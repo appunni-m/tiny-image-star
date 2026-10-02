@@ -1,3 +1,5 @@
+import { inspectFontVariationAxes } from './font-variation.js';
+
 export const MAX_LOCAL_FONT_BYTES = 20 * 1024 * 1024;
 export const LOCAL_FONT_FAMILY_LIMIT = 120;
 
@@ -63,7 +65,8 @@ export function validateLocalFontAsset(asset, { copyBytes = true } = {}) {
 export async function loadLocalFontFace(asset, {
   FontFaceConstructor = globalThis.FontFace,
   fontSet = globalThis.document?.fonts,
-  register = true
+  register = true,
+  variationAxes = undefined
 } = {}) {
   const font = validateLocalFontAsset(asset, { copyBytes: false });
   if (typeof FontFaceConstructor !== 'function' || (register && !fontSet?.add)) {
@@ -72,7 +75,11 @@ export async function loadLocalFontFace(asset, {
   const buffer = font.bytes.buffer.slice(font.bytes.byteOffset, font.bytes.byteOffset + font.bytes.byteLength);
   let face;
   try {
-    face = new FontFaceConstructor(font.family, buffer, { weight: String(font.weight), style: font.style, display: 'swap' });
+    const axes = variationAxes ?? await inspectFontVariationAxes(font.bytes);
+    const weightAxis = axes.find(axis => axis.tag === 'wght');
+    const weight = weightAxis && weightAxis.min >= 1 && weightAxis.max <= 1000
+      ? `${weightAxis.min} ${weightAxis.max}` : String(font.weight);
+    face = new FontFaceConstructor(font.family, buffer, { weight, style: font.style, display: 'swap' });
     await face.load();
     if (face.status && face.status !== 'loaded') throw new Error('The browser could not decode this font file.');
     if (register) fontSet.add(face);

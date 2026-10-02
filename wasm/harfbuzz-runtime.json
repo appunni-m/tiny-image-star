@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "runtime": {
+    "package": "harfbuzzjs",
+    "version": "1.6.2",
+    "packageIntegrity": "sha512-95c1vWuzoHjM19d5fQgPbz1wcv1pTa0UM9dZrdPgSMUEVuSwuzeVPkq6UhHHw3jLOkE9AYzzTP8XQkRBpPYpEg==",
+    "license": "MIT",
+    "licenseFile": "harfbuzz/LICENSE.txt",
+    "wasm": {
+      "file": "../src/workers/harfbuzz.wasm",
+      "sizeBytes": 433766,
+      "sha256": "684bda29aee2411d05e6859070a9b1a6b8d061025ededb5a8910098fd0cf10f4"
+    },
+    "worker": {
+      "bundle": "../src/workers/font-shaping-worker.bundle.js",
+      "sizeBytes": 44936,
+      "sha256": "2b38c6713303d546a43a662b80f71b96de76e3b8c5a57fe3feb67d156b622866"
+    },
+    "limits": {
+      "maxFontBytes": 20971520,
+      "maxRetainedFontBytes": 67108864,
+      "maxCachedFaces": 4,
+      "maxTextCodeUnits": 32768,
+      "maxGlyphsPerShape": 65536,
+      "maxOutlinePathCharacters": 8388608,
+      "maxCachedShapeBytes": 8388608,
+      "maxCachedShapeEntries": 256
+    }
+  }
+}

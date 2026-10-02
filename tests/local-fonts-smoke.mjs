@@ -94,6 +94,8 @@ let faceStub = null;
 let originalFontId = null;
 let importedFontId = null;
 let family = `Smoke Display ${Date.now().toString(36)}`;
+let variableFontId = null;
+const variableFamily = `Inter Variable ${Date.now().toString(36)}`;
 
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
@@ -132,6 +134,25 @@ try {
   assert(familyOption, 'the installed family was not added to the text font-family options.');
   assert([...faceStub.faces].some(face => face.family === family && face.weight === '700' && face.style === 'italic'),
     'the stored local font was not loaded into the isolated document FontFaceSet.');
+
+  const variableBytes = new Uint8Array(await (await app.defaultView.fetch('./fixtures/fonts/inter-latin-variable.woff2')).arrayBuffer());
+  setFile(app, '#font-input', new app.defaultView.File([variableBytes], 'inter-latin-variable.woff2', { type: 'font/woff2' }));
+  await waitFor(() => dialog?.open, 'variable WOFF2 descriptor dialog');
+  app.querySelector('#font-family-name').value = variableFamily;
+  app.querySelector('#font-weight-value').value = '400';
+  app.querySelector('#font-style-value').value = 'normal';
+  click(app, app.querySelector('#font-import-confirm'));
+  await waitFor(() => [...app.querySelectorAll('#font-assets-list .local-font-row')]
+    .some(row => row.textContent.includes(variableFamily)), 'variable WOFF2 inspection and installation');
+  const variableMetadata = (await readStore(app, 'fontMetadata')).find(record => record.family === variableFamily);
+  variableFontId = variableMetadata?.id;
+  assert(variableFontId, 'the variable WOFF2 font metadata was not stored.');
+  const variableRow = [...app.querySelectorAll('#font-assets-list .local-font-row')]
+    .find(row => row.textContent.includes(variableFamily));
+  assert(variableRow.textContent.includes('opsz 14–32') && variableRow.textContent.includes('wght 100–900'),
+    'the bundled local WASM decoder should discover the WOFF2 optical-size and weight axis ranges.');
+  assert([...faceStub.faces].some(face => face.family === variableFamily && face.weight === '100 900'),
+    'the variable WOFF2 weight axis should configure an honest FontFace matching range.');
 
   click(app, app.querySelector('#file-menu-button'));
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('New design'));
@@ -194,18 +215,18 @@ try {
   assert([...app.querySelector('#font-family-options').options].some(option => option.value === `${family} Imported`),
     'the remapped family was not available to imported text layers.');
 
-  for (const id of [originalFontId, importedFontId]) {
+  for (const id of [originalFontId, variableFontId, importedFontId]) {
     const remove = app.querySelector(`[data-font-id="${id}"]`);
     assert(remove, `The font catalog did not expose an accessible remove control for ${id}.`);
     click(app, remove);
     await waitFor(async () => !(await readStore(app, 'fontMetadata')).some(record => record.id === id), `font ${id} removal`);
   }
-  assert(!(await readStore(app, 'fontAssets')).some(record => record.id === originalFontId || record.id === importedFontId),
+  assert(!(await readStore(app, 'fontAssets')).some(record => [originalFontId, variableFontId, importedFontId].includes(record.id)),
     'font removal left orphaned binary data in IndexedDB.');
-  assert(![...faceStub.faces].some(face => face.family === family || face.family === `${family} Imported`),
+  assert(![...faceStub.faces].some(face => [family, variableFamily, `${family} Imported`].includes(face.family)),
     'font removal left a local face registered in the document.');
 
-  result.textContent = `PASS\n${JSON.stringify({ fontDialog: true, accessibleDescriptors: true, indexedDbMetadata: true, indexedDbBytesRoundTrip: true, textFamilyOptions: true, textFamilyApplied: true, flocalFontBytes: true, flocalCollisionRemapping: true, removeClearsMetadataBinaryAndFace: true, stubbedFontFaces: faceStub.faces.size })}`;
+  result.textContent = `PASS\n${JSON.stringify({ fontDialog: true, accessibleDescriptors: true, indexedDbMetadata: true, indexedDbBytesRoundTrip: true, woff2VariableAxisInspection: true, woff2WeightRange: true, textFamilyOptions: true, textFamilyApplied: true, flocalFontBytes: true, flocalCollisionRemapping: true, removeClearsMetadataBinaryAndFace: true, stubbedFontFaces: faceStub.faces.size })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {
@@ -214,7 +235,7 @@ try {
     if (dialog?.open) dialog.close();
     if (faceStub) {
       const remaining = (await readStore(app, 'fontMetadata').catch(() => []))
-        .filter(record => record.family === family || record.family === `${family} Imported`);
+        .filter(record => [family, variableFamily, `${family} Imported`].includes(record.family));
       for (const record of remaining) await deleteFontAsset(record.id).catch(() => {});
       faceStub.restore();
     }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as pillow from '../wasm/pillow_rs_js.js';
-import { decodeOriginal, imagePreviewResolutionMatches, renderImage } from '../src/image-processing.js';
+import { decodeOriginal, renderImage } from '../src/image-processing.js';
 
 function twoPixelBmp() {
   const bytes = Buffer.alloc(62);
@@ -50,7 +50,6 @@ test('local image worker returns full-resolution Pillow-RS export bytes in the r
       waiters.push({ matches: predicate, resolve: message => { clearTimeout(timer); resolve(message); } });
     });
   };
-
   globalThis.self = selfMock;
   globalThis.fetch = async input => {
     if (String(input).endsWith('/pillow_rs_js_bg.wasm')) {
@@ -79,7 +78,7 @@ test('local image worker returns full-resolution Pillow-RS export bytes in the r
   }
 });
 
-test('a budgeted preview source stays reusable while exports still decode the full-resolution original', async () => {
+test('oversized previews always decode the full original and remain ephemeral while exports retain full resolution', async () => {
   const previousSelf = globalThis.self;
   const previousFetch = globalThis.fetch;
   const wasmBytes = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
@@ -98,13 +97,19 @@ test('a budgeted preview source stays reusable while exports still decode the fu
       }
     },
   };
+  const describeMessages = () => messages.map(message => `${message.type}:${message.requestId ?? message.generation ?? ''}:${message.message || ''}`).join(', ');
   const waitFor = predicate => {
     const existing = messages.find(predicate);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Timed out waiting for a local Pillow-RS worker message.')), 5000);
+      const timer = setTimeout(() => reject(new Error(`Timed out waiting for a local Pillow-RS worker message; received ${describeMessages()}.`)), 5000);
       waiters.push({ matches: predicate, resolve: message => { clearTimeout(timer); resolve(message); } });
     });
+  };
+  const waitForRender = async requestId => {
+    const message = await waitFor(item => item.requestId === requestId && ['rendered', 'error'].includes(item.type));
+    assert.equal(message.type, 'rendered', message.message || `Pillow-RS render ${requestId} failed.`);
+    return message;
   };
 
   globalThis.self = selfMock;
@@ -124,34 +129,38 @@ test('a budgeted preview source stays reusable while exports still decode the fu
     await configured;
 
     const sourceBytes = fourByTwoBmp();
-    const firstResult = waitFor(message => message.type === 'rendered' && message.requestId === 1);
+    const firstResult = waitForRender(1);
     selfMock.onmessage({ data: {
       type: 'render', requestId: 1, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
       adjustments: { invert: true }, transforms: {}, previewMaxDimension: 8, outputMode: 'preview',
     } });
     const first = await firstResult;
-    assert.equal(first.sourceRetained, true, 'the worker retains the interactive source inside its small pixel budget');
-    assert.deepEqual([first.width, first.height, first.sourceWidth, first.sourceHeight], [2, 1, 2, 1]);
+    assert.equal(first.sourceRetained, false, 'an oversized decoded source is not retained in the worker cache');
+    assert.deepEqual([first.width, first.height, first.sourceWidth, first.sourceHeight], [4, 2, 4, 2],
+      'the preview render starts from full-resolution source pixels when its output cap permits');
 
     const expectedOriginal = decodeOriginal(pillow, sourceBytes);
+    const reducedSource = decodeOriginal(pillow, sourceBytes);
     try {
-      expectedOriginal.thumbnail(2, 2);
       const expected = renderImage(expectedOriginal, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow, { previewMaxDimension: 8 });
-      const secondResult = waitFor(message => message.type === 'rendered' && message.requestId === 2);
+      reducedSource.thumbnail(2, 2);
+      const reducedSourceResult = renderImage(reducedSource, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow, { previewMaxDimension: 8 });
+      const secondResult = waitForRender(2);
       selfMock.onmessage({ data: {
-        type: 'render', requestId: 2, assetId: 'same-original', sourceBytes: null,
+        type: 'render', requestId: 2, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
         adjustments: { brightness: 24, saturation: -15 }, transforms: { rotation: 90 },
         previewMaxDimension: 8, outputMode: 'preview',
       } });
       const second = await secondResult;
 
-      assert.equal(second.sourceRetained, true);
+      assert.equal(second.sourceRetained, false, 'the full source is freed again after each over-budget preview');
+      assert.deepEqual([second.width, second.height, second.sourceWidth, second.sourceHeight], [2, 4, 4, 2]);
       assert.deepEqual(second.bytes, expected.bytes,
-        'the new settings render from the same unedited, budgeted source rather than the previous preview');
-      assert.equal(imagePreviewResolutionMatches(second.width, second.height, 2, 4), true,
-        'a lower-resolution cache preview preserves the verified original aspect ratio');
+        'successive edits match a fresh render from the immutable full-resolution source');
+      assert.notDeepEqual(second.bytes, reducedSourceResult.bytes,
+        'preview edits preserve detail that would be lost by caching a downsampled source');
 
-      const exportResult = waitFor(message => message.type === 'rendered' && message.requestId === 3);
+      const exportResult = waitForRender(3);
       selfMock.onmessage({ data: {
         type: 'render', requestId: 3, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
         adjustments: { brightness: 24 }, transforms: {}, previewMaxDimension: 1,
@@ -159,17 +168,20 @@ test('a budgeted preview source stays reusable while exports still decode the fu
       } });
       const exported = await exportResult;
       assert.deepEqual([exported.width, exported.height], [4, 2], 'exports always use the original dimensions');
-      assert.equal(exported.sourceRetained, true, 'full-resolution export preserves the active preview source');
+      assert.equal(exported.sourceRetained, false, 'oversized export decodes the source ephemerally too');
 
-      const thirdResult = waitFor(message => message.type === 'rendered' && message.requestId === 4);
+      const thirdResult = waitForRender(4);
       selfMock.onmessage({ data: {
-        type: 'render', requestId: 4, assetId: 'same-original', sourceBytes: null,
+        type: 'render', requestId: 4, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
         adjustments: { brightness: 12 }, transforms: {}, previewMaxDimension: 8, outputMode: 'preview',
       } });
       const third = await thirdResult;
-      assert.equal(third.sourceRetained, true, 'subsequent previews continue using the retained source after export');
+      const expectedThird = renderImage(expectedOriginal, { brightness: 12 }, {}, pillow, { previewMaxDimension: 8 });
+      assert.equal(third.sourceRetained, false);
+      assert.deepEqual(third.bytes, expectedThird.bytes,
+        'a preview after export still derives from the original rather than an earlier result');
       assert.deepEqual([...sourceBytes], [...fourByTwoBmp()], 'worker processing leaves the editor-owned original bytes attached and unchanged');
-    } finally { expectedOriginal.free(); }
+    } finally { expectedOriginal.free(); reducedSource.free(); }
   } finally {
     globalThis.self = previousSelf;
     globalThis.fetch = previousFetch;

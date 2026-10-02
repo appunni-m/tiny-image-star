@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createComponent, createComponentInstance, createDocument, createFillLayer, createGradientFill, createNode, addNode, duplicateNode, parseDocument, serializeDocument, syncComponentInstances, validateDocument } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, isValidFillStack, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from '../src/fills.js';
-import { imagePreviewKey } from '../src/image-preview-runtime.js';
+import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { SceneRenderer } from '../src/renderer.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 
@@ -19,7 +19,14 @@ function renderNode(node, assets = new Map(), previews = new Map()) {
   const document = createDocument();
   addNode(document, node);
   const calls = [];
-  const state = { document, assets, previews, previewAssetIds: new Map([...previews.keys()].map(key => [key, 'asset-local'])), selectedIds: [], outlineMode: false, presenting: false, zoom: 1 };
+  const previewAssetIds = new Map();
+  const previewSignatures = new Map();
+  for (const key of previews.keys()) {
+    const settings = imagePreviewSettingsForNode(node, key);
+    previewAssetIds.set(key, settings.assetId);
+    previewSignatures.set(key, imagePreviewSettingsSignature(settings));
+  }
+  const state = { document, assets, previews, previewAssetIds, previewSignatures, selectedIds: [], outlineMode: false, presenting: false, zoom: 1 };
   const context = {
     globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
     save() {}, restore() {}, beginPath() {}, rect() {}, moveTo() {}, lineTo() {}, closePath() {},
@@ -150,9 +157,11 @@ test('Boolean surfaces composite the fill-ID preview without an image-fill refer
     addNode(document, node);
     let preview = { width: 8, height: 8 };
     const previewKey = imagePreviewKey(node.id, 'boolean-image-paint');
+    const previewSettings = imagePreviewSettingsForNode(node, previewKey);
     const state = {
       document, assets: new Map([['asset-local', { bitmap: { width: 2, height: 2 } }]]),
       previews: new Map([[previewKey, preview]]), previewAssetIds: new Map([[previewKey, 'asset-local']]),
+      previewSignatures: new Map([[previewKey, imagePreviewSettingsSignature(previewSettings)]]),
       previewVersions: new Map([[previewKey, 1]]),
       selectedIds: [], outlineMode: false, presenting: false, zoom: 1
     };

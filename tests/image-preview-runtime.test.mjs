@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from '../src/image-preview-runtime.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -78,6 +78,63 @@ test('preview settings signatures are stable and include every rendered image in
   }
 });
 
+test('preview keys round-trip node and image-fill identity', () => {
+  assert.deepEqual(parseImagePreviewKey(imagePreviewKey('image-node')), { nodeId: 'image-node', fillId: null });
+  assert.deepEqual(parseImagePreviewKey(imagePreviewKey('shape-node', 'fill-1')), { nodeId: 'shape-node', fillId: 'fill-1' });
+  assert.throws(() => parseImagePreviewKey('image-fill:bad-json'), /malformed/);
+  assert.throws(() => parseImagePreviewKey(''), /nonempty string/);
+});
+
+test('cloning schedules only image and image-fill previews whose edited pixels need rendering', async () => {
+  const nodes = [{
+    id: 'edited-image', type: 'image', assetId: 'photo', adjustments: { brightness: 12 }, children: []
+  }, {
+    id: 'image-fill-shape', type: 'rectangle', imageFill: {
+      assetId: 'legacy-fill-photo', adjustments: { contrast: 8 }
+    }, children: []
+  }, {
+    id: 'stacked-fills', type: 'rectangle', fills: [
+      { id: 'edited-paint', type: 'image', imageFill: { assetId: 'paint-photo', adjustments: { saturation: 4 } } },
+      { id: 'unchanged-paint', type: 'image', imageFill: { assetId: 'unchanged-photo' } }
+    ], children: [{ id: 'nested-image', type: 'image', assetId: 'nested-photo', transforms: { rotation: 90 }, children: [] }]
+  }];
+
+  const requests = collectEditedImagePreviewRequests(nodes);
+  assert.deepEqual(requests.map(({ node, fillId }) => [node.id, fillId]), [
+    ['edited-image', null],
+    ['image-fill-shape', 'legacy-fill:image-fill-shape'],
+    ['stacked-fills', 'edited-paint'],
+    ['nested-image', null]
+  ]);
+
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  for (const [start, end] of [
+    ['function duplicateSelectionForCanvasDrag(', '\nfunction '],
+    ['function pasteSelectedLayers(', '\nfunction ']
+  ]) {
+    const bodyStart = source.indexOf(start);
+    const body = source.slice(bodyStart, source.indexOf(end, bodyStart + 10));
+    assert.match(body, /scheduleEditedImagePreviews\(/, `${start} must rebuild a clone's newly keyed raster previews`);
+  }
+  const pageStart = source.indexOf("if (action === 'duplicate') {", source.indexOf('function managePageAction('));
+  const pageBody = source.slice(pageStart, source.indexOf("if (action === 'delete')", pageStart));
+  assert.match(pageBody, /scheduleEditedImagePreviews\(copy\.children\)/,
+    'duplicated pages also receive fresh previews for their renewed layer IDs');
+});
+
+test('offscreen preview candidates preserve visible, selected, in-flight, and current previews in LRU order', () => {
+  const previews = new Map([
+    ['least-recent', {}], ['visible', {}], ['selected', {}], ['in-flight', {}], ['current', {}], ['recent-offscreen', {}]
+  ]);
+  const candidates = offscreenPreviewEvictionCandidates({
+    previews,
+    visiblePreviewKeys: new Set(['visible']),
+    protectedPreviewKeys: new Set(['selected', 'in-flight']),
+    excludedPreviewKeys: new Set(['current'])
+  });
+  assert.deepEqual(candidates, ['least-recent', 'recent-offscreen']);
+});
+
 test('presentation crossfades only current Pillow preview settings and receives the live preview maps', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const renderStart = source.indexOf('async function renderImagePreview(');
@@ -104,6 +161,63 @@ test('presentation crossfades only current Pillow preview settings and receives 
     'presentation gives Smart Animate the verified-preview resolver');
   assert.match(frameBody, /presentRenderState\.previewSignatures = state\.previewSignatures/,
     'the presentation renderer gets the same freshness metadata as the editor');
+});
+
+test('visible deferred previews are connected to the live editor and presentation render states', async () => {
+  const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const rendererSource = await readFile(new URL('../src/renderer.js', import.meta.url), 'utf8');
+  assert.match(mainSource, /previewDeferredKeys: new Set\(\), requestDeferredPreview: requestDeferredImagePreview/,
+    'the main renderer receives the deferred-preview loader');
+  assert.match(mainSource, /previewDeferredKeys: state\.previewDeferredKeys,\s*requestDeferredPreview: requestDeferredImagePreview/,
+    'presentation rendering shares the same deferred-preview loader');
+  assert.match(rendererSource, /state\.requestDeferredPreview\?\.\(previewKey\)/,
+    'a preview is scheduled when its image enters the viewport');
+  assert.match(mainSource, /state\.previewVersions\.clear\(\); state\.previewDeferredKeys\.clear\(\)/,
+    'document teardown clears deferred work for the previous design');
+});
+
+test('offscreen sources restore on demand and bulk targets hydrate before their Pillow render', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const restoreStart = source.indexOf('async function restoreImageAssets(');
+  const restoreEnd = source.indexOf('\nfunction syncBulkBarTicker()', restoreStart);
+  const restoreBody = source.slice(restoreStart, restoreEnd);
+  assert.match(restoreBody, /shouldRestoreImageAssetSource\(\{[\s\S]*?alreadyResident: Boolean\(state\.assets\.get\(assetId\)\?\.sourceBytes\)[\s\S]*?visible: visiblePreviewKeys\.has\(previewKey\)[\s\S]*?\}\)\) continue;[\s\S]*?await loadActiveImageAssetMetadata\(assetId\)/,
+    'offscreen assets avoid metadata reads and bitmap decoding until a view or edit needs them');
+  assert.match(source, /function ensureImageAssetResident\(assetId, previewKey[\s\S]*?imageAssetRestoreTasks\.get\(taskKey\)[\s\S]*?restoreImageAssets\(generation, \{ assetIds: \[assetId\], previewKeys: \[previewKey\], skipPreview: true \}\)/,
+    'concurrent requests for one asset share an on-demand restore');
+  const batchStart = source.indexOf('function scheduleBulk()');
+  const batchEnd = source.indexOf('\nfunction restoreImageRecipeBatchConcurrency', batchStart);
+  const batchBody = source.slice(batchStart, batchEnd);
+  assert.match(batchBody, /hydrateAndAdmitImageRecipeTarget\(\{[\s\S]*?ensureResident: ensureImageAssetResident[\s\S]*?isGenerationCurrent:[\s\S]*?isBatchCurrent:[\s\S]*?resolveTarget:[\s\S]*?expectedNode: node[\s\S]*?onAdmit: currentEntry => \{[\s\S]*?applyImageRecipe\([\s\S]*?queueSave\([\s\S]*?renderImagePreview\(id, assetId/,
+    'bulk jobs hydrate first, then revalidate generation, batch, node, and asset before applying or saving a recipe');
+  assert.match(batchBody, /const recipeRenderVersion = state\.renderVersion\.get\(id\);[\s\S]*?bulk\.renderVersions\.set\(id, recipeRenderVersion\)/,
+    'the job records its render fence only after the hydrated target passes admission and dispatches');
+});
+
+test('only visible or explicitly used originals are restored into memory', () => {
+  assert.equal(shouldRestoreImageAssetSource(), false, 'offscreen cold sources are not decoded at startup');
+  assert.equal(shouldRestoreImageAssetSource({ visible: true }), true, 'viewport images hydrate for display');
+  assert.equal(shouldRestoreImageAssetSource({ explicitlyRequested: true }), true, 'edits and batch targets can hydrate offscreen sources');
+  assert.equal(shouldRestoreImageAssetSource({ requestedLibrarySource: true }), true, 'placing a library source hydrates its original');
+  assert.equal(shouldRestoreImageAssetSource({ alreadyResident: true }), true, 'resident sources remain reusable across visible references');
+});
+
+test('editing and export entry points rehydrate cold originals before consuming bytes', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const eraseStart = source.indexOf('async function toggleImageEraseMode(node)');
+  const eraseEnd = source.indexOf('\nfunction updateImageEraseStrokes', eraseStart);
+  assert.match(source.slice(eraseStart, eraseEnd), /await ensureImageAssetResident\(node\.assetId, imagePreviewKey\(node\.id\)/,
+    'object erase restores a cold selected original before opening the brush');
+  const exportStart = source.indexOf('async function refreshImagesForExport(');
+  const exportEnd = source.indexOf('\nfunction safeExportName', exportStart);
+  assert.match(source.slice(exportStart, exportEnd), /await ensureImageAssetResident\(assetId, previewKey\)[\s\S]*?const asset = state\.assets\.get\(assetId\)/,
+    'PNG, SVG, slice, and selection exports hydrate source assets before preflight');
+  const imageExportStart = source.indexOf('async function exportEditedImageSource(');
+  assert.match(source.slice(imageExportStart), /await ensureImageAssetResident\(node\.assetId, imagePreviewKey\(node\.id\)\)[\s\S]*?const asset = state\.assets\.get\(node\.assetId\)/,
+    'full-resolution edited-original download restores its source before dimensions are inspected');
+  const pdfStart = source.indexOf('async function vectorPdfImagePreviews(');
+  assert.match(source.slice(pdfStart), /await restoreImageAssets\(state\.documentGeneration,[\s\S]*?previewKeys: requestedReferences\.map\(reference => reference\.previewKey\)[\s\S]*?const references = vectorPdfRasterReferences/,
+    'vector PDF preflight hydrates the complete selected image set before choosing source or preview bytes');
 });
 
 test('asset reachability includes current, undo, and redo snapshots before releasing source resources', () => {
@@ -217,7 +331,7 @@ test('restoring a preview from an already-loaded shared asset records its failur
 
 test('editor preview disposal cannot strand references or skip cleanup when browser disposers throw', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  const releaseStart = source.indexOf('function releasePreviewResources(previewKey)');
+  const releaseStart = source.indexOf('function releasePreviewResources(previewKey,');
   const renderStart = source.indexOf('async function renderImagePreview(', releaseStart);
   assert.notEqual(releaseStart, -1);
   assert.notEqual(renderStart, -1);
@@ -261,7 +375,7 @@ test('preview memory is reserved before worker dispatch and held through decode 
   const dimensions = body.indexOf('const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);');
   const cappedDimensions = body.indexOf('const outputDimensions = imagePreviewDimensions(transformedDimensions.width, transformedDimensions.height, previewMaxDimension);');
   const estimate = body.indexOf('estimatePreviewMemoryReservationBytes(outputDimensions)');
-  const reserve = body.indexOf('imageMemoryBudget.reserve(previewAdmission.retainedBytes');
+  const reserve = body.indexOf('reserveImagePreviewMemory(previewAdmission.retainedBytes, previewKey)');
   const reservationScope = body.indexOf('withImageMemoryReservation(imageMemoryBudget, reservation, async () => {');
   const dispatch = body.indexOf('await renderImageWithEdits(');
   const decode = body.indexOf('bitmap = await createImageBitmap(previewBlob);');
@@ -270,6 +384,13 @@ test('preview memory is reserved before worker dispatch and held through decode 
 
   assert.ok(dimensions >= 0 && cappedDimensions > dimensions && estimate > cappedDimensions && reserve > estimate && reservationScope > reserve && dispatch > reservationScope,
     'the bounded crop/rotation preview dimensions must reserve the conservative preview budget before worker dispatch');
+  const reserveStart = source.indexOf('function reserveImageMemory(bytes, { kind =');
+  const reserveEnd = source.indexOf('function reserveImagePreviewMemory', reserveStart);
+  assert.ok(reserveStart >= 0 && reserveEnd > reserveStart);
+  assert.match(source.slice(reserveStart, reserveEnd), /offscreenPreviewEvictionCandidates[\s\S]*?releasePreviewResources\(previewKey, \{ defer: true \}\)[\s\S]*?imageMemoryBudget\.reserve\(bytes[\s\S]*?imageSourceResidency\.evictionCandidates[\s\S]*?releaseResidentImageAsset\(assetId(?:, sourceReferences)?\)/,
+    'memory admission defers offscreen previews, then releases least-recent unprotected image sources before rejecting a worker request');
+  assert.match(source.slice(reserveEnd, source.indexOf('function requestDeferredImagePreview', reserveEnd)), /reserveImageMemory\(bytes, \{ kind: 'preview-pending', excludePreviewKeys: \[currentPreviewKey\] \}\)/,
+    'preview reservations use the shared safe-memory eviction policy');
   assert.ok(decode > dispatch && commit > decode && publish > commit,
     'the reservation stays in force through bitmap decoding and is committed before preview publication');
   assert.ok(body.indexOf('result.bytes.byteLength > previewAdmission.encodedByteLength') > dispatch
@@ -277,13 +398,31 @@ test('preview memory is reserved before worker dispatch and held through decode 
   'the returned PNG must fit the conservative encoded-output reservation before bitmap allocation');
 });
 
-test('interactive preview resolution follows visible canvas demand within memory-friendly phone and desktop caps', async () => {
+test('resident image sources stay pinned while renders use them and memory admission evicts only unprotected LRU sources', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('async function renderImagePreview(');
+  const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  const render = source.slice(renderStart, renderEnd);
+  assert.match(render, /sourceLease = imageSourceResidency\.acquire\(assetId\)/);
+  assert.match(render, /sourceLease\?\.release\(\)/);
+
+  const reserveStart = source.indexOf('function reserveImageMemory(bytes, { kind =');
+  const reserveEnd = source.indexOf('function reserveImagePreviewMemory', reserveStart);
+  const reserve = source.slice(reserveStart, reserveEnd);
+  assert.match(reserve, /imageSourceResidency\.evictionCandidates\(\{ exclude: excludedAssets \}\)/);
+  assert.match(reserve, /protectedImageSourceAssetIds\(\{ excludeAssetIds, references: sourceReferences \}\)/);
+  assert.match(reserve, /releaseResidentImageAsset\(assetId, sourceReferences\)/);
+  assert.match(source, /state\.documentTransitioning \|\| state\.imageExportAbortController \|\| state\.localPackageBuilding/,
+    'document replacement, exports, and package creation must keep source bytes stable');
+});
+
+test('interactive preview resolution follows image display size within phone and desktop caps', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const renderStart = source.indexOf('async function renderImagePreview(');
   const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
   const body = source.slice(renderStart, renderEnd);
-  assert.match(body, /const desiredPreviewEdge = Math\.ceil\(Math\.max\(canvasBounds\.width, canvasBounds\.height\) \* pixelRatio \* Math\.max\(\.5, state\.zoom\)\)/,
-    'preview size should cover the visible canvas scale and account for device pixels and zoom');
+  assert.match(body, /imagePreviewMaxDimensionForNode\(previewLayer, state\.document, pageId, \{[\s\S]*?zoom: Math\.max\(\.5, state\.zoom\)[\s\S]*?pixelRatio[\s\S]*?maximumDimension: previewDimensionCeiling/,
+    'preview size should follow the actual transformed image layer and account for device pixels, zoom, and device caps');
   assert.match(body, /const previewDimensionCeiling = innerWidth <= 820 \|\| Number\(navigator\.deviceMemory\) > 0 && navigator\.deviceMemory <= 4 \? 2048 : 4096/,
     'phone and low-memory devices should use a lower hard ceiling than desktop');
   assert.match(body, /queueGroup, previewMaxDimension/,
@@ -292,6 +431,7 @@ test('interactive preview resolution follows visible canvas demand within memory
 
 test('pruning deleted nodes cancels timers and releases only orphan preview resources', () => {
   const runtime = runtimeMaps();
+  const deferredPreviewKeys = new Set(['live-on-another-page', 'deleted-preview']);
   const cancelled = [];
   const revoked = [];
   const closed = [];
@@ -318,6 +458,7 @@ test('pruning deleted nodes cancels timers and releases only orphan preview reso
   const released = pruneImagePreviewRuntime({
     ...runtime,
     liveNodeIds: new Set(['live-on-another-page']),
+    deferredPreviewKeys,
     clearTimer: timer => cancelled.push(timer),
     revokeUrl: url => revoked.push(url),
   });
@@ -327,6 +468,7 @@ test('pruning deleted nodes cancels timers and releases only orphan preview reso
   assert.deepEqual(revoked, ['blob:deleted']);
   assert.deepEqual(closed, ['deleted']);
   for (const map of Object.values(runtime)) assert.equal(map.has('deleted-preview'), false);
+  assert.deepEqual([...deferredPreviewKeys], ['live-on-another-page'], 'deferred markers survive for live references and are pruned with deleted nodes');
   assert.equal(runtime.timers.has('deleted-pending'), false);
   assert.equal(runtime.renderVersion.has('deleted-pending'), false);
   assert.equal(runtime.previews.has('live-on-another-page'), true);

@@ -5,3 +5,4 @@ _site/
 .coverage-mcp/
 src/workers/fig-import-worker.bundle.js
 src/workers/inpaint-worker.bundle.js
+src/workers/object-isolation-worker.bundle.js

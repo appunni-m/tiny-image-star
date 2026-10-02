@@ -137,3 +137,31 @@ test('aspect-ratio option does not change edge resizing and rejects invalid rati
   assert.equal(resized.height, 40);
   assert.throws(() => resizeOrientedRect(rect, 'se', pointer, [], { aspectRatio: 0 }), /Aspect ratio/);
 });
+
+test('Alt-style center resize keeps the transformed center fixed for rotated affine layers', () => {
+  const ancestors = [{ x: 90, y: 30, width: 240, height: 140, rotation: 23 }];
+  const rect = {
+    x: 18, y: 12, width: 80, height: 50, rotation: -31,
+    affineTransform: { a: 1.1, b: 0.2, c: -0.15, d: 0.9 }
+  };
+  const beforeCenter = nodeLocalToPage(rect, { x: rect.width / 2, y: rect.height / 2 }, ancestors);
+  const pointer = nodeLocalToPage(rect, { x: 105, y: 30 }, ancestors);
+  const resized = resizeOrientedRect(rect, 'e', pointer, ancestors, { fromCenter: true });
+  const afterCenter = nodeLocalToPage(resized, { x: resized.width / 2, y: resized.height / 2 }, ancestors);
+
+  assert.ok(Math.abs(resized.width - 130) < 1e-9);
+  assert.equal(resized.height, rect.height);
+  closePoint(afterCenter, beforeCenter);
+});
+
+test('center corner resize supports aspect locking and clamps before crossing its center', () => {
+  const rect = { x: 10, y: 20, width: 80, height: 40, rotation: 25 };
+  const center = nodeLocalToPage(rect, { x: 40, y: 20 });
+  const pointer = nodeLocalToPage(rect, { x: 90, y: 40 });
+  const resized = resizeOrientedRect(rect, 'se', pointer, [], { fromCenter: true, aspectRatio: 2 });
+  assert.ok(Math.abs(resized.width / resized.height - 2) < 1e-12);
+  closePoint(nodeLocalToPage(resized, { x: resized.width / 2, y: resized.height / 2 }), center);
+
+  const crossed = resizeOrientedRect(rect, 'e', nodeLocalToPage(rect, { x: 20, y: 20 }), [], { fromCenter: true });
+  assert.equal(crossed.width, 1);
+});

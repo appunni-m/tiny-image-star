@@ -4,11 +4,13 @@ import { isValidLayerEffects } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
+import { isValidFontVariationValues } from './font-variation.js';
+import { isValidFontFeatureValues } from './font-features.js';
 
 const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
 const textStyleProperties = Object.freeze([
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
   'verticalAlign', 'textCase', 'textDecoration'
 ]);
@@ -49,7 +51,9 @@ export function snapshotAppearance(sourceNode) {
 
   if (sourceNode.type === 'text') {
     const textStyle = Object.fromEntries(textStyleProperties
-      .filter(property => Object.hasOwn(sourceNode, property) && sourceNode[property] !== undefined)
+      .filter(property => Object.hasOwn(sourceNode, property) && sourceNode[property] !== undefined
+        && (property !== 'fontAxes' || isValidFontVariationValues(sourceNode[property]))
+        && (property !== 'fontFeatures' || isValidFontFeatureValues(sourceNode[property])))
       .map(property => [property, clone(sourceNode[property])]));
     if (Object.keys(textStyle).length) snapshot.textStyle = textStyle;
   }
@@ -206,6 +210,12 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
         .filter(property => Object.hasOwn(before, property))
         .map(property => [property, before[property]]));
       const previousBindings = bindingState(before, 'textStyle');
+      if (appearance.textStyle.fontAxes != null && !isValidFontVariationValues(appearance.textStyle.fontAxes)) {
+        throw new TypeError('The copied variable-font axes are invalid.');
+      }
+      if (appearance.textStyle.fontFeatures != null && !isValidFontFeatureValues(appearance.textStyle.fontFeatures)) {
+        throw new TypeError('The copied OpenType feature settings are invalid.');
+      }
       for (const property of textStyleProperties) {
         if (!Object.hasOwn(appearance.textStyle, property)) continue;
         node[property] = clone(appearance.textStyle[property]);

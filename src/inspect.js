@@ -5,6 +5,7 @@ import { nodeLocalToPage } from './transform-geometry.js';
 import { vectorPathContours } from './vector-path.js';
 import { strokeStackForNode } from './strokes.js';
 import { resolvedLineHeight } from './text-layout.js';
+import { fontFeatureSettings } from './font-features.js';
 
 function hasFillablePathContour(node) {
   return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
@@ -246,6 +247,7 @@ function cssForEntry(document, entry) {
       `font-size: ${number(fontSize)}px;`,
       `font-weight: ${number(node.fontWeight || 400)};`,
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
+      ...(fontFeatureSettings(node.fontFeatures) ? [`font-feature-settings: ${fontFeatureSettings(node.fontFeatures)};`] : []),
       `line-height: ${number(lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       'display: block;',
@@ -528,6 +530,8 @@ function summaryForEntry(document, entry) {
       fontSize: getNodePropertyValue(document, node, 'fontSize'),
       fontWeight: node.fontWeight,
       fontStyle: node.fontStyle || 'normal',
+      ...(node.fontAxes ? { fontAxes: structuredClone(node.fontAxes) } : {}),
+      ...(node.fontFeatures ? { fontFeatures: structuredClone(node.fontFeatures) } : {}),
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
       paragraphSpacing: Number(node.paragraphSpacing) || 0,

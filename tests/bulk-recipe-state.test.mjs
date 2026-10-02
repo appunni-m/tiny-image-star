@@ -1,6 +1,98 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
+import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+  return { promise, resolve, reject };
+}
+
+function hydrationAdmissionOptions(overrides = {}) {
+  const node = { id: 'image-a', type: 'image', assetId: 'asset-a', adjustments: { brightness: 0 } };
+  const entry = { node, parents: [] };
+  return {
+    ensureResident: async () => {},
+    assetId: 'asset-a',
+    previewKey: 'image-a',
+    generation: 4,
+    isGenerationCurrent: () => true,
+    isBatchCurrent: () => true,
+    resolveTarget: () => entry,
+    expectedNode: node,
+    isEditableTarget: target => target.node.type === 'image' && !target.node.locked && !(target.parents || []).some(parent => parent.locked),
+    onAdmit: target => {
+      target.node.adjustments.brightness = 25;
+      return 'render-admitted';
+    },
+    ...overrides,
+    entry,
+    node,
+  };
+}
+
+test('recipe target hydration finishes before recipe mutation and render admission', async () => {
+  const sourceReady = deferred();
+  let admitted = false;
+  const options = hydrationAdmissionOptions({
+    ensureResident: () => sourceReady.promise,
+    onAdmit: target => {
+      admitted = true;
+      target.node.adjustments.brightness = 25;
+      return 'render-admitted';
+    },
+  });
+
+  const admission = hydrateAndAdmitImageRecipeTarget(options);
+  await Promise.resolve();
+  assert.equal(admitted, false, 'the recipe must remain untouched while original bytes are loading');
+  assert.equal(options.node.adjustments.brightness, 0);
+
+  sourceReady.resolve();
+  assert.deepEqual(await admission, { status: 'admitted', value: 'render-admitted' });
+  assert.equal(admitted, true);
+  assert.equal(options.node.adjustments.brightness, 25);
+});
+
+test('hydrated recipe targets are fenced against generation, batch, layer, asset, and lock changes', async () => {
+  const cases = [
+    ['document generation', context => { context.generationCurrent = false; }, 'cancelled'],
+    ['batch ownership', context => { context.batchCurrent = false; }, 'cancelled'],
+    ['removed target', context => { context.entry = null; }, 'skipped'],
+    ['replaced node identity', context => { context.entry = { node: { ...context.node }, parents: [] }; }, 'skipped'],
+    ['changed source asset', context => { context.node.assetId = 'asset-b'; }, 'skipped'],
+    ['locked target', context => { context.node.locked = true; }, 'skipped'],
+    ['locked ancestor', context => { context.entry.parents = [{ locked: true }]; }, 'skipped'],
+  ];
+
+  for (const [label, invalidate, expectedStatus] of cases) {
+    const sourceReady = deferred();
+    const node = { id: 'image-a', type: 'image', assetId: 'asset-a', adjustments: { brightness: 0 } };
+    const context = { generationCurrent: true, batchCurrent: true, node, entry: { node, parents: [] } };
+    let admitted = false;
+    const admission = hydrateAndAdmitImageRecipeTarget({
+      ensureResident: () => sourceReady.promise,
+      assetId: 'asset-a',
+      previewKey: 'image-a',
+      generation: 4,
+      isGenerationCurrent: () => context.generationCurrent,
+      isBatchCurrent: () => context.batchCurrent,
+      resolveTarget: () => context.entry,
+      expectedNode: node,
+      isEditableTarget: target => target.node.type === 'image' && !target.node.locked && !(target.parents || []).some(parent => parent.locked),
+      onAdmit: () => { admitted = true; },
+    });
+
+    await Promise.resolve();
+    invalidate(context);
+    sourceReady.resolve();
+    const outcome = await admission;
+    assert.equal(outcome.status, expectedStatus, label);
+    assert.equal(admitted, false, `${label} must not mutate or dispatch a render`);
+    assert.equal(node.adjustments.brightness, 0, `${label} must leave the original recipe state untouched`);
+  }
+});
 
 test('a cancelled recipe batch keeps its bar until submitted work has drained', () => {
   const batch = { targets: ['a', 'b', 'c', 'd'], next: 2, inflight: 2, paused: true, cancelled: false, done: false };

@@ -14,6 +14,8 @@ import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 import { isValidPrototypeEasing } from './prototype-easing.js';
 import { createTextPathGeometry, isValidTextPathGeometry } from './text-on-path.js';
+import { isValidFontVariationValues } from './font-variation.js';
+import { isValidFontFeatureValues } from './font-features.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -113,7 +115,7 @@ function isValidFontWeight(value) {
   return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
 }
 
-const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift']);
+const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift']);
 const lineHeightUnits = new Set(['ratio', 'auto', 'pixels', 'percent']);
 
 function isValidLineHeight(value, unit = 'ratio') {
@@ -129,6 +131,8 @@ function isValidTextRun(run) {
   if (run.fontSize != null && (typeof run.fontSize !== 'number' || !Number.isFinite(run.fontSize) || run.fontSize <= 0 || run.fontSize > 100_000)) return false;
   if (run.fontWeight != null && !isValidFontWeight(run.fontWeight)) return false;
   if (run.fontStyle != null && !['normal', 'italic'].includes(run.fontStyle)) return false;
+  if (run.fontAxes != null && !isValidFontVariationValues(run.fontAxes)) return false;
+  if (run.fontFeatures != null && !isValidFontFeatureValues(run.fontFeatures)) return false;
   if (run.lineHeightUnit != null && (!lineHeightUnits.has(run.lineHeightUnit) || run.lineHeight == null)) return false;
   if (run.lineHeight != null && !isValidLineHeight(run.lineHeight, run.lineHeightUnit || 'ratio')) return false;
   if (run.letterSpacing != null && (typeof run.letterSpacing !== 'number' || !Number.isFinite(run.letterSpacing) || Math.abs(run.letterSpacing) > 10_000)) return false;
@@ -395,7 +399,7 @@ const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both'
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -1965,7 +1969,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
 const legacyTypographyStyleProperties = ['color', 'align', 'verticalAlign'];
 
 function typographyStyleValues(document, node) {
@@ -1974,6 +1978,8 @@ function typographyStyleValues(document, node) {
     fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
     fontWeight: Number(getNodePropertyValue(document, node, 'fontWeight')) || 400,
     fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
+    ...(node.fontAxes ? { fontAxes: clone(node.fontAxes) } : {}),
+    ...(node.fontFeatures ? { fontFeatures: clone(node.fontFeatures) } : {}),
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
@@ -1988,6 +1994,14 @@ function typographyStyleValues(document, node) {
 function applyTypographyStyleValues(node, style) {
   for (const property of typographyStyleProperties) {
     if (property === 'paragraphSpacing' || property === 'firstLineIndent' || property === 'listSpacing') node[property] = Number(style[property]) || 0;
+    else if (property === 'fontAxes') {
+      if (style.fontAxes) node.fontAxes = clone(style.fontAxes);
+      else delete node.fontAxes;
+    }
+    else if (property === 'fontFeatures') {
+      if (style.fontFeatures) node.fontFeatures = clone(style.fontFeatures);
+      else delete node.fontFeatures;
+    }
     else if (property === 'textCase') node[property] = textCases.has(style[property]) ? style[property] : 'none';
     else if (property === 'textDecoration') node[property] = textDecorations.has(style[property]) ? style[property] : 'none';
     else node[property] = style[property];
@@ -2323,7 +2337,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -3446,6 +3460,8 @@ export function validateDocument(document) {
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
       if (node.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(node.fontWeight))) throw new TypeError(`Invalid font weight on layer ${node.name || node.id}.`);
       if (node.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(node.fontStyle))) throw new TypeError(`Invalid font style on layer ${node.name || node.id}.`);
+      if (node.fontAxes != null && (node.type !== 'text' || !isValidFontVariationValues(node.fontAxes))) throw new TypeError(`Invalid variable-font axes on layer ${node.name || node.id}.`);
+      if (node.fontFeatures != null && (node.type !== 'text' || !isValidFontFeatureValues(node.fontFeatures))) throw new TypeError(`Invalid OpenType features on layer ${node.name || node.id}.`);
       if (['polygon', 'star'].includes(node.type) && node.points != null && (!Number.isFinite(node.points) || node.points < 3 || node.points > 32)) throw new TypeError(`Invalid shape point count on layer ${node.name || node.id}.`);
       if (node.type === 'star' && node.innerRadius != null && (!Number.isFinite(node.innerRadius) || node.innerRadius < 0 || node.innerRadius > 1)) throw new TypeError(`Invalid star inner radius on layer ${node.name || node.id}.`);
       if (node.type !== 'star' && node.innerRadius != null) throw new TypeError(`Star inner radius is only supported on star layers (${node.name || node.id}).`);
@@ -3628,6 +3644,8 @@ export function validateDocument(document) {
           if (overrides.fontFamily != null && (node.type !== 'text' || typeof overrides.fontFamily !== 'string' || !overrides.fontFamily.trim() || overrides.fontFamily.length > 160 || /[\x00-\x1f]/.test(overrides.fontFamily))) throw new TypeError(`Invalid component font family override on ${node.name || node.id}.`);
           if (overrides.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(overrides.fontWeight))) throw new TypeError(`Invalid component font weight override on ${node.name || node.id}.`);
           if (overrides.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(overrides.fontStyle))) throw new TypeError(`Invalid component font style override on ${node.name || node.id}.`);
+          if (overrides.fontAxes != null && (sourceNode?.type !== 'text' || !isValidFontVariationValues(overrides.fontAxes))) throw new TypeError(`Invalid component font axes override on ${node.name || node.id}.`);
+          if (overrides.fontFeatures != null && (sourceNode?.type !== 'text' || !isValidFontFeatureValues(overrides.fontFeatures))) throw new TypeError(`Invalid component OpenType features override on ${node.name || node.id}.`);
           if (overrides.textCase != null && (node.type !== 'text' || !textCases.has(overrides.textCase))) throw new TypeError(`Invalid component text case override on ${node.name || node.id}.`);
           if (overrides.textDecoration != null && (node.type !== 'text' || !textDecorations.has(overrides.textDecoration))) throw new TypeError(`Invalid component text decoration override on ${node.name || node.id}.`);
           if (overrides.align != null && (sourceNode?.type !== 'text' || !textAlignments.has(overrides.align))) throw new TypeError(`Invalid component text alignment override on ${node.name || node.id}.`);
@@ -3947,6 +3965,8 @@ export function validateDocument(document) {
         || !Number.isFinite(style.fontSize) || style.fontSize <= 0
         || !isValidFontWeight(style.fontWeight)
         || !['normal', 'italic'].includes(style.fontStyle)
+        || (style.fontAxes != null && !isValidFontVariationValues(style.fontAxes))
+        || (style.fontFeatures != null && !isValidFontFeatureValues(style.fontFeatures))
         || !isValidLineHeight(style.lineHeight, style.lineHeightUnit || 'ratio')
         || !Number.isFinite(style.letterSpacing)
         || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))

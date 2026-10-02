@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
-import { imagePreviewKey } from '../src/image-preview-runtime.js';
+import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
@@ -208,9 +208,11 @@ test('image and container layers contribute their alpha when used as mask source
   const editedPreview = { name: 'edited alpha preview', width: 80, height: 60 };
   const image = createNode('image', { assetId: 'mask-photo', width: 80, height: 60, opacity: 0.7 });
   addNode(document, image);
+  const imagePreviewSettings = imagePreviewSettingsForNode(image, image.id);
   const state = {
     document, assets: new Map([['mask-photo', { bitmap: sourceBitmap }]]),
-    previews: new Map([[image.id, editedPreview]]), previewAssetIds: new Map(),
+    previews: new Map([[image.id, editedPreview]]), previewAssetIds: new Map([[image.id, 'mask-photo']]),
+    previewSignatures: new Map([[image.id, imagePreviewSettingsSignature(imagePreviewSettings)]]),
     zoom: 1, presenting: false, selectedIds: [], imageCropMode: false
   };
   const makeContext = (calls, scale = 1) => new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
@@ -1415,9 +1417,11 @@ test('text fill stacks composite ordered paints through the combined laid-out gl
   addNode(document, text);
   const preview = { name: 'local fill preview', width: 16, height: 12 };
   const fillKey = imagePreviewKey(text.id, 'photo');
+  const fillPreviewSettings = imagePreviewSettingsForNode(text, fillKey);
   const state = {
     document, assets: new Map(), previews: new Map([[fillKey, preview]]),
     previewAssetIds: new Map([[fillKey, 'local-photo']]),
+    previewSignatures: new Map([[fillKey, imagePreviewSettingsSignature(fillPreviewSettings)]]),
     outlineMode: false, presenting: false, zoom: 1
   };
   const context = textPaintContext();
@@ -1578,6 +1582,73 @@ test('rich text draws each run with inherited or overridden font, color, and dec
   assert.equal(draws[1].fillStyle, 'rgba(255, 0, 0, 1)');
   assert.ok(context.calls.some(call => call.transform === 'translate' && call.x === 4 && call.y === 8));
   assert.ok(context.calls.some(call => call.path === 'stroke' && call.strokeStyle === 'rgba(255, 0, 0, 1)'), 'run decoration should inherit its run color');
+});
+
+test('locally shaped rich text paints glyph outlines and falls back when an outline cannot be parsed', () => {
+  const previousPath2D = Object.getOwnPropertyDescriptor(globalThis, 'Path2D');
+  class TestPath2D {
+    constructor(data) {
+      if (data === 'invalid-path') throw new TypeError('invalid test outline');
+      this.data = data;
+    }
+  }
+  Object.defineProperty(globalThis, 'Path2D', { configurable: true, value: TestPath2D });
+  try {
+    const shaped = [];
+    const context = richContext();
+    context.fill = path => context.calls.push({ kind: 'fillGlyphPath', data: path.data });
+    const shapeText = (text, style) => {
+      shaped.push({ text, style });
+      return {
+        upem: 1000, extents: { ascender: 800 },
+        glyphs: [...text].map((_, index) => ({
+          path: 'valid-path', cluster: index, xAdvance: 1000, xOffset: 0, yOffset: 250
+        }))
+      };
+    };
+    const result = drawTextRuns(context, [{ text: 'A' }], 4, 8, 100, {
+      ...defaultRunStyle, fontAxes: { opsz: 20, wght: 600 }, shapeText
+    });
+    assert.equal(result.lines.length, 1);
+    assert.ok(shaped.some(item => item.style.fontAxes?.opsz === 20), 'the selected local axis coordinates reach the shaping callback');
+    assert.equal(context.calls.filter(call => call.kind === 'fillGlyphPath').length, 1);
+    assert.equal(context.calls.some(call => call.text === 'A'), false, 'valid local outlines replace Canvas text painting');
+    assert.ok(context.calls.some(call => call.transform === 'translate' && call.y === 250),
+      'HarfBuzz positive Y offsets stay positive in the flipped font coordinate system so combining marks rise');
+
+    const missing = richContext();
+    missing.fill = () => {};
+    drawTextRuns(missing, [{ text: 'مرحبا' }], 0, 0, 100, {
+      ...defaultRunStyle, shapeText: () => ({
+        upem: 1000, extents: { ascender: 800 }, missingGlyph: true, glyphs: []
+      })
+    });
+    assert.ok(missing.calls.some(call => call.text === 'مرحبا'), 'missing glyphs retain browser font fallback and never become .notdef boxes');
+
+    const fallback = richContext();
+    fallback.fill = () => {};
+    drawTextRuns(fallback, [{ text: 'B' }], 0, 0, 100, {
+      ...defaultRunStyle, shapeText: () => ({
+        upem: 1000, extents: { ascender: 800 },
+        glyphs: [{ path: 'invalid-path', cluster: 0, xAdvance: 1000 }]
+      })
+    });
+    assert.ok(fallback.calls.some(call => call.text === 'B'), 'an invalid outline returns to the Canvas renderer instead of dropping the glyph');
+
+    const strokeOnly = richContext();
+    strokeOnly.stroke = path => strokeOnly.calls.push({ kind: 'strokeGlyphPath', data: path.data });
+    drawTextRuns(strokeOnly, [{ text: 'C' }], 0, 0, 100, {
+      ...defaultRunStyle, paintMode: 'stroke', shapeText: () => ({
+        upem: 1000, extents: { ascender: 800 },
+        glyphs: [{ path: 'stroke-path', cluster: 0, xAdvance: 1000 }]
+      })
+    });
+    assert.equal(strokeOnly.calls.filter(call => call.kind === 'strokeGlyphPath').length, 1,
+      'stroke-only Canvas contexts can paint HarfBuzz outlines without a fill method');
+  } finally {
+    if (previousPath2D) Object.defineProperty(globalThis, 'Path2D', previousPath2D);
+    else delete globalThis.Path2D;
+  }
 });
 
 test('rich text wraps using each run font and advances lines for larger styles', () => {

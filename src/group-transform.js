@@ -121,12 +121,12 @@ function localSizeScales(node, ancestors, scaleX, scaleY) {
   };
 }
 
-function buildResizePatches(entries, bounds, handle, scaleX, scaleY, correction, minSize) {
+function buildResizePatches(entries, bounds, handle, scaleX, scaleY, correction, minSize, fromCenter = false) {
   const affectsX = handle.includes('e') || handle.includes('w');
   const affectsY = handle.includes('n') || handle.includes('s');
   const anchor = {
-    x: affectsX ? (handle.includes('w') ? bounds.x + bounds.width : bounds.x) : null,
-    y: affectsY ? (handle.includes('n') ? bounds.y + bounds.height : bounds.y) : null
+    x: affectsX ? (fromCenter ? bounds.center.x : handle.includes('w') ? bounds.x + bounds.width : bounds.x) : null,
+    y: affectsY ? (fromCenter ? bounds.center.y : handle.includes('n') ? bounds.y + bounds.height : bounds.y) : null
   };
   const patches = new Map();
   const ordered = [...entries].sort((left, right) => (left.ancestors?.length || 0) - (right.ancestors?.length || 0));
@@ -220,7 +220,7 @@ export function selectionAspectRatio(bounds) {
  * layers. Resolved ancestor snapshots are adjusted top-down so nested selected
  * layers remain positioned at their intended page-space centers.
  */
-export function resizeSelection(entries, bounds, handle, pointerPage, { aspectRatio, minSize = 1 } = {}) {
+export function resizeSelection(entries, bounds, handle, pointerPage, { aspectRatio, minSize = 1, fromCenter = false } = {}) {
   validateEntries(entries);
   validateBounds(bounds);
   validatePagePoint(pointerPage, 'Resize pointer');
@@ -241,31 +241,31 @@ export function resizeSelection(entries, bounds, handle, pointerPage, { aspectRa
     handle,
     pointerPage,
     [],
-    { aspectRatio, minSize }
+    { aspectRatio, minSize, fromCenter }
   );
   let scaleX = affectsX ? resizedBounds.width / bounds.width : 1;
   let scaleY = affectsY ? resizedBounds.height / bounds.height : 1;
 
-  let patches = buildResizePatches(entries, bounds, handle, scaleX, scaleY, { x: 0, y: 0 }, minSize);
+  let patches = buildResizePatches(entries, bounds, handle, scaleX, scaleY, { x: 0, y: 0 }, minSize, fromCenter);
   const patchedBounds = selectionBounds(entries.map(({ node, ancestors = [] }) => ({
     node: { ...node, ...patches.get(node.id) },
     ancestors: selectedAncestorPatches(ancestors, patches)
   })));
   const fixedX = affectsX
-    ? (handle.includes('w') ? bounds.x + bounds.width : bounds.x)
+    ? (fromCenter ? bounds.center.x : handle.includes('w') ? bounds.x + bounds.width : bounds.x)
     : bounds.x + bounds.width / 2;
   const fixedY = affectsY
-    ? (handle.includes('n') ? bounds.y + bounds.height : bounds.y)
+    ? (fromCenter ? bounds.center.y : handle.includes('n') ? bounds.y + bounds.height : bounds.y)
     : bounds.y + bounds.height / 2;
   const movedFixedX = affectsX
-    ? (handle.includes('w') ? patchedBounds.x + patchedBounds.width : patchedBounds.x)
+    ? (fromCenter ? patchedBounds.center.x : handle.includes('w') ? patchedBounds.x + patchedBounds.width : patchedBounds.x)
     : patchedBounds.center.x;
   const movedFixedY = affectsY
-    ? (handle.includes('n') ? patchedBounds.y + patchedBounds.height : patchedBounds.y)
+    ? (fromCenter ? patchedBounds.center.y : handle.includes('n') ? patchedBounds.y + patchedBounds.height : patchedBounds.y)
     : patchedBounds.center.y;
   const correction = { x: fixedX - movedFixedX, y: fixedY - movedFixedY };
   if (Math.abs(correction.x) > 1e-12 || Math.abs(correction.y) > 1e-12) {
-    patches = buildResizePatches(entries, bounds, handle, scaleX, scaleY, correction, minSize);
+    patches = buildResizePatches(entries, bounds, handle, scaleX, scaleY, correction, minSize, fromCenter);
   }
   return [...patches.values()];
 }

@@ -1,8 +1,31 @@
+import { hasRasterImageEdits } from './pdf-raster-plan.js';
+import { fillStackForNode } from './fills.js';
+
 export function imagePreviewKey(nodeId, fillId = null) {
   // A materialized legacy fill keeps the exact preview slot older documents
   // used, so changing only fit/opacity cannot flash back to the source bitmap.
   if (fillId === `legacy-fill:${nodeId}`) return nodeId;
   return fillId ? `image-fill:${JSON.stringify([nodeId, fillId])}` : nodeId;
+}
+
+/** Whether a cached source bitmap would visibly differ from this preview. */
+export function imagePreviewRequiresRenderedPixels({
+  adjustments = {}, transforms = {}, inpaintStrokes = [], outputFormat = 'png', outputQuality = 90,
+} = {}) {
+  return hasRasterImageEdits(adjustments, transforms, inpaintStrokes)
+    || (outputFormat || 'png') !== 'png' || (Number.isFinite(outputQuality) ? outputQuality : 90) !== 90;
+}
+
+export function parseImagePreviewKey(previewKey) {
+  if (typeof previewKey !== 'string' || !previewKey) throw new TypeError('A preview key must be a nonempty string.');
+  if (!previewKey.startsWith('image-fill:')) return { nodeId: previewKey, fillId: null };
+  try {
+    const [nodeId, fillId] = JSON.parse(previewKey.slice('image-fill:'.length));
+    if (typeof nodeId !== 'string' || !nodeId || typeof fillId !== 'string' || !fillId) throw new Error('Invalid image fill key.');
+    return { nodeId, fillId };
+  } catch {
+    throw new TypeError('An image fill preview key is malformed.');
+  }
 }
 
 function stableSettingsValue(value) {
@@ -30,6 +53,53 @@ export function imagePreviewSettingsSignature({
   }));
 }
 
+/** Resolve the Pillow inputs represented by one renderer preview key. */
+export function imagePreviewSettingsForNode(node, previewKey, assetId = undefined) {
+  if (!node || typeof node.id !== 'string') throw new TypeError('Image preview settings need a layer.');
+  const { nodeId, fillId } = parseImagePreviewKey(previewKey);
+  if (nodeId !== node.id) throw new TypeError('Image preview key does not belong to the layer.');
+  if (node.type === 'image' && !fillId) {
+    return {
+      assetId: assetId ?? node.assetId,
+      adjustments: node.adjustments,
+      transforms: node.transforms,
+      inpaintStrokes: node.inpaintStrokes,
+      outputFormat: node.outputFormat ?? 'png',
+      outputQuality: node.outputQuality ?? 90,
+    };
+  }
+  const fills = fillStackForNode(node);
+  const fill = fillId
+    ? fills.find(item => item.id === fillId)
+    : fills.find(item => item.id === `legacy-fill:${node.id}` && item.type === 'image');
+  const imageFill = fill?.type === 'image' ? fill.imageFill : null;
+  return {
+    assetId: assetId ?? imageFill?.assetId,
+    adjustments: imageFill?.adjustments,
+    transforms: imageFill?.transforms,
+    inpaintStrokes: [],
+    outputFormat: 'png',
+    outputQuality: 90,
+  };
+}
+
+/** A retained bitmap is current only for the exact asset and render settings. */
+export function imagePreviewMatchesSettings(settings, previewAssetId, previewSignature) {
+  return Boolean(settings?.assetId)
+    && previewAssetId === settings.assetId
+    && previewSignature === imagePreviewSettingsSignature(settings);
+}
+
+/** A decoded source is needed only for a visible, requested, or resident layer. */
+export function shouldRestoreImageAssetSource({
+  alreadyResident = false,
+  explicitlyRequested = false,
+  visible = false,
+  requestedLibrarySource = false,
+} = {}) {
+  return Boolean(alreadyResident || explicitlyRequested || visible || requestedLibrarySource);
+}
+
 export function collectLiveImagePreviewNodeIds(document) {
   const liveNodeIds = new Set();
   for (const page of document?.pages || []) {
@@ -46,6 +116,45 @@ export function collectLiveImagePreviewNodeIds(document) {
     visit(page.children);
   }
   return liveNodeIds;
+}
+
+/** List least-recently-used preview candidates that are safe to evict. */
+export function offscreenPreviewEvictionCandidates({
+  previews,
+  visiblePreviewKeys = new Set(),
+  protectedPreviewKeys = new Set(),
+  excludedPreviewKeys = new Set(),
+} = {}) {
+  if (!(previews instanceof Map)) throw new TypeError('Preview eviction needs the retained preview map.');
+  const visible = visiblePreviewKeys instanceof Set ? visiblePreviewKeys : new Set(visiblePreviewKeys);
+  const protectedKeys = protectedPreviewKeys instanceof Set ? protectedPreviewKeys : new Set(protectedPreviewKeys);
+  const excluded = excludedPreviewKeys instanceof Set ? excludedPreviewKeys : new Set(excludedPreviewKeys);
+  return [...previews.keys()].filter(key => !visible.has(key) && !protectedKeys.has(key) && !excluded.has(key));
+}
+
+/**
+ * Return cloned layers whose edited raster appearance needs a fresh preview.
+ * A duplicate has new layer/fill keys even when its asset and edit settings
+ * match the source, so its old per-key preview cannot be reused implicitly.
+ */
+export function collectEditedImagePreviewRequests(nodes) {
+  const requests = [];
+  const visit = items => {
+    for (const node of items || []) {
+      if (node?.type === 'image' && node.assetId) {
+        const settings = imagePreviewSettingsForNode(node, imagePreviewKey(node.id), node.assetId);
+        if (imagePreviewRequiresRenderedPixels(settings)) requests.push({ node, fillId: null });
+      }
+      for (const fill of fillStackForNode(node)) {
+        if (fill.type !== 'image' || !fill.imageFill?.assetId) continue;
+        const settings = imagePreviewSettingsForNode(node, imagePreviewKey(node.id, fill.id), fill.imageFill.assetId);
+        if (imagePreviewRequiresRenderedPixels(settings)) requests.push({ node, fillId: fill.id });
+      }
+      visit(node?.children);
+    }
+  };
+  visit(Array.isArray(nodes) ? nodes : nodes ? [nodes] : []);
+  return requests;
 }
 
 /**
@@ -130,6 +239,7 @@ export function pruneImagePreviewRuntime({
   previewAssetIds,
   previewVersions,
   previewSignatures,
+  deferredPreviewKeys = new Set(),
   imageStatus,
   renderVersion,
   clearTimer = clearTimeout,
@@ -143,6 +253,7 @@ export function pruneImagePreviewRuntime({
     ...previewAssetIds.keys(),
     ...previewVersions.keys(),
     ...(previewSignatures?.keys?.() || []),
+    ...(deferredPreviewKeys || []),
     ...imageStatus.keys(),
     ...renderVersion.keys(),
   ]);
@@ -174,6 +285,7 @@ export function pruneImagePreviewRuntime({
     previewAssetIds.delete(nodeId);
     previewVersions.delete(nodeId);
     previewSignatures?.delete(nodeId);
+    deferredPreviewKeys.delete(nodeId);
     imageStatus.delete(nodeId);
     // Removing the token makes every render that captured it stale. Callers
     // must use globally unique tokens so a later node with the same ID cannot

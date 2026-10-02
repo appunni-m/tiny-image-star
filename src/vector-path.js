@@ -162,6 +162,106 @@ export function setVectorNodePoint(node, index, part, position, { origin = { x: 
   return true;
 }
 
+/**
+ * Capture both Bézier controls at a path anchor or degree-two network vertex.
+ * Shift-dragging a control in the editor uses this snapshot to move both
+ * controls by the same amount without changing their relative shape.
+ */
+export function vectorControlPairSnapshot(node, control, geometry = node, {
+  shiftKey = false, origin = { x: 0, y: 0 }
+} = {}) {
+  if (!shiftKey || !node?.id || node.type !== geometry?.type
+    || !finitePoint(origin) || !Number.isFinite(geometry?.width) || geometry.width <= 0
+    || !Number.isFinite(geometry?.height) || geometry.height <= 0) return null;
+
+  if (node.type === 'path' && ['in', 'out'].includes(control?.part)) {
+    const contourIndex = control.contourIndex || 0;
+    const contour = contourAt(node, contourIndex);
+    const points = contour?.points;
+    const index = control.index;
+    if (!Array.isArray(points) || !Number.isInteger(index) || !points[index]) return null;
+    const anchor = vectorNodePoint(geometry, index, 'anchor', origin, contourIndex);
+    const handles = Object.fromEntries(['in', 'out'].map(part => {
+      const point = points[index][part];
+      const position = point && finitePoint(point)
+        ? vectorNodePoint(geometry, index, part, origin, contourIndex)
+        : anchor;
+      return [part, position];
+    }));
+    if (!finitePoint(anchor) || !finitePoint(handles.in) || !finitePoint(handles.out)) return null;
+    return {
+      type: 'path', nodeId: node.id, contourIndex, index,
+      width: geometry.width, height: geometry.height, origin: { ...origin }, anchor,
+      handles
+    };
+  }
+
+  if (node.type === 'network' && ['control1', 'control2'].includes(control?.part)) {
+    const edge = node.edges?.find(item => item.id === control.edgeId);
+    if (!edge) return null;
+    const vertexId = control.part === 'control1' ? edge.from : edge.to;
+    const handles = networkVertexHandles(node, vertexId);
+    if (handles.length !== 2 || !handles.some(item => item.edge.id === edge.id && item.part === control.part)) return null;
+    const anchor = vectorNetworkVertexPoint(geometry, vertexId, origin);
+    const positions = handles.map(item => ({
+      edgeId: item.edge.id,
+      part: item.part,
+      position: networkControlPoint(item.edge, item.part, geometry, origin) || anchor
+    }));
+    if (!finitePoint(anchor) || positions.some(item => !finitePoint(item.position))) return null;
+    return {
+      type: 'network', nodeId: node.id, vertexId, width: geometry.width, height: geometry.height,
+      origin: { ...origin }, anchor, handles: positions
+    };
+  }
+  return null;
+}
+
+/** Move both controls from their pointer-down positions, preserving the delta. */
+export function translateVectorControlPair(node, snapshot, delta) {
+  if (!snapshot || snapshot.nodeId !== node?.id || !finitePoint(delta)
+    || !finitePoint(snapshot.origin) || !finitePoint(snapshot.anchor)
+    || !Number.isFinite(snapshot.width) || snapshot.width <= 0
+    || !Number.isFinite(snapshot.height) || snapshot.height <= 0) return false;
+
+  if (snapshot.type === 'path' && node.type === 'path') {
+    const points = contourAt(node, snapshot.contourIndex)?.points;
+    const point = points?.[snapshot.index];
+    if (!point || !finitePoint(snapshot.handles?.in) || !finitePoint(snapshot.handles?.out)) return false;
+    const next = Object.fromEntries(['in', 'out'].map(part => [part, {
+      x: (snapshot.handles[part].x + delta.x - snapshot.anchor.x) / snapshot.width,
+      y: (snapshot.handles[part].y + delta.y - snapshot.anchor.y) / snapshot.height
+    }]));
+    if (Object.values(next).some(handle => !finitePoint(handle))) return false;
+    point.in = next.in;
+    point.out = next.out;
+    return 2;
+  }
+
+  if (snapshot.type === 'network' && node.type === 'network' && Array.isArray(snapshot.handles)
+    && snapshot.handles.length === 2) {
+    const updates = snapshot.handles.map(handle => {
+      const edge = node.edges?.find(item => item.id === handle.edgeId);
+      const endpoint = handle.part === 'control1' ? edge?.from : handle.part === 'control2' ? edge?.to : null;
+      if (!edge || endpoint !== snapshot.vertexId || !finitePoint(handle.position)) return null;
+      return {
+        edge, part: handle.part,
+        position: {
+          x: (handle.position.x + delta.x - snapshot.origin.x) / snapshot.width,
+          y: (handle.position.y + delta.y - snapshot.origin.y) / snapshot.height
+        }
+      };
+    });
+    if (updates.some(item => !item || !finitePoint(item.position))) return false;
+    for (const update of updates) {
+      invalidateNetworkSplitForEdge(node, update.edge.id);
+      update.edge[update.part] = update.position;
+    }
+    return updates.length;
+  }
+  return false;
+}
+
 function autoSmoothVectorNodePoint(node, index, contourIndex = 0) {
   const contour = contourAt(node, contourIndex);
   const points = contour?.points || [];

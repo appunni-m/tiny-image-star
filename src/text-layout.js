@@ -1,3 +1,5 @@
+import { canvasFontWeight } from './font-variation.js';
+
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
 const thaiWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
@@ -596,7 +598,7 @@ export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
   return size * amount;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -982,7 +984,8 @@ export function calculateTextBox(ctx, node, {
   firstLineIndent = node.firstLineIndent,
   listSpacing = node.listSpacing,
   paragraphStyles = node.paragraphStyles,
-  text = node.text
+  text = node.text,
+  shapeText = null
 } = {}) {
   const width = Math.max(0, Number(node.width) || 0);
   const height = Math.max(0, Number(node.height) || 0);
@@ -993,13 +996,26 @@ export function calculateTextBox(ctx, node, {
   const lineHeightPx = resolvedLineHeight(lineHeight, size, lineHeightUnit);
   const spacing = Number(letterSpacing) || 0;
   const textValue = transformTextCase(text, node.textCase || 'none');
-  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
+  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
+  const measure = (value, style = node) => {
+    const shaped = shapeText?.(value, style);
+    if (shaped && !shaped.missingGlyph && Array.isArray(shaped.glyphs) && shaped.upem > 0) {
+      let advance = 0;
+      let boundaries = 0;
+      for (let index = 0; index < shaped.glyphs.length; index += 1) {
+        advance += Number(shaped.glyphs[index].xAdvance) || 0;
+        if (index > 0 && shaped.glyphs[index].cluster !== shaped.glyphs[index - 1].cluster) boundaries += 1;
+      }
+      return Math.max(0, advance * (Number(style.fontSize) || size) / shaped.upem + boundaries * (Number(style.letterSpacing) || 0));
+    }
+    return measureTrackedText(ctx, value, style.letterSpacing ?? spacing);
+  };
 
   const richRuns = node.textRuns;
   if (Array.isArray(richRuns) && richRuns.every(run => run && typeof run.text === 'string') && richRuns.map(run => run.text).join('') === String(text ?? '')) {
     const baseStyle = {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size,
-      fontWeight: Number(node.fontWeight) || 400, fontStyle: node.fontStyle || 'normal',
+      fontWeight: Number(node.fontWeight) || 400, fontStyle: node.fontStyle || 'normal', fontAxes: node.fontAxes, fontFeatures: node.fontFeatures,
       lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
       lineHeightUnit,
       paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
@@ -1013,11 +1029,11 @@ export function calculateTextBox(ctx, node, {
     let layout;
     try {
       layout = layoutTextRuns(richRuns, mode === 'auto-width' ? Infinity : Math.max(1, width), baseStyle, (value, style) => {
-        ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
-        return measureTrackedText(ctx, value, style.letterSpacing);
+        ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight, style.fontAxes)} ${style.fontSize}px ${style.fontFamily}`;
+        return measure(value, style);
       });
     } finally {
-      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
+      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
     }
     if (mode === 'auto-width') {
       return {
@@ -1030,7 +1046,7 @@ export function calculateTextBox(ctx, node, {
 
   if (mode === 'auto-width') {
     const layout = layoutPlainText(textValue, Infinity,
-      line => measureTrackedText(ctx, line, spacing),
+      line => measure(line, { ...node, fontSize: size, letterSpacing: spacing }),
       { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
         fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
         fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
@@ -1042,7 +1058,7 @@ export function calculateTextBox(ctx, node, {
   }
 
   const layout = layoutPlainText(textValue, Math.max(1, width),
-    line => measureTrackedText(ctx, line, spacing),
+    line => measure(line, { ...node, fontSize: size, letterSpacing: spacing }),
     { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
       fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'

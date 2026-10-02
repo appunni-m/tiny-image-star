@@ -39,6 +39,23 @@ test('axis resize scales multiple layers and preserves the opposite AABB edge', 
   close(Math.max(...patches.map(patch => patch.x + patch.width)), 40);
 });
 
+test('center group resize expands selected layers equally around the selection center', () => {
+  const entries = [
+    { node: { id: 'a', x: 0, y: 0, width: 10, height: 10, rotation: 0 }, ancestors: [] },
+    { node: { id: 'b', x: 20, y: 0, width: 10, height: 10, rotation: 0 }, ancestors: [] }
+  ];
+  const bounds = selectionBounds(entries);
+  const patches = resizeSelection(entries, bounds, 'e', { x: 37.5, y: bounds.center.y }, { fromCenter: true });
+  const byId = new Map(patches.map(patch => [patch.id, patch]));
+
+  close(byId.get('a').x, -7.5);
+  close(byId.get('a').width, 15);
+  close(byId.get('b').x, 22.5);
+  close(byId.get('b').width, 15);
+  const afterBounds = selectionBounds(entries.map(({ node }) => ({ node: { ...node, ...byId.get(node.id) }, ancestors: [] })));
+  close(afterBounds.center.x, bounds.center.x);
+});
+
 test('group resize composes page scaling into imported affine scale, shear, and reflection', () => {
   const node = {
     id: 'transformed', x: 8, y: 12, width: 30, height: 18, rotation: 17,

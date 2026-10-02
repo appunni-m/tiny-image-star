@@ -14,9 +14,11 @@ import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
-import { imagePreviewKey } from './image-preview-runtime.js';
+import { imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode } from './image-preview-runtime.js';
+import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { gridTrackResizeHandles } from './grid-track-editing.js';
 import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js';
+import { canvasFontWeight } from './font-variation.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { hitTestVisibleGeometry } from './shape-hit-testing.js';
@@ -29,6 +31,82 @@ const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
+const MAX_FONT_OUTLINE_PATH_ENTRIES = 4096;
+const MAX_FONT_OUTLINE_PATH_CACHE_BYTES = 8 * 1024 * 1024;
+const MAX_FONT_OUTLINE_PATH_BYTES = 256 * 1024;
+const fontOutlinePathCache = new Map();
+let fontOutlinePathCacheBytes = 0;
+
+function cachedFontOutlinePath(data) {
+  if (typeof globalThis.Path2D !== 'function' || !data || data.length * 2 > MAX_FONT_OUTLINE_PATH_BYTES) return null;
+  let entry = fontOutlinePathCache.get(data);
+  if (entry) {
+    fontOutlinePathCache.delete(data);
+    fontOutlinePathCache.set(data, entry);
+    return entry.path;
+  }
+  let path;
+  try { path = new globalThis.Path2D(data); }
+  catch { return null; }
+  const size = data.length * 2;
+  entry = { path, size };
+  while (fontOutlinePathCache.size >= MAX_FONT_OUTLINE_PATH_ENTRIES
+    || fontOutlinePathCacheBytes + size > MAX_FONT_OUTLINE_PATH_CACHE_BYTES) {
+    const oldest = fontOutlinePathCache.entries().next().value;
+    if (!oldest) break;
+    fontOutlinePathCache.delete(oldest[0]);
+    fontOutlinePathCacheBytes -= oldest[1].size;
+  }
+  fontOutlinePathCache.set(data, entry);
+  fontOutlinePathCacheBytes += size;
+  return path;
+}
+
+function shapedTextWidth(shaped, fontSize, letterSpacing = 0) {
+  if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !(shaped.upem > 0)) return null;
+  const scale = Math.max(1, Number(fontSize) || 24) / shaped.upem;
+  let advances = 0;
+  let clusterBoundaries = 0;
+  for (let index = 0; index < shaped.glyphs.length; index += 1) {
+    const glyph = shaped.glyphs[index];
+    advances += Number(glyph.xAdvance) || 0;
+    if (index > 0 && glyph.cluster !== shaped.glyphs[index - 1].cluster) clusterBoundaries += 1;
+  }
+  return Math.max(0, advances * scale + Math.max(0, clusterBoundaries) * (Number(letterSpacing) || 0));
+}
+
+function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0, paintMode = 'fill') {
+  if (typeof globalThis.Path2D !== 'function' || !shaped || !Array.isArray(shaped.glyphs)
+    || shaped.missingGlyph || !shaped.extents || !(shaped.upem > 0)
+    || typeof ctx[paintMode === 'stroke' ? 'stroke' : 'fill'] !== 'function') return false;
+  const size = Math.max(1, Number(fontSize) || 24);
+  const scale = size / shaped.upem;
+  const ascender = Number(shaped.extents.ascender);
+  if (!Number.isFinite(ascender)) return false;
+  const paths = shaped.glyphs.map(glyph => glyph.path ? cachedFontOutlinePath(glyph.path) : null);
+  if (shaped.glyphs.some((glyph, index) => glyph.path && !paths[index])) return false;
+  ctx.save();
+  ctx.translate(x, topY + ascender * scale);
+  ctx.scale(scale, -scale);
+  let penX = 0;
+  let tracking = 0;
+  let previousCluster = null;
+  for (const [index, glyph] of shaped.glyphs.entries()) {
+    if (previousCluster !== null && glyph.cluster !== previousCluster) tracking += Number(letterSpacing) / scale || 0;
+    const path = paths[index];
+    if (path) {
+      ctx.save();
+      ctx.translate(penX + (Number(glyph.xOffset) || 0) + tracking, Number(glyph.yOffset) || 0);
+      if (paintMode === 'stroke') ctx.stroke(path);
+      else ctx.fill(path);
+      ctx.restore();
+    }
+    penX += Number(glyph.xAdvance) || 0;
+    previousCluster = glyph.cluster;
+  }
+  ctx.restore();
+  return true;
+}
 
 function drawShapeBuilderRegions(ctx, regions, zoom = 1) {
   if (!Array.isArray(regions) || !regions.length) return;
@@ -100,10 +178,13 @@ function booleanNodeCacheState(document, node) {
   };
 }
 
-function drawTextMask(ctx, node, document, x, y, width, height) {
+function drawTextMask(ctx, node, document, x, y, width, height, shapeText = null) {
   const text = getNodePropertyValue(document, node, 'text');
+  if (node.textPath) return drawTextLayerContent(ctx, node, document, x, y, width, height, {
+    colorOverride: '#ffffff', fillOpacity: 1, overrideRunColors: true, shapeText
+  });
   const richTextIsCurrent = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
-  if (!richTextIsCurrent) return drawPlainText(ctx, node, document, x, y, width, height, '#ffffff');
+  if (!richTextIsCurrent) return drawPlainText(ctx, node, document, x, y, width, height, '#ffffff', { shapeText });
   const sourceRuns = richTextIsCurrent ? node.textRuns : [{ text }];
   const maskRuns = sourceRuns.map(run => ({ ...run, color: '#ffffff' }));
   return drawTextRuns(ctx, maskRuns, x, y, width, {
@@ -111,6 +192,8 @@ function drawTextMask(ctx, node, document, x, y, width, height) {
     fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
     fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
     fontStyle: node.fontStyle || 'normal',
+    fontAxes: node.fontAxes,
+    fontFeatures: node.fontFeatures,
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
@@ -124,7 +207,8 @@ function drawTextMask(ctx, node, document, x, y, width, height) {
     align: node.align || 'left',
     verticalAlign: node.verticalAlign || 'top',
     height,
-    fillOpacity: node.fillOpacity ?? 1
+    fillOpacity: node.fillOpacity ?? 1,
+    shapeText
   });
 }
 
@@ -139,15 +223,28 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   const fontSize = getNodePropertyValue(document, node, 'fontSize');
   const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
-  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
+  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  const shapeStyle = {
+    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontSize: fontSize || 24,
+    fontWeight: Number(node.fontWeight) || 400,
+    fontStyle: node.fontStyle || 'normal',
+    fontAxes: node.fontAxes,
+    fontFeatures: node.fontFeatures
+  };
+  const shapedWidth = value => {
+    const shaped = options.shapeText?.(value, shapeStyle);
+    return shapedTextWidth(shaped, shapeStyle.fontSize, letterSpacing);
+  };
+  const measureText = value => shapedWidth(value) ?? measureTrackedText(ctx, value, letterSpacing);
   const lineHeight = resolvedLineHeight(lineHeightScale || 1.25, fontSize || 24, node.lineHeightUnit || 'ratio');
-  const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
+  const layout = layoutPlainText(text, Math.max(1, width), measureText, {
     lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles, markerStyle: {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-      fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
-      letterSpacing: letterSpacing || 0, color: textColor
+      fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
+      fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: letterSpacing || 0, color: textColor
     },
     firstLineIndent: node.firstLineIndent, align: node.align
   });
@@ -155,14 +252,20 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   layout.lines.forEach(line => {
     if (line.marker) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-      fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+      fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
       letterSpacing: letterSpacing || 0, color: textColor
-    }, fillOpacity, paintMode);
+    }, fillOpacity, paintMode, options.shapeText);
     const availableWidth = Math.max(1, width - line.indent);
     const lineAlign = line.align || node.align || 'left';
     const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
-    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace, paintMode);
-    else drawTrackedTextPaint(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth, paintMode);
+    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace, paintMode,
+      options.shapeText, shapeStyle);
+    else {
+      const shaped = options.shapeText?.(line.displayText, shapeStyle);
+      if (!drawShapedText(ctx, shaped, line.displayText, x + offsetX, textY + line.y, shapeStyle.fontSize, letterSpacing, paintMode)) {
+        drawTrackedTextPaint(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth, paintMode);
+      }
+    }
     if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
   });
   return layout;
@@ -170,7 +273,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
 
 function drawTextLayerContent(ctx, node, document, x, y, width, height, {
   colorOverride = undefined, fillOpacity = node.fillOpacity ?? 1,
-  paintMode = 'fill', includeDecorations = true, overrideRunColors = false
+  paintMode = 'fill', includeDecorations = true, overrideRunColors = false, shapeText = null
 } = {}) {
   const text = getNodePropertyValue(document, node, 'text');
   if (node.textPath) {
@@ -182,16 +285,16 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     return drawTextAlongPath(ctx, text, node, x, y,
       value => measureTrackedText(ctx, value), {
         fillOpacity, paintMode, fontSize, letterSpacing,
-        fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
-        fontFamily: node.fontFamily || 'Arial, sans-serif', color,
+        fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
+        fontFamily: node.fontFamily || 'Arial, sans-serif', color, fontFeatures: node.fontFeatures,
         overrideRunColors: overrideRunColors || colorOverride !== undefined,
-        includeDecorations
+        includeDecorations, shapeText, drawShaped: drawShapedText
       });
   }
   const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
   if (!currentRuns) {
     return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {
-      fillOpacity, paintMode, includeDecorations
+      fillOpacity, paintMode, includeDecorations, shapeText
     });
   }
 
@@ -204,6 +307,8 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
     fontWeight: node.fontWeight || 400,
     fontStyle: node.fontStyle || 'normal',
+    fontAxes: node.fontAxes,
+    fontFeatures: node.fontFeatures,
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
@@ -219,7 +324,8 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     height,
     fillOpacity,
     paintMode,
-    includeDecorations
+    includeDecorations,
+    shapeText
   });
 }
 
@@ -262,7 +368,7 @@ function drawTextFillStack(ctx, node, document, assets, state, x, y, width, heig
 
   setTextSurfaceTransform(glyphContext, x, y, width, height, dimensions.width, dimensions.height);
   drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
-    colorOverride: '#ffffff', fillOpacity: 1, overrideRunColors: true
+    colorOverride: '#ffffff', fillOpacity: 1, overrideRunColors: true, shapeText: state.shapeLocalTextRun
   });
 
   const motionFillIndex = node.fills.findIndex(fill => fill.type === 'solid');
@@ -436,9 +542,17 @@ export function drawCropPreview(ctx, image, x, y, width, height, fit = 'cover', 
 }
 
 function imageForNode(node, assets, state, assetId = node.assetId, previewKey = node.id) {
+  const settings = imagePreviewSettingsForNode(node, previewKey, assetId);
+  const requiresRenderedPixels = imagePreviewRequiresRenderedPixels(settings);
   const cachedAssetId = state.previewAssetIds?.get(previewKey);
   const preview = state.previews?.get(previewKey);
-  if (preview && (cachedAssetId == null || cachedAssetId === assetId)) return preview;
+  const previewIsCurrent = imagePreviewMatchesSettings(
+    settings, cachedAssetId, state.previewSignatures?.get(previewKey)
+  );
+  if (preview && previewIsCurrent) return preview;
+  // Never let an older retained bitmap or the original source masquerade as
+  // the current appearance while an edited preview is missing or being rebuilt.
+  if (requiresRenderedPixels && !previewIsCurrent) return null;
   return assets.get(assetId)?.bitmap ?? null;
 }
 
@@ -806,14 +920,18 @@ function drawTrackedTextPaint(ctx, text, x, y, letterSpacing = 0, maxWidth = und
   }
 }
 
-function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace, paintMode = 'fill') {
+function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace, paintMode = 'fill', shapeText = null, style = null) {
   const segments = String(text ?? '').match(/\s+|\S+/gu) || [];
   let offset = 0;
   let hasTextBefore = false;
   for (const [index, segment] of segments.entries()) {
     const whitespace = /^\s+$/u.test(segment);
-    drawTrackedTextPaint(ctx, segment, x + offset, y, letterSpacing, undefined, paintMode);
-    offset += measureTrackedText(ctx, segment, letterSpacing);
+    const shaped = style ? shapeText?.(segment, style) : null;
+    const width = shapedTextWidth(shaped, style?.fontSize, letterSpacing);
+    if (!drawShapedText(ctx, shaped, segment, x + offset, y, style?.fontSize, letterSpacing, paintMode)) {
+      drawTrackedTextPaint(ctx, segment, x + offset, y, letterSpacing, undefined, paintMode);
+    }
+    offset += width ?? measureTrackedText(ctx, segment, letterSpacing);
     // Drawing tokens separately removes the tracking between adjacent tokens.
     // Keep that boundary advance so justified text matches measuring the full line.
     if (index < segments.length - 1) offset += Number(letterSpacing) || 0;
@@ -847,20 +965,24 @@ export function textVerticalOffset(boxHeight, contentHeight, alignment = 'top') 
 }
 
 function richFont(style) {
-  return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+  return `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight, style.fontAxes)} ${style.fontSize}px ${style.fontFamily}`;
 }
 
-function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1, paintMode = 'fill') {
+function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1, paintMode = 'fill', shapeText = null) {
   const style = marker.style || fallbackStyle;
   ctx.save();
   ctx.font = richFont(style);
   if (paintMode !== 'stroke') ctx.fillStyle = rgba(style.color || fallbackStyle.color, fillOpacity);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  const markerWidth = measureTrackedText(ctx, marker.text, style.letterSpacing);
+  const shaped = shapeText?.(marker.text, style);
+  const markerWidth = shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+    ?? measureTrackedText(ctx, marker.text, style.letterSpacing);
   // Right-align within the marker column. Keeping this draw independent from
   // the text-line transform preserves a stable gutter for center/right text.
-  drawTrackedTextPaint(ctx, marker.text, x + marker.anchorX - markerWidth, y, style.letterSpacing, undefined, paintMode);
+  if (!drawShapedText(ctx, shaped, marker.text, x + marker.anchorX - markerWidth, y, style.fontSize, style.letterSpacing, paintMode)) {
+    drawTrackedTextPaint(ctx, marker.text, x + marker.anchorX - markerWidth, y, style.letterSpacing, undefined, paintMode);
+  }
   ctx.restore();
 }
 
@@ -873,7 +995,9 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   try {
     layout = layoutTextRuns(runs, Math.max(1, width), baseStyle, (text, style) => {
       ctx.font = richFont(style);
-      return measureTrackedText(ctx, text, style.letterSpacing);
+      const shaped = baseStyle.shapeText?.(text, style);
+      return shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+        ?? measureTrackedText(ctx, text, style.letterSpacing);
     });
   } finally {
     ctx.font = previousFont;
@@ -882,7 +1006,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   const contentHeight = layout.height;
   let top = y + textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign);
   for (const line of lines) {
-    if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle), baseStyle.fillOpacity ?? 1, paintMode);
+    if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle),
+      baseStyle.fillOpacity ?? 1, paintMode, baseStyle.shapeText);
     const availableWidth = Math.max(1, width - line.indent);
     const lineAlign = line.align || baseStyle.align || 'left';
     const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
@@ -907,8 +1032,12 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         ctx.font = richFont(style);
         if (paintMode !== 'stroke') ctx.fillStyle = rgba(style.color, baseStyle.fillOpacity ?? 1);
         const start = offset;
-        drawTrackedTextPaint(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing, undefined, paintMode);
-        offset += measureTrackedText(ctx, text, style.letterSpacing);
+        const shaped = baseStyle.shapeText?.(text, style);
+        if (!drawShapedText(ctx, shaped, text, start, -Number(style.baselineShift || 0), style.fontSize, style.letterSpacing, paintMode)) {
+          drawTrackedTextPaint(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing, undefined, paintMode);
+        }
+        offset += shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+          ?? measureTrackedText(ctx, text, style.letterSpacing);
         if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
         const bounds = partBounds.get(part) || { start, end: offset };
         bounds.end = offset;
@@ -932,7 +1061,11 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     for (const part of line.parts) {
       ctx.font = richFont(part.style);
       if (paintMode !== 'stroke') ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-      drawTrackedTextPaint(ctx, part.text, part.offsetX, -Number(part.style.baselineShift || 0), part.style.letterSpacing, undefined, paintMode);
+      const shaped = baseStyle.shapeText?.(part.text, part.style);
+      if (!drawShapedText(ctx, shaped, part.text, part.offsetX, -Number(part.style.baselineShift || 0),
+        part.style.fontSize, part.style.letterSpacing, paintMode)) {
+        drawTrackedTextPaint(ctx, part.text, part.offsetX, -Number(part.style.baselineShift || 0), part.style.letterSpacing, undefined, paintMode);
+      }
       if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, part.offsetX, -Number(part.style.baselineShift || 0), part.width, part.style.fontSize, part.style.textDecoration);
     }
     ctx.restore();
@@ -946,6 +1079,8 @@ function richTextStyleForMarker(baseStyle) {
     fontSize: Number(baseStyle.fontSize) || 24,
     fontWeight: baseStyle.fontWeight || 400,
     fontStyle: baseStyle.fontStyle || 'normal',
+    fontAxes: baseStyle.fontAxes,
+    fontFeatures: baseStyle.fontFeatures,
     letterSpacing: Number(baseStyle.letterSpacing) || 0,
     color: baseStyle.color || '#000000'
   };
@@ -957,6 +1092,7 @@ export class SceneRenderer {
     this.context = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.getState = getState;
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
+    this.visiblePreviewKeys = new Set();
     this.frame = 0;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
@@ -972,6 +1108,12 @@ export class SceneRenderer {
   invalidate() {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => { this.frame = 0; this.draw(); });
+  }
+
+  invalidateImagePreviewCache() {
+    this.booleanCache.clear();
+    this.booleanCachePixels = 0;
+    this.invalidate();
   }
 
   resize() {
@@ -1085,7 +1227,27 @@ export class SceneRenderer {
     ctx.fillStyle = '#e9e9e9';
     ctx.fillRect(0, 0, width, height);
     const page = state.document.pages.find(item => item.id === state.document.activePageId);
-    if (!page) { this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }
+    if (!page) { this.visiblePreviewKeys.clear(); this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }
+    const zoom = Math.max(.08, Number(state.zoom) || 1);
+    const previousVisiblePreviewKeys = this.visiblePreviewKeys;
+    this.visiblePreviewKeys = collectVisibleImagePreviewKeys(page, state.document, {
+      left: -state.panX / zoom,
+      top: -state.panY / zoom,
+      right: (cssWidth - state.panX) / zoom,
+      bottom: (cssHeight - state.panY) / zoom
+    }, { presentationScrollOffsets: state.presentationScrollOffsets });
+    for (const previewKey of this.visiblePreviewKeys) {
+      state.touchImagePreviewSource?.(previewKey);
+      const preview = state.previews?.get(previewKey);
+      if (preview) {
+        // Map order is the preview LRU order. Drawing makes this entry recent.
+        state.previews.delete(previewKey);
+        state.previews.set(previewKey, preview);
+      }
+      if (!previousVisiblePreviewKeys.has(previewKey) && state.previewDeferredKeys?.has(previewKey)) {
+        state.requestDeferredPreview?.(previewKey);
+      }
+    }
     ctx.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
     if (state.shapeBuilder) drawShapeBuilderRegions(ctx, state.shapeBuilder.previewContours, state.zoom);
@@ -1260,7 +1422,7 @@ export class SceneRenderer {
       return;
     }
     if (maskMode && node.type === 'text') {
-      drawTextMask(ctx, node, document, x, y, width, height);
+      drawTextMask(ctx, node, document, x, y, width, height, state.shapeLocalTextRun);
       ctx.restore();
       return;
     }
@@ -1385,7 +1547,11 @@ export class SceneRenderer {
           if (renderOptions.showImageLoadingPlaceholder !== false) {
             ctx.fillStyle = '#d9d9d9'; ctx.fill();
             ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('Loading image…', cx, cy);
+            const imageSettings = imagePreviewSettingsForNode(node, node.id, node.assetId);
+            const needsRenderedPreview = imagePreviewRequiresRenderedPixels(imageSettings)
+              && !imagePreviewMatchesSettings(imageSettings, state.previewAssetIds?.get(node.id), state.previewSignatures?.get(node.id));
+            const previewPaused = state.previewDeferredKeys?.has(node.id);
+            ctx.fillText(previewPaused ? 'Preview paused' : needsRenderedPreview ? 'Updating preview…' : 'Loading image…', cx, cy);
           }
         }
       }
@@ -1396,14 +1562,14 @@ export class SceneRenderer {
         const rendered = drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces, this);
         if (!rendered && node.fills.length) {
           // Keep text visible if a browser cannot allocate an auxiliary surface.
-          drawTextLayerContent(ctx, node, document, x, y, width, height);
+          drawTextLayerContent(ctx, node, document, x, y, width, height, { shapeText: state.shapeLocalTextRun });
         }
       } else {
-        drawTextLayerContent(ctx, node, document, x, y, width, height);
+        drawTextLayerContent(ctx, node, document, x, y, width, height, { shapeText: state.shapeLocalTextRun });
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
         outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
-          fillOpacity: 1, paintMode: 'stroke', includeDecorations: false
+          fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
         }));
     } else if (node.type === 'network') {
       const fills = fillStackForNode(node);
@@ -2578,6 +2744,42 @@ export class SceneRenderer {
         ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
         for (let index = 1; index < points.length; index += 1) ctx.lineTo(points[index].x, points[index].y);
         ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const isolationSourceId = state.objectIsolationSourceId;
+    const isolationEntry = isolationSourceId
+      ? selected.find(entry => entry.node.id === isolationSourceId && entry.node.type === 'image') : null;
+    if (isolationEntry) {
+      const { node, ancestors } = isolationEntry;
+      const pagePoint = point => nodeLocalToPage(node, point, ancestors);
+      const clipCorners = [
+        { x: 0, y: 0 }, { x: node.width, y: 0 },
+        { x: node.width, y: node.height }, { x: 0, y: node.height }
+      ].map(pagePoint);
+      const marks = [...(state.objectIsolationStrokes || []), ...(state.objectIsolationDraft ? [state.objectIsolationDraft] : [])];
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(clipCorners[0].x, clipCorners[0].y);
+      for (let index = 1; index < clipCorners.length; index += 1) ctx.lineTo(clipCorners[index].x, clipCorners[index].y);
+      ctx.closePath(); ctx.clip();
+      for (const mark of marks) {
+        const points = (mark.previewPoints || mark.points || []).map(pagePoint);
+        if (!points.length) continue;
+        const lasso = mark.brushMode === 3;
+        const excluded = mark.brushMode === 2;
+        const color = lasso ? '#a855f7' : excluded ? '#ef4444' : '#19a974';
+        ctx.strokeStyle = color;
+        ctx.fillStyle = lasso ? 'rgba(168,85,247,.13)' : excluded ? 'rgba(239,68,68,.2)' : 'rgba(25,169,116,.2)';
+        ctx.lineWidth = (lasso ? 2 : 12) / Math.max(.08, zoom);
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index += 1) ctx.lineTo(points[index].x, points[index].y);
+        if (lasso && points.length >= 3) {
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        } else if (points.length === 1) {
+          ctx.beginPath(); ctx.arc(points[0].x, points[0].y, 6 / Math.max(.08, zoom), 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+        } else ctx.stroke();
       }
       ctx.restore();
     }

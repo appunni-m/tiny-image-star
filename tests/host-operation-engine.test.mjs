@@ -121,6 +121,30 @@ test('ReplaceSnapshot carries any schema-valid editor mutation while preserving 
   assert.equal(engine.getSnapshot().id, document.id);
 });
 
+test('ReplaceSnapshot cannot forge or remove verified collaboration assets', async () => {
+  const { document } = fixture();
+  document.collaborationAssets = [{
+    assetId: 'asset-a', mimeType: 'image/png', byteLength: 4, sha256: 'a'.repeat(64)
+  }];
+  const engine = setup({ snapshot: document });
+  const replacement = JSON.parse(JSON.stringify(engine.getSnapshot()));
+  replacement.name = 'Keep ordinary edits available';
+  replacement.collaborationAssets[0].sha256 = 'b'.repeat(64);
+  const forged = await request(engine, { type: 'ReplaceSnapshot', opId: 'forge-asset', snapshot: replacement });
+  assert.equal(forged.kind, 'REJECT');
+  assert.equal(forged.code, 'UNSUPPORTED_OPERATION');
+  assert.equal(engine.getRevision(), 0);
+  assert.equal(engine.getSnapshot().name, document.name);
+  assert.equal(engine.getSnapshot().collaborationAssets[0].sha256, 'a'.repeat(64));
+
+  const removal = JSON.parse(JSON.stringify(engine.getSnapshot()));
+  removal.collaborationAssets = [];
+  const removed = await request(engine, { type: 'ReplaceSnapshot', opId: 'remove-asset', snapshot: removal });
+  assert.equal(removed.kind, 'REJECT');
+  assert.equal(removed.code, 'UNSUPPORTED_OPERATION');
+  assert.equal(engine.getRevision(), 0);
+});
+
 test('a remote snapshot cannot erase the owner copy’s local fork provenance', async () => {
   const { document } = fixture();
   document.settings.collaborationSource = {

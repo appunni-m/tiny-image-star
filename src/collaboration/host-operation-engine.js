@@ -44,7 +44,7 @@ const NODE_PROPERTIES = new Set([
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
+  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
   'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
@@ -84,6 +84,13 @@ function assetManifest(document) {
   return document.collaborationAssets;
 }
 
+function sameAssetManifest(left, right) {
+  const stable = manifest => assetManifest(manifest)
+    .map(({ assetId, mimeType, byteLength, sha256 }) => ({ assetId, mimeType, byteLength, sha256 }))
+    .sort((a, b) => a.assetId.localeCompare(b.assetId));
+  return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
+}
+
 function operationPropertyIsAllowed(path) {
   if (NODE_PROPERTIES.has(path)) return true;
   // A few properties are frequently edited as individual nested values. The
@@ -99,6 +106,14 @@ function assignAllowedProperty(node, property, value) {
   const segments = property.split('.');
   if (segments.some(segment => RESERVED.has(segment))) throw operationError('INVALID_OPERATION', 'Property path contains a reserved key.');
   if (segments.length === 1) {
+    if (property === 'fontAxes' && value === null) {
+      delete node.fontAxes;
+      return;
+    }
+    if (property === 'fontFeatures' && value === null) {
+      delete node.fontFeatures;
+      return;
+    }
     node[property] = clone(value);
     return;
   }
@@ -168,6 +183,17 @@ function applyOperation(document, operation) {
       try { replacement = parseDocument(operation.snapshot); }
       catch { throw operationError('INVALID_OPERATION', 'The replacement design snapshot is invalid.'); }
       if (replacement.id !== document.id) throw operationError('PERMISSION_DENIED', 'A collaboration edit cannot replace the design identity.');
+      // Asset bytes are transferred and verified independently from document
+      // operations. A broad snapshot must not forge, discard, or rewrite the
+      // host's asset manifest; those changes go through AddAsset/RemoveAsset.
+      try {
+        if (!sameAssetManifest(document, replacement)) {
+          throw operationError('UNSUPPORTED_OPERATION', 'Asset manifest changes must use the verified asset operations.');
+        }
+      } catch (error) {
+        if (error?.code) throw error;
+        throw operationError('INVALID_OPERATION', 'The replacement design has an invalid asset manifest.');
+      }
       // This is local provenance for a design that was itself started from a
       // recovered guest fork. It is not an editable shared setting and the
       // guest-side proposal intentionally omits it.

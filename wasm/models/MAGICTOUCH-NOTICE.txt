@@ -1,0 +1,15 @@
+MediaPipe Interactive Segmenter v2 · MagicTouch int8
+
+Copyright (c) Google LLC.
+Licensed under the Apache License, Version 2.0. See ../mediapipe/APACHE-2.0.txt.
+
+Official artifact:
+https://storage.googleapis.com/mediapipe-models/interactive_segmenter_v2/magic_touch/int8/1/interactive_segmentation.task
+
+The model archive identifies itself as `interactive_segmenter_v2` and declares
+`Apache 2.0` in its task manifest. Its official model card is published at:
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MagicTouch.pdf
+
+The exact artifact checksum, size, and Google Cloud Storage generation are
+recorded in ../object-isolation-runtime.json. This notice accompanies the
+unmodified upstream model artifact.

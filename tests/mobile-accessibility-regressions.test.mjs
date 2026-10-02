@@ -29,6 +29,15 @@ test('recipe save dialog is named by its visible heading', () => {
   assert.match(html, /<h2\s+id="recipe-dialog-title">Save recipe<\/h2>/);
 });
 
+test('canvas selection and tool changes are announced without reading live coordinates', () => {
+  assert.match(html, /id="selection-status" role="status" aria-live="polite" aria-atomic="true"/,
+    'assistive technology should announce the selected layer or active tool');
+  assert.match(html, /<span id="position-status">—<\/span>/,
+    'high-frequency canvas position updates should stay outside the live region');
+  assert.match(main, /function updateSelectionStatus\(\) \{[\s\S]*?\$\('#selection-status'\)\.textContent = state\.layerSelectionMode[\s\S]*?\$\('#position-status'\)\.textContent/,
+    'selection and active tool changes should update the announcement while coordinates remain a separate field');
+});
+
 test('canvas tool buttons expose the active tool at startup and when it changes', () => {
   const toolbar = html.match(/<div class="bottom-toolbar" id="bottom-toolbar"[\s\S]*?<\/div>/)?.[0] || '';
   const toolButtons = [...toolbar.matchAll(/<button\b[^>]*>/g)].map(([tag]) => ({

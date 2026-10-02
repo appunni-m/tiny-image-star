@@ -73,6 +73,46 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
 });
 
+test('smart animation switches frame clipping and overflow behavior at the midpoint', () => {
+  const from = createNode('frame', {
+    clip: false,
+    overflowBehavior: 'none',
+    children: [createNode('frame', {
+      name: 'Scrollable panel', clip: false, overflowBehavior: 'none',
+      children: [createNode('rectangle', { name: 'Overflow content', x: 180, y: 180 })]
+    })]
+  });
+  const to = createNode('frame', {
+    clip: true,
+    overflowBehavior: 'vertical',
+    children: [createNode('frame', {
+      name: 'Scrollable panel', clip: true, overflowBehavior: 'both',
+      children: [createNode('rectangle', { name: 'Overflow content', x: 180, y: 180 })]
+    })]
+  });
+  const sample = progress => interpolateSmartFrame(from, to, progress);
+
+  assert.deepEqual(
+    [sample(0.001).clip, sample(0.001).overflowBehavior,
+      sample(0.001).children[0].clip, sample(0.001).children[0].overflowBehavior],
+    [false, 'none', false, 'none'],
+    'destination clipping must not activate while the transition is still at the source side'
+  );
+  assert.deepEqual(
+    [sample(0.499).clip, sample(0.499).overflowBehavior,
+      sample(0.499).children[0].clip, sample(0.499).children[0].overflowBehavior],
+    [false, 'none', false, 'none']
+  );
+  assert.deepEqual(
+    [sample(0.5).clip, sample(0.5).overflowBehavior,
+      sample(0.5).children[0].clip, sample(0.5).children[0].overflowBehavior],
+    [true, 'vertical', true, 'both'],
+    'clipping and scrolling activate atomically with other categorical properties at halfway'
+  );
+  assert.deepEqual(sample(0), from, 'source clipping settings remain exact at the endpoint');
+  assert.deepEqual(sample(1), to, 'destination clipping settings remain exact at the endpoint');
+});
+
 test('smart animation interpolates imported affine scale and shear without changing authored endpoints', () => {
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Imported card' })] });
   const to = createNode('frame', { children: [createNode('rectangle', {

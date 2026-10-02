@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "decoder": {
+    "package": "woff2-encoder",
+    "version": "2.0.0",
+    "entryPoint": "woff2-encoder/decompress",
+    "upstream": "google/woff2 and google/brotli",
+    "license": "MIT",
+    "licenseFile": "woff2/LICENSE.txt",
+    "maxInputBytes": 20971520,
+    "maxDecodedBytes": 31457280,
+    "wasmEmbeddedInWorker": true
+  },
+  "license": {
+    "sizeBytes": 1100,
+    "sha256": "2947f101e074fa72859ae25cf21b8d434a710e7d5b81a1d0ab312f52528b3e4b"
+  },
+  "upstreamLicenses": {
+    "woff2": {
+      "file": "woff2/GOOGLE-WOFF2-LICENSE.txt",
+      "sizeBytes": 1069,
+      "sha256": "7d35fc425117b01d937b22a1433c27bb864e0c71db7430a5f7877034b02dfa25"
+    },
+    "brotli": {
+      "file": "woff2/GOOGLE-BROTLI-LICENSE.txt",
+      "sizeBytes": 1082,
+      "sha256": "ee828c7c12f822dba3b16596d609920fe7c449d179e645bcf1e75cf0927f14bf"
+    }
+  },
+  "worker": {
+    "bundle": "../src/workers/woff2-decompress-worker.bundle.js",
+    "sizeBytes": 296217,
+    "sha256": "b704f0743db02be0636d8efa21d2b446361012262c81a2f19a1cb3ede4306976"
+  }
+}

@@ -270,6 +270,59 @@ test('text on a path keeps rich-run type, color, tracking, baseline, and text-ca
   assert.equal(decorationStrokes, 4, 'the underline follows each styled grapheme on its local path tangent');
 });
 
+test('text on a path shapes complete styled runs locally and places glyph clusters by their advances', () => {
+  const shapeRequests = [];
+  const painted = [];
+  const ctx = {
+    font: '', fillStyle: '', strokeStyle: '', globalAlpha: 1, textBaseline: '', textAlign: '',
+    save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, fillText() {}, strokeText() {},
+    beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}
+  };
+  const node = createNode('text', {
+    text: 'ab', fontSize: 10,
+    textRuns: [
+      { text: 'a', fontFeatures: { liga: 0 } },
+      { text: 'b', fontFeatures: { liga: 1 } }
+    ],
+    textPath: { width: 100, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], closed: false, startOffset: 0, flipped: false }
+  });
+  const result = (text, feature) => ({
+    upem: 1000, extents: { ascender: 800 },
+    glyphs: [{ cluster: 0, xAdvance: feature === 0 ? 1000 : 2000, xOffset: 0, yOffset: 0, path: 'M0 0' }]
+  });
+  assert.equal(drawTextAlongPath(ctx, node.text, node, 0, 0, () => 99, {
+    shapeText(text, style) {
+      shapeRequests.push({ text, features: style.fontFeatures });
+      return result(text, style.fontFeatures?.liga);
+    },
+    drawShaped(context, shaped, text, x, topY, fontSize, letterSpacing, paintMode) {
+      painted.push({ text, glyphCount: shaped.glyphs.length, x, topY, fontSize, letterSpacing, paintMode });
+      return true;
+    }
+  }), true);
+  assert.deepEqual(shapeRequests, [
+    { text: 'a', features: { liga: 0 } },
+    { text: 'b', features: { liga: 1 } }
+  ], 'runs with distinct features are shaped independently while preserving their full run text');
+  assert.deepEqual(painted.map(item => item.text), ['a', 'b']);
+  assert.equal(painted[0].x, -5);
+  assert.equal(painted[1].x, -10);
+  assert.equal(painted[0].topY, -8, 'shaped outlines align their font ascender to the path baseline');
+  assert.ok(painted.every(item => item.fontSize === 10 && item.letterSpacing === 0 && item.paintMode === 'fill'));
+
+  const clusterPaints = [];
+  const ligature = createNode('text', {
+    text: 'fi', fontSize: 10,
+    textPath: { width: 100, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], closed: false, startOffset: 0, flipped: false }
+  });
+  drawTextAlongPath(ctx, 'fi', ligature, 0, 0, () => 99, {
+    shapeText: text => ({ upem: 1000, extents: { ascender: 800 }, glyphs: [{ cluster: 0, xAdvance: 1200, path: 'M0 0' }] }),
+    drawShaped(_context, shaped, text, x, topY) { clusterPaints.push({ text, glyphs: shaped.glyphs.length, x, topY }); return true; }
+  });
+  assert.deepEqual(clusterPaints, [{ text: 'fi', glyphs: 1, x: -6, topY: -8 }],
+    'a ligature is placed and painted as one HarfBuzz cluster rather than as two independent letters');
+});
+
 test('SVG exports editable textPath markup with a stable geometry reference and flip control', () => {
   const text = createNode('text', {
     id: 'curve-label', text: 'A & B', width: 100, height: 40, fontSize: 16,

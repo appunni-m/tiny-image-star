@@ -16,7 +16,29 @@ export function commentCanvasAction(target, { addCommentShortcut = false } = {})
   return addCommentShortcut || !target ? 'place-comment' : 'select';
 }
 
-/** Let a user leave an already-open thread by selecting the object beneath its pin. */
-export function commentPinCanvasAction(comment, target, { tool, activeCommentId } = {}) {
-  return tool === 'comment' && comment?.id === activeCommentId && target ? 'select' : 'open-thread';
+/** Keep the canvas interactive when the mobile Comments panel is being used to select/place. */
+export function commentPanelCanvasIsInteractive({
+  mobile, hostViewOnly, inspectorOpen, inspectorTab, pendingCommentAnchor
+} = {}) {
+  // The visible canvas stays selectable from the Comments panel even when no
+  // thread is open. A new-comment draft is the only modal comment state.
+  const commentCanvasActionReady = !pendingCommentAnchor;
+  return Boolean(mobile && !hostViewOnly && inspectorOpen && inspectorTab === 'comments' && commentCanvasActionReady);
+}
+
+/** Keep object selection available when a comment pin overlaps its target. */
+export function commentPinCanvasAction(comment, target, { tool, activeCommentId, targetSelected = false } = {}) {
+  if (!target) return 'open-thread';
+  // Let the user leave an open thread by selecting the object beneath its pin,
+  // whether they are in Comment mode or have switched back to Select.
+  if (comment?.id === activeCommentId && ['comment', 'select'].includes(tool)) return 'select';
+  // In Select mode, an unselected object under a comment pin gets the first
+  // click. A second click on that selected object opens the thread. This keeps
+  // pins from trapping selection when the Comments panel is active.
+  if (tool === 'select') return targetSelected ? 'open-thread' : 'select';
+  if (tool !== 'comment') return 'open-thread';
+  // For other pins, select an unselected target on the first click; clicking
+  // it again opens the thread without requiring pixel-perfect pin targeting.
+  if (!targetSelected) return 'select';
+  return 'open-thread';
 }

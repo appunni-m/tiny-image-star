@@ -10,6 +10,7 @@ import { DEFAULT_PROTOTYPE_BEZIER } from './prototype-easing.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { clipboardImageFilename, routeClipboardPaste } from './image-clipboard.js';
 import { createImageTransforms, flipImageTransforms, rotateImageTransforms } from './image-transforms.js';
+import { imagePreviewMaxDimensionForNode } from './image-preview-surface.js';
 import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFromDisplayRect, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
 import { imageErasePointFromDisplay, imageEraseRadiusFraction, imageEraseRadiusLocal } from './image-erase-geometry.js';
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
@@ -30,9 +31,14 @@ import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-p
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
+import { LocalObjectIsolationEngine } from './object-isolation-engine.js';
+import { OBJECT_ISOLATION_BRUSH_MODE, validateObjectIsolationDimensions } from './object-isolation-mask.js';
+import { insertObjectIsolationLayer, prepareObjectIsolationLayer } from './object-isolation-layer.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
-import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
+import { ImageSourceResidencyManager } from './image-source-residency.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
+import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
 import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
@@ -40,6 +46,10 @@ import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWo
 import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
+import { canvasFontWeight, fontVariationInspectionStatus, fontVariationSettings, inspectFontVariationAxes, isValidFontVariationValues, setFontVariationValue } from './font-variation.js';
+import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings, setFontFeatureValue } from './font-features.js';
+import { LocalWoff2Decoder } from './woff2-decoder.js';
+import { LocalFontShapingClient } from './font-shaping.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { strokeDecorationTypes } from './stroke-decorations.js';
@@ -72,7 +82,7 @@ import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirect
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
 import { isValidSliceDimensionInput, MAX_SLICE_EXPORT_PIXELS, planSliceRasterExport, planSliceRenderSurface, sliceExportContentSignature, sliceRasterBoundsIntersect, sliceRenderBleedPixels } from './slice-export-plan.js';
-import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
+import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, parentLocalToPageTransform, resizeOrientedRect, shortestAngleDelta, transformPoint } from './transform-geometry.js';
 import { shapeCreationGeometry } from './shape-creation-geometry.js';
 import { appendLassoPoint, clipMarqueePolygonThroughAncestors, createLassoSelectionTest, isMarqueeLayerVisible, marqueeSelectsPolygon } from './marquee-selection.js';
@@ -83,13 +93,13 @@ import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
-  getVectorNetworkVertexMode, setVectorNetworkEdgeControlPoint, setVectorNetworkVertexMode, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
+  getVectorNetworkVertexMode, setVectorNetworkEdgeControlPoint, setVectorNetworkVertexMode, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, translateVectorControlPair, vectorControlPairSnapshot, vectorGeometryFromAnchors,
   reverseVectorPathContour, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { commentCanvasAction, commentPinCanvasAction, commentSelectionTarget } from './comment-selection.js';
+import { commentCanvasAction, commentPinCanvasAction, commentSelectionTarget, commentPanelCanvasIsInteractive } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
@@ -114,17 +124,20 @@ const $$ = selector => [...document.querySelectorAll(selector)];
 const themePreferences = createThemePreferenceController();
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
+const MIB = 1024 * 1024;
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'
 ]);
 const state = {
   shapeBuilder: null,
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
+  fontShaper: new LocalFontShapingClient({ onReady: () => renderer?.invalidate() }), shapeLocalTextRun,
+  fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
   gradientGeometryTarget: null,
-  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
+  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
@@ -150,6 +163,9 @@ const state = {
   prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest',
   imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null,
   imageEraseMode: false, imageEraseBrushDiameter: 32, imageEraseDraft: null, inpaintControllers: new Map(),
+  objectIsolationMode: false, objectIsolationBrushMode: OBJECT_ISOLATION_BRUSH_MODE.LASSO,
+  objectIsolationStrokes: [], objectIsolationDraft: null, objectIsolationProgress: '',
+  objectIsolationController: null, objectIsolationSourceId: null, objectIsolationSourceSignature: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   componentLibraries: [], componentLibraryTargetId: null,
   componentSlotDialog: null,
@@ -162,6 +178,8 @@ let liveViewOnlyInertState = null;
 let liveViewSyncTimer = 0;
 const history = new History(120);
 const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRetainedImageMemoryBudget() });
+const imageSourceResidency = new ImageSourceResidencyManager();
+const localWoff2Decoder = new LocalWoff2Decoder();
 const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
@@ -180,11 +198,15 @@ const presentationTransitionFrames = new Set();
 let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const inpaintEngine = new LocalInpaintEngine();
+const objectIsolationEngine = new LocalObjectIsolationEngine();
 const preparedInpaintCache = new PreparedInpaintCache({
   memoryBudget: imageMemoryBudget,
   onDispose: assetId => imageEngine.dispose(assetId)
 });
 const previewTimers = new Map();
+const activeImagePreviewRenders = new Map();
+const imageAssetRestoreTasks = new Map();
+const pendingImageSourceOrphans = new Set();
 const previewsEvictedForCapacity = new Set();
 let nextImageRenderVersion = 0;
 let nextInpaintSourceId = 0;
@@ -421,7 +443,9 @@ function renderLocalFontAssets() {
     sample.style.fontWeight = String(font.weight); sample.style.fontStyle = font.style;
     const copy = document.createElement('span'); copy.className = 'local-font-copy';
     const family = document.createElement('strong'); family.className = 'local-font-family'; family.textContent = font.family;
-    const detail = document.createElement('small'); detail.textContent = `${font.weight} · ${font.style} · ${font.name}`;
+    const axisSummary = font.axes?.length
+      ? ` · Variable · ${font.axes.map(axis => `${axis.tag} ${axis.min}–${axis.max}`).join(', ')}` : '';
+    const detail = document.createElement('small'); detail.textContent = `${font.weight} · ${font.style} · ${font.name}${axisSummary}`;
     copy.append(family, detail);
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'tiny-icon-button local-font-remove';
     remove.dataset.action = 'remove-local-font'; remove.dataset.fontId = font.id; remove.textContent = '×';
@@ -433,22 +457,47 @@ function renderLocalFontAssets() {
 }
 
 async function refreshLocalFontAssets({ showFailureToast = false } = {}) {
-  const records = await listActiveFontAssets();
+  const epoch = ++state.fontAssetEpoch;
+  const previousFontIds = [...state.fontAssets.keys()];
+  state.fontShapeLoadPromises.clear();
+  state.fontShapeFailures.clear();
+  await Promise.allSettled(previousFontIds.map(id => Promise.resolve().then(() => state.fontShaper.releaseFont(id))));
+  if (epoch !== state.fontAssetEpoch) return;
   for (const face of state.fontFaces.values()) unloadLocalFontFace(face);
   state.fontFaces.clear();
-  state.fontAssets = new Map(records.map(font => [font.id, font]));
-  if (typeof FontFace === 'function' && document.fonts?.add) {
-    // Keep binary reads and browser font parsing bounded when a device has a large local font catalog.
-    const results = await mapLocalFontAssets(records, async font => {
-      const saved = await loadActiveFontAsset(font.id);
-      if (!saved) return { id: font.id, error: true };
-      try { return { id: font.id, face: await loadLocalFontFace(saved) }; }
-      catch { return { id: font.id, error: true }; }
-    }, 2);
-    for (const result of results) if (result.face) state.fontFaces.set(result.id, result.face);
-    if (showFailureToast && results.some(result => result.error)) showToast('Some local fonts could not be loaded. Their text uses the browser fallback until you replace the font file.');
+  state.fontAssets.clear();
+  const records = await listActiveFontAssets();
+  if (epoch !== state.fontAssetEpoch) return;
+  // Keep binary reads and browser font parsing bounded when a device has a large local font catalog.
+  const results = await mapLocalFontAssets(records, async font => {
+    const saved = await loadActiveFontAsset(font.id);
+    if (!saved) return { id: font.id, error: true };
+    try {
+      const axes = await inspectFontVariationAxes(saved.bytes, {
+        decompressWoff2: bytes => localWoff2Decoder.decode(bytes)
+      });
+      const face = typeof FontFace === 'function' && document.fonts?.add
+        ? await loadLocalFontFace(saved, { variationAxes: axes }) : null;
+      return { id: font.id, face, axes, axisInspection: fontVariationInspectionStatus(saved.bytes) };
+    } catch { return { id: font.id, error: true }; }
+  }, 2);
+  if (epoch !== state.fontAssetEpoch) {
+    for (const result of results) if (result.face) unloadLocalFontFace(result.face);
+    return;
   }
+  const refreshedFonts = new Map(records.map(font => [font.id, font]));
+  for (const result of results) {
+    if (result.face) state.fontFaces.set(result.id, result.face);
+    const font = refreshedFonts.get(result.id);
+    if (font && result.axes) {
+      font.axes = result.axes;
+      font.axisInspection = result.axisInspection;
+    }
+  }
+  state.fontAssets = refreshedFonts;
+  if (showFailureToast && results.some(result => result.error)) showToast('Some local fonts could not be loaded. Their text uses the browser fallback until you replace the font file.');
   renderLocalFontAssets();
+  renderer?.invalidate();
 }
 
 function familyStackUses(fontFamily, family) {
@@ -472,6 +521,85 @@ function familyStackUses(fontFamily, family) {
   tokens.push(token);
   const normalize = value => value.trim().replace(/^("|')(.*)\1$/u, '$2').replace(/\\(["'\\])/gu, '$1');
   return tokens.some(value => normalize(value).toLocaleLowerCase() === family.toLocaleLowerCase());
+}
+
+function localFontForTextStyle(style) {
+  const requestedWeight = Number(style?.fontWeight) || 400;
+  return [...state.fontAssets.values()]
+    .filter(font => familyStackUses(style?.fontFamily, font.family))
+    .sort((left, right) => {
+      const score = font => {
+        const weightAxis = font.axes?.find(axis => axis.tag === 'wght');
+        const weightDistance = weightAxis && requestedWeight >= weightAxis.min && requestedWeight <= weightAxis.max
+          ? 0 : Math.abs(Number(font.weight) - requestedWeight);
+        const styleDistance = font.style === (style?.fontStyle || 'normal') ? 0 : 10_000;
+        return styleDistance + weightDistance;
+      };
+      return score(left) - score(right) || left.id.localeCompare(right.id);
+    })[0] || null;
+}
+
+function localFontVariations(font, style) {
+  const requested = style?.fontAxes && typeof style.fontAxes === 'object' && !Array.isArray(style.fontAxes)
+    ? style.fontAxes : {};
+  const values = {};
+  for (const axis of font.axes || []) {
+    let value = Number.isFinite(requested[axis.tag]) ? requested[axis.tag] : axis.defaultValue;
+    if (!Number.isFinite(requested[axis.tag])) {
+      if (axis.tag === 'wght') value = Number(style?.fontWeight) || Number(font.weight) || axis.defaultValue;
+      else if (axis.tag === 'opsz') value = Number(style?.fontSize) || axis.defaultValue;
+      else if (axis.tag === 'ital' && style?.fontStyle === 'italic') value = 1;
+      else if (axis.tag === 'slnt' && style?.fontStyle === 'italic') value = -12;
+    }
+    values[axis.tag] = Math.min(axis.max, Math.max(axis.min, value));
+  }
+  return values;
+}
+
+async function ensureLocalFontShapingLoaded(font, epoch) {
+  const saved = await loadActiveFontAsset(font.id);
+  if (!saved?.bytes || epoch !== state.fontAssetEpoch) throw new Error('The local font changed while its preview was loading.');
+  let bytes = saved.bytes;
+  if (bytes[0] === 0x77 && bytes[1] === 0x4f && bytes[2] === 0x46 && bytes[3] === 0x32) {
+    bytes = new Uint8Array(await localWoff2Decoder.decode(bytes));
+  }
+  if (epoch !== state.fontAssetEpoch) throw new Error('The local font changed while its preview was loading.');
+  await state.fontShaper.loadFont(font.id, bytes);
+}
+
+function requestLocalFontShape(font, request) {
+  const cached = state.fontShaper.get(font.id, request);
+  if (cached) return cached;
+  const epoch = state.fontAssetEpoch;
+  if (state.fontShapeFailures.has(font.id)) return null;
+  let loading = state.fontShapeLoadPromises.get(font.id);
+  if (!state.fontShaper.hasFont(font.id) && !loading) {
+    loading = ensureLocalFontShapingLoaded(font, epoch).catch(error => {
+      if (epoch === state.fontAssetEpoch && state.fontAssets.has(font.id)) state.fontShapeFailures.add(font.id);
+      throw error;
+    }).finally(() => {
+      if (state.fontShapeLoadPromises.get(font.id) === loading) state.fontShapeLoadPromises.delete(font.id);
+    });
+    state.fontShapeLoadPromises.set(font.id, loading);
+  }
+  const ready = loading || Promise.resolve();
+  void ready.then(() => {
+    if (epoch !== state.fontAssetEpoch || !state.fontAssets.has(font.id)) return;
+    return state.fontShaper.shape(font.id, request);
+  }).catch(() => {});
+  return null;
+}
+
+function shapeLocalTextRun(text, style) {
+  if (typeof text !== 'string' || text.length > 32_768 || typeof globalThis.Path2D !== 'function') return null;
+  const font = localFontForTextStyle(style);
+  if (!font) return null;
+  const request = {
+    text,
+    variations: localFontVariations(font, style),
+    features: style?.fontFeatures || undefined
+  };
+  return requestLocalFontShape(font, request);
 }
 
 function documentUsesFontFamily(design, family) {
@@ -523,7 +651,11 @@ async function savePendingLocalFont() {
     }
     throw new TypeError(`A different ${weight} ${style} face for “${family}” is already installed. Choose another family name.`);
   }
-  const face = await loadLocalFontFace(candidate, { register: false });
+  const axes = await inspectFontVariationAxes(candidate.bytes, {
+    decompressWoff2: bytes => localWoff2Decoder.decode(bytes)
+  });
+  const axisInspection = fontVariationInspectionStatus(candidate.bytes);
+  const face = await loadLocalFontFace(candidate, { register: false, variationAxes: axes });
   if (state.workspace) {
     const snapshot = JSON.parse(serializeDocument(state.document));
     await enqueueWorkspaceSnapshot(snapshot);
@@ -536,7 +668,7 @@ async function savePendingLocalFont() {
     else await deleteFontAsset(candidate.id);
     throw error;
   }
-  state.fontAssets.set(candidate.id, { id: candidate.id, name: candidate.name, type: candidate.type, family: candidate.family, weight: candidate.weight, style: candidate.style });
+  state.fontAssets.set(candidate.id, { id: candidate.id, name: candidate.name, type: candidate.type, family: candidate.family, weight: candidate.weight, style: candidate.style, axes, axisInspection });
   state.fontFaces.set(candidate.id, face);
   renderLocalFontAssets();
   renderInspector();
@@ -554,6 +686,10 @@ async function removeLocalFont(id) {
     await deleteWorkspaceFontAsset(state.workspace, state.document.id, id);
     workspaceIdCache(state.workspaceVerifiedFontIds, state.document.id).delete(id);
   } else await deleteFontAsset(id);
+  state.fontAssetEpoch += 1;
+  void Promise.resolve().then(() => state.fontShaper.releaseFont(id)).catch(() => {});
+  state.fontShapeLoadPromises.delete(id);
+  state.fontShapeFailures.delete(id);
   unloadLocalFontFace(state.fontFaces.get(id));
   state.fontFaces.delete(id);
   state.fontAssets.delete(id);
@@ -1225,6 +1361,11 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
     state.imageEraseDraft = null;
     canvas?.classList.remove('tool-image-erase');
   }
+  if ((state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId)
+    && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== state.objectIsolationSourceId)) {
+    if (state.interaction?.kind === 'object-isolation') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    resetObjectIsolationSession();
+  }
   if (state.imageCropMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
     if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageCropMode = false;
@@ -1232,6 +1373,9 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
     state.imageCropDraftSelection = null;
   }
   state.selectedIds = nextSelectedIds;
+  for (const previewKey of selectedImagePreviewKeys()) {
+    if (state.previewDeferredKeys.has(previewKey)) requestDeferredImagePreview(previewKey);
+  }
   if (state.gradientGeometryTarget
     && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.gradientGeometryTarget.nodeId)) {
     state.gradientGeometryTarget = null;
@@ -1308,6 +1452,7 @@ function installDesignToolToolbarKeyboard() {
 }
 function setTool(tool) {
   if (state.shapeBuilder) exitShapeBuilderMode();
+  if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) resetObjectIsolationSession();
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment') {
@@ -1671,18 +1816,50 @@ function imageEraseControls(node) {
   const width = asset?.sourceWidth || node.sourceWidth;
   const height = asset?.sourceHeight || node.sourceHeight;
   const blockedByParent = findNode(state.document, node.id)?.parents.some(parent => parent.locked);
+  const sourceStoredLocally = (state.document.imageLibrary || []).some(item => item.assetId === node.assetId)
+    || Number.isSafeInteger(node.sourceWidth);
+  const sourceRestorePending = imageAssetRestoreTasks.has(JSON.stringify([state.documentGeneration, node.assetId]));
   let unavailableReason = '';
   try {
-    if (!asset?.sourceBytes) throw new Error('The original image is not available on this device.');
+    if (!asset?.sourceBytes && !sourceStoredLocally) throw new Error('The original image is not available on this device.');
+    if (sourceRestorePending) throw new Error('Restoring the local original…');
     validateInpaintDimensions(width, height);
     if (node.locked || blockedByParent) throw new Error('Unlock the image and its parent layers to use object erase.');
   } catch (error) { unavailableReason = error.message; }
   const active = state.imageEraseMode && state.selectedIds.length === 1 && state.selectedIds[0] === node.id;
   const strokes = Array.isArray(node.inpaintStrokes) ? node.inpaintStrokes : [];
-  const disabled = Boolean(unavailableReason || isImageRecipeBatchActive(state.bulk));
+  const disabled = Boolean(unavailableReason || isImageRecipeBatchActive(state.bulk) || state.objectIsolationController);
   const buttonLabel = active ? 'Done erasing' : 'Brush to erase';
-  const status = state.imageStatus.get(node.id) || 'Ready · original image stays unchanged';
+  const status = state.imageStatus.get(node.id)
+    || (asset?.sourceBytes ? 'Ready · original image stays unchanged' : 'Original stored locally · loads when erasing starts');
   return section('Object erase · local AI', `<div class="image-erase-actions"><button class="add-fill image-erase-mode-button" type="button" data-action="toggle-image-erase-mode" aria-pressed="${active}"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Pause the image batch before drawing.') }"` : ''}>${buttonLabel}</button><button class="add-fill" type="button" data-action="undo-image-erase"${disabled || !strokes.length ? ' disabled' : ''}>Undo stroke</button><button class="add-fill" type="button" data-action="clear-image-erase"${disabled || !strokes.length ? ' disabled' : ''}>Clear</button></div><div class="slider-row image-erase-brush"><label>Brush</label><input type="range" min="8" max="96" step="2" value="${state.imageEraseBrushDiameter}" data-image-erase-brush aria-label="Object erase brush diameter"${disabled ? ' disabled' : ''}/><output>${state.imageEraseBrushDiameter} px</output></div>${active ? '<div class="image-properties-note image-erase-hint">Paint over the object to remove it. Use one or more strokes; finish with Done. The original pixels remain available for undo and recipes.</div>' : ''}<div class="image-engine-status" role="status">${escapeHtml(strokes.length ? `${strokes.length} erase stroke${strokes.length === 1 ? '' : 's'} · ${status}` : unavailableReason || status)}</div><div class="image-properties-note">Uses the bundled MI-GAN model and local WASM only. Erase marks are saved with the image and copied by recipes.</div>`);
+}
+function objectIsolationControls(node) {
+  const entry = findNode(state.document, node.id);
+  const asset = state.assets.get(node.assetId);
+  const width = asset?.sourceWidth || node.sourceWidth;
+  const height = asset?.sourceHeight || node.sourceHeight;
+  const active = state.objectIsolationMode && state.objectIsolationSourceId === node.id;
+  const processing = Boolean(state.objectIsolationController);
+  const sourceStoredLocally = (state.document.imageLibrary || []).some(item => item.assetId === node.assetId)
+    || Number.isSafeInteger(node.sourceWidth);
+  let unavailableReason = '';
+  try {
+    if (!entry || (!asset?.sourceBytes && !sourceStoredLocally)) throw new Error('The original image must be available on this device.');
+    if (node.locked || entry.parents.some(parent => parent.locked)) throw new Error('Unlock the image and its parent layers to add an isolated layer.');
+    validateObjectIsolationDimensions(width, height);
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('Pause the image batch before isolating an object.');
+  } catch (error) { unavailableReason = error.message; }
+  const disabled = Boolean(unavailableReason || processing || state.documentTransitioning);
+  const modeOptions = [
+    [OBJECT_ISOLATION_BRUSH_MODE.POSITIVE, 'Include'],
+    [OBJECT_ISOLATION_BRUSH_MODE.NEGATIVE, 'Exclude'],
+    [OBJECT_ISOLATION_BRUSH_MODE.LASSO, 'Lasso']
+  ].map(([mode, label]) => `<button class="add-fill object-isolation-mode-choice" type="button" data-action="set-object-isolation-mode" data-mode="${mode}" aria-pressed="${state.objectIsolationBrushMode === mode}"${processing || unavailableReason ? ' disabled' : ''}>${label}</button>`).join('');
+  const strokeCount = state.objectIsolationStrokes.length;
+  const status = processing ? state.objectIsolationProgress || 'Starting local model…'
+    : state.objectIsolationProgress || unavailableReason || (strokeCount ? `${strokeCount} area mark${strokeCount === 1 ? '' : 's'} ready · source image stays unchanged` : 'Draw a lasso around the area. Add Include or Exclude marks to refine it.');
+  return section('Select area · local AI', `<div class="object-isolation-modes" role="group" aria-label="Area selection mark type">${modeOptions}</div><div class="object-isolation-actions"><button class="add-fill object-isolation-draw-button" type="button" data-action="toggle-object-isolation-mode" aria-pressed="${active}"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Object isolation is processing.') }"` : ''}>${active ? 'Finish selection' : strokeCount ? 'Continue selection' : 'Select area'}</button><button class="add-fill" type="button" data-action="undo-object-isolation-stroke"${disabled || !strokeCount ? ' disabled' : ''}>Undo</button><button class="add-fill" type="button" data-action="clear-object-isolation-strokes"${disabled || !strokeCount ? ' disabled' : ''}>Clear</button></div><div class="object-isolation-actions"><button class="primary-button" type="button" data-action="create-object-isolation-layer" aria-label="Isolate selected area as a new image layer"${disabled || !strokeCount ? ' disabled' : ''}>${processing ? 'Isolating…' : 'Isolate'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-object-isolation">Cancel</button>' : ''}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div>${active ? '<div class="image-properties-note object-isolation-hint">Draw a closed lasso around the area, then choose Isolate. Include and Exclude marks refine the selection. The result is a separate transparent image layer above the unchanged source.</div>' : ''}<div class="image-properties-note">Runs offline in a bounded worker with the bundled MagicTouch model. The original image bytes and layer remain untouched.</div>`);
 }
 function imageTransformControls(transforms, target, disabled = false, fillId = '', nodeId = null) {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
@@ -2291,6 +2468,43 @@ function componentSection(node) {
   }
   return section('Component', '<button class="add-fill" data-action="create-component">◇ Create component</button><div class="image-properties-note">Create a reusable main component from this layer and its children.</div>');
 }
+const fontAxisLabels = new Map([['wght', 'Weight'], ['wdth', 'Width'], ['ital', 'Italic'], ['slnt', 'Slant'], ['opsz', 'Optical size']]);
+function fontVariationAxisControls(node) {
+  const matchingFonts = [...state.fontAssets.values()].filter(font => familyStackUses(node.fontFamily, font.family));
+  const variableFont = matchingFonts.find(font => font.axes?.length);
+  if (variableFont) {
+    const axes = variableFont.axes.filter(axis => axis.max > axis.min);
+    if (!axes.length) return '';
+    const sliders = axes.map(axis => {
+      const current = Number.isFinite(node.fontAxes?.[axis.tag]) ? node.fontAxes[axis.tag] : axis.defaultValue;
+      const step = axis.tag === 'wght' || axis.tag === 'ital' ? 1 : Math.max(0.01, Math.min(1, (axis.max - axis.min) / 1000));
+      const label = fontAxisLabels.get(axis.tag) || axis.tag;
+      return `<div class="slider-row font-axis-row"><label>${escapeHtml(label)} <code>${escapeHtml(axis.tag)}</code></label><input class="prop-input" data-prop="fontAxes.${escapeHtml(axis.tag)}" type="range" min="${axis.min}" max="${axis.max}" step="${step}" value="${current}" aria-label="${escapeHtml(label)} axis ${escapeHtml(axis.tag)}"${node.locked ? ' disabled' : ''}/><output>${formatInspectorNumber(current)}</output></div>`;
+    }).join('');
+    const canvasLimits = '<div class="image-properties-note">Local WOFF, WOFF2, TTF, and OTF fonts use the on-device shaper for canvas preview. Runs with missing glyphs use browser text fallback; SVG export keeps the saved axis coordinates.</div>';
+    return `<div class="font-axis-section"><strong>Variable font axes</strong>${sliders}${canvasLimits}</div>`;
+  }
+  return '';
+}
+const fontFeatureLabels = [
+  ['liga', 'Standard ligatures'], ['clig', 'Contextual ligatures'], ['dlig', 'Discretionary ligatures'],
+  ['calt', 'Contextual alternates'], ['kern', 'Kerning'], ['smcp', 'Small caps'], ['c2sc', 'Capitals to small caps'],
+  ['onum', 'Oldstyle figures'], ['lnum', 'Lining figures'], ['tnum', 'Tabular figures'],
+  ['pnum', 'Proportional figures'], ['zero', 'Slashed zero']
+];
+function fontFeatureControls(node) {
+  const standardTags = new Set(fontFeatureLabels.map(([tag]) => tag));
+  const custom = Object.keys(node.fontFeatures || {}).filter(tag => !standardTags.has(tag)).sort();
+  const rows = [
+    ...fontFeatureLabels.map(([tag, label]) => [tag, label]),
+    ...custom.map(tag => [tag, `Custom · ${tag}`])
+  ].map(([tag, label]) => {
+    const value = node.fontFeatures?.[tag];
+    const selected = value === 0 ? 'off' : value == null ? 'auto' : 'on';
+    return `<label class="property-label font-feature-control">${escapeHtml(label)}<select class="prop-input select-field" data-prop="fontFeatures.${escapeHtml(tag)}" aria-label="${escapeHtml(label)}"><option value="auto"${selected === 'auto' ? ' selected' : ''}>Auto</option><option value="on"${selected === 'on' ? ' selected' : ''}>On</option><option value="off"${selected === 'off' ? ' selected' : ''}>Off</option></select></label>`;
+  }).join('');
+  return `<details class="font-axis-section font-feature-details"><summary>OpenType features</summary><div class="font-feature-grid">${rows}</div><div class="font-feature-custom"><input id="font-feature-tag-input" class="prop-input" type="text" maxlength="4" placeholder="ss01" aria-label="Custom four-character OpenType feature tag"/><input id="font-feature-value-input" class="prop-input" type="number" min="0" max="65535" step="1" value="1" aria-label="Custom OpenType feature value; clear to restore Auto"/><button class="add-fill" type="button" data-action="set-custom-font-feature">Set feature</button></div><div class="image-properties-note">Set any four-character OpenType tag to a numeric value. Clear the value to restore Auto. Local HarfBuzz applies feature overrides in the canvas.</div></details>`;
+}
 function textSection(node) {
   const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
@@ -2319,7 +2533,7 @@ function textSection(node) {
     ? `<div class="image-properties-note">Linked to ${escapeHtml(pathSource?.name || 'source path')}. Geometry edits update this text path.</div><button class="add-fill" type="button" data-action="detach-text-path">Detach from source path</button>`
     : '<div class="image-properties-note">This text keeps its own path snapshot.</div>';
   const pathControls = currentTextPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(currentTextPath.width) * 4 + Number(currentTextPath.height) * 4)}" step="1" value="${Number(currentTextPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${currentTextPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>${pathLinkStatus}` : '';
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -2921,6 +3135,7 @@ function setInspectorTab(tab) {
   if (tab === 'motion') refreshMotionPreview();
   if (tab !== 'prototype') clearPrototypeConnectPrompt();
   syncInspectorTabAccessibility(tab);
+  syncMobilePanelAccessibility();
   renderInspector();
   renderer?.invalidate();
 }
@@ -2982,8 +3197,8 @@ function handleCommentAction(button) {
     setInspectorTab('comments');
     showToast('Tap empty canvas to place a comment. Tap an object to select it, or Alt/Option-click to comment on it.');
   } else if (action === 'open') openCommentThread(threadId);
-  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
-  else if (action === 'cancel') { state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
+  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
+  else if (action === 'cancel') { state.pendingCommentAnchor = null; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
   else if (action === 'resolve') {
     const comment = pageComments().find(item => item.id === threadId);
     if (!comment) return;
@@ -3015,6 +3230,7 @@ function submitCommentForm(form) {
       checkpoint('Reply to comment');
       addCommentReply(state.document, threadId, text);
     }
+    syncMobilePanelAccessibility();
     renderInspector(); queueSave(); renderer.invalidate();
   } catch (error) { showToast(error.message || 'Could not save this comment.'); }
 }
@@ -3129,14 +3345,14 @@ function renderInspector() {
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
     body += section('Offset vector', offsetControl);
-    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); use “Delete point” above to remove anchors. Delete or Backspace removes the layer.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use “Delete ${selectedAnchorCount} anchors” above to remove them. Delete or Backspace removes the layer.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together. Use the explicit Delete point control to remove an anchor.'}</div>`);
+    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it. Hold Shift while dragging a handle to move both handles together.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); use “Delete point” above to remove anchors. Delete or Backspace removes the layer.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use “Delete ${selectedAnchorCount} anchors” above to remove them. Delete or Backspace removes the layer.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together. Use the explicit Delete point control to remove an anchor.'}</div>`);
     if (hasClosedContour) body += appearanceSection(node);
     else body += strokeSection(node);
   } else if (node.type === 'network') {
     const selectedVertexId = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.vertexId : null;
     const selectedVertex = selectedVertexId ? node.vertices.find(vertex => vertex.id === selectedVertexId) : null;
     const anchorMode = selectedVertex ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${node.locked || entries[0].parents.some(parent => parent.locked) ? ' disabled' : ''}><option value="corner"${getVectorNetworkVertexMode(node, selectedVertexId) === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${getVectorNetworkVertexMode(node, selectedVertexId) === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${getVectorNetworkVertexMode(node, selectedVertexId) === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
-    body += section('Vector network', `${anchorMode}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; branched junctions remain independently editable.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
+    body += section('Vector network', `${anchorMode}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; hold Shift while dragging a handle at a two-edge junction to move both controls together. Branch handles remain independent.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
     const primaryFill = fillStackForNode(node)[0];
     const faceColorsEditable = Array.isArray(node.fills) ? primaryFill?.type === 'solid' : !node.imageFill;
     if (node.faces.length && faceColorsEditable) body += section('Region fills', networkFaceControls(node));
@@ -3163,6 +3379,7 @@ function renderInspector() {
   if (node.type === 'image') {
     body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, adjustments, and object erase at the original image resolution. Output format and quality are also saved in recipes for batch export.</div>`);
     body += imageEraseControls(node);
+    body += objectIsolationControls(node);
   }
   body += exportSettingsSection(node);
   content.innerHTML = body;
@@ -3284,7 +3501,11 @@ function renderAssetsTab() {
     const asset = state.assets.get(node.assetId);
     const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
     const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
-    const image = document.createElement('img'); image.alt = ''; image.src = state.previewUrls.get(node.id) || asset?.bitmapUrl || '';
+    const image = document.createElement('img'); image.alt = '';
+    image.src = imageThumbnailSource(node, asset);
+    const thumbnailState = imageThumbnailState(node, asset);
+    thumb.classList.toggle('is-preview-paused', thumbnailState === 'paused');
+    thumb.classList.toggle('is-preview-updating', thumbnailState === 'updating');
     state.assetThumbnailImages.set(node.id, image);
     thumb.append(image);
     const name = document.createElement('span'); name.className = 'asset-card-name'; name.textContent = node.name;
@@ -3443,7 +3664,29 @@ function updateImageAssetThumbnail(nodeId) {
   if (!thumbnail) return;
   const node = findNode(state.document, nodeId)?.node;
   const asset = node?.assetId ? state.assets.get(node.assetId) : null;
-  thumbnail.src = state.previewUrls.get(nodeId) || asset?.bitmapUrl || '';
+  thumbnail.src = node ? imageThumbnailSource(node, asset) : '';
+  const thumb = thumbnail.closest('.asset-thumb');
+  const thumbnailState = node ? imageThumbnailState(node, asset) : 'paused';
+  thumb?.classList.toggle('is-preview-paused', thumbnailState === 'paused');
+  thumb?.classList.toggle('is-preview-updating', thumbnailState === 'updating');
+}
+
+function imageThumbnailState(node, asset) {
+  const settings = imagePreviewSettingsForNode(node, node.id, node.assetId);
+  const current = imagePreviewMatchesSettings(settings, state.previewAssetIds.get(node.id), state.previewSignatures.get(node.id))
+    && state.previews.has(node.id);
+  if (current) return 'ready';
+  if (imagePreviewRequiresRenderedPixels(settings)) {
+    return state.previewDeferredKeys.has(node.id) ? 'paused' : 'updating';
+  }
+  return state.previewDeferredKeys.has(node.id) && !asset?.bitmapUrl ? 'paused' : 'source';
+}
+
+function imageThumbnailSource(node, asset) {
+  const stateLabel = imageThumbnailState(node, asset);
+  if (stateLabel === 'ready') return state.previewUrls.get(node.id) || '';
+  if (stateLabel === 'paused' || stateLabel === 'updating') return '';
+  return asset?.bitmapUrl || '';
 }
 
 function pageLayerRows(page = activePage()) {
@@ -4280,6 +4523,7 @@ function duplicateSelectionForCanvasDrag(interaction) {
 
   state.document = result.document;
   const duplicatedEntries = result.nodes.map(node => findNode(state.document, node.id)).filter(Boolean);
+  scheduleEditedImagePreviews(result.nodes);
   if (interaction.kind === 'reorder') {
     const duplicated = duplicatedEntries[0];
     const parent = reorderParentId && findNode(state.document, reorderParentId)?.node;
@@ -4510,6 +4754,11 @@ function onCanvasPointerDown(event) {
     const interruptedInteraction = state.interaction;
     if (interruptedInteraction?.kind === 'pencil-stroke') {
       cancelPencilStroke({ retainPointer: true });
+    } else if (interruptedInteraction?.kind === 'object-isolation') {
+      // Pinch takes over navigation; never finalize a half-drawn model prompt.
+      state.interaction = null;
+      state.objectIsolationDraft = null;
+      renderer.invalidate();
     } else if (interruptedInteraction?.kind === 'draw') {
       // A second finger takes over navigation. Discard an unfinished shape so
       // it cannot remain as a ghost preview after the pinch has ended.
@@ -4546,7 +4795,7 @@ function onCanvasPointerDown(event) {
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
   }
-  if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode && !state.imageEraseMode)) {
+  if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode && !state.imageEraseMode && !state.objectIsolationMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
     pauseGuestViewFollowing();
     canvas.classList.add('is-panning'); event.preventDefault(); return;
@@ -4579,6 +4828,7 @@ function onCanvasPointerDown(event) {
   // prototype tool. Space/middle-button pan and two-finger pinch remain usable.
   if (state.imageCropMode) { beginImageCropInteraction(event, world); return; }
   if (state.imageEraseMode && event.button === 0) { beginImageEraseStroke(event, world); return; }
+  if (state.objectIsolationMode && event.button === 0) { beginObjectIsolationStroke(event, world); return; }
   if (state.tool === 'lasso') {
     const additive = event.shiftKey || (event.pointerType !== 'mouse' && state.selectedIds.length > 0);
     state.interaction = { kind: 'lasso', pointerId: event.pointerId, points: [world], additive };
@@ -4593,6 +4843,7 @@ function onCanvasPointerDown(event) {
     const target = selectCommentTargetAt(world, { preferComponent: false });
     state.commentPlacementArmed = false;
     if (target) state.activeCommentId = null;
+    if (target && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
     if (target && state.inspectorTab === 'comments') setInspectorTab('design');
     showToast(target
       ? `Selected “${target.name}”.`
@@ -4602,14 +4853,17 @@ function onCanvasPointerDown(event) {
   }
   const commentPin = state.commentPlacementArmed ? null : commentPinAt(world);
   if (commentPin) {
-    const target = state.tool === 'comment' && commentPin.id === state.activeCommentId ? commentTargetAt(world) : null;
+    const canSelectFromPin = state.tool === 'comment' || state.tool === 'select';
+    const target = canSelectFromPin ? commentTargetAt(world) : null;
     const action = commentPinCanvasAction(commentPin, target, {
       tool: state.tool,
-      activeCommentId: state.activeCommentId
+      activeCommentId: state.activeCommentId,
+      targetSelected: target ? state.selectedIds.includes(target.id) : false
     });
     if (action === 'select') {
       state.activeCommentId = null;
       state.commentPlacementArmed = false;
+      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
       setSelection([target.id]);
       if (state.inspectorTab === 'comments') setInspectorTab('design');
       showToast(`Selected “${target.name}”.`);
@@ -4625,6 +4879,7 @@ function onCanvasPointerDown(event) {
       const wasSelected = state.selectedIds.length === 1 && state.selectedIds[0] === target.id;
       state.activeCommentId = null;
       state.commentPlacementArmed = false;
+      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
       setSelection([target.id]);
       if (state.inspectorTab === 'comments') setInspectorTab('design');
       if (!wasSelected) showToast(`Selected “${target.name}”.`);
@@ -4669,6 +4924,14 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
   if (state.tool === 'pencil') { startPencilStroke(world, event); event.preventDefault(); return; }
   if (state.tool === 'select') {
+    // Leaving the Comments panel through the canvas should reveal the selected
+    // layer's design controls, whether or not a saved thread is open.
+    if (state.activeCommentId || state.inspectorTab === 'comments') {
+      state.activeCommentId = null;
+      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+      if (state.inspectorTab === 'comments') setInspectorTab('design');
+      else renderer.invalidate();
+    }
     if (state.layerSelectionMode) {
       const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
       const hit = hitTestPage(activePage(), world, hitTester, state.document, null, state.zoom, { allowAnyClippedNodes: true });
@@ -4709,10 +4972,20 @@ function onCanvasPointerDown(event) {
     }
     const vectorControl = vectorPathControlAt(world, event.pointerType);
     if (vectorControl) {
+      const geometry = { ...vectorControl.node, ...resolvedGeometry(vectorControl.node) };
+      const controlPair = vectorControlPairSnapshot(vectorControl.node, vectorControl, geometry, {
+        shiftKey: event.shiftKey, origin: vectorControl.origin
+      });
       if (vectorControl.node.type === 'network') {
         clearVectorAnchorSelection();
-        state.selectedVectorPoint = vectorControl.part === 'anchor' ? { nodeId: vectorControl.node.id, vertexId: vectorControl.vertexId } : null;
-        state.interaction = { kind: 'network-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector network') };
+        state.selectedVectorPoint = vectorControl.part === 'anchor'
+          ? { nodeId: vectorControl.node.id, vertexId: vectorControl.vertexId }
+          : controlPair ? { nodeId: vectorControl.node.id, vertexId: controlPair.vertexId } : null;
+        state.interaction = controlPair
+          ? { kind: 'vector-control-pair', ...vectorControl, geometry, controlPair,
+            startLocal: pageToNodeLocal(geometry, world, vectorControl.ancestors),
+            historyTransaction: beginCanvasHistoryTransaction('Move Bézier handles') }
+          : { kind: 'network-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector network') };
       } else {
         const anchor = { nodeId: vectorControl.node.id, contourIndex: vectorControl.contourIndex || 0, index: vectorControl.index };
         if (vectorControl.part === 'anchor' && (state.vectorPointSelectMode || event.shiftKey)) {
@@ -4723,7 +4996,11 @@ function onCanvasPointerDown(event) {
         if (vectorControl.part !== 'anchor') {
           state.vectorPointSelectMode = false;
           setVectorAnchorSelection([anchor], anchor);
-          state.interaction = { kind: 'vector-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector path') };
+          state.interaction = controlPair
+            ? { kind: 'vector-control-pair', ...vectorControl, geometry, controlPair,
+              startLocal: pageToNodeLocal(geometry, world, vectorControl.ancestors),
+              historyTransaction: beginCanvasHistoryTransaction('Move Bézier handles') }
+            : { kind: 'vector-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector path') };
         } else {
           const selectedAnchors = normalizeVectorAnchorSelection(state.selectedVectorPoints, vectorControl.node.id);
           const isPartOfGroup = selectedAnchors.length > 1
@@ -4946,6 +5223,11 @@ function onCanvasPointerMove(event) {
     if (appendImageErasePointer(interaction, world)) renderer.invalidate();
     return;
   }
+  if (interaction.kind === 'object-isolation') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (appendObjectIsolationPointer(interaction, world)) renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'lasso') {
     if (interaction.pointerId !== event.pointerId) return;
     appendLassoPoint(interaction.points, world, { minDistance: 1.25 / Math.max(.08, state.zoom) });
@@ -5021,6 +5303,12 @@ function onCanvasPointerMove(event) {
     });
     renderer.invalidate(); return;
   }
+  if (interaction.kind === 'vector-control-pair') {
+    const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+    const delta = { x: local.x - interaction.startLocal.x, y: local.y - interaction.startLocal.y };
+    if (translateVectorControlPair(interaction.node, interaction.controlPair, delta)) renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'vector-anchor-group') {
     const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
     const delta = { x: local.x - interaction.startLocal.x, y: local.y - interaction.startLocal.y };
@@ -5091,7 +5379,8 @@ function onCanvasPointerMove(event) {
   if (interaction.kind === 'group-resize') {
     const aspectRatio = selectionAspectRatio(interaction.bounds);
     const patches = resizeSelection(interaction.entries, interaction.bounds, interaction.handle, world, {
-      aspectRatio: event.shiftKey ? aspectRatio : undefined
+      aspectRatio: event.shiftKey ? aspectRatio : undefined,
+      fromCenter: event.altKey
     });
     for (const patch of patches) {
       const node = findNode(state.document, patch.id)?.node;
@@ -5150,7 +5439,10 @@ function onCanvasPointerMove(event) {
   }
   if (interaction.kind === 'resize') {
     const aspectRatio = event.shiftKey && interaction.rect.height ? interaction.rect.width / interaction.rect.height : undefined;
-    const resized = resizeOrientedRect(interaction.rect, interaction.handle, world, interaction.ancestors, { aspectRatio });
+    const resized = resizeOrientedRect(interaction.rect, interaction.handle, world, interaction.ancestors, {
+      aspectRatio,
+      fromCenter: event.altKey
+    });
     for (const property of ['x', 'y', 'width', 'height']) setNodePropertyValue(interaction.node, property, resized[property]);
     const geometry = resolvedGeometry(interaction.node);
     if (interaction.node.type === 'frame' && interaction.node.autoLayout) applyAutoLayout(interaction.node);
@@ -5233,6 +5525,12 @@ function onCanvasPointerUp(event) {
     if (interaction.pointerId !== event.pointerId) return;
     if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) appendImageErasePointer(interaction, screenToWorld(event, canvas, state));
     finishImageEraseStroke(interaction);
+    return;
+  }
+  if (interaction.kind === 'object-isolation') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) appendObjectIsolationPointer(interaction, screenToWorld(event, canvas, state));
+    finishObjectIsolationStroke(interaction);
     return;
   }
   if (interaction.kind === 'image-fill-crop') {
@@ -5371,9 +5669,10 @@ function onCanvasPointerUp(event) {
     recordGradientTrackChange(interaction);
     renderInspector(); queueSave(); renderer.invalidate(); return;
   }
-  if (interaction.kind === 'vector-control') {
+  if (interaction.kind === 'vector-control' || interaction.kind === 'vector-control-pair') {
     if (!commitCanvasHistoryTransaction(interaction)) { state.interaction = null; renderInspector(); renderer.invalidate(); return; }
-    recordNodeComponentOverrides(interaction.node, (interaction.contourIndex || 0) === 0 ? ['points'] : ['subpaths']);
+    if (interaction.node.type === 'network') recordNodeComponentOverrides(interaction.node, ['vertices', 'edges', 'faces']);
+    else recordNodeComponentOverrides(interaction.node, (interaction.contourIndex || 0) === 0 ? ['points'] : ['subpaths']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-anchor-group') {
@@ -5531,6 +5830,7 @@ function cancelCanvasInteraction(event) {
   }
   if (interaction.kind === 'image-crop') state.imageCropDraftSelection = null;
   if (interaction.kind === 'image-erase') state.imageEraseDraft = null;
+  if (interaction.kind === 'object-isolation') state.objectIsolationDraft = null;
   state.pointerMap.clear();
   state.smartGuides = [];
   canvas.classList.remove('is-panning');
@@ -5574,7 +5874,8 @@ function resizeTextNode(node) {
     firstLineIndent: node.firstLineIndent,
     listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles,
-    text: getNodePropertyValue(state.document, node, 'text')
+    text: getNodePropertyValue(state.document, node, 'text'),
+    shapeText: state.shapeLocalTextRun
   });
   if (!node.variableBindings?.width) node.width = size.width;
   if (!node.variableBindings?.height) node.height = size.height;
@@ -5596,7 +5897,7 @@ function resizeTextLayers(roots, variableId = null) {
   for (const parent of layoutParents) applyAutoLayout(parent);
 }
 
-const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
+const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
 const textBlockTags = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE']);
 function textRunDataAttribute(property) { return `data-run-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`; }
 function normalizeTextRunStyle(source = {}) {
@@ -5625,6 +5926,12 @@ function normalizeTextRunStyle(source = {}) {
     } else if (property === 'fontStyle') {
       value = String(value);
       if (!['normal', 'italic'].includes(value)) continue;
+    } else if (property === 'fontAxes') {
+      if (!isValidFontVariationValues(value)) continue;
+      value = structuredClone(value);
+    } else if (property === 'fontFeatures') {
+      if (!isValidFontFeatureValues(value)) continue;
+      value = structuredClone(value);
     } else if (property === 'textDecoration') {
       value = String(value);
       if (!['none', 'underline', 'line-through'].includes(value)) continue;
@@ -5667,7 +5974,11 @@ function textRunStyleForElement(element, inherited) {
   if (tag === 'I' || tag === 'EM') style.fontStyle = 'italic';
   for (const property of textRunStyleKeys) {
     const encoded = element.getAttribute(textRunDataAttribute(property));
-    let value = encoded != null ? encoded : element.style?.[property];
+    let value = encoded != null ? encoded : property === 'fontFeatures'
+      ? parseFontFeatureSettings(element.style?.fontFeatureSettings) : element.style?.[property];
+    if (['fontAxes', 'fontFeatures'].includes(property) && encoded != null) {
+      try { value = JSON.parse(encoded); } catch { value = null; }
+    }
     if (property === 'fontWeight' && value) value = value === 'bold' ? 700 : value === 'normal' ? 400 : Number(value);
     if (property === 'fontStyle' && value) value = value === 'italic' ? 'italic' : 'normal';
     if (property === 'fontSize' || property === 'lineHeight' || property === 'letterSpacing' || property === 'baselineShift') {
@@ -5793,10 +6104,16 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
       for (const property of textRunStyleKeys) {
         const value = run[property];
         if (value == null) continue;
-        span.setAttribute(textRunDataAttribute(property), String(value));
+        span.setAttribute(textRunDataAttribute(property), ['fontAxes', 'fontFeatures'].includes(property) ? JSON.stringify(value) : String(value));
         if (property === 'baselineShift') {
           span.style.position = 'relative';
           span.style.top = `${-value * state.zoom}px`;
+        } else if (property === 'fontAxes') {
+          const settings = fontVariationSettings(value);
+          if (settings) span.style.fontVariationSettings = settings;
+        } else if (property === 'fontFeatures') {
+          const settings = fontFeatureSettings(value);
+          if (settings) span.style.fontFeatureSettings = settings;
         } else span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
       }
       span.textContent = run.text;
@@ -6155,6 +6472,9 @@ function editTextNode(nodeId) {
   editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
   editor.style.fontFamily = entry.node.fontFamily;
   editor.style.fontWeight = String(entry.node.fontWeight || 400);
+  editor.style.fontStyle = entry.node.fontStyle === 'italic' ? 'italic' : 'normal';
+  editor.style.fontVariationSettings = fontVariationSettings(entry.node.fontAxes) || 'normal';
+  editor.style.fontFeatureSettings = fontFeatureSettings(entry.node.fontFeatures) || 'normal';
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
   editor.style.lineHeight = `${resolvedLineHeight(getNodePropertyValue(state.document, entry.node, 'lineHeight') || 1.25, getNodePropertyValue(state.document, entry.node, 'fontSize') || 24, entry.node.lineHeightUnit || 'ratio') * state.zoom}px`;
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
@@ -7052,7 +7372,384 @@ function imageEraseLayerContext(node = selectedNodes().length === 1 ? selectedNo
   return context ? { ...context, asset, sourceWidth, sourceHeight } : null;
 }
 
-function toggleImageEraseMode(node) {
+function objectIsolationLayerContext(node = selectedNodes().length === 1 ? selectedNodes()[0] : null) {
+  if (node?.type !== 'image' || node.locked || isImageRecipeBatchActive(state.bulk)) return null;
+  const entry = findNode(state.document, node.id);
+  if (!entry || entry.parents.some(parent => parent.locked)) return null;
+  const asset = state.assets.get(node.assetId);
+  const sourceWidth = asset?.sourceWidth || node.sourceWidth;
+  const sourceHeight = asset?.sourceHeight || node.sourceHeight;
+  if (!asset?.sourceBytes || !Number.isSafeInteger(sourceWidth) || !Number.isSafeInteger(sourceHeight)) return null;
+  validateObjectIsolationDimensions(sourceWidth, sourceHeight);
+  const context = imageCropContext(node);
+  return context ? { ...context, asset, sourceWidth, sourceHeight } : null;
+}
+
+function resetObjectIsolationSession() {
+  state.objectIsolationController?.abort();
+  state.objectIsolationController = null;
+  state.objectIsolationMode = false;
+  state.objectIsolationStrokes = [];
+  state.objectIsolationDraft = null;
+  state.objectIsolationProgress = '';
+  state.objectIsolationSourceId = null;
+  state.objectIsolationSourceSignature = null;
+  canvas?.classList.remove('tool-object-isolation');
+}
+
+async function toggleObjectIsolationMode(node) {
+  const active = state.objectIsolationMode && state.objectIsolationSourceId === node?.id;
+  if (active) {
+    if (state.interaction?.kind === 'object-isolation') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.objectIsolationMode = false;
+    state.objectIsolationDraft = null;
+    canvas.classList.remove('tool-object-isolation');
+    renderInspector(); renderer.invalidate();
+    return;
+  }
+  if (state.objectIsolationController) return;
+  if (node?.assetId && !state.assets.get(node.assetId)?.sourceBytes) {
+    const generation = state.documentGeneration;
+    const documentId = state.document.id;
+    const pageId = state.document.activePageId;
+    const sourceSignature = JSON.stringify(node);
+    showToast('Restoring the local image before object isolation…');
+    try { await ensureImageAssetResident(node.assetId, imagePreviewKey(node.id), generation); }
+    catch (error) {
+      if (generation === state.documentGeneration) showToast(error.message || 'The local image could not be restored for object isolation.');
+      return;
+    }
+    const current = findNode(state.document, node.id, pageId)?.node;
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id
+      || current !== node || JSON.stringify(current) !== sourceSignature) return;
+  }
+  let context;
+  try {
+    context = objectIsolationLayerContext(node);
+    if (!context) throw new Error('Select an unlocked image with its local original available.');
+    prepareObjectIsolationLayer(state.document, {
+      sourceId: node.id, assetId: 'preflight-object-isolation', width: context.sourceWidth, height: context.sourceHeight
+    });
+  } catch (error) { showToast(error.message || 'Object isolation is unavailable for this image.'); return; }
+  if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+  if (state.imageCropMode) {
+    state.imageCropMode = false;
+    state.imageFillCropTarget = null;
+    state.imageCropDraftSelection = null;
+    syncImageCropOverlay();
+  }
+  if (state.imageEraseMode) {
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas.classList.remove('tool-image-erase');
+  }
+  if (state.objectIsolationSourceId !== node.id) state.objectIsolationStrokes = [];
+  state.objectIsolationSourceId = node.id;
+  state.objectIsolationSourceSignature = JSON.stringify(node);
+  state.objectIsolationMode = true;
+  state.objectIsolationProgress = '';
+  canvas.classList.add('tool-object-isolation');
+  renderInspector(); renderer.invalidate();
+  showToast('Draw a lasso around the area to isolate. Include or Exclude marks can refine it.');
+}
+
+function setObjectIsolationBrushMode(mode) {
+  const next = Number(mode);
+  if (!Object.values(OBJECT_ISOLATION_BRUSH_MODE).includes(next) || state.objectIsolationController) return;
+  if (state.interaction?.kind === 'object-isolation') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+  state.objectIsolationBrushMode = next;
+  state.objectIsolationProgress = '';
+  renderInspector(); renderer.invalidate();
+}
+
+function appendObjectIsolationPointer(interaction, world) {
+  if (state.documentGeneration !== interaction.generation || state.document.id !== interaction.documentId
+    || state.document.activePageId !== interaction.pageId || state.selectedIds.length !== 1
+    || state.selectedIds[0] !== interaction.node.id || JSON.stringify(interaction.node) !== interaction.sourceSignature) return false;
+  const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+  if (!displayedImagePointIsPaintable(local, interaction.context)) return false;
+  const source = imageErasePointFromDisplay(local, interaction.context.virtualBounds, {
+    rotation: interaction.rotation,
+    flipHorizontal: interaction.flipHorizontal,
+    flipVertical: interaction.flipVertical
+  });
+  const previous = interaction.points.at(-1);
+  const minDistance = 1 / Math.max(.08, state.zoom * interaction.context.scale);
+  if (previous && checkPointDistance(previous.local, local) < minDistance) return false;
+  if (interaction.points.length >= 8192) {
+    interaction.truncated = true;
+    return false;
+  }
+  const totalPoints = state.objectIsolationStrokes.reduce((total, stroke) => total + stroke.point.length, 0);
+  if (totalPoints + interaction.points.length >= 8192) {
+    interaction.truncated = true;
+    return false;
+  }
+  interaction.points.push({ local, source });
+  state.objectIsolationDraft = {
+    nodeId: interaction.node.id, brushMode: interaction.brushMode,
+    points: interaction.points.map(item => item.local)
+  };
+  return true;
+}
+
+function beginObjectIsolationStroke(event, world) {
+  const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
+  let context;
+  try { context = objectIsolationLayerContext(node); }
+  catch (error) { showToast(error.message || 'Object isolation is unavailable for this image.'); return; }
+  if (!context) { showToast('Select an unlocked image with its local original available to isolate an object.'); return; }
+  const sourceSignature = JSON.stringify(node);
+  if (state.objectIsolationSourceSignature !== sourceSignature) {
+    state.objectIsolationStrokes = [];
+    state.objectIsolationSourceSignature = sourceSignature;
+    showToast('The image changed; previous isolation marks were cleared.');
+  }
+  const local = pageToNodeLocal(context.geometry, world, context.ancestors);
+  if (!displayedImagePointIsPaintable(local, context)) return;
+  const source = imageErasePointFromDisplay(local, context.virtualBounds, {
+    rotation: context.rotation, flipHorizontal: context.flipHorizontal, flipVertical: context.flipVertical
+  });
+  const interaction = {
+    kind: 'object-isolation', pointerId: event.pointerId, node, context,
+    geometry: context.geometry, ancestors: context.ancestors,
+    rotation: context.rotation, flipHorizontal: context.flipHorizontal, flipVertical: context.flipVertical,
+    brushMode: state.objectIsolationBrushMode, generation: state.documentGeneration,
+    documentId: state.document.id, pageId: state.document.activePageId, sourceSignature,
+    points: [{ local, source }], truncated: false
+  };
+  state.interaction = interaction;
+  state.objectIsolationDraft = { nodeId: node.id, brushMode: interaction.brushMode, points: [local] };
+  event.preventDefault(); renderer.invalidate();
+}
+
+function finishObjectIsolationStroke(interaction) {
+  state.interaction = null;
+  state.objectIsolationDraft = null;
+  canvas.classList.remove('is-panning');
+  if (interaction.truncated) showToast('This selection reached its point limit. Keep it and add another shorter stroke.');
+  const points = interaction.points.map(item => item.source);
+  if (interaction.brushMode === OBJECT_ISOLATION_BRUSH_MODE.LASSO && points.length < 3) {
+    showToast('A lasso needs at least three points. Draw a larger closed region.');
+  } else if (points.length) {
+  state.objectIsolationStrokes.push({
+      brushMode: interaction.brushMode,
+      isCompleted: true,
+      point: points,
+      previewPoints: interaction.points.map(item => item.local)
+    });
+  }
+  state.objectIsolationProgress = '';
+  renderInspector(); renderer.invalidate();
+}
+
+function undoObjectIsolationStroke() {
+  if (state.objectIsolationController || !state.objectIsolationStrokes.length) return;
+  state.objectIsolationStrokes.pop(); renderInspector(); renderer.invalidate();
+}
+
+function clearObjectIsolationStrokes() {
+  if (state.objectIsolationController) return;
+  state.objectIsolationStrokes = []; state.objectIsolationDraft = null;
+  renderInspector(); renderer.invalidate();
+}
+
+function cancelObjectIsolationProcessing() {
+  const controller = state.objectIsolationController;
+  if (!controller) return false;
+  state.objectIsolationController = null;
+  controller.abort();
+  state.objectIsolationProgress = 'Cancelled · selection strokes kept';
+  renderInspector(); renderer.invalidate();
+  return true;
+}
+
+function objectIsolationStageLabel(stage) {
+  return ({
+    'loading-model': 'Loading bundled model…',
+    'decoding-source': 'Reading original pixels…',
+    'encoding-image-features': 'Preparing image features…',
+    segmenting: 'Finding the selected object…',
+    'creating-transparent-layer': 'Building transparent PNG…'
+  })[stage] || 'Processing locally…';
+}
+
+function objectIsolationFenceMatches(capture, controller) {
+  if (controller.signal.aborted || state.objectIsolationController !== controller
+    || state.documentGeneration !== capture.generation || state.document.id !== capture.documentId
+    || state.document.activePageId !== capture.pageId || state.selectedIds.length !== 1
+    || state.selectedIds[0] !== capture.nodeId) return false;
+  const entry = findNode(state.document, capture.nodeId, capture.pageId);
+  if (!entry || entry.node !== capture.sourceNode || JSON.stringify(entry.node) !== capture.sourceSignature
+    || entry.index !== capture.index || (entry.parent?.id ?? null) !== capture.parentId
+    || entry.parents.map(parent => JSON.stringify(parent)).join('\n') !== capture.parentSignatures
+    || (entry.parent?.children || activePage()?.children || []).map(node => node.id).join('\0') !== capture.stackIds
+    || state.assets.get(capture.assetId) !== capture.asset
+    || capture.asset.sourceBytes !== capture.sourceBytes) return false;
+  return true;
+}
+
+async function persistObjectIsolationAsset(target, assetId, name, bytes) {
+  if (target.workspace) return saveWorkspaceImageAsset(target.workspace, target.documentId, assetId, bytes, { mimeType: 'image/png' });
+  return saveImageAssetBytes(assetId, name, 'image/png', bytes);
+}
+
+async function deleteObjectIsolationAsset(target, assetId) {
+  if (target.workspace) return deleteWorkspaceImageAsset(target.workspace, target.documentId, assetId);
+  return deleteImageAsset(assetId);
+}
+
+async function createObjectIsolationLayer(node) {
+  if (state.objectIsolationController) return;
+  const pageId = state.document.activePageId;
+  let context;
+  try { context = objectIsolationLayerContext(node); }
+  catch (error) { showToast(error.message || 'Object isolation is unavailable for this image.'); return; }
+  if (!context || state.selectedIds.length !== 1 || state.selectedIds[0] !== node?.id) {
+    showToast('Select an unlocked image with its local original available.'); return;
+  }
+  if (!state.objectIsolationStrokes.length) { showToast('Draw a lasso around an area before isolating it.'); return; }
+  const captureEntry = findNode(state.document, node.id, pageId);
+  const capture = {
+    generation: state.documentGeneration, documentId: state.document.id, pageId, nodeId: node.id,
+    sourceNode: node, sourceSignature: JSON.stringify(node), index: captureEntry.index,
+    parentId: captureEntry.parent?.id ?? null,
+    parentSignatures: captureEntry.parents.map(parent => JSON.stringify(parent)).join('\n'),
+    stackIds: (captureEntry.parent?.children || activePage()?.children || []).map(child => child.id).join('\0'),
+    assetId: node.assetId, asset: context.asset, sourceBytes: context.asset.sourceBytes,
+    sourceWidth: context.sourceWidth, sourceHeight: context.sourceHeight,
+    workspace: state.workspace
+  };
+  const controller = new AbortController();
+  const sourceId = createId('isolated');
+  let workingReservation = null;
+  let assetReservation = null;
+  let decodeReservation = null;
+  let resultBitmap = null;
+  let resultUrl = null;
+  let persisted = false;
+  let committed = false;
+  let success = false;
+  state.objectIsolationController = controller;
+  state.objectIsolationMode = false;
+  state.objectIsolationDraft = null;
+  state.objectIsolationProgress = 'Starting local model…';
+  canvas.classList.remove('tool-object-isolation');
+  renderInspector(); renderer.invalidate();
+  try {
+    const preflight = prepareObjectIsolationLayer(state.document, {
+      pageId, sourceId: node.id, assetId: sourceId, width: capture.sourceWidth, height: capture.sourceHeight
+    });
+    if (preflight.sourceSignature !== capture.sourceSignature) throw new Error('The source image changed before object isolation started.');
+    validateObjectIsolationDimensions(capture.sourceWidth, capture.sourceHeight);
+    const outputBound = estimatePreviewMemoryReservationBytes({ width: capture.sourceWidth, height: capture.sourceHeight });
+    const workingBytes = 48 * MIB + capture.sourceBytes.byteLength
+      + estimateBitmapBytes(capture.sourceWidth, capture.sourceHeight, 12) + outputBound.encodedByteLength;
+    workingReservation = reserveImageMemory(workingBytes, { kind: 'object-isolation-worker', excludeAssetIds: [capture.assetId] });
+    if (!workingReservation) throw new ImageMemoryLimitError('There is not enough free local memory for object isolation. Close another large image or use a smaller source, then retry.', 'object-isolation-worker');
+    const strokes = state.objectIsolationStrokes.map(({ brushMode, isCompleted, point }) => ({ brushMode, isCompleted, point }));
+    const result = await objectIsolationEngine.run(capture.sourceBytes, strokes, {
+      signal: controller.signal,
+      onStage: ({ stage }) => {
+        if (!objectIsolationFenceMatches(capture, controller)) return;
+        state.objectIsolationProgress = objectIsolationStageLabel(stage);
+        renderInspector();
+      }
+    });
+    if (!objectIsolationFenceMatches(capture, controller)) throw new DOMException('The source or page changed during object isolation.', 'AbortError');
+    imageMemoryBudget.releaseReservation(workingReservation); workingReservation = null;
+    const dimensions = assertSafeRasterDimensions(result.bytes);
+    if (result.mimeType !== 'image/png' || dimensions.width !== capture.sourceWidth || dimensions.height !== capture.sourceHeight
+      || result.width !== capture.sourceWidth || result.height !== capture.sourceHeight) {
+      throw new Error('The local model returned a PNG whose dimensions do not match the source image.');
+    }
+    const fallbackDimensions = fallbackImageDimensions(dimensions.width, dimensions.height);
+    const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: result.bytes.byteLength, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
+    assetReservation = reserveImageMemory(assetBytes, { kind: 'object-isolation-asset', excludeAssetIds: [capture.assetId] });
+    if (!assetReservation) throw retainedImageLimitMessage();
+    decodeReservation = reserveImageMemory(estimateBitmapBytes(dimensions.width, dimensions.height), { kind: 'object-isolation-decode', excludeAssetIds: [capture.assetId] });
+    if (!decodeReservation) throw retainedImageLimitMessage();
+    const blob = new Blob([result.bytes], { type: 'image/png' });
+    const fallback = await createFallbackImage(blob);
+    resultBitmap = fallback.bitmap;
+    if (!objectIsolationFenceMatches(capture, controller)) throw new DOMException('The source or page changed while decoding the isolated image.', 'AbortError');
+    imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+    resultUrl = URL.createObjectURL(blob);
+    const target = { workspace: capture.workspace, documentId: capture.documentId };
+    persisted = true;
+    await persistObjectIsolationAsset(target, sourceId, `${node.name || 'Image'}-isolated.png`, result.bytes);
+    if (!objectIsolationFenceMatches(capture, controller)) throw new DOMException('The source or page changed while saving the isolated image.', 'AbortError');
+    const prepared = prepareObjectIsolationLayer(state.document, {
+      pageId, sourceId: node.id, assetId: sourceId, width: dimensions.width, height: dimensions.height
+    });
+    if (prepared.sourceSignature !== capture.sourceSignature) throw new Error('The source image changed before insertion.');
+    imageMemoryBudget.commit(assetReservation, assetMemoryKey(sourceId), { bytes: assetBytes, kind: 'asset' });
+    assetReservation = null;
+    committed = true;
+    state.assets.set(sourceId, {
+      id: sourceId, name: `${node.name || 'Image'}-isolated.png`, type: 'image/png',
+      sourceBytes: result.bytes, bitmap: resultBitmap, bitmapUrl: resultUrl,
+      sourceWidth: dimensions.width, sourceHeight: dimensions.height
+    });
+    imageSourceResidency.markResident(sourceId);
+    resultBitmap = null; resultUrl = null;
+    checkpoint('Isolate image object');
+    insertObjectIsolationLayer(state.document, prepared);
+    success = true;
+    if (capture.workspace && state.workspace === capture.workspace && state.document.id === capture.documentId) {
+      workspaceIdCache(state.workspaceVerifiedImageIds, capture.documentId).add(sourceId);
+    }
+    state.objectIsolationController = null;
+    state.objectIsolationProgress = '';
+    state.objectIsolationStrokes = [];
+    state.objectIsolationSourceId = null;
+    state.objectIsolationSourceSignature = null;
+    state.imageStatus.set(prepared.layer.id, 'Processing locally…');
+    renderImagePreview(prepared.layer.id, sourceId, prepared.layer.adjustments, prepared.layer.transforms, null, null, pageId)
+      .catch(error => { state.imageStatus.set(prepared.layer.id, imagePreviewFailureStatus(error)); showToast(error.message || 'Could not render the isolated image preview.'); });
+    setSelection([prepared.layer.id]);
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast('Transparent image layer created above the unchanged source.');
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not isolate this object.');
+    if (state.objectIsolationController === controller) {
+      state.objectIsolationController = null;
+      state.objectIsolationProgress = error?.name === 'AbortError' ? 'Cancelled · selection strokes kept' : error.message || 'Object isolation failed.';
+      if (state.documentGeneration === capture.generation && state.document.id === capture.documentId
+        && state.document.activePageId === capture.pageId && state.selectedIds.length === 1
+        && state.selectedIds[0] === capture.nodeId) {
+        renderInspector(); renderer.invalidate();
+      }
+    }
+    if (committed) {
+      const retained = state.assets.get(sourceId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(sourceId);
+      imageSourceResidency.evict(sourceId);
+      imageMemoryBudget.release(assetMemoryKey(sourceId));
+    }
+  } finally {
+    if (workingReservation) imageMemoryBudget.releaseReservation(workingReservation);
+    if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
+    if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
+    resultBitmap?.close?.();
+    if (resultUrl) URL.revokeObjectURL(resultUrl);
+    if (persisted && !success) {
+      try { await deleteObjectIsolationAsset({ workspace: capture.workspace, documentId: capture.documentId }, sourceId); }
+      catch (error) { showToast(`The unused isolated image could not be removed from local storage: ${error.message || 'storage error'}.`); }
+    }
+    if (state.objectIsolationController === controller && state.documentGeneration === capture.generation
+      && state.document.id === capture.documentId && state.document.activePageId === capture.pageId
+      && state.selectedIds.length === 1 && state.selectedIds[0] === capture.nodeId) {
+      state.objectIsolationController = null;
+      renderInspector(); renderer.invalidate();
+    }
+  }
+}
+
+async function toggleImageEraseMode(node) {
   const active = state.imageEraseMode && state.selectedIds.length === 1 && state.selectedIds[0] === node?.id;
   if (active) {
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
@@ -7061,6 +7758,18 @@ function toggleImageEraseMode(node) {
     canvas.classList.remove('tool-image-erase');
     renderInspector(); renderer.invalidate();
     return;
+  }
+  if (state.objectIsolationMode || state.objectIsolationSourceId || state.objectIsolationController) resetObjectIsolationSession();
+  if (node?.assetId && !state.assets.get(node.assetId)?.sourceBytes) {
+    const generation = state.documentGeneration;
+    showToast('Restoring the local image before object erase…');
+    try { await ensureImageAssetResident(node.assetId, imagePreviewKey(node.id), generation); }
+    catch (error) {
+      if (generation === state.documentGeneration) showToast(error.message || 'The local image could not be restored for object erase.');
+      return;
+    }
+    if (generation !== state.documentGeneration || !state.selectedIds.includes(node.id)) return;
+    renderInspector();
   }
   let context;
   try { context = imageEraseLayerContext(node); }
@@ -7329,6 +8038,8 @@ function updateInspectorInput(event) {
   }
   if (selected.length > 1 && selected.some(node => node.type === 'image' && isActiveImageRecipeTarget(node.id))) return;
   const prop = input.dataset.prop;
+  const fontAxisMatch = /^fontAxes\.([\x20-\x7e]{4})$/u.exec(prop);
+  const fontFeatureMatch = /^fontFeatures\.([\x20-\x7e]{4})$/u.exec(prop);
   if (prop.startsWith('adjustments.') && selected.some(node => node.type === 'image' && node.locked)) return;
   if (prop.startsWith('selection.')) { updateSelectionInspectorInput(input); return; }
   if (['width', 'height'].includes(prop) && selectedNodes().some(node => selectionDimensionIsHugged([{ node }], prop))) {
@@ -7342,12 +8053,16 @@ function updateInspectorInput(event) {
   }
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
-  const propertyValue = prop === 'opacity' ? value / 100
+  const propertyValue = fontAxisMatch ? Math.max(Number(input.min), Math.min(Number(input.max), value))
+    : fontFeatureMatch ? value === 'auto' ? null : value === 'off' ? 0 : value === 'on' ? 1 : Number(value)
+    : prop === 'opacity' ? value / 100
     : prop === 'points' ? Math.max(3, Math.min(32, Math.round(Number.isFinite(value) ? value : 3)))
     : prop === 'innerRadius' ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : .48))
       : ['paragraphSpacing', 'firstLineIndent', 'listSpacing'].includes(prop) ? Math.max(0, Math.min(10_000, Number.isFinite(value) ? value : 0))
         : value;
-  if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${['opacity', 'outputQuality'].includes(prop) ? '%' : ''}`;
+  if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = fontAxisMatch
+    ? formatInspectorNumber(propertyValue)
+    : `${Math.round(value)}${['opacity', 'outputQuality'].includes(prop) ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
   const layoutSetting = prop.startsWith('autoLayout.');
   const constraintSetting = prop.startsWith('constraints.');
@@ -7355,7 +8070,7 @@ function updateInspectorInput(event) {
   const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
-    if (node.type === 'text' && TYPOGRAPHY_STYLE_PROPERTIES.has(prop) && node.typographyStyleId) {
+    if (node.type === 'text' && (TYPOGRAPHY_STYLE_PROPERTIES.has(prop) || fontAxisMatch || fontFeatureMatch) && node.typographyStyleId) {
       delete node.typographyStyleId;
       if (instanceRoot) recordComponentOverride(instanceRoot, node, 'typographyStyleId');
     }
@@ -7448,6 +8163,14 @@ function updateInspectorInput(event) {
         node.cornerRadii[side] = Math.max(0, Math.min(100_000, Number(propertyValue) || 0));
       }
     }
+    else if (fontAxisMatch && node.type === 'text') {
+      node.fontAxes = setFontVariationValue(node.fontAxes, fontAxisMatch[1], propertyValue);
+    }
+    else if (fontFeatureMatch && node.type === 'text') {
+      const features = setFontFeatureValue(node.fontFeatures, fontFeatureMatch[1], propertyValue);
+      if (Object.keys(features).length) node.fontFeatures = features;
+      else delete node.fontFeatures;
+    }
     else if (prop === 'lineHeightUnit' && node.type === 'text') {
       const size = getNodePropertyValue(state.document, node, 'fontSize') || 24;
       const currentPx = resolvedLineHeight(getNodePropertyValue(state.document, node, 'lineHeight') || 1.25, size, node.lineHeightUnit || 'ratio');
@@ -7457,11 +8180,11 @@ function updateInspectorInput(event) {
     else if (prop === 'points' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
-    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
+    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop))) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
-      else if (resized && parent?.autoLayout) applyAutoLayout(parent);
+      else if ((resized || fontAxisMatch || fontFeatureMatch) && parent?.autoLayout) applyAutoLayout(parent);
     }
     const geometry = resolvedGeometry(node);
     if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, geometry.width, geometry.height);
@@ -7484,7 +8207,8 @@ function updateInspectorInput(event) {
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
     if (instanceRoot) {
-      const overrideProperty = prop === 'closed' && state.selectedVectorPoint?.nodeId === node.id && (state.selectedVectorPoint.contourIndex || 0) > 0 ? 'subpaths' : prop;
+      const overrideProperty = fontFeatureMatch ? 'fontFeatures'
+        : prop === 'closed' && state.selectedVectorPoint?.nodeId === node.id && (state.selectedVectorPoint.contourIndex || 0) > 0 ? 'subpaths' : prop;
       recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : overrideProperty);
       if (prop === 'fillType' && value !== 'solid') {
         recordComponentOverride(instanceRoot, node, 'fillVariableId');
@@ -7523,6 +8247,21 @@ function finishInspectorInput() {
   clearTimeout(state.statusTimer);
   state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
 }
+function scheduleEditedImagePreviews(nodes) {
+  const visible = visibleImagePreviewKeys();
+  const selected = selectedImagePreviewKeys();
+  for (const { node, fillId } of collectEditedImagePreviewRequests(nodes)) {
+    const previewKey = imagePreviewKey(node.id, fillId);
+    if (!visible.has(previewKey) && !selected.has(previewKey)) {
+      state.previewDeferredKeys.add(previewKey);
+      state.imageStatus.set(previewKey, 'Preview paused · offscreen');
+      continue;
+    }
+    state.previewDeferredKeys.delete(previewKey);
+    schedulePreview(node, true, fillId);
+  }
+}
+
 function schedulePreview(node, immediate = false, fillId = null) {
   const previewKey = imagePreviewKey(node.id, fillId);
   const pageId = findNodeAcrossPages(state.document, node.id)?.page.id || state.document.activePageId;
@@ -7543,9 +8282,14 @@ function schedulePreview(node, immediate = false, fillId = null) {
   const version = state.renderVersion.get(previewKey);
   const run = async () => {
     try {
-      if (!state.assets.get(assetId)?.sourceBytes) await restoreImageAssets(generation, { assetIds: [assetId] });
+      let restoredSource = false;
+      if (!state.assets.get(assetId)?.sourceBytes) {
+        await ensureImageAssetResident(assetId, previewKey, generation);
+        restoredSource = true;
+      }
       if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return;
       if (!state.assets.get(assetId)?.sourceBytes) throw new Error('The original image source is unavailable. Reimport it before continuing.');
+      if (restoredSource && state.selectedIds.includes(node.id)) renderInspector();
       await renderImagePreview(node.id, assetId, adjustments, transforms, fillId, null, pageId);
     } catch (error) {
       state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
@@ -7577,6 +8321,179 @@ function updateSelectedImageStatus(nodeId, previewKey = nodeId, fillId = null) {
   }
 }
 
+function ensureImageAssetResident(assetId, previewKey, generation = state.documentGeneration) {
+  if (state.assets.get(assetId)?.sourceBytes) {
+    imageSourceResidency.markResident(assetId);
+    return Promise.resolve();
+  }
+  const taskKey = JSON.stringify([generation, assetId]);
+  const existingTask = imageAssetRestoreTasks.get(taskKey);
+  if (existingTask) return existingTask;
+  const task = restoreImageAssets(generation, { assetIds: [assetId], previewKeys: [previewKey], skipPreview: true })
+    .finally(() => {
+      if (imageAssetRestoreTasks.get(taskKey) === task) imageAssetRestoreTasks.delete(taskKey);
+    });
+  imageAssetRestoreTasks.set(taskKey, task);
+  return task;
+}
+
+function visibleImagePreviewKeys() {
+  const visible = new Set(renderer?.visiblePreviewKeys || []);
+  for (const previewKey of visiblePreviewKeysForCanvas(canvas, state)) visible.add(previewKey);
+  if (state.presenting) {
+    for (const previewKey of presentRenderer?.visiblePreviewKeys || []) visible.add(previewKey);
+    for (const previewKey of visiblePreviewKeysForCanvas($('#present-canvas'), presentRenderState)) visible.add(previewKey);
+  }
+  return visible;
+}
+
+function visiblePreviewKeysForCanvas(targetCanvas, renderState) {
+  const documentData = renderState?.document || state.document;
+  const page = documentData?.pages?.find(item => item.id === renderState?.activePageId || item.id === documentData.activePageId);
+  const rect = targetCanvas?.getBoundingClientRect();
+  if (!page || !rect || rect.width <= 0 || rect.height <= 0) return new Set();
+  const zoom = Math.max(.08, Number(renderState?.zoom) || 1);
+  const panX = Number(renderState?.panX) || 0;
+  const panY = Number(renderState?.panY) || 0;
+  return collectVisibleImagePreviewKeys(page, documentData, {
+    left: -panX / zoom,
+    top: -panY / zoom,
+    right: (rect.width - panX) / zoom,
+    bottom: (rect.height - panY) / zoom
+  }, { presentationScrollOffsets: renderState?.presentationScrollOffsets });
+}
+
+function selectedImagePreviewKeys() {
+  const protectedKeys = new Set();
+  for (const node of selectedNodes()) {
+    if (node.type === 'image' && node.assetId) protectedKeys.add(imagePreviewKey(node.id));
+    if (!Array.isArray(node.fills) && node.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id));
+    for (const fill of node.fills || []) {
+      if (fill.type === 'image' && fill.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id, fill.id));
+    }
+  }
+  return protectedKeys;
+}
+
+function busyImagePreviewKeys() {
+  const busy = new Set([...previewTimers.keys(), ...state.inpaintControllers.keys()]);
+  for (const previewKey of activeImagePreviewRenders.keys()) busy.add(previewKey);
+  for (const [previewKey, status] of state.imageStatus) {
+    if (/^(Updating preview|Processing locally|Object erase|Restoring local preview)/.test(status || '')) busy.add(previewKey);
+  }
+  return busy;
+}
+
+function touchImagePreviewSource(previewKey) {
+  const { nodeId } = parseImagePreviewKey(previewKey);
+  const documentData = state.presenting && presentRuntimeDocument ? presentRuntimeDocument : state.document;
+  const node = findNodeAcrossPages(documentData, nodeId)?.node;
+  if (!node) return false;
+  const assetId = imagePreviewSettingsForNode(node, previewKey).assetId;
+  return assetId ? imageSourceResidency.touch(assetId) : false;
+}
+
+function protectedImageSourceAssetIds({ excludeAssetIds = [], references = imageAssetReferencesAcrossPages() } = {}) {
+  const protectedAssetIds = new Set(excludeAssetIds);
+  if (state.documentTransitioning || state.imageExportAbortController || state.localPackageBuilding) {
+    for (const assetId of state.assets.keys()) protectedAssetIds.add(assetId);
+  }
+
+  const protectedPreviewKeys = new Set([
+    ...visibleImagePreviewKeys(),
+    ...selectedImagePreviewKeys(),
+    ...busyImagePreviewKeys(),
+    ...activeImagePreviewRenders.keys(),
+    ...state.inpaintControllers.keys(),
+  ]);
+  const referencesByPreviewKey = new Map(references.map(reference => [reference.previewKey, reference]));
+  for (const previewKey of protectedPreviewKeys) {
+    const assetId = referencesByPreviewKey.get(previewKey)?.assetId;
+    if (assetId) protectedAssetIds.add(assetId);
+  }
+  for (const assetId of state.imageLibraryThumbnailLoads.keys()) protectedAssetIds.add(assetId);
+  for (const taskKey of imageAssetRestoreTasks.keys()) {
+    try {
+      const [, assetId] = JSON.parse(taskKey);
+      if (typeof assetId === 'string' && assetId) protectedAssetIds.add(assetId);
+    } catch { /* ignore malformed internal keys rather than blocking all eviction */ }
+  }
+  return protectedAssetIds;
+}
+
+function releaseResidentImageAsset(assetId, references = null) {
+  if (imageSourceResidency.pinCount(assetId) > 0 || !imageSourceResidency.evict(assetId)) return false;
+  const asset = state.assets.get(assetId);
+  if (asset) {
+    try { asset.bitmap?.close?.(); } catch { /* bitmap disposal is best-effort */ }
+    try { if (asset.bitmapUrl) URL.revokeObjectURL(asset.bitmapUrl); } catch { /* URL may already be revoked */ }
+    asset.sourceBytes = null;
+    asset.bitmap = null;
+    asset.bitmapUrl = null;
+    state.assets.delete(assetId);
+  }
+  try { preparedInpaintCache.invalidateAsset(assetId); } catch { /* worker source disposal still proceeds */ }
+  try { imageEngine.dispose(assetId); } catch { /* worker source disposal is best-effort */ }
+  try { imageMemoryBudget.release(assetMemoryKey(assetId)); } catch { /* release accounting even during teardown */ }
+  for (const reference of references || imageAssetReferencesAcrossPages()) {
+    if (reference.assetId !== assetId) continue;
+    state.previewDeferredKeys.add(reference.previewKey);
+    if (!state.previews.has(reference.previewKey)) state.imageStatus.set(reference.previewKey, 'Preview paused · source released for memory');
+    if (reference.node.type === 'image') updateImageAssetThumbnail(reference.node.id);
+  }
+  return true;
+}
+
+function reserveImageMemory(bytes, { kind = 'pending', excludeAssetIds = [], excludePreviewKeys = [] } = {}) {
+  let reservation = imageMemoryBudget.reserve(bytes, { kind });
+  if (reservation) return reservation;
+  const visible = visibleImagePreviewKeys();
+  const protectedKeys = new Set([...selectedImagePreviewKeys(), ...busyImagePreviewKeys()]);
+  if (state.imageExportAbortController) {
+    for (const previewKey of state.previews.keys()) protectedKeys.add(previewKey);
+  }
+  for (const previewKey of offscreenPreviewEvictionCandidates({
+    previews: state.previews,
+    visiblePreviewKeys: visible,
+    protectedPreviewKeys: protectedKeys,
+    excludedPreviewKeys: new Set(excludePreviewKeys)
+  })) {
+    releasePreviewResources(previewKey, { defer: true });
+    reservation = imageMemoryBudget.reserve(bytes, { kind });
+    if (reservation) return reservation;
+  }
+
+  const sourceReferences = imageAssetReferencesAcrossPages();
+  const excludedAssets = protectedImageSourceAssetIds({ excludeAssetIds, references: sourceReferences });
+  for (const assetId of imageSourceResidency.evictionCandidates({ exclude: excludedAssets })) {
+    if (!releaseResidentImageAsset(assetId, sourceReferences)) continue;
+    reservation = imageMemoryBudget.reserve(bytes, { kind });
+    if (reservation) return reservation;
+  }
+  return null;
+}
+
+function reserveImagePreviewMemory(bytes, currentPreviewKey) {
+  return reserveImageMemory(bytes, { kind: 'preview-pending', excludePreviewKeys: [currentPreviewKey] });
+}
+
+function requestDeferredImagePreview(previewKey) {
+  if (!state.previewDeferredKeys.has(previewKey) || previewTimers.has(previewKey)
+    || state.inpaintControllers.has(previewKey) || activeImagePreviewRenders.has(previewKey)) return false;
+  const { nodeId, fillId } = parseImagePreviewKey(previewKey);
+  const entry = findNodeAcrossPages(state.document, nodeId);
+  const node = entry?.node;
+  if (!node) { state.previewDeferredKeys.delete(previewKey); return false; }
+  const settings = imagePreviewSettingsForNode(node, previewKey);
+  const assetId = settings.assetId;
+  if (!assetId) { state.previewDeferredKeys.delete(previewKey); return false; }
+  const legacyFillId = !fillId && node.type !== 'image'
+    ? fillStackForNode(node).find(item => item.id === `legacy-fill:${node.id}` && item.type === 'image')?.id || null
+    : null;
+  schedulePreview(node, true, fillId || legacyFillId);
+  return true;
+}
+
 function assetMemoryKey(assetId) { return `asset:${assetId}`; }
 function previewMemoryKey(previewKey) { return `preview:${previewKey}`; }
 function retainedImageLimitMessage() {
@@ -7595,7 +8512,7 @@ function markImagePreviewFallbackShown(error) {
     return wrapped;
   }
 }
-function releasePreviewResources(previewKey) {
+function releasePreviewResources(previewKey, { defer = false } = {}) {
   const preview = state.previews.get(previewKey);
   state.previews.delete(previewKey);
   try { preview?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
@@ -7604,6 +8521,13 @@ function releasePreviewResources(previewKey) {
   try { if (url) URL.revokeObjectURL(url); } catch { /* URL may already be revoked */ }
   state.previewAssetIds.delete(previewKey);
   state.previewSignatures.delete(previewKey);
+  if (defer) {
+    state.previewDeferredKeys.add(previewKey);
+    state.imageStatus.set(previewKey, 'Preview paused · offscreen');
+    state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
+    renderer?.invalidateImagePreviewCache?.();
+    presentRenderer?.invalidateImagePreviewCache?.();
+  } else state.previewDeferredKeys.delete(previewKey);
   try { imageMemoryBudget.release(previewMemoryKey(previewKey)); } catch { /* always finish dropping preview references */ }
   if (!previewKey.startsWith('image-fill:')) updateImageAssetThumbnail(previewKey);
   renderer?.invalidate(); presentRenderer?.invalidate();
@@ -7638,12 +8562,12 @@ async function renderImageWithEdits(node, asset, adjustments, transforms, option
   let inpaintReservation = null;
   try {
     const transientBytes = estimateBitmapBytes(originalDimensions.width, originalDimensions.height, 8);
-    inpaintReservation = imageMemoryBudget.reserve(transientBytes, { kind: 'local-object-erase' });
+    inpaintReservation = reserveImageMemory(transientBytes, { kind: 'local-object-erase', excludeAssetIds: [asset.assetId] });
     if (!inpaintReservation && cachedSource) {
       cachedSource.release();
       cachedSource = null;
       preparedInpaintCache.clear();
-      inpaintReservation = imageMemoryBudget.reserve(transientBytes, { kind: 'local-object-erase' });
+      inpaintReservation = reserveImageMemory(transientBytes, { kind: 'local-object-erase', excludeAssetIds: [asset.assetId] });
     }
     if (!inpaintReservation) {
       throw new ImageMemoryLimitError('There is not enough free local image memory for object erase. Close another large design or crop the source image, then retry.', 'local-object-erase');
@@ -7685,7 +8609,11 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   if (state.selectedIds.length === 1 && state.selectedIds[0] === nodeId) imageEngine.setActiveSource(assetId);
   const previousInpaintController = state.inpaintControllers.get(previewKey);
   previousInpaintController?.abort();
-  const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
+  const previewLayer = findNode(state.document, nodeId, pageId)?.node;
+  if (!previewLayer) return false;
+  const imageNode = previewLayer.type === 'image' && !fillId ? previewLayer : null;
+  const previewSettings = imagePreviewSettingsForNode(previewLayer, previewKey, assetId);
+  const requiresRenderedPixels = imagePreviewRequiresRenderedPixels(previewSettings);
   const inpaintController = imageNode?.type === 'image' && imageNode.inpaintStrokes?.length ? new AbortController() : null;
   const version = ++nextImageRenderVersion;
   state.renderVersion.set(previewKey, version);
@@ -7694,11 +8622,11 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   const sourceDimensions = inspectRasterDimensions(asset.sourceBytes);
   if (!sourceDimensions) throw new Error('Tiny Image Star could not verify this image size before rendering.');
   const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
-  const canvasBounds = canvas.getBoundingClientRect();
-  const pixelRatio = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  const desiredPreviewEdge = Math.ceil(Math.max(canvasBounds.width, canvasBounds.height) * pixelRatio * Math.max(.5, state.zoom));
+  const pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const previewDimensionCeiling = innerWidth <= 820 || Number(navigator.deviceMemory) > 0 && navigator.deviceMemory <= 4 ? 2048 : 4096;
-  const previewMaxDimension = Math.max(1024, Math.min(previewDimensionCeiling, desiredPreviewEdge));
+  const previewMaxDimension = imagePreviewMaxDimensionForNode(previewLayer, state.document, pageId, {
+    zoom: Math.max(.5, state.zoom), pixelRatio, maximumDimension: previewDimensionCeiling
+  });
   const outputDimensions = imagePreviewDimensions(transformedDimensions.width, transformedDimensions.height, previewMaxDimension);
   const previewAdmission = estimatePreviewMemoryReservationBytes(outputDimensions);
   if (previewAdmission.retainedBytes > imageMemoryBudget.limitBytes) throw retainedImageLimitMessage();
@@ -7707,13 +8635,20 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   let previewUrl = null;
   let releasedPreviewForCapacity = false;
   if (inpaintController) state.inpaintControllers.set(previewKey, inpaintController);
+  let activeVersions = activeImagePreviewRenders.get(previewKey);
+  if (!activeVersions) { activeVersions = new Set(); activeImagePreviewRenders.set(previewKey, activeVersions); }
+  activeVersions.add(version);
+  let sourceLease = null;
   try {
+    imageSourceResidency.markResident(assetId);
+    sourceLease = imageSourceResidency.acquire(assetId);
+    if (!sourceLease) throw new Error('The original image source could not be protected for this preview.');
     const currentMemoryKey = previewMemoryKey(previewKey);
-    reservation = imageMemoryBudget.reserve(previewAdmission.retainedBytes, { kind: 'preview-pending' });
+    reservation = reserveImagePreviewMemory(previewAdmission.retainedBytes, previewKey);
     if (!reservation && imageMemoryBudget.canFit(previewAdmission.retainedBytes, { excluding: [currentMemoryKey] })) {
       // A replacement may need the old bitmap released before its worker is
       // dispatched. Keep the original source bitmap as the visible fallback.
-      releasePreviewResources(previewKey);
+      releasePreviewResources(previewKey, { defer: requiresRenderedPixels });
       releasedPreviewForCapacity = true;
       previewsEvictedForCapacity.add(previewKey);
       reservation = imageMemoryBudget.reserve(previewAdmission.retainedBytes, { kind: 'preview-pending' });
@@ -7762,6 +8697,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
         outputQuality: imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90,
       }));
       state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
+      state.previewDeferredKeys.delete(previewKey);
       previewUrl = null;
       bitmap = null;
       state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
@@ -7772,8 +8708,13 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   } catch (error) {
     if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
     if ((releasedPreviewForCapacity || previewsEvictedForCapacity.has(previewKey)) && !state.previews.has(previewKey)) {
-      error = markImagePreviewFallbackShown(error);
-      state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
+      if (requiresRenderedPixels) {
+        state.previewDeferredKeys.add(previewKey);
+        state.imageStatus.set(previewKey, 'Preview unavailable · edited pixels hidden');
+      } else {
+        error = markImagePreviewFallbackShown(error);
+        state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
+      }
       renderer?.invalidate();
       if (!fillId) updateImageAssetThumbnail(nodeId);
       updateSelectedImageStatus(nodeId, previewKey, fillId);
@@ -7783,6 +8724,12 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
     try { bitmap?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
     try { if (previewUrl) URL.revokeObjectURL(previewUrl); } catch { /* URL may already be revoked */ }
     if (inpaintController && state.inpaintControllers.get(previewKey) === inpaintController) state.inpaintControllers.delete(previewKey);
+    activeVersions.delete(version);
+    if (!activeVersions.size && activeImagePreviewRenders.get(previewKey) === activeVersions) activeImagePreviewRenders.delete(previewKey);
+    sourceLease?.release();
+    if (sourceLease && imageSourceResidency.pinCount(assetId) === 0 && pendingImageSourceOrphans.delete(assetId)) {
+      releaseResidentImageAsset(assetId);
+    }
   }
 }
 
@@ -7806,6 +8753,7 @@ function reconcileImagePreviewRuntime() {
     previewAssetIds: state.previewAssetIds,
     previewVersions: state.previewVersions,
     previewSignatures: state.previewSignatures,
+    deferredPreviewKeys: state.previewDeferredKeys,
     imageStatus: state.imageStatus,
     renderVersion: state.renderVersion,
   });
@@ -7820,10 +8768,18 @@ function reconcileImageAssetRuntime() {
     ...history.undoStack.map(step => step.document),
     ...history.redoStack.map(step => step.document),
   ];
+  const liveAssetIds = collectLiveImageAssetIds(snapshots, state.clipboard?.items?.map(item => item.node) || []);
+  for (const assetId of state.assets.keys()) {
+    if (liveAssetIds.has(assetId)) pendingImageSourceOrphans.delete(assetId);
+    else if (imageSourceResidency.pinCount(assetId) > 0) {
+      liveAssetIds.add(assetId);
+      pendingImageSourceOrphans.add(assetId);
+    } else pendingImageSourceOrphans.delete(assetId);
+  }
   return pruneImageAssetRuntime({
-    liveAssetIds: collectLiveImageAssetIds(snapshots, state.clipboard?.items?.map(item => item.node) || []),
+    liveAssetIds,
     assets: state.assets,
-    disposeSource: assetId => { preparedInpaintCache.invalidateAsset(assetId); imageEngine.dispose(assetId); },
+    disposeSource: assetId => { imageSourceResidency.evict(assetId); preparedInpaintCache.invalidateAsset(assetId); imageEngine.dispose(assetId); },
     releaseMemory: assetId => imageMemoryBudget.release(assetMemoryKey(assetId)),
   });
 }
@@ -7856,9 +8812,7 @@ async function placeImageLibraryAsset(assetId) {
   const entry = state.document.imageLibrary?.find(item => item.assetId === assetId);
   if (!entry) throw new Error('That source image is no longer in this design’s library.');
   const generation = state.documentGeneration;
-  if (!state.assets.get(assetId)?.sourceBytes) {
-    await restoreImageAssets(generation, { assetIds: [assetId] });
-  }
+  if (!state.assets.get(assetId)?.sourceBytes) await ensureImageAssetResident(assetId, `image-library:${assetId}`, generation);
   if (generation !== state.documentGeneration || state.documentTransitioning) return false;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes || !asset.bitmap) throw new Error(`The original image “${entry.name}” could not be restored. Reimport the source file and try again.`);
@@ -7920,9 +8874,9 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       const sourceDimensions = assertSafeRasterDimensions(headerBytes);
       const fallbackDimensions = fallbackImageDimensions(sourceDimensions.width, sourceDimensions.height);
       const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: file.size, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
-      assetReservation = imageMemoryBudget.reserve(assetBytes, { kind: 'asset-pending' });
+      assetReservation = reserveImageMemory(assetBytes, { kind: 'asset-pending' });
       if (!assetReservation) throw retainedImageLimitMessage();
-      decodeReservation = imageMemoryBudget.reserve(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
+      decodeReservation = reserveImageMemory(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
       if (!decodeReservation) throw retainedImageLimitMessage();
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
       const verifiedDimensions = assertSafeRasterDimensions(sourceBytes);
@@ -7954,6 +8908,7 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       assetReservation = null;
       retainedAsset = true;
       state.assets.set(assetId, { id: assetId, name: displayName, type: file.type, sourceBytes, bitmap, bitmapUrl, sourceWidth, sourceHeight });
+      imageSourceResidency.markResident(assetId);
       bitmap = null; bitmapUrl = null;
       addImageLibraryEntry(state.document, { assetId, name: displayName, type: file.type || '', width: sourceWidth, height: sourceHeight });
       retainedInLibrary = true;
@@ -7982,6 +8937,7 @@ async function importImageFiles(files, point = null, { place = true, input = $('
         if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
         if (!retained) { bitmap?.close?.(); if (bitmapUrl) URL.revokeObjectURL(bitmapUrl); }
         state.assets.delete(assetId);
+        imageSourceResidency.evict(assetId);
         imageMemoryBudget.release(assetMemoryKey(assetId));
       }
       if (error instanceof ImageMemoryLimitError) memoryLimitedFiles.push(fileName);
@@ -8015,14 +8971,18 @@ async function importImageFiles(files, point = null, { place = true, input = $('
   }
 }
 
-async function restoreImageAssets(generation = state.documentGeneration, { assetIds = [] } = {}) {
-  const references = scopeImageAssetReferences(imageAssetReferencesAcrossPages(), assetIds);
+async function restoreImageAssets(generation = state.documentGeneration, { assetIds = [], previewKeys = null, skipPreview = false } = {}) {
+  const requestedPreviewKeys = previewKeys == null ? null : new Set(previewKeys);
+  const visiblePreviewKeys = visibleImagePreviewKeys();
+  const references = scopeImageAssetReferences(imageAssetReferencesAcrossPages(), assetIds)
+    .filter(reference => !requestedPreviewKeys || requestedPreviewKeys.has(reference.previewKey));
   const requestedLibraryAssets = new Set(assetIds);
   for (const entry of state.document.imageLibrary || []) {
-    if (!requestedLibraryAssets.has(entry.assetId)) continue;
+    const previewKey = `image-library:${entry.assetId}`;
+    if (!requestedLibraryAssets.has(entry.assetId) || requestedPreviewKeys && !requestedPreviewKeys.has(previewKey)) continue;
     references.push({
       node: { id: `image-library:${entry.assetId}` },
-      previewKey: `image-library:${entry.assetId}`,
+      previewKey,
       assetId: entry.assetId,
       name: entry.name,
       librarySource: true
@@ -8033,6 +8993,20 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
   for (const reference of references) {
     if (generation !== state.documentGeneration) return;
     const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, name, adjustments, transforms, librarySource = false } = reference;
+    const shouldRenderPreview = !librarySource && !skipPreview
+      && (requestedPreviewKeys ? requestedPreviewKeys.has(previewKey) : visiblePreviewKeys.has(previewKey));
+    if (!librarySource && !shouldRenderPreview && !skipPreview
+      && !imagePreviewMatchesSettings(imagePreviewSettingsForNode(node, previewKey, assetId),
+        state.previewAssetIds.get(previewKey), state.previewSignatures.get(previewKey))) {
+      state.previewDeferredKeys.add(previewKey);
+      state.imageStatus.set(previewKey, 'Preview paused · offscreen');
+    }
+    if (!shouldRestoreImageAssetSource({
+      alreadyResident: Boolean(state.assets.get(assetId)?.sourceBytes),
+      explicitlyRequested: Boolean(requestedPreviewKeys?.has(previewKey)),
+      visible: visiblePreviewKeys.has(previewKey),
+      requestedLibrarySource: librarySource && requestedLibraryAssets.has(assetId)
+    })) continue;
     if (unavailableAssetIds.has(assetId)) { state.imageStatus.set(previewKey, 'Local image memory limit reached'); continue; }
     const reservations = { assetReservation: null, decodeReservation: null };
     let bitmap = null;
@@ -8042,7 +9016,8 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
     try {
       const existing = state.assets.get(assetId);
       if (existing?.sourceBytes) {
-        if (!librarySource) renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
+        imageSourceResidency.markResident(assetId);
+        if (shouldRenderPreview) renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
             setImagePreviewFailureStatus(state.imageStatus, previewKey, error);
             updateSelectedImageStatus(node.id, previewKey, fillId);
             showToast(error.message || 'Could not restore the image preview.');
@@ -8062,9 +9037,9 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
       }
       const fallbackDimensions = fallbackImageDimensions(sourceDimensions.width, sourceDimensions.height);
       const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: metadata.byteLength, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
-      reservations.assetReservation = imageMemoryBudget.reserve(assetBytes, { kind: 'asset-pending' });
+      reservations.assetReservation = reserveImageMemory(assetBytes, { kind: 'asset-pending', excludeAssetIds: [assetId] });
       if (!reservations.assetReservation) throw retainedImageLimitMessage();
-      reservations.decodeReservation = imageMemoryBudget.reserve(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
+      reservations.decodeReservation = reserveImageMemory(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient', excludeAssetIds: [assetId] });
       if (!reservations.decodeReservation) throw retainedImageLimitMessage();
       const saved = await loadActiveImageAsset(assetId);
       if (generation !== state.documentGeneration) { releaseImageMemoryReservations(imageMemoryBudget, reservations); return; }
@@ -8104,8 +9079,9 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
       reservations.assetReservation = null;
       retainedAsset = true;
       state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl, sourceWidth: actualDimensions.width, sourceHeight: actualDimensions.height });
+      imageSourceResidency.markResident(assetId);
       bitmap = null; bitmapUrl = null;
-      if (!librarySource) {
+      if (shouldRenderPreview) {
         state.imageStatus.set(previewKey, 'Restoring local preview…');
         renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); });
       }
@@ -8117,6 +9093,7 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
         const retained = state.assets.get(assetId);
         retained?.bitmap?.close?.(); if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
         state.assets.delete(assetId); imageMemoryBudget.release(assetMemoryKey(assetId));
+        imageSourceResidency.evict(assetId);
       }
       if (generation !== state.documentGeneration) return;
       state.imageStatus.set(previewKey, error instanceof ImageMemoryLimitError ? 'Local image memory limit reached' : 'Could not restore image');
@@ -8475,7 +9452,7 @@ function isEditableImageRecipeTarget(entry) {
 
 function scheduleBulk() {
   const bulk = state.bulk;
-  if (!bulk || bulk.journalPending || bulk.paused || bulk.cancelled || bulk.done || bulk.ownershipLost) return;
+  if (!bulk || bulk.journalPending || bulk.paused || bulk.cancelled || bulk.done || bulk.ownershipLost || state.documentTransitioning) return;
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
     const entry = findNode(state.document, id, bulk.pageId);
@@ -8488,7 +9465,9 @@ function scheduleBulk() {
       recordImageRecipeBatchTarget(bulk);
       continue;
     }
-    const node = entry.node; const before = snapshotRecipeState(node);
+    const node = entry.node;
+    const assetId = node.assetId;
+    const generation = state.documentGeneration;
     const previousStatus = state.imageStatus.get(id);
     bulk.previousStatuses.set(id, previousStatus);
     const pendingPreview = previewTimers.get(id);
@@ -8499,29 +9478,79 @@ function scheduleBulk() {
     if (pendingPreview || previousStatus === 'Updating preview…' || previousStatus === 'Processing locally…') {
       bulk.restorePreviews.add(id);
     }
-    applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId);
-    const recipeOverrides = ['adjustments', 'transforms', 'fit', 'outputFormat', 'outputQuality'];
-    if (Object.hasOwn(bulk.recipe, 'inpaintStrokes')) recipeOverrides.push('inpaintStrokes');
-    if (Object.hasOwn(bulk.recipe, 'opacity') && bulk.recipe.opacity != null) recipeOverrides.push('opacity');
-    if (bulk.recipe.effects != null) recipeOverrides.push('effects');
-    if (bulk.recipe.blendMode != null) recipeOverrides.push('blendMode');
-    const appliedOpacityBinding = snapshotRecipeField(node.variableBindings || {}, 'opacity');
-    if (!recipeFieldMatches(before.opacityBinding, appliedOpacityBinding)) recipeOverrides.push('variableBindings');
-    recordNodeComponentOverrides(node, recipeOverrides);
-    // Persist in-place recipe state as soon as it is admitted. A slow first
-    // render must not leave already-edited targets only in volatile memory.
-    queueSave({ refreshLayerTree: false });
-    const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     updateSelectedImageStatus(id);
-    const previousRenderVersion = state.renderVersion.get(id);
-    const preview = renderImagePreview(id, node.assetId, node.adjustments, node.transforms, null, bulk.queueGroup, bulk.pageId);
-    const recipeRenderVersion = state.renderVersion.get(id);
-    if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
-    preview.then(rendered => {
+    let before = null;
+    let applied = null;
+    let recipeMutationApplied = false;
+    const restoreStableImageStatus = () => {
+      const previousStatus = bulk.previousStatuses.get(id);
+      const stablePreviousStatus = previousStatus && !previousStatus.startsWith('Processing') && !previousStatus.startsWith('Updating preview')
+        ? previousStatus
+        : null;
+      state.imageStatus.set(id, stablePreviousStatus || (state.previews.has(id) ? 'Updated · Pillow-RS WASM' : 'Ready · original image'));
+      updateSelectedImageStatus(id);
+    };
+    const preview = hydrateAndAdmitImageRecipeTarget({
+      ensureResident: ensureImageAssetResident,
+      assetId,
+      previewKey: imagePreviewKey(id),
+      generation,
+      isGenerationCurrent: () => state.documentGeneration === generation && !state.documentTransitioning,
+      isBatchCurrent: () => state.bulk === bulk && !bulk.cancelled && !bulk.ownershipLost,
+      resolveTarget: () => findNode(state.document, id, bulk.pageId),
+      expectedNode: node,
+      isEditableTarget: isEditableImageRecipeTarget,
+      onAdmit: currentEntry => {
+        const currentNode = currentEntry.node;
+        if (!state.assets.get(assetId)?.sourceBytes) throw new Error(`The original image for “${currentNode.name}” could not be restored.`);
+
+        // Capture the rollback state only after hydration, so edits made while
+        // the source was loading remain the correct pre-recipe state.
+        before = snapshotRecipeState(currentNode);
+        if (!applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId)) {
+          throw new Error(`Image “${currentNode.name}” is no longer a recipe target.`);
+        }
+        recipeMutationApplied = true;
+        applied = snapshotRecipeState(currentNode);
+        const recipeOverrides = ['adjustments', 'transforms', 'fit', 'outputFormat', 'outputQuality'];
+        if (Object.hasOwn(bulk.recipe, 'inpaintStrokes')) recipeOverrides.push('inpaintStrokes');
+        if (Object.hasOwn(bulk.recipe, 'opacity') && bulk.recipe.opacity != null) recipeOverrides.push('opacity');
+        if (bulk.recipe.effects != null) recipeOverrides.push('effects');
+        if (bulk.recipe.blendMode != null) recipeOverrides.push('blendMode');
+        const appliedOpacityBinding = snapshotRecipeField(currentNode.variableBindings || {}, 'opacity');
+        if (!recipeFieldMatches(before.opacityBinding, appliedOpacityBinding)) recipeOverrides.push('variableBindings');
+        recordNodeComponentOverrides(currentNode, recipeOverrides);
+        // Save only after the source and target have both passed their fences.
+        queueSave({ refreshLayerTree: false });
+
+        const previousRenderVersion = state.renderVersion.get(id);
+        const render = renderImagePreview(id, assetId, currentNode.adjustments, currentNode.transforms, null, bulk.queueGroup, bulk.pageId);
+        const recipeRenderVersion = state.renderVersion.get(id);
+        if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
+        return { render };
+      }
+    }).then(outcome => {
+      if (state.bulk !== bulk) return { status: 'detached' };
+      if (outcome.status === 'cancelled') {
+        if (bulk.cancelled) throw new DOMException('Image recipe canceled before source restoration completed.', 'AbortError');
+        restoreStableImageStatus();
+        recordImageRecipeBatchTarget(bulk, { canceled: true });
+        return { status: 'settled' };
+      }
+      if (outcome.status === 'skipped') {
+        restoreStableImageStatus();
+        recordImageRecipeBatchTarget(bulk, { skipped: true });
+        return { status: 'settled' };
+      }
+      return { status: 'rendering', rendered: outcome.value.render };
+    });
+    preview.then(async outcome => {
       if (state.bulk !== bulk) return;
+      if (outcome.status !== 'rendering') return;
+      const rendered = await outcome.rendered;
       if (bulk.ownershipLost) {
-        rollbackRecipeStateIfUnchanged(node, before, applied);
+        if (before && applied) rollbackRecipeStateIfUnchanged(node, before, applied);
         if (bulk.renderVersions.get(id) === state.renderVersion.get(id)) schedulePreview(node, true);
         recordImageRecipeBatchTarget(bulk, { canceled: true });
         return;
@@ -8536,16 +9565,19 @@ function scheduleBulk() {
     }).catch(error => {
       if (state.bulk !== bulk) return;
       if (bulk.ownershipLost) {
-        rollbackRecipeStateIfUnchanged(node, before, applied);
-        if (bulk.renderVersions.get(id) === state.renderVersion.get(id)) schedulePreview(node, true);
+        if (before && applied) {
+          rollbackRecipeStateIfUnchanged(node, before, applied);
+          if (bulk.renderVersions.get(id) === state.renderVersion.get(id)) schedulePreview(node, true);
+        } else restoreStableImageStatus();
         recordImageRecipeBatchTarget(bulk, { canceled: true });
         return;
       }
       const wasCanceledBeforeRender = bulk.cancelled && error.name === 'AbortError' && !error.superseded;
       const renderStillCurrent = bulk.renderVersions.get(id) === state.renderVersion.get(id);
       const currentEntry = findNode(state.document, id, bulk.pageId);
-      const targetRemovedOrChanged = !currentEntry || currentEntry.node.type !== 'image';
-      const canRestoreBeforeState = renderStillCurrent && !error.superseded && !targetRemovedOrChanged;
+      const targetRemovedOrChanged = !currentEntry || currentEntry.node !== node
+        || currentEntry.node.type !== 'image' || currentEntry.node.assetId !== assetId;
+      const canRestoreBeforeState = renderStillCurrent && !error.superseded && !targetRemovedOrChanged && before && applied;
       if (canRestoreBeforeState) rollbackRecipeStateIfUnchanged(node, before, applied);
       if (wasCanceledBeforeRender) {
         if (renderStillCurrent) {
@@ -8584,7 +9616,7 @@ function scheduleBulk() {
     }).finally(() => {
       if (state.bulk !== bulk) return;
       bulk.inflight -= 1;
-      if (!bulk.ownershipLost) queueSave({ refreshLayerTree: false });
+      if (recipeMutationApplied && !bulk.ownershipLost) queueSave({ refreshLayerTree: false });
       renderer.invalidate();
       if (!bulk.paused && !bulk.cancelled) scheduleBulk();
       completeImageRecipeBatchIfDrained(bulk);
@@ -10324,7 +11356,7 @@ function pasteAppearanceToSelection() {
         componentProperties.add('radius'); componentProperties.add('cornerRadii');
       }
       if (changed.has('textStyle')) {
-        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
         if (resizeTextNode(result.node)) {
           componentProperties.add('width'); componentProperties.add('height');
           if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
@@ -10384,6 +11416,7 @@ function pasteSelectedLayers({ duplicate = false } = {}) {
     }
     reconcileImageAssetRuntime();
     setSelection(result.nodes.map(node => node.id));
+    scheduleEditedImagePreviews(result.nodes);
     renderUI(); queueSave();
     showToast(duplicate ? `Duplicated ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.` : `Pasted ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.`);
   } catch (error) { showToast(error.message || 'Could not paste these layers.'); }
@@ -10742,6 +11775,7 @@ function reorderSelected(direction) {
 }
 
 function refreshHistoryImagePreviews(previousDocument) {
+  const visiblePreviewKeys = visibleImagePreviewKeys();
   for (const reference of imageAssetReferencesAcrossPages()) {
     const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, adjustments, transforms } = reference;
     const previousNode = findNode(previousDocument, node.id)?.node;
@@ -10757,18 +11791,14 @@ function refreshHistoryImagePreviews(previousDocument) {
     const timer = previewTimers.get(previewKey);
     if (timer) clearTimeout(timer);
     previewTimers.delete(previewKey);
-    const asset = state.assets.get(assetId);
-    if (!asset?.sourceBytes) {
-      releasePreviewResources(previewKey);
-      state.imageStatus.set(previewKey, 'Original image missing');
+    const shouldRenderNow = visiblePreviewKeys.has(previewKey) || state.selectedIds.includes(node.id);
+    if (!shouldRenderNow) {
+      releasePreviewResources(previewKey, { defer: true });
+      state.imageStatus.set(previewKey, 'Preview paused · offscreen');
       continue;
     }
     state.imageStatus.set(previewKey, 'Updating preview…');
-    renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
-      state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
-      showToast(`${node.name}: ${error.message || 'Could not restore the image preview.'}`);
-      if (state.selectedIds.includes(node.id)) renderInspector();
-    });
+    schedulePreview(node, true, fillId);
   }
 }
 function undo() {
@@ -10820,7 +11850,9 @@ function managePageAction(action, pageId) {
     const copy = duplicateManagedPage(state.document, pageId);
     if (!copy) return;
     state.document.activePageId = copy.id; state.selectedIds = []; clearVectorAnchorSelection();
-    state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); queueSave();
+    state.pendingCommentAnchor = null; state.activeCommentId = null;
+    scheduleEditedImagePreviews(copy.children);
+    renderUI(); queueSave();
     showToast(`Duplicated “${page.name}” as “${copy.name}”.`); return;
   }
   if (action === 'delete') {
@@ -11190,6 +12222,9 @@ function startPresentation(selectedId = null) {
   presentRuntimeDocument = cloneDocument(state.document);
   presentRenderState = {
     document: null, assets: state.assets, previews: state.previews, previewAssetIds: state.previewAssetIds,
+    previewDeferredKeys: state.previewDeferredKeys,
+    requestDeferredPreview: requestDeferredImagePreview,
+    touchImagePreviewSource,
     previewVersions: state.previewVersions, previewSignatures: state.previewSignatures, imageStatus: state.imageStatus,
     selectedIds: [], presentationScrollOffsets: new Map(), zoom: 1, panX: 0, panY: 0,
     draftNode: null, marquee: null, inspectorTab: 'design'
@@ -11729,8 +12764,10 @@ async function persistCurrentDocumentNow() {
 }
 
 function releaseImageRuntimeForDocumentSwitch() {
+  resetObjectIsolationSession();
   for (const timer of previewTimers.values()) clearTimeout(timer);
   previewTimers.clear();
+  imageAssetRestoreTasks.clear();
   for (const controller of state.inpaintControllers.values()) controller.abort();
   state.inpaintControllers.clear();
   for (const nodeId of state.renderVersion.keys()) imageEngine.cancelQueuedByKey(`preview:${nodeId}`);
@@ -11742,8 +12779,8 @@ function releaseImageRuntimeForDocumentSwitch() {
   for (const bitmap of state.previews.values()) bitmap.close?.();
   for (const url of state.previewUrls.values()) URL.revokeObjectURL(url);
   previewsEvictedForCapacity.clear();
-  state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear(); state.previewSignatures.clear();
-  state.previewVersions.clear(); state.imageStatus.clear(); state.renderVersion.clear();
+  state.assets.clear(); imageSourceResidency.clear(); pendingImageSourceOrphans.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear(); state.previewSignatures.clear();
+  state.previewVersions.clear(); state.previewDeferredKeys.clear(); state.imageStatus.clear(); state.renderVersion.clear();
   preparedInpaintCache.clear();
   imageMemoryBudget.releaseEntries();
 }
@@ -12408,6 +13445,7 @@ async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
     });
   }
   await Promise.all([...images.values()].map(async ({ node, fillId = null, previewKey, assetId, adjustments, transforms, inpaintStrokes = [] }) => {
+    await ensureImageAssetResident(assetId, previewKey);
     const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
     const status = state.imageStatus.get(previewKey) || '';
@@ -12642,6 +13680,7 @@ async function exportEditedImageSource(nodeId) {
   const entry = findNode(state.document, nodeId);
   const node = entry?.node;
   if (node?.type !== 'image' || !node.assetId) throw new Error('Select an image with a locally saved original.');
+  await ensureImageAssetResident(node.assetId, imagePreviewKey(node.id));
   const asset = state.assets.get(node.assetId);
   if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
   const format = node.outputFormat ?? 'png';
@@ -12712,10 +13751,11 @@ function createSvgTextMeasurer() {
     const run = node.textPathRunStyle || null;
     const fontSize = run?.fontSize ?? getNodePropertyValue(state.document, node, 'fontSize') ?? 24;
     const fontWeight = run?.fontWeight ?? getNodePropertyValue(state.document, node, 'fontWeight') ?? 400;
+    const fontAxes = run?.fontAxes || node.fontAxes;
     const letterSpacing = run?.letterSpacing ?? getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
     const fontStyle = run?.fontStyle ?? node.fontStyle;
     const fontFamily = run?.fontFamily ?? node.fontFamily;
-    context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${fontWeight} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
+    context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, fontAxes)} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
     return measureTrackedText(context, text, letterSpacing);
   };
 }
@@ -13003,6 +14043,13 @@ function vectorPdfRasterReferences(rootNodeIds) {
 async function vectorPdfImagePreviews(rootNodeIds, { controller, assertCurrent, pendingQueueKeys, queueGroup }) {
   const previews = new Map();
   let firstFailure = null;
+  const requestedReferences = vectorPdfRasterReferences(rootNodeIds);
+  await restoreImageAssets(state.documentGeneration, {
+    assetIds: [...new Set(requestedReferences.map(reference => reference.assetId))],
+    previewKeys: requestedReferences.map(reference => reference.previewKey),
+    skipPreview: true
+  });
+  assertCurrent();
   const references = vectorPdfRasterReferences(rootNodeIds);
   let aggregateImageBytes = 0;
   for (const { assetId, plan } of references) {
@@ -13386,6 +14433,42 @@ function applyVectorOffset() {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'set-custom-font-feature') {
+    const tag = $('#font-feature-tag-input')?.value || '';
+    const inputValue = $('#font-feature-value-input')?.value ?? '';
+    const featureValue = inputValue.trim() === '' ? null : Number(inputValue);
+    const targets = selectedNodes().filter(target => target.type === 'text' && !target.locked);
+    if (!/^[\x20-\x7e]{4}$/u.test(tag) || !/[^ ]/u.test(tag)) {
+      showToast('Enter a printable four-character OpenType tag, such as ss01.');
+      return;
+    }
+    if (featureValue !== null && (!Number.isInteger(featureValue) || featureValue < 0 || featureValue > 65_535)) {
+      showToast('OpenType feature values must be whole numbers from 0 to 65535.');
+      return;
+    }
+    if (!targets.length) { showToast('Select an unlocked text layer to set a font feature.'); return; }
+    let updates;
+    try {
+      updates = targets.map(target => ({ target, features: setFontFeatureValue(target.fontFeatures, tag, featureValue) }));
+    } catch (error) { showToast(error.message); return; }
+    updates = updates.filter(({ target, features }) => JSON.stringify(target.fontFeatures || {}) !== JSON.stringify(features));
+    if (!updates.length) { showToast('That OpenType feature already has this setting.'); return; }
+    checkpoint('Set OpenType font feature');
+    const layoutParents = new Set();
+    for (const { target, features } of updates) {
+      if (Object.keys(features).length) target.fontFeatures = features;
+      else delete target.fontFeatures;
+      if (target.typographyStyleId) delete target.typographyStyleId;
+      const resized = resizeTextNode(target);
+      const parent = findNode(state.document, target.id)?.parent;
+      if (resized && parent?.autoLayout) layoutParents.add(parent);
+      recordNodeComponentOverrides(target, ['typographyStyleId', 'fontFeatures', ...(resized ? ['width', 'height'] : [])]);
+    }
+    for (const parent of layoutParents) applyAutoLayout(parent);
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast(`Set ${tag} on ${updates.length} text layer${updates.length === 1 ? '' : 's'}.`);
+    return;
+  }
   if (action === 'shape-builder-start') { enterShapeBuilder(rootSelectedIds()); return; }
   if (action === 'offset-vector') { applyVectorOffset(); return; }
   if (action === 'delete-layer') {
@@ -13544,6 +14627,21 @@ function applyInspectorAction(action, details = {}) {
     toggleImageEraseMode(node);
     return;
   }
+  if (action === 'toggle-object-isolation-mode' && node?.type === 'image') {
+    toggleObjectIsolationMode(node);
+    return;
+  }
+  if (action === 'set-object-isolation-mode' && node?.type === 'image') {
+    setObjectIsolationBrushMode(details.mode);
+    return;
+  }
+  if (action === 'undo-object-isolation-stroke') { undoObjectIsolationStroke(); return; }
+  if (action === 'clear-object-isolation-strokes') { clearObjectIsolationStrokes(); return; }
+  if (action === 'create-object-isolation-layer' && node?.type === 'image') {
+    createObjectIsolationLayer(node);
+    return;
+  }
+  if (action === 'cancel-object-isolation') { cancelObjectIsolationProcessing(); return; }
   if (action === 'undo-image-erase' && node?.type === 'image') {
     undoImageEraseStroke(node);
     return;
@@ -13553,6 +14651,7 @@ function applyInspectorAction(action, details = {}) {
     return;
   }
   if (action === 'toggle-image-crop-mode') {
+    if (state.objectIsolationMode || state.objectIsolationSourceId || state.objectIsolationController) resetObjectIsolationSession();
     if (details.transformTarget === 'fill') {
       const context = node && imageFillCropContext(node, details.fillId);
       if (!context) { showToast('Choose an image fill using Fill before adjusting it on the canvas.'); return; }
@@ -13988,6 +15087,7 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); renderer.invalidate();
   }
   else if (action === 'reset-image' && node?.type === 'image') {
+    if (state.objectIsolationMode || state.objectIsolationSourceId || state.objectIsolationController) resetObjectIsolationSession();
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageEraseMode = false;
     state.imageEraseDraft = null;
@@ -14128,6 +15228,13 @@ function syncMobilePanelAccessibility() {
     { panel: $('#right-panel'), toggle: $('#inspector-toggle'), name: 'properties' }
   ];
   const inspectorOpen = mobile && panels[1].panel.classList.contains('is-open');
+  const commentPanelCanvasAccess = commentPanelCanvasIsInteractive({
+    mobile,
+    hostViewOnly,
+    inspectorOpen,
+    inspectorTab: state.inspectorTab,
+    pendingCommentAnchor: state.pendingCommentAnchor
+  });
   let anyOpen = false;
   for (const { panel, toggle, name } of panels) {
     const open = !hostViewOnly && mobile && panel.classList.contains('is-open');
@@ -14140,9 +15247,10 @@ function syncMobilePanelAccessibility() {
     toggle.setAttribute('aria-label', `${open ? 'Close' : 'Open'} ${name}`);
     toggle.title = `${open ? 'Close' : 'Open'} ${name}`;
   }
-  canvasRegion.inert = hostViewOnly ? false : anyOpen;
-  canvasRegion.setAttribute('aria-hidden', String(!hostViewOnly && anyOpen));
+  canvasRegion.inert = hostViewOnly ? false : anyOpen && !commentPanelCanvasAccess;
+  canvasRegion.setAttribute('aria-hidden', String(!hostViewOnly && anyOpen && !commentPanelCanvasAccess));
   appShell.classList.toggle('mobile-inspector-open', inspectorOpen);
+  appShell.classList.toggle('mobile-comment-canvas-open', commentPanelCanvasAccess);
   scrim.classList.toggle('is-visible', !hostViewOnly && anyOpen);
 }
 function closeMobilePanels({ restoreFocus = true } = {}) {
@@ -14489,6 +15597,7 @@ function initEvents() {
     if (!selection) return;
     const pageId = selection.dataset.pageSelect;
     if (pageId === state.document.activePageId) return;
+    if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) resetObjectIsolationSession();
     exitShapeBuilderMode();
     pauseGuestViewFollowing();
     clearPrototypeConnectPrompt(); state.document.activePageId = pageId; state.selectedIds = []; clearVectorAnchorSelection(); state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI();
@@ -15373,6 +16482,14 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
+  if (event.key === 'Escape' && (state.objectIsolationMode || state.objectIsolationController)
+    && !editing && !document.querySelector('dialog[open]')) {
+    resetObjectIsolationSession();
+    renderInspector(); renderer.invalidate();
+    canvas.focus({ preventScroll: true });
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && state.imageCropMode && !editing && !document.querySelector('dialog[open]')) {
     if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction();
     state.imageCropMode = false;
@@ -15589,7 +16706,7 @@ async function boot() {
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
-  window.addEventListener('beforeunload', () => { preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
+  window.addEventListener('beforeunload', () => { resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();

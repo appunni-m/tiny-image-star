@@ -1,5 +1,6 @@
 import { vectorPathContours } from './vector-path.js';
 import { textGraphemes } from './text-layout.js';
+import { canvasFontWeight } from './font-variation.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const MAX_TEXT_PATH_SAMPLES = 65_536;
@@ -135,11 +136,14 @@ export function pointAtTextPathDistance(path, distance, tolerance = 1) {
 }
 
 function pathRunStyle(node, run, baseColor) {
+  const fontAxes = run?.fontAxes || node.fontAxes;
   return {
     fontFamily: run?.fontFamily || node.fontFamily || 'Arial, sans-serif',
     fontSize: Math.max(1, Number(run?.fontSize ?? node.fontSize) || 24),
-    fontWeight: Number(run?.fontWeight ?? node.fontWeight) || 400,
+    fontWeight: canvasFontWeight(run?.fontWeight ?? node.fontWeight, fontAxes),
     fontStyle: (run?.fontStyle ?? node.fontStyle) === 'italic' ? 'italic' : 'normal',
+    fontAxes,
+    fontFeatures: run?.fontFeatures || node.fontFeatures,
     letterSpacing: Number(run?.letterSpacing ?? node.letterSpacing) || 0,
     color: run?.color || baseColor || node.color || '#1e1e1e',
     textDecoration: run?.textDecoration || node.textDecoration || 'none',
@@ -202,7 +206,7 @@ export function textPathSvgData(path) {
 export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   fillOpacity = 1, paintMode = 'fill', fontSize: fontSizeOverride,
   letterSpacing: letterSpacingOverride, fontWeight, fontStyle, fontFamily,
-  color, overrideRunColors = false, includeDecorations = true
+  color, overrideRunColors = false, includeDecorations = true, shapeText = null, drawShaped = null
 } = {}) {
   const path = node.textPath;
   const sampler = createTextPathSampler(path, 0.5);
@@ -211,44 +215,112 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     fontSize: fontSizeOverride ?? node.fontSize,
     fontWeight: fontWeight ?? node.fontWeight,
     fontStyle: fontStyle ?? node.fontStyle,
+    fontAxes: node.fontAxes,
+    fontFeatures: node.fontFeatures,
     fontFamily: fontFamily ?? node.fontFamily,
     letterSpacing: letterSpacingOverride ?? node.letterSpacing,
     color: color ?? node.color
   };
   const styledCharacters = textPathCharacters(text, { ...node, ...baseStyle }, { color, overrideRunColors });
+  const spans = [];
+  const sameMap = (left = {}, right = {}) => {
+    const leftKeys = Object.keys(left || {}).sort(); const rightKeys = Object.keys(right || {}).sort();
+    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index] && Object.is(left[key], right[key]));
+  };
+  const sameStyle = (left, right) => left && right && Object.keys(left).every(key =>
+    ['fontAxes', 'fontFeatures'].includes(key) ? sameMap(left[key], right[key]) : Object.is(left[key], right[key]));
+  for (const character of styledCharacters) {
+    const previous = spans.at(-1);
+    if (previous && sameStyle(previous.style, character.style)) previous.text += character.text;
+    else spans.push({ text: character.text, style: character.style });
+  }
+  const segments = [];
+  const appendCanvasFallback = span => {
+    for (const grapheme of textGraphemes(span.text)) {
+      const advance = Math.max(0, Number(measure(grapheme, span.style)) || 0);
+      segments.push({ text: grapheme, style: span.style, advance, letterSpacing: span.style.letterSpacing, shaped: null });
+    }
+  };
+  for (const span of spans) {
+    const shaped = shapeText?.(span.text, span.style);
+    if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !shaped.glyphs.length
+      || !(shaped.upem > 0) || !Number.isFinite(Number(shaped.extents?.ascender))) {
+      appendCanvasFallback(span);
+      continue;
+    }
+    const groups = [];
+    for (const glyph of shaped.glyphs) {
+      if (!Number.isInteger(glyph.cluster) || glyph.cluster < 0 || glyph.cluster >= span.text.length) {
+        groups.length = 0;
+        break;
+      }
+      const previous = groups.at(-1);
+      if (previous?.cluster === glyph.cluster) previous.glyphs.push(glyph);
+      else groups.push({ cluster: glyph.cluster, glyphs: [glyph] });
+    }
+    if (!groups.length) {
+      appendCanvasFallback(span);
+      continue;
+    }
+    const starts = [...new Set(groups.map(group => group.cluster))].sort((left, right) => left - right);
+    const clusterText = new Map(starts.map((start, index) => [start, span.text.slice(start, starts[index + 1] ?? span.text.length)]));
+    if (groups.some(group => !clusterText.get(group.cluster))) {
+      appendCanvasFallback(span);
+      continue;
+    }
+    const scale = Math.max(1, Number(span.style.fontSize) || 24) / shaped.upem;
+    for (const group of groups) {
+      const advanceUnits = group.glyphs.reduce((sum, glyph) => sum + (Number(glyph.xAdvance) || 0), 0);
+      const advance = Math.abs(advanceUnits * scale);
+      const groupText = clusterText.get(group.cluster) || '';
+      segments.push({
+        text: groupText, style: span.style, advance, letterSpacing: span.style.letterSpacing,
+        shaped: { ...shaped, glyphs: group.glyphs },
+        shapedStartX: advanceUnits < 0 ? advance / 2 : -advance / 2
+      });
+    }
+  }
   ctx.textBaseline = 'alphabetic';
-  const advances = styledCharacters.map(({ text: grapheme, style }) => {
-    ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
-    return Number(measure(grapheme, style)) + style.letterSpacing;
-  });
+  const advances = segments.map(segment => segment.advance + (Number(segment.letterSpacing) || 0));
   let cursor = Number(path.startOffset) || 0;
   if (node.align === 'center' || node.align === 'right') {
     const total = advances.reduce((sum, value) => sum + value, 0);
     cursor += node.align === 'center' ? (sampler.length - total) / 2 : sampler.length - total;
   }
-  for (let index = 0; index < styledCharacters.length; index += 1) {
+  for (let index = 0; index < segments.length; index += 1) {
     const advance = advances[index];
     if (!path.closed && cursor + advance / 2 > sampler.length) break;
     const sample = sampler.at(cursor + advance / 2);
     if (!sample) break;
     const angle = sample.angle + (path.flipped ? Math.PI : 0);
-    const character = styledCharacters[index];
-    const { style } = character;
-    ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+    const segment = segments[index];
+    const { style } = segment;
+    ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight, style.fontAxes)} ${style.fontSize}px ${style.fontFamily}`;
     ctx.save();
     ctx.translate(x + sample.x, y + sample.y);
     ctx.rotate(angle);
     if (path.flipped) ctx.scale(1, -1);
     ctx.textAlign = 'center';
     const baseline = -style.baselineShift;
-    if (paintMode === 'stroke') ctx.strokeText(character.text, 0, baseline);
-    else {
+    ctx.fillStyle = style.color;
+    ctx.strokeStyle = style.color;
+    if (paintMode !== 'stroke') ctx.globalAlpha *= fillOpacity;
+    const shapedTop = segment.shaped
+      ? baseline - Number(segment.shaped.extents.ascender) / segment.shaped.upem * style.fontSize
+      : baseline;
+    const paintedByShaper = segment.shaped && typeof drawShaped === 'function'
+      ? drawShaped(ctx, segment.shaped, segment.text, segment.shapedStartX ?? -segment.advance / 2,
+        shapedTop, style.fontSize, 0, paintMode)
+      : false;
+    if (!paintedByShaper) {
+      if (paintMode === 'stroke') ctx.strokeText(segment.text, 0, baseline);
+      else ctx.fillText(segment.text, 0, baseline);
+    }
+    if (includeDecorations && paintMode !== 'stroke') {
       ctx.fillStyle = style.color;
-      ctx.globalAlpha *= fillOpacity;
-      ctx.fillText(character.text, 0, baseline);
       if (includeDecorations && ['underline', 'line-through'].includes(style.textDecoration)) {
         const decorationY = baseline + style.fontSize * (style.textDecoration === 'underline' ? 0.08 : -0.3);
-        const textWidth = Math.max(0, advance - style.letterSpacing);
+        const textWidth = Math.max(0, segment.advance);
         const decorationWidth = Math.max(1, style.fontSize / 16);
         ctx.strokeStyle = style.color;
         ctx.lineWidth = decorationWidth;

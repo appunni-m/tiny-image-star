@@ -169,11 +169,12 @@ function handleAxes(name) {
  * node's local axes. Crossing the opposite handle clamps the active dimension
  * to one unit to avoid negative dimensions or an implicit handle flip. For a
  * corner handle, an optional `aspectRatio` projects the pointer onto that
- * ratio in local space; edge handles remain one-dimensional.
+ * ratio in local space; edge handles remain one-dimensional. `fromCenter`
+ * keeps the transformed center fixed, matching Alt/Option resizing.
  *
  * `rect` and returned x/y are in the immediate parent's coordinate space.
  */
-export function resizeOrientedRect(rect, handle, pointerPage, ancestors = [], { minSize = 1, aspectRatio } = {}) {
+export function resizeOrientedRect(rect, handle, pointerPage, ancestors = [], { minSize = 1, aspectRatio, fromCenter = false } = {}) {
   assertGeometry(rect, 'Rectangle');
   if (!Number.isFinite(pointerPage?.x) || !Number.isFinite(pointerPage?.y)) throw new TypeError('Resize pointer must have finite page coordinates.');
   if (!Number.isFinite(minSize) || minSize <= 0) throw new TypeError('Minimum resize size must be a positive finite number.');
@@ -182,29 +183,42 @@ export function resizeOrientedRect(rect, handle, pointerPage, ancestors = [], { 
   const fixedHandle = oppositeHandle(handle);
   const original = { ...rect, rotation: Number(rect.rotation || 0) };
   const pointerLocal = pageToNodeLocal(original, pointerPage, ancestors);
-  const fixedLocal = handleLocalPoint(original, fixedHandle);
+  const fixedLocal = fromCenter
+    ? { x: original.width / 2, y: original.height / 2 }
+    : handleLocalPoint(original, fixedHandle);
   let width = Number(original.width);
   let height = Number(original.height);
 
   if (axes.x && axes.y && aspectRatio !== undefined) {
-    const rawWidth = Math.max(0, (handle.includes('e') ? 1 : -1) * (pointerLocal.x - fixedLocal.x));
-    const rawHeight = Math.max(0, (handle.includes('s') ? 1 : -1) * (pointerLocal.y - fixedLocal.y));
+    const centeredScale = fromCenter ? 2 : 1;
+    const rawWidth = Math.max(0, centeredScale * (handle.includes('e') ? 1 : -1) * (pointerLocal.x - fixedLocal.x));
+    const rawHeight = Math.max(0, centeredScale * (handle.includes('s') ? 1 : -1) * (pointerLocal.y - fixedLocal.y));
     // Least-squares projection of the pointer offset onto width = ratio * height.
     height = Math.max(minSize, minSize / aspectRatio, (aspectRatio * rawWidth + rawHeight) / (aspectRatio ** 2 + 1));
     width = aspectRatio * height;
   } else if (axes.x) {
     const east = handle.includes('e');
-    const movingX = east ? Math.max(fixedLocal.x + minSize, pointerLocal.x) : Math.min(fixedLocal.x - minSize, pointerLocal.x);
-    width = Math.abs(movingX - fixedLocal.x);
+    if (fromCenter) {
+      width = Math.max(minSize, 2 * (east ? pointerLocal.x - fixedLocal.x : fixedLocal.x - pointerLocal.x));
+    } else {
+      const movingX = east ? Math.max(fixedLocal.x + minSize, pointerLocal.x) : Math.min(fixedLocal.x - minSize, pointerLocal.x);
+      width = Math.abs(movingX - fixedLocal.x);
+    }
   }
   if (!(axes.x && axes.y && aspectRatio !== undefined) && axes.y) {
     const south = handle.includes('s');
-    const movingY = south ? Math.max(fixedLocal.y + minSize, pointerLocal.y) : Math.min(fixedLocal.y - minSize, pointerLocal.y);
-    height = Math.abs(movingY - fixedLocal.y);
+    if (fromCenter) {
+      height = Math.max(minSize, 2 * (south ? pointerLocal.y - fixedLocal.y : fixedLocal.y - pointerLocal.y));
+    } else {
+      const movingY = south ? Math.max(fixedLocal.y + minSize, pointerLocal.y) : Math.min(fixedLocal.y - minSize, pointerLocal.y);
+      height = Math.abs(movingY - fixedLocal.y);
+    }
   }
 
   const resized = { ...original, x: 0, y: 0, width, height };
-  const nextFixedLocal = handleLocalPoint(resized, fixedHandle);
+  const nextFixedLocal = fromCenter
+    ? { x: resized.width / 2, y: resized.height / 2 }
+    : handleLocalPoint(resized, fixedHandle);
   const fixedPage = nodeLocalToPage(original, fixedLocal, ancestors);
   const parentTransform = parentLocalToPageTransform(ancestors);
   const fixedParent = transformPoint(invertAffine(parentTransform), fixedPage);

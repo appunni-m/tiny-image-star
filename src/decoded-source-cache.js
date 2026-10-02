@@ -1,35 +1,5 @@
 const DEFAULT_PIXEL_BUDGET = 16_000_000;
 
-/**
- * Choose a thumbnail edge whose aspect-preserving result fits a decoded cache
- * budget. `null` means the source already fits or caching is disabled.
- */
-export function imageCacheDimensionForBudget(width, height, pixelBudget) {
-  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1
-    || !Number.isSafeInteger(pixelBudget) || pixelBudget < 0) {
-    throw new RangeError('Decoded cache dimensions and pixel budget must be safe nonnegative integers.');
-  }
-  const pixels = width * height;
-  if (!Number.isSafeInteger(pixels)) throw new RangeError('Decoded cache dimensions are too large to estimate safely.');
-  if (pixelBudget === 0 || pixels <= pixelBudget) return null;
-
-  const longer = Math.max(width, height);
-  const shorter = Math.min(width, height);
-  // `pixelBudget` also bounds the long edge for extreme panoramas whose short
-  // axis rounds to one pixel. The follow-up ceil check handles aspect rounding.
-  let edge = Math.min(
-    longer,
-    pixelBudget,
-    Math.floor(Math.sqrt(pixelBudget) * Math.sqrt(longer / shorter)),
-  );
-  while (edge > 1) {
-    const minor = Math.max(1, Math.ceil(edge * shorter / longer));
-    if (edge * minor <= pixelBudget) break;
-    edge -= 1;
-  }
-  return Math.max(1, edge);
-}
-
 function imagePixels(source) {
   const { width, height } = source ?? {};
   const pixels = width * height;

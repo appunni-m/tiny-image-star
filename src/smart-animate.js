@@ -16,7 +16,7 @@ const midpointProperties = [
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'affineTransform',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
-  'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
+  'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior'
 ];
 
 const AFFINE_DETERMINANT_EPSILON = 1e-12;

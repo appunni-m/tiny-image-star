@@ -2,15 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [source, smoke] = await Promise.all([
+const [source, smoke, commentsSmoke] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('./mobile-recipe-smoke.mjs', import.meta.url), 'utf8'),
+  readFile(new URL('./comments-smoke.mjs', import.meta.url), 'utf8'),
 ]);
 const stylesheet = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('an open phone drawer hides the covered canvas from focus and screen readers', () => {
-  assert.match(source, /canvasRegion\.inert = hostViewOnly \? false : anyOpen;[\s\S]*?canvasRegion\.setAttribute\('aria-hidden', String\(!hostViewOnly && anyOpen\)\)/);
+  assert.match(source, /canvasRegion\.inert = hostViewOnly \? false : anyOpen && !commentPanelCanvasAccess;[\s\S]*?canvasRegion\.setAttribute\('aria-hidden', String\(!hostViewOnly && anyOpen && !commentPanelCanvasAccess\)\)/);
   assert.match(smoke, /canvas behind an open phone panel should be removed from keyboard and screen-reader navigation/);
+  assert.match(commentsSmoke, /The mobile Comments list should leave the canvas available for selection without an open thread/,
+    'the Comments list should leave the visible phone canvas interactive so users can select a component or frame');
 });
 
 test('the live owner view dock keeps a safe canvas accessible while locking editing panels', () => {
@@ -20,7 +23,7 @@ test('the live owner view dock keeps a safe canvas accessible while locking edit
   const pointerDown = source.slice(pointerStart, pointerEnd);
   assert.match(sync, /const hostViewOnly = isLiveHostViewOnly\(\)/);
   assert.match(sync, /panel\.inert = closed/);
-  assert.match(sync, /canvasRegion\.inert = hostViewOnly \? false : anyOpen/);
+  assert.match(sync, /canvasRegion\.inert = hostViewOnly \? false : anyOpen && !commentPanelCanvasAccess/);
   assert.match(pointerDown, /if \(isLiveHostViewOnly\(\)\) \{/);
   assert.match(pointerDown, /kind: 'pan'/);
   assert.match(pointerDown, /event\.stopImmediatePropagation\(\)/,

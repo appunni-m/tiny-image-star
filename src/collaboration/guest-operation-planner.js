@@ -19,7 +19,7 @@ const SET_PROPERTY_ROOTS = new Set([
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
+  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
   'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
@@ -157,7 +157,9 @@ function generatePropertyOperations(entries, working, target) {
     for (const property of keys) {
       const hasCurrent = Object.hasOwn(current, property);
       const hasWanted = Object.hasOwn(wanted, property);
-      if (hasCurrent !== hasWanted) throw new Error('A property removal cannot be represented by the host protocol.');
+      if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures') {
+        throw new Error('A property removal cannot be represented by the host protocol.');
+      }
       if (equal(current[property], wanted[property])) continue;
       if (property === 'text') {
         if (current.type !== 'text' || typeof wanted.text !== 'string') throw new Error('Text replacement is unsupported for this layer.');
@@ -168,7 +170,7 @@ function generatePropertyOperations(entries, working, target) {
         if (!SET_PROPERTY_ROOTS.has(property)) throw new Error(`Host SetProperty does not support ${property}.`);
         emitOperation(entries, {
           type: 'SetProperty', pageId: targetNodes.get(id).pageId, targetId: id,
-          property, value: clone(wanted[property])
+          property, value: hasWanted ? clone(wanted[property]) : null
         }, working);
       }
     }

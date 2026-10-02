@@ -15,6 +15,8 @@ import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgP
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { flattenTextPath, textPathCharacters, textPathSvgData } from './text-on-path.js';
+import { fontVariationSettings } from './font-variation.js';
+import { fontFeatureSettings } from './font-features.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -174,6 +176,16 @@ function escapeXml(value) {
   return text.replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
   })[character]);
+}
+
+function fontVariationAttribute(values) {
+  const settings = fontVariationSettings(values);
+  return settings ? ` font-variation-settings="${escapeXml(settings)}"` : '';
+}
+
+function fontFeatureAttribute(values) {
+  const settings = fontFeatureSettings(values);
+  return settings ? ` font-feature-settings="${escapeXml(settings)}"` : '';
 }
 
 function number(value) {
@@ -960,7 +972,7 @@ function textListMarkerTspan(line, node, document, verticalOffset, fillOverride 
     throw new TypeError(`SVG export supports solid hexadecimal list marker colors only on layer ${node.name || node.id || '(unnamed)'}.`);
   }
   const textLength = marker.width > 0 ? ` textLength="${number(marker.width)}" lengthAdjust="spacingAndGlyphs"` : '';
-  return `<tspan data-tiny-image-star-list-marker="${marker.listStyle || line.listStyle}" data-list-level="${line.listLevel}" x="${number(marker.anchorX)}" y="${number(line.y + verticalOffset)}" text-anchor="end" text-transform="none" font-family="${escapeXml(style.fontFamily || node.fontFamily || 'Arial, sans-serif')}" font-size="${number(style.fontSize || getNodePropertyValue(document, node, 'fontSize') || 24)}" font-weight="${escapeXml(style.fontWeight || getNodePropertyValue(document, node, 'fontWeight') || 400)}" font-style="${style.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(style.letterSpacing ?? getNodePropertyValue(document, node, 'letterSpacing') ?? 0)}" fill="${escapeXml(markerColor)}"${textLength}>${escapeXml(marker.text)}</tspan>`;
+  return `<tspan data-tiny-image-star-list-marker="${marker.listStyle || line.listStyle}" data-list-level="${line.listLevel}" x="${number(marker.anchorX)}" y="${number(line.y + verticalOffset)}" text-anchor="end" text-transform="none" font-family="${escapeXml(style.fontFamily || node.fontFamily || 'Arial, sans-serif')}" font-size="${number(style.fontSize || getNodePropertyValue(document, node, 'fontSize') || 24)}" font-weight="${escapeXml(style.fontWeight || getNodePropertyValue(document, node, 'fontWeight') || 400)}" font-style="${style.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(style.letterSpacing ?? getNodePropertyValue(document, node, 'letterSpacing') ?? 0)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)} fill="${escapeXml(markerColor)}"${textLength}>${escapeXml(marker.text)}</tspan>`;
 }
 
 function isSvgPaintValue(value) {
@@ -1050,9 +1062,9 @@ function textMarkup(node, document, measureText, {
         throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
       }
       const baseline = baselineShift ? ` baseline-shift="${number(baselineShift)}px"` : '';
-      return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}" fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
+      return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}"${fontVariationAttribute(run.fontAxes || node.fontAxes)}${fontFeatureAttribute(run.fontFeatures || node.fontFeatures)} fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
     }).join('') : escapeXml(text);
-    return `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(node.fontFamily || 'Arial, sans-serif')}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle || 'normal'}" letter-spacing="${number(letterSpacing)}" fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>`;
+    return `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(node.fontFamily || 'Arial, sans-serif')}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle || 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)} fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>`;
   }
   const align = node.align === 'center' ? 'middle' : node.align === 'right' ? 'end' : 'start';
   const anchorX = node.align === 'center' ? Number(node.width) / 2 : node.align === 'right' ? Number(node.width) : 0;
@@ -1083,7 +1095,7 @@ function textMarkup(node, document, measureText, {
           throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
         }
         const baselineShiftAttribute = baselineShift === 0 ? '' : ` baseline-shift="${number(baselineShift)}px"`;
-        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${baselineShiftAttribute} fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)}${baselineShiftAttribute} fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
         if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);
@@ -1100,7 +1112,7 @@ function textMarkup(node, document, measureText, {
         + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
     const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
-    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
+    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
     return element + decorations.join('');
   }
   const tspans = lines.map(line => {
@@ -1115,7 +1127,7 @@ function textMarkup(node, document, measureText, {
       + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
   const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
-  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
+  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
   const decoration = ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : null;
   const textColor = fillValue === undefined ? color(document, node, 'text') : fillValue;
   const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;

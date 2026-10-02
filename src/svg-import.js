@@ -1,6 +1,8 @@
 import { createDocument, createNode, validateDocument } from './model.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
+import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
+import { isValidFontFeatureValues, parseFontFeatureSettings } from './font-features.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -859,7 +861,7 @@ function collectDefinitions(root) {
 const inheritedProperties = new Set([
   'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
   'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'clip-rule', 'color', 'visibility', 'font-family', 'font-size',
-  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'baseline-shift', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
+  'font-weight', 'font-style', 'font-variation-settings', 'font-feature-settings', 'text-anchor', 'dominant-baseline', 'baseline-shift', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
 ]);
 const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility', 'filter', 'clip-path', 'clip-rule', 'mask']);
 
@@ -951,6 +953,22 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       case 'font-style':
         if (!['normal', 'italic', 'oblique'].includes(value)) fail('invalid-text-font', 'SVG font-style must be normal, italic, or oblique.', node.tag);
         values.fontStyle = value; break;
+      case 'font-variation-settings': {
+        const axes = parseFontVariationSettings(value);
+        if (!axes || Object.keys(axes).length && !isValidFontVariationValues(axes)) {
+          fail('invalid-text-font-variation', 'SVG font-variation-settings must contain unique four-character axis tags and finite values.', node.tag);
+        }
+        values.fontAxes = Object.keys(axes).length ? axes : undefined;
+        break;
+      }
+      case 'font-feature-settings': {
+        const features = parseFontFeatureSettings(value);
+        if (!features || Object.keys(features).length && !isValidFontFeatureValues(features)) {
+          fail('invalid-text-font-features', 'SVG font-feature-settings must contain unique four-character feature tags and bounded integer values.', node.tag);
+        }
+        values.fontFeatures = Object.keys(features).length ? features : undefined;
+        break;
+      }
       case 'text-anchor':
         if (!['start', 'middle', 'end'].includes(value)) fail('invalid-text-alignment', 'SVG text-anchor must be start, middle, or end.', node.tag);
         values.textAnchor = value; break;
@@ -1034,7 +1052,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     else fail('unsupported-stroke-style', 'SVG custom dash arrays cannot be represented; use solid, 4:2 dashed, or round 0:2 dotted strokes.', node.tag);
   }
   for (const [property, styleKey] of [
-    ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'],
+    ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'], ['font-variation-settings', 'fontAxes'], ['font-feature-settings', 'fontFeatures'],
     ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['baseline-shift', 'baselineShift'], ['letter-spacing', 'letterSpacing'],
     ['line-height', 'lineHeight'], ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
   ]) if (!Object.hasOwn(declarations, property)) values[styleKey] = parentStyle[styleKey];
@@ -1078,7 +1096,7 @@ const geomAttrs = {
 const commonAttrs = new Set([
   'id', 'transform', 'style', 'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap',
   'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'clip-rule', 'clip-path', 'mask', 'opacity', 'display', 'visibility', 'color', 'class',
-  'href', 'xlink:href', 'xml:space', 'role', 'focusable', 'font-family', 'font-size', 'font-weight', 'font-style',
+  'href', 'xlink:href', 'xml:space', 'role', 'focusable', 'font-family', 'font-size', 'font-weight', 'font-style', 'font-variation-settings', 'font-feature-settings',
   'text-anchor', 'dominant-baseline', 'baseline-shift', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform', 'filter'
 ]);
 
@@ -2155,7 +2173,7 @@ function svgTextValue(node, style, gradients = new Map()) {
   if (editorWrapped && node.attrs['data-tiny-image-star-text-wrap'] !== 'canvas-word-wrap') {
     fail('unsupported-text-wrap', 'This Tiny Image Star SVG uses an unknown text-wrap encoding.', 'text');
   }
-  const runStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'textDecoration', 'baselineShift', 'fill', 'fillAlpha'];
+  const runStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'letterSpacing', 'textDecoration', 'baselineShift', 'fill', 'fillAlpha'];
   const segments = [];
   let rawLength = 0;
   const pushSegment = (text, runStyle) => {
@@ -2327,7 +2345,7 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
   const textRuns = content.segments.map(segment => {
     const run = { text: segment.text };
     for (const [source, target] of [
-      ['fontFamily', 'fontFamily'], ['fontSize', 'fontSize'], ['fontWeight', 'fontWeight'], ['fontStyle', 'fontStyle'],
+      ['fontFamily', 'fontFamily'], ['fontSize', 'fontSize'], ['fontWeight', 'fontWeight'], ['fontStyle', 'fontStyle'], ['fontAxes', 'fontAxes'], ['fontFeatures', 'fontFeatures'],
       ['lineHeight', 'lineHeight'], ['letterSpacing', 'letterSpacing'], ['textDecoration', 'textDecoration']
     ]) if (!Object.is(segment.style[source], style[source])) run[target] = segment.style[source];
     if (segment.style.baselineShift !== 0) run.baselineShift = segment.style.baselineShift;
@@ -2375,6 +2393,8 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
     opacity: style.opacity, text: value, textFit: 'auto-width',
     fontFamily: style.fontFamily, fontSize: outputFontSize, fontWeight: style.fontWeight,
     fontStyle: style.fontStyle, lineHeight: style.lineHeight, letterSpacing: outputLetterSpacing,
+    ...(style.fontAxes ? { fontAxes: style.fontAxes } : {}),
+    ...(style.fontFeatures ? { fontFeatures: style.fontFeatures } : {}),
     color: style.fill || '#000000', fillOpacity: style.fill ? style.fillColorAlpha * style.fillOpacityValue : 0,
     align: anchor, verticalAlign: 'top', textCase: style.textCase, textDecoration: style.textDecoration,
     ...(hasStyledRuns ? { textRuns: textRuns.map(run => {

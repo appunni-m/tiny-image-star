@@ -3,6 +3,35 @@ export function isImageRecipeBatchActive(batch) {
   return Boolean(batch && (!batch.done || batch.inflight > 0));
 }
 
+/**
+ * Restore a target's original image, then validate that the admitted batch and
+ * exact editable layer are still current before allowing any recipe mutation.
+ * `onAdmit` runs synchronously after the checks, so callers can mutate/save and
+ * dispatch the render without another async gap between validation and use.
+ */
+export async function hydrateAndAdmitImageRecipeTarget({
+  ensureResident,
+  assetId,
+  previewKey,
+  generation,
+  isGenerationCurrent,
+  isBatchCurrent,
+  resolveTarget,
+  expectedNode,
+  isEditableTarget,
+  onAdmit,
+}) {
+  await ensureResident(assetId, previewKey, generation);
+  if (!isGenerationCurrent() || !isBatchCurrent()) return { status: 'cancelled' };
+
+  const entry = resolveTarget();
+  if (!entry || entry.node !== expectedNode || entry.node.assetId !== assetId || !isEditableTarget(entry)) {
+    return { status: 'skipped' };
+  }
+
+  return { status: 'admitted', value: onAdmit(entry) };
+}
+
 function monotonicNow(now) {
   if (Number.isFinite(now)) return now;
   return globalThis.performance?.now?.() ?? Date.now();
