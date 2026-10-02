@@ -44,6 +44,34 @@ test('Comment-mode hit testing can select both a component and a nested frame', 
     'Shift-click should select the nearest frame');
 });
 
+test('Comment-mode clicks keep directly hit nested frames selectable', () => {
+  const document = createDocument();
+  const component = createNode('frame', { name: 'Component', x: 0, y: 0, width: 300, height: 200, fill: 'transparent' });
+  addNode(document, component);
+  createComponent(document, component.id, component.name);
+  const frame = createNode('frame', { name: 'Nested frame', x: 20, y: 20, width: 180, height: 150, fill: 'transparent' });
+  addNode(document, frame, { parentId: component.id });
+  const child = createNode('rectangle', { name: 'Nested content', x: 10, y: 10, width: 30, height: 30, fill: '#ff0000' });
+  addNode(document, child, { parentId: frame.id });
+
+  const hitAt = point => hitTestPage(document.pages[0], point, null, document, null, 1, { allowAnyClippedNodes: true });
+  const frameHit = hitAt({ x: 100, y: 100 });
+  assert.equal(frameHit?.id, frame.id, 'an empty point inside the nested frame should hit the frame itself');
+  assert.equal(commentSelectionTarget(findNode(document, frameHit.id), { preferHitContainer: true })?.id, frame.id,
+    'ordinary Comment-mode selection should preserve a directly hit nested frame');
+
+  const componentHit = hitAt({ x: 270, y: 170 });
+  assert.equal(componentHit?.id, component.id, 'an empty point inside the outer component should hit that component');
+  assert.equal(commentSelectionTarget(findNode(document, componentHit.id), { preferHitContainer: true })?.id, component.id);
+
+  const childHit = hitAt({ x: 50, y: 50 });
+  assert.equal(childHit?.id, child.id);
+  assert.equal(commentSelectionTarget(findNode(document, childHit.id), { preferHitContainer: true })?.id, component.id,
+    'clicking child artwork should continue to select its containing component');
+  assert.equal(commentSelectionTarget(findNode(document, frameHit.id), { preferComponent: false })?.id, frame.id,
+    'Shift-click frame targeting remains available');
+});
+
 test('the mobile Comments panel keeps canvas selection available except while writing a new draft', () => {
   assert.equal(commentPanelCanvasIsInteractive({ mobile: true, inspectorOpen: true, inspectorTab: 'comments', activeCommentId: 'thread' }), true);
   assert.equal(commentPanelCanvasIsInteractive({ mobile: true, hostViewOnly: true, inspectorOpen: true, inspectorTab: 'comments', activeCommentId: 'thread' }), false,
@@ -102,7 +130,7 @@ test('Comment mode keeps object clicks for selection and uses explicit gestures 
   assert.equal(commentCanvasAction({ id: 'frame' }, { addCommentShortcut: false }), 'select',
     'an object hit remains a selection target unless the explicit placement shortcut is used');
   assert.equal(commentCanvasAction(null), 'place-comment');
-  assert.match(editorSource, /function commentTargetAt\(world, options\)[\s\S]*?commentSelectionTarget\(entry, options\)/,
+  assert.match(editorSource, /function commentTargetAt\(world, options\)[\s\S]*?commentSelectionTarget\(entry, \{[\s\S]*?preferHitContainer: state\.tool === 'comment' && options\?\.preferComponent !== false/,
     'canvas hits must resolve to an eligible frame or component');
   assert.match(editorSource, /state\.tool === 'comment' && event\.shiftKey\)[\s\S]*?selectCommentTargetAt\(world, \{ preferComponent: false \}\)/,
     'Shift-click must allow selecting a nested frame inside a component');

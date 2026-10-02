@@ -69,6 +69,16 @@ try {
   assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'), 'Selecting an object should expose its Design properties while leaving Comment mode active.');
   assert(!app.querySelector('#comment-draft'), 'Selecting a component should not create a comment draft.');
   assert(app.querySelector('[data-tool="comment"]')?.classList.contains('is-selected'), 'Selecting a frame should keep Comment mode active.');
+  const initialZoom = Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100;
+  const emptyFramePoint = new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId: 94, pointerType: 'mouse',
+    clientX: rect.left + rect.width / 2 + 60 * initialZoom,
+    clientY: rect.top + rect.height / 2 + 40 * initialZoom
+  });
+  canvas.dispatchEvent(emptyFramePoint);
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 94, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${nestedFrame.id}"]`)?.classList.contains('is-selected'),
+    'Clicking empty space inside a nested frame should select that frame directly, without requiring Shift-click.');
   const framePoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 78, pointerType: 'mouse', shiftKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
   canvas.dispatchEvent(framePoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 78, pointerType: 'mouse' }));

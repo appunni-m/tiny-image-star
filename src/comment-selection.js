@@ -1,7 +1,13 @@
 /** Resolve a canvas hit to a component first, then its nearest frame, group, or leaf. */
-export function commentSelectionTarget(entry, { preferComponent = true } = {}) {
+export function commentSelectionTarget(entry, { preferComponent = true, preferHitContainer = false } = {}) {
   if (!entry?.node) return null;
   const candidates = [entry.node, ...(Array.isArray(entry.parents) ? [...entry.parents].reverse() : [])];
+  // In Comment mode, a directly hit container should stay selectable even
+  // when it is nested inside a component. Child artwork still resolves to its
+  // containing component, preserving the normal one-click review workflow.
+  if (preferHitContainer && (entry.node.type === 'frame' || entry.node.isComponent || entry.node.isInstance)) {
+    return entry.node;
+  }
   if (preferComponent) {
     const component = candidates.find(node => node.isComponent || node.isInstance);
     if (component) return component;

@@ -4384,7 +4384,10 @@ function commentTargetAt(world, options) {
     state.document, null, state.zoom, { allowAnyClippedNodes: true });
   if (!hit) return null;
   const entry = findNode(state.document, hit.id, activePage()?.id);
-  return commentSelectionTarget(entry, options);
+  return commentSelectionTarget(entry, {
+    ...options,
+    preferHitContainer: state.tool === 'comment' && options?.preferComponent !== false
+  });
 }
 function selectCommentTargetAt(world, options) {
   const target = commentTargetAt(world, options);
