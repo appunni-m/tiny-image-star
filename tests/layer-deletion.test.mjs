@@ -45,6 +45,14 @@ test('every layer delete entry point cancels an in-flight canvas gesture before 
     'deleting from the Inspector, layer row, context menu, or keyboard must not leave a rollback that restores the layer');
 });
 
+test('deleting a Shape Builder source exits its preview session before removing the layer', () => {
+  const start = editorSource.indexOf('function deleteSelected(selectionIds = null) {');
+  const end = editorSource.indexOf('\nfunction copySelected()', start);
+  const command = editorSource.slice(start, end);
+  assert.match(command, /if \(state\.shapeBuilder\) exitShapeBuilderMode\(\);[\s\S]*?const ids = pageId \? rootSelectedIds/,
+    'a preview derived from deleted source geometry must not remain visible as an apparent surviving layer');
+});
+
 test('vector inspector explains separate layer and anchor deletion actions', () => {
   assert.match(editorSource, /data-action="delete-vector-point"[\s\S]*?Delete or Backspace removes the layer/,
     'anchor editing should leave a clear, layer-level keyboard deletion path');

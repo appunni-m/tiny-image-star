@@ -9893,6 +9893,10 @@ function deleteSelected(selectionIds = null) {
   // Finish a stale canvas gesture here too, so its rollback cannot resurrect a
   // layer immediately after a delete action succeeds.
   if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+  // Shape Builder keeps a rendered preview derived from its source layers.
+  // Dispose it before removing a source so no stale geometry looks like a
+  // layer that survived deletion.
+  if (state.shapeBuilder) exitShapeBuilderMode();
   const pageId = activePage()?.id;
   const ids = pageId ? rootSelectedIds(selectionIds ?? state.selectedIds) : [];
   if (!ids.length) {
