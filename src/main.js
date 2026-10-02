@@ -92,6 +92,7 @@ import { generateRulerTicks } from './ruler-scale.js';
 import { commentSelectionTarget } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
+import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
@@ -126,6 +127,7 @@ const state = {
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
+  vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
@@ -3086,8 +3088,15 @@ function renderInspector() {
     const hasClosedContour = contours.some(contour => contour.closed && contour.points.length >= 2);
     const pathEntry = entries[0];
     const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
+    const offsetBlockReason = anchorLocked ? 'Unlock this vector layer before offsetting it.'
+      : ['x', 'y', 'width', 'height'].some(property => node.variableBindings?.[property]) ? 'Detach position and size variables before offsetting this path.'
+        : pathEntry.parent?.autoLayout && node.layoutPositioning !== 'absolute' ? 'Set this layer to absolute positioning before offsetting it.'
+          : contours.some(contour => !contour.closed || contour.points.length < 3) ? 'Close every contour before offsetting this path.' : '';
+    const offsetDisabled = offsetBlockReason ? ' disabled' : '';
+    const offsetControl = `<div class="property-grid"><label class="field-label" for="vector-offset-amount">Amount</label><input id="vector-offset-amount" class="prop-input" type="number" min="-100000" max="100000" step="0.1" value="${escapeHtml(state.vectorOffsetAmount)}" data-vector-offset-amount aria-label="Vector offset amount in pixels"${offsetDisabled}/><label class="field-label" for="vector-offset-join">Join</label><select id="vector-offset-join" class="select-field" data-vector-offset-join aria-label="Vector offset join style"${offsetDisabled}><option value="square"${state.vectorOffsetJoin === 'square' ? ' selected' : ''}>Square</option><option value="round"${state.vectorOffsetJoin === 'round' ? ' selected' : ''}>Round</option></select></div><button class="add-fill" data-action="offset-vector"${offsetDisabled}>Apply offset</button><div class="image-properties-note" role="status">Positive expands; negative contracts. The edit is destructive and can be undone.${offsetBlockReason ? ` ${escapeHtml(offsetBlockReason)}` : ''}</div>`;
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
+    body += section('Offset vector', offsetControl);
     body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); use “Delete point” above to remove anchors. Delete or Backspace removes the layer.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use “Delete ${selectedAnchorCount} anchors” above to remove them. Delete or Backspace removes the layer.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together. Use the explicit Delete point control to remove an anchor.'}</div>`);
     if (hasClosedContour) body += appearanceSection(node);
     else body += strokeSection(node);
@@ -13275,9 +13284,51 @@ async function copyInspectText(kind) {
   showToast(copied ? `${label} copied.` : 'Clipboard unavailable. Select the code block and copy it.');
 }
 
+function applyVectorOffset() {
+  if (state.documentTransitioning || isLiveHostViewOnly()) return;
+  const entries = selectedEntries();
+  if (entries.length !== 1 || entries[0].node.type !== 'path') {
+    showToast('Select one closed vector path to offset.');
+    return;
+  }
+  const { node, parents, parent } = entries[0];
+  if (node.locked || parents.some(item => item.locked)) {
+    showToast('Unlock this vector layer before offsetting it.');
+    return;
+  }
+  if (['x', 'y', 'width', 'height'].some(property => node.variableBindings?.[property])) {
+    showToast('Detach position and size variables before offsetting this path.');
+    return;
+  }
+  if (parent?.autoLayout && node.layoutPositioning !== 'absolute') {
+    showToast('Set this layer to absolute positioning before offsetting it.');
+    return;
+  }
+  try {
+    const nextGeometry = offsetVectorPath(node, Number(state.vectorOffsetAmount), state.vectorOffsetJoin, resolvedGeometry(node));
+    const candidate = cloneDocument(state.document);
+    const candidateNode = findNode(candidate, node.id, activePage()?.id)?.node;
+    if (!candidateNode) { showToast('That vector path is no longer available.'); return; }
+    Object.assign(candidateNode, nextGeometry);
+    validateDocument(candidate);
+    checkpoint('Offset vector');
+    state.document = candidate;
+    const updatedNode = findNode(state.document, node.id, activePage()?.id)?.node;
+    recordNodeComponentOverrides(updatedNode, ['x', 'y', 'width', 'height', 'points', 'subpaths']);
+    clearVectorAnchorSelection();
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
+    showToast(`${Number(state.vectorOffsetAmount) > 0 ? 'Expanded' : 'Contracted'} vector by ${Math.abs(Number(state.vectorOffsetAmount))} px.`);
+  } catch (error) {
+    showToast(error instanceof VectorOffsetError ? error.message : error.message || 'Could not offset this vector path.');
+  }
+}
+
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'shape-builder-start') { enterShapeBuilder(rootSelectedIds()); return; }
+  if (action === 'offset-vector') { applyVectorOffset(); return; }
   if (action === 'delete-layer') {
     const layerId = typeof details.layerId === 'string' ? details.layerId : '';
     if (!layerId || !findNode(state.document, layerId)) {
@@ -14532,6 +14583,10 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    if (event.target.matches('[data-vector-offset-amount]')) {
+      state.vectorOffsetAmount = event.target.value;
+      return;
+    }
     if (event.target.matches('[data-text-path-offset]')) return;
     const eraseBrush = event.target.closest('[data-image-erase-brush]');
     if (eraseBrush) {
@@ -14591,6 +14646,10 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.matches('[data-vector-offset-join]')) {
+      state.vectorOffsetJoin = event.target.value === 'round' ? 'round' : 'square';
+      return;
+    }
     if (event.target.matches('[data-text-path-offset]')) {
       const node = findNode(state.document, event.target.dataset.textPathOffset)?.node;
       if (!node?.textPath) return;
@@ -14767,6 +14826,11 @@ function initEvents() {
   $('#inspector-content').addEventListener('pointercancel', finishGradientStopPointer);
   $('#inspector-content').addEventListener('lostpointercapture', finishGradientStopPointer);
   $('#inspector-content').addEventListener('keydown', handleGradientStopKey);
+  $('#inspector-content').addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || !event.target.matches('[data-vector-offset-amount]')) return;
+    event.preventDefault();
+    applyVectorOffset();
+  });
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => {
     const motionAction = event.target.closest('[data-motion-action]');
