@@ -9888,9 +9888,13 @@ function toggleOutlineMode() {
   renderer.invalidate();
 }
 
-function deleteSelected(selectionIds = state.selectedIds) {
+function deleteSelected(selectionIds = null) {
+  // Inspector, layer-row, and menu actions bypass the global keyboard handler.
+  // Finish a stale canvas gesture here too, so its rollback cannot resurrect a
+  // layer immediately after a delete action succeeds.
+  if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
   const pageId = activePage()?.id;
-  const ids = pageId ? rootSelectedIds(selectionIds) : [];
+  const ids = pageId ? rootSelectedIds(selectionIds ?? state.selectedIds) : [];
   if (!ids.length) {
     showToast('Select a layer to delete.');
     return false;
@@ -15033,7 +15037,7 @@ function onKeyDown(event) {
     closeMenu();
     target?.focus({ preventScroll: true });
   }
-  if (shouldRecoverCanvasInteractionForDelete(event.key, state.interaction, state.pointerMap.size, editing)) {
+  if (shouldRecoverCanvasInteractionForDelete(event.key, state.interaction, editing)) {
     cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
   }
   if (event.key.toLowerCase() === 'escape' && innerWidth <= 820

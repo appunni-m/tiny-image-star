@@ -6,10 +6,9 @@ export function shouldRouteCanvasPointerCompletion(event, canvas, pointerMap) {
   return !canvas.contains(event.target) && pointerMap.has(event.pointerId);
 }
 
-/** Let a delete shortcut recover when an interaction outlives every pointer. */
-export function shouldRecoverCanvasInteractionForDelete(key, interaction, activePointerCount, editing) {
+/** Let Delete/Backspace recover even when a lost release leaves a stale pointer recorded. */
+export function shouldRecoverCanvasInteractionForDelete(key, interaction, editing) {
   return Boolean(interaction)
-    && activePointerCount === 0
     && !editing
     && (key === 'Delete' || key === 'Backspace');
 }

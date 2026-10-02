@@ -36,6 +36,15 @@ test('Delete and Backspace always delete the selected layer; vector anchors use 
     'vector point deletion stays on its explicit inspector action');
 });
 
+test('every layer delete entry point cancels an in-flight canvas gesture before taking its target snapshot', () => {
+  const start = editorSource.indexOf('function deleteSelected(selectionIds = null) {');
+  const end = editorSource.indexOf('\nfunction copySelected()', start);
+  assert.ok(start >= 0 && end > start, 'the shared delete command should have a bounded implementation');
+  const command = editorSource.slice(start, end);
+  assert.match(command, /if \(state\.interaction\) cancelCanvasInteraction\(\{ pointerId: state\.interaction\.pointerId \}\);[\s\S]*?const ids = pageId \? rootSelectedIds\(selectionIds \?\? state\.selectedIds\)/,
+    'deleting from the Inspector, layer row, context menu, or keyboard must not leave a rollback that restores the layer');
+});
+
 test('vector inspector explains separate layer and anchor deletion actions', () => {
   assert.match(editorSource, /data-action="delete-vector-point"[\s\S]*?Delete or Backspace removes the layer/,
     'anchor editing should leave a clear, layer-level keyboard deletion path');
@@ -170,7 +179,7 @@ test('deleting a final Boolean operand inside a component instance reports how t
 });
 
 test('the editor does not rerun component sync after installing the validated delete candidate', () => {
-  const start = editorSource.indexOf('function deleteSelected(selectionIds = state.selectedIds) {');
+  const start = editorSource.indexOf('function deleteSelected(selectionIds = null) {');
   const end = editorSource.indexOf('\nfunction copySelected()', start);
   assert.ok(start >= 0 && end > start, 'the shared delete command should have a bounded implementation');
   assert.match(editorSource.slice(start, end), /removeLayersAtomically\(state\.document, ids, pageId\)/);

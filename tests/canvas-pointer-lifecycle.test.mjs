@@ -27,18 +27,17 @@ test('outside-canvas pointer completion and window blur both clear unfinished ge
     'losing the browser window must not leave keyboard shortcuts blocked by a stale gesture');
 });
 
-test('Delete and Backspace recover a stale canvas interaction after all pointers are gone', () => {
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', { kind: 'move' }, 0, false), true);
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Backspace', { kind: 'move' }, 0, false), true);
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', { kind: 'move' }, 1, false), false);
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', { kind: 'move' }, 0, true), false);
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Escape', { kind: 'move' }, 0, false), false);
-  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', null, 0, false), false);
+test('Delete and Backspace recover a stale canvas interaction even when pointer tracking is stale', () => {
+  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', { kind: 'move' }, false), true);
+  assert.equal(shouldRecoverCanvasInteractionForDelete('Backspace', { kind: 'move' }, false), true);
+  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', { kind: 'move' }, true), false);
+  assert.equal(shouldRecoverCanvasInteractionForDelete('Escape', { kind: 'move' }, false), false);
+  assert.equal(shouldRecoverCanvasInteractionForDelete('Delete', null, false), false);
 
   const keyHandler = source.slice(source.indexOf('function onKeyDown(event) {'));
-  const recovery = keyHandler.indexOf('shouldRecoverCanvasInteractionForDelete(event.key, state.interaction, state.pointerMap.size, editing)');
+  const recovery = keyHandler.indexOf('shouldRecoverCanvasInteractionForDelete(event.key, state.interaction, editing)');
   const interactionGate = keyHandler.indexOf('if (state.interaction) { event.preventDefault(); return; }');
   assert.ok(recovery >= 0 && interactionGate > recovery,
     'a stale gesture must be cancelled before the global key handler suppresses Delete/Backspace');
-  assert.match(keyHandler, /shouldRecoverCanvasInteractionForDelete\(event\.key, state\.interaction, state\.pointerMap\.size, editing\)[\s\S]*?cancelCanvasInteraction\(\{ pointerId: state\.interaction\.pointerId \}\)/);
+  assert.match(keyHandler, /shouldRecoverCanvasInteractionForDelete\(event\.key, state\.interaction, editing\)[\s\S]*?cancelCanvasInteraction\(\{ pointerId: state\.interaction\.pointerId \}\)/);
 });
