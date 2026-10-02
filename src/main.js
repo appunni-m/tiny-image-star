@@ -44,6 +44,7 @@ import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { strokeDecorationTypes } from './stroke-decorations.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
+import { addGridTrack, deleteGridTrack, gridTrackCount } from './grid-track-editing.js';
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
@@ -1879,9 +1880,10 @@ function resolveAutoLayoutSettings(node) {
   }
   return createAutoLayout(settings);
 }
-function gridTrackEditor(node, axis, count, tracks, fallbackMode) {
+function gridTrackEditor(node, axis, count, tracks, fallbackMode, locked = node.locked) {
   const title = axis === 'columnTracks' ? 'Columns' : 'Rows';
   const shortTitle = axis === 'columnTracks' ? 'Column' : 'Row';
+  const trackKind = axis === 'columnTracks' ? 'column' : 'row';
   const rows = Array.from({ length: Math.max(1, Math.min(64, count)) }, (_, index) => {
     const track = tracks[index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: fallbackMode });
     const mode = ['fixed', 'hug', 'fill'].includes(track.mode) ? track.mode : fallbackMode;
@@ -1890,9 +1892,11 @@ function gridTrackEditor(node, axis, count, tracks, fallbackMode) {
     const valueControl = mode === 'hug'
       ? '<span class="grid-track-content">Content size</span>'
       : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${node.locked ? ' disabled' : ''}/></label>`;
-    return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}</div>`;
+    const deleteButton = `<button class="tiny-icon-button grid-track-delete" type="button" data-action="delete-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Delete ${shortTitle.toLowerCase()} ${index + 1} and its contents" title="Delete ${shortTitle.toLowerCase()} and its contents"${locked || count <= 1 ? ' disabled' : ''}>×</button>`;
+    return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}${deleteButton}</div>`;
   }).join('');
-  return `<details class="grid-track-editor"><summary>${title} sizing</summary><div class="grid-track-list">${rows}</div></details>`;
+  const addButton = `<button class="add-fill grid-track-add" type="button" data-action="add-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" aria-label="Add ${trackKind}"${locked || count >= 64 ? ' disabled' : ''}>＋ Add ${trackKind}</button>`;
+  return `<details class="grid-track-editor"><summary>${title} sizing</summary><div class="grid-track-list">${rows}</div>${addButton}</details>`;
 }
 function visibleGridRowCount(node, layout) {
   if (layout.rows !== 'auto') return layout.rows;
@@ -1965,6 +1969,8 @@ function autoLayoutSection(node) {
       : suggestion.reason;
     return section('Layout', `${suggest}${preview}<div class="image-properties-note">${escapeHtml(note)}</div><button class="add-fill" type="button" data-action="auto-layout-toggle">＋ Add auto layout manually</button>`);
   }
+  const entry = findNode(state.document, node.id);
+  const trackLocked = node.locked || Boolean(entry?.parents.some(parent => parent.locked));
   const layout = resolveAutoLayoutSettings(node);
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${String(value) === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
@@ -1973,7 +1979,7 @@ function autoLayoutSection(node) {
   const variableProperties = autoLayoutBindingProperties.map(([property, label]) => variablePropertyBindingControl(node, property, label)).filter(Boolean).join('');
   const variableBindings = variableProperties ? `<details class="auto-layout-variable-bindings"><summary>Bind layout properties</summary>${variableProperties}</details>` : '';
   const body = layout.axis === 'grid'
-    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill')}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill')}${padding}<div class="image-properties-note">Each track can stay fixed, hug its contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill', trackLocked)}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill', trackLocked)}${padding}<div class="image-properties-note">Each track can stay fixed, hug its contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
     : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, minimumGap, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, minimumGap, 100_000)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between'],['space-around','Space around'],['space-evenly','Space evenly']])}${layout.wrap ? `<span class="field-caption">Line distribution</span>${select('wrapDistribution', layout.wrapDistribution, [['start','Start'],['center','Center'],['end','End'],['space-between','Space between']])}` : ''}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Negative gaps overlap adjacent layers.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
@@ -12934,6 +12940,68 @@ function applyInspectorAction(action, details = {}) {
       return;
     }
     deleteSelected(layerIds);
+    return;
+  }
+  if (action === 'add-grid-track' || action === 'delete-grid-track') {
+    if (state.documentTransitioning) return;
+    const frameId = typeof details.frameId === 'string' ? details.frameId : '';
+    const axis = details.axis;
+    const pageId = activePage()?.id;
+    if (!frameId || !pageId || !['columnTracks', 'rowTracks'].includes(axis)) return;
+    try {
+      const candidate = cloneDocument(state.document);
+      const entry = findNode(candidate, frameId, pageId);
+      if (!entry || entry.node.type !== 'frame' || entry.node.autoLayout?.axis !== 'grid'
+        || entry.node.locked || entry.parents.some(parent => parent.locked)) return;
+      const frame = entry.node;
+      const previousCells = new Map((frame.children || []).map(child => [child.id, JSON.stringify(child.gridCell || null)]));
+      const previousCount = gridTrackCount(frame, axis);
+      let removedNodeIds = [];
+      let changed = false;
+      let trackIndex = previousCount;
+      if (action === 'add-grid-track') {
+        changed = addGridTrack(frame, axis);
+      } else {
+        trackIndex = Number(details.trackIndex);
+        if (!Number.isInteger(trackIndex)) return;
+        const result = deleteGridTrack(frame, axis, trackIndex);
+        changed = result.changed;
+        removedNodeIds = result.removedNodeIds;
+      }
+      if (!changed) {
+        showToast(action === 'add-grid-track' ? 'A grid can have up to 64 tracks in each direction.' : 'A grid must keep at least one track in each direction.');
+        return;
+      }
+      const instanceRoot = [...entry.parents, frame].reverse().find(parent => parent.isInstance || isLocalLinkedComponent(parent));
+      if (instanceRoot) {
+        recordComponentOverride(instanceRoot, frame, 'autoLayout');
+        if (!frame.autoLayout.autoPositioning) for (const child of frame.children || []) {
+          if (previousCells.get(child.id) !== JSON.stringify(child.gridCell || null)) {
+            recordComponentOverride(instanceRoot, child, 'gridCell');
+          }
+        }
+      }
+
+      let nextDocument = candidate;
+      if (removedNodeIds.length) {
+        nextDocument = removeLayersAtomically(candidate, removedNodeIds, pageId).document;
+      } else validateDocument(candidate);
+
+      checkpoint(action === 'add-grid-track' ? 'Add grid track' : 'Delete grid track');
+      state.document = nextDocument;
+      state.selectedIds = state.selectedIds.filter(id => findNode(nextDocument, id, pageId));
+      if (state.selectedVectorPoint && !findNode(nextDocument, state.selectedVectorPoint.nodeId, pageId)) clearVectorAnchorSelection();
+      clearPrototypeConnectPromptIfSourceMissing();
+      reconcileImagePreviewRuntime();
+      renderUI();
+      queueSave({ syncComponents: removedNodeIds.length === 0 });
+      renderer.invalidate();
+      const trackName = axis === 'columnTracks' ? 'column' : 'row';
+      const message = action === 'add-grid-track'
+        ? `Added ${trackName} ${previousCount + 1}.`
+        : `Deleted ${trackName} ${trackIndex + 1}${removedNodeIds.length ? ` and ${removedNodeIds.length} layer${removedNodeIds.length === 1 ? '' : 's'}` : ''}.`;
+      showToast(message);
+    } catch (error) { showToast(error.message || 'Could not update the grid tracks.'); }
     return;
   }
   if (node?.type === 'slice' && ['edit-prototype-interaction', 'prototype-connect', 'prototype-start', 'present'].includes(action)) {

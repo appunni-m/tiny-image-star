@@ -555,9 +555,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .grid-track-editor { margin-top: 8px; border-top: 1px solid var(--line); }
 .grid-track-editor > summary { min-height: 36px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .grid-track-list { display: grid; gap: 6px; }
-.grid-track-row { min-width: 0; display: grid; grid-template-columns: minmax(48px, .65fr) minmax(96px, 1.2fr) minmax(78px, .9fr); align-items: center; gap: 6px; }
+.grid-track-row { min-width: 0; display: grid; grid-template-columns: minmax(48px, .65fr) minmax(96px, 1.2fr) minmax(78px, .9fr) 34px; align-items: center; gap: 6px; }
 .grid-track-name { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .grid-track-row .select-field { width: 100%; height: 34px; padding-inline: 5px; }
+.grid-track-delete { width: 34px; min-width: 34px; height: 34px; }
+.grid-track-add { margin-top: 7px; }
 .grid-track-value { min-width: 0; height: 34px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9px; }
 .grid-track-value input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; text-align: right; }
 .grid-track-content { grid-column: 3; overflow: hidden; color: var(--muted); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
@@ -1058,9 +1060,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layout-guide-opacity { grid-template-columns: 46px minmax(0, 1fr) 38px; }
   .layout-guide-opacity input { min-height: 28px; }
   .grid-track-editor > summary { min-height: 44px; font-size: 12px; }
-  .grid-track-row { grid-template-columns: minmax(42px, .55fr) minmax(88px, 1.1fr) minmax(72px, .85fr); gap: 5px; }
+  .grid-track-row { grid-template-columns: minmax(42px, .55fr) minmax(88px, 1.1fr) minmax(72px, .85fr) 44px; gap: 5px; }
   .grid-track-name { font-size: 11px; }
   .grid-track-row .select-field, .grid-track-value { height: 42px; min-height: 42px; font-size: 12px; }
+  .grid-track-delete { width: 44px; min-width: 44px; height: 44px; }
   .grid-track-value { grid-template-columns: auto minmax(0, 1fr); padding-inline: 4px; }
   .grid-track-value input { min-height: 38px; font-size: 16px; }
   .grid-track-content { font-size: 10px; }

@@ -93,7 +93,7 @@ test('narrow mobile inspector sliders have finger-sized hit areas even without c
 
 test('grid track controls expose sizing and weighted fill with phone-sized controls', () => {
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
-  assert.match(mainSource, /function gridTrackEditor\(node, axis, count, tracks, fallbackMode\)/);
+  assert.match(mainSource, /function gridTrackEditor\(node, axis, count, tracks, fallbackMode, locked = node\.locked\)/);
   assert.match(mainSource, /\['fixed', 'Fixed'\], \['hug', 'Hug content'\], \['fill', 'Fill available'\]/);
   assert.match(mainSource, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.\$\{mode === 'fixed' \? 'value' : 'weight'\}"/);
   assert.match(coarsePhone, /\.grid-track-row \.select-field, \.grid-track-value\s*\{[^}]*min-height:\s*44px[^}]*height:\s*44px/);

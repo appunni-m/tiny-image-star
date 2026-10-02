@@ -2192,6 +2192,26 @@ try {
   savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
   const visibleGridChildren = savedGridFrame.children.filter(node => node.visible && node.layoutPositioning !== 'absolute');
   assert(savedGridFrame.autoLayout.columns === 1 && visibleGridChildren.length >= 2 && visibleGridChildren[1].gridCell.row > visibleGridChildren[0].gridCell.row, `reducing grid columns did not reflow visible children into more rows: ${JSON.stringify({ columns: savedGridFrame.autoLayout.columns, visible: visibleGridChildren.map(node => ({ name: node.name, row: node.gridCell?.row, column: node.gridCell?.column, visible: node.visible })) })}`);
+  const gridRowsBeforeTrackEdit = Math.max(1, ...visibleGridChildren.map(node => node.gridCell.row + node.gridCell.rowSpan - 1));
+  const gridChildIdsBeforeTrackEdit = savedGridFrame.children.map(node => node.id).sort();
+  const addGridRow = app.querySelector(`[data-action="add-grid-track"][data-frame-id="${nestedThemeFrame.id}"][data-axis="rowTracks"]`);
+  assert(addGridRow && !addGridRow.disabled, 'grid track editor did not expose an accessible add-row control');
+  addGridRow.closest('.grid-track-editor').open = true;
+  dispatchClick(addGridRow);
+  await waitForSaveCycle(app, 'add a grid row');
+  layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  assert(savedGridFrame?.autoLayout.rows === gridRowsBeforeTrackEdit + 1, 'adding an auto row did not preserve current rows and append one empty track');
+  const addedGridRowDelete = app.querySelector(`[data-action="delete-grid-track"][data-frame-id="${nestedThemeFrame.id}"][data-axis="rowTracks"][data-track-index="${gridRowsBeforeTrackEdit}"]`);
+  assert(addedGridRowDelete && !addedGridRowDelete.disabled, 'new grid row did not expose its exact delete control');
+  addedGridRowDelete.closest('.grid-track-editor').open = true;
+  dispatchClick(addedGridRowDelete);
+  await waitForSaveCycle(app, 'delete the empty grid row');
+  layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  assert(savedGridFrame?.autoLayout.rows === gridRowsBeforeTrackEdit
+    && JSON.stringify(savedGridFrame.children.map(node => node.id).sort()) === JSON.stringify(gridChildIdsBeforeTrackEdit),
+  'deleting an empty grid row changed child identities or removed visible layers');
   const absoluteChildId = visibleGridChildren[0].id;
   dispatchClick(app.querySelector(`[data-layer-id="${absoluteChildId}"]`));
   let placementControl = app.querySelector('#inspector-content [data-prop="layoutPositioning"]');
