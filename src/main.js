@@ -54,6 +54,7 @@ import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
+import { shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from './canvas-pointer-lifecycle.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -13956,6 +13957,24 @@ function initEvents() {
     // can mutate the document behind its rollback snapshot.
     cancelCanvasInteraction({ pointerId: state.interaction.pointerId, preserveUI: true });
   }, true);
+  document.addEventListener('pointerup', event => {
+    // Pointer capture normally routes the release back through the canvas.
+    // If an embedded browser drops capture while the pointer is outside it,
+    // finish the gesture here so the next keyboard action is not blocked by a
+    // stale interaction.
+    if (!shouldRouteCanvasPointerCompletion(event, canvas, state.pointerMap)) return;
+    onCanvasPointerUp(event);
+  }, true);
+  document.addEventListener('pointercancel', event => {
+    if (!shouldRouteCanvasPointerCompletion(event, canvas, state.pointerMap)) return;
+    cancelCanvasInteraction(event);
+  }, true);
+  window.addEventListener('blur', () => {
+    // Browsers can stop delivering pointer events when the window loses focus.
+    // Roll back an unfinished gesture and release every tracked pointer.
+    if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    else state.pointerMap.clear();
+  });
   $$('.tool-button').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.tool === 'image') chooseImageFiles(); else setTool(button.dataset.tool);
   }));
@@ -15013,6 +15032,9 @@ function onKeyDown(event) {
     const target = menuFocusReturnTarget(returnFocus, fallback);
     closeMenu();
     target?.focus({ preventScroll: true });
+  }
+  if (shouldRecoverCanvasInteractionForDelete(event.key, state.interaction, state.pointerMap.size, editing)) {
+    cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
   }
   if (event.key.toLowerCase() === 'escape' && innerWidth <= 820
     && ($('#left-panel').classList.contains('is-open') || $('#right-panel').classList.contains('is-open'))
