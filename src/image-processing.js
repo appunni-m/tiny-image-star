@@ -212,6 +212,19 @@ export function imagePreviewDimensions(width, height, maxDimension) {
 }
 
 /**
+ * A memory-bounded worker may retain an unedited, downsampled source for fast
+ * slider previews. Accept that lower resolution only when it stays inside the
+ * verified output bounds and preserves aspect ratio within one output pixel.
+ */
+export function imagePreviewResolutionMatches(actualWidth, actualHeight, expectedWidth, expectedHeight) {
+  if (![actualWidth, actualHeight, expectedWidth, expectedHeight].every(Number.isSafeInteger)
+    || actualWidth < 1 || actualHeight < 1 || expectedWidth < 1 || expectedHeight < 1
+    || actualWidth > expectedWidth || actualHeight > expectedHeight) return false;
+  const ratioDelta = Math.abs(actualWidth * expectedHeight - actualHeight * expectedWidth);
+  return ratioDelta <= Math.max(expectedWidth, expectedHeight);
+}
+
+/**
  * Resolve an optional normalized crop, clockwise quarter-turn rotation, and
  * visible-axis flips against the original source dimensions. Normalized crop
  * edges make saved recipes portable across sources with different dimensions.

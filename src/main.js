@@ -26,7 +26,7 @@ import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, pre
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
-import { imagePreviewDimensions } from './image-processing.js';
+import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-processing.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
@@ -7436,7 +7436,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
         }
       });
       if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
-      if (result.width !== outputDimensions.width || result.height !== outputDimensions.height) {
+      if (!imagePreviewResolutionMatches(result.width, result.height, outputDimensions.width, outputDimensions.height)) {
         throw new Error('The local image preview dimensions did not match the verified source size.');
       }
       if (result.bytes.byteLength > previewAdmission.encodedByteLength) {

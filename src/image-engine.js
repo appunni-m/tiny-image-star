@@ -665,8 +665,12 @@ export class LocalImageEngine {
     if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
     const requestId = this.nextRequestId++;
     const firstLoad = !slot.loaded.has(job.assetId);
+    // A retained preview source can be downsampled to fit a constrained cache.
+    // Exports still need the immutable original bytes even when that preview is
+    // already resident in this worker.
+    const sendSourceBytes = firstLoad || job.outputMode === 'export';
     let bytes = null;
-    if (firstLoad) {
+    if (sendSourceBytes) {
       try {
         bytes = transferableSourceBytes(job.sourceBytes);
       } catch (error) {

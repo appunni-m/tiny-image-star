@@ -1,10 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DecodedSourceCache } from '../src/decoded-source-cache.js';
+import { DecodedSourceCache, imageCacheDimensionForBudget } from '../src/decoded-source-cache.js';
 import { assertSafeRasterDimensions, defaultActiveRenderMemoryBudget, defaultImageCachePixelBudget, defaultSingleImageRenderMemoryBudget, estimateImageWorkingSetBytes, inspectRasterDimensions, LocalImageEngine } from '../src/image-engine.js';
 import { ImageMemoryLimitError } from '../src/image-memory-budget.js';
 
 const PIXEL_BUDGET = 5;
+
+test('preview cache dimensions fit the configured pixel ceiling across normal and extreme aspect ratios', () => {
+  for (const [width, height, budget] of [[4000, 3000, 10_000_000], [80_000_000, 1, 16_000_000], [4, 2, 3]]) {
+    const edge = imageCacheDimensionForBudget(width, height, budget);
+    assert.ok(Number.isSafeInteger(edge) && edge > 0 && edge <= Math.max(width, height));
+    const longer = Math.max(width, height);
+    const shorter = Math.min(width, height);
+    const minor = Math.max(1, Math.ceil(edge * shorter / longer));
+    assert.ok(edge * minor <= budget, `${edge} × ${minor} should fit ${budget} cached pixels`);
+  }
+  assert.equal(imageCacheDimensionForBudget(4, 2, 8), null, 'a source already inside the budget stays full resolution');
+  assert.equal(imageCacheDimensionForBudget(4, 2, 0), null, 'a disabled cache does not downsample ephemeral renders');
+  assert.throws(() => imageCacheDimensionForBudget(0, 2, 3), /dimensions/);
+});
 
 function makeSource(width) {
   return { width, height: 1, freeCalls: 0, free() { this.freeCalls += 1; } };
@@ -420,6 +434,8 @@ test('LocalImageEngine forwards preview dimensions only to interactive preview w
     await engine.renderOutput('asset', bytesFor(2), {}, {}, { previewMaxDimension: 2048 });
     assert.equal(engine.workers[0].worker.renderRequests[1].previewMaxDimension, undefined,
       'export always renders at full source resolution even when a preview cap is accidentally present');
+    assert.equal(engine.workers[0].worker.renderRequests[1].hasSourceBytes, true,
+      'a full-resolution export receives the immutable original even when a lower-resolution preview is cached');
   });
 });
 
