@@ -462,7 +462,7 @@ try {
   assert(app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'the bulk bar should pause immediately.');
   const speed = app.querySelector('#bulk-speed');
   setInput(app, speed, Math.min(3, Number(speed.max)));
-  assert(app.querySelector('#bulk-speed-value').textContent.includes('worker'), 'the live speed value should update to the selected worker count.');
+  assert(/^\d+\/\d+ active$/.test(app.querySelector('#bulk-speed-value').textContent), 'the live speed value should show active workers against the selected cap.');
   tap(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied' && app.querySelector('#bulk-progress-label')?.textContent === '3 / 3', 'in-place recipe completion');
   const afterBatch = sampleUntouchedSecondImage(app);

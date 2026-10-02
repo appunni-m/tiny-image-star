@@ -314,7 +314,7 @@ try {
   dispatchClick(app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'pause control');
   const speed = app.querySelector('#bulk-speed'); speed.value = String(Math.min(3, Number(speed.max))); speed.dispatchEvent(new Event('input', { bubbles: true }));
-  assert(app.querySelector('#bulk-speed-value').textContent.includes('worker'), 'speed control did not update the live worker count');
+  assert(/^\d+\/\d+ active$/.test(app.querySelector('#bulk-speed-value').textContent), 'speed control did not update the live active/cap worker readout');
   dispatchClick(app.querySelector('#bulk-pause'));
   await waitFor(() => !app.querySelector('#bulk-done').hidden && app.querySelector('#bulk-progress-label').textContent === '3 / 3', 'in-place bulk recipe completion');
   assert(app.querySelector('#bulk-title').textContent === 'Recipe applied', 'bulk recipe did not finish successfully');

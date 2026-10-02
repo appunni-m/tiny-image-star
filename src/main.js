@@ -51,7 +51,7 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
-import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from './layer-deletion.js';
+import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
@@ -93,7 +93,7 @@ import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVarian
 import { createThemePreferenceController } from './theme-preference.js';
 import { contextMenuActionByLabel, contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
 import { toolbarNavigationTarget } from './toolbar-keyboard.js';
-import { imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
+import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
 import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES, migrateImageLibraryEntry, removeImageLibraryEntry } from './image-asset-library.js';
 import { scopeImageAssetReferences } from './image-asset-restoration.js';
@@ -2949,7 +2949,7 @@ function renderInspector() {
     const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
-  body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); Delete removes the layer when none are selected. Turn this mode off to drag selected anchors.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use Delete to remove them.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together.'}</div>`);
+    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); use “Delete point” above to remove anchors. Delete or Backspace removes the layer.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use “Delete ${selectedAnchorCount} anchors” above to remove them. Delete or Backspace removes the layer.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together. Use the explicit Delete point control to remove an anchor.'}</div>`);
     if (hasClosedContour) body += appearanceSection(node);
     else body += strokeSection(node);
   } else if (node.type === 'network') {
@@ -7929,10 +7929,10 @@ function renderBulkBar() {
   $('#bulk-rate').title = `Historical average and trailing 5-second throughput. Paused time and paused completions are excluded; ETA uses the historical average.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
   const speedValue = $('#bulk-speed-value');
-  speedValue.textContent = `${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}`;
+  speedValue.textContent = formatImageRecipeWorkerReadout(batchMetrics.active, bulk.concurrency);
   speedValue.dataset.activeWorkers = String(engineMetrics.active);
   speedValue.dataset.workersReady = String(engineMetrics.workersReady);
-  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum workers; ${engineMetrics.active} active; ${engineMetrics.workersReady} ready`);
+  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum workers; ${batchMetrics.active} active in this batch; ${engineMetrics.active} active total; ${engineMetrics.workersReady} ready`);
   speedValue.title = `Engine limit: ${engineMetrics.concurrency} worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued in this batch; ${engineMetrics.active} total active jobs. Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
@@ -13472,7 +13472,11 @@ function applyInspectorAction(action, details = {}) {
 function updateImageEngineState(metrics) {
   const output = $('#bulk-speed-value');
   if (output && state.bulk) {
-    output.textContent = `${state.bulk.concurrency} max worker${state.bulk.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready · ${metrics.active} active`;
+    const batchMetrics = imageEngine.queueGroupMetrics(state.bulk.queueGroup);
+    output.textContent = formatImageRecipeWorkerReadout(batchMetrics.active, state.bulk.concurrency);
+    output.dataset.activeWorkers = String(metrics.active);
+    output.dataset.workersReady = String(metrics.workersReady);
+    output.setAttribute('aria-label', `${state.bulk.concurrency} maximum workers; ${batchMetrics.active} active in this batch; ${metrics.active} active total; ${metrics.workersReady} ready`);
     output.title = `Engine limit: ${metrics.concurrency} worker${metrics.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready. Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   }
 }
@@ -14770,11 +14774,6 @@ function onKeyDown(event) {
   if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
   if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
   if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
-  if ((key === 'delete' || key === 'backspace') && shouldDeleteSelectedVectorAnchor(state.selectedIds, state.selectedVectorPoint)) {
-    deleteSelectedVectorPoint();
-    event.preventDefault();
-    return;
-  }
   if (key === 'delete' || key === 'backspace') {
     const focusedLayer = event.target.closest?.('#layers-list [data-layer-id]')
       || document.activeElement?.closest?.('#layers-list [data-layer-id]');

@@ -1,4 +1,10 @@
 /** Build a concise batch announcement that stays stable during per-image progress updates. */
+export function formatImageRecipeWorkerReadout(active, limit) {
+  const activeWorkers = Number.isFinite(active) ? Math.max(0, Math.trunc(active)) : 0;
+  const workerLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 1;
+  return `${activeWorkers}/${workerLimit} active`;
+}
+
 export function imageRecipeBatchAnnouncement(batch) {
   if (!batch) return '';
   const recipeName = String(batch.recipe?.name || 'image recipe');

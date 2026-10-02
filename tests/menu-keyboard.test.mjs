@@ -97,9 +97,10 @@ test('editor menu opening and keyboard handling use the shared mixed-role focus 
   assert.match(source, /focusFirstContextMenuItem\(menu\);/);
   assert.match(source, /contextMenuNavigationTarget\(menuItems, document\.activeElement, event\.key\)/);
   const contextDeleteShortcut = source.indexOf("const deleteAction = contextMenuActionByLabel(menuItems, 'Delete');");
-  const vectorDeleteShortcut = source.indexOf('shouldDeleteSelectedVectorAnchor(state.selectedIds, state.selectedVectorPoint)');
-  assert.ok(contextDeleteShortcut >= 0 && vectorDeleteShortcut > contextDeleteShortcut,
-    'a focused layer menu Delete action must take precedence over vector-anchor Delete');
+  assert.ok(contextDeleteShortcut >= 0,
+    'a focused layer menu Delete action must remain available');
+  assert.doesNotMatch(source, /shouldDeleteSelectedVectorAnchor/,
+    'keyboard Delete should not be intercepted by vector-anchor selection');
   assert.match(source, /if \(event\.key === 'Delete' \|\| event\.key === 'Backspace'\)[\s\S]*?contextMenuActionByLabel\(menuItems, 'Delete'\)[\s\S]*?deleteAction\.click\(\)/,
     'the visible menu Delete shortcut should activate the actual layer deletion action');
   assert.match(source, /mobilePanelTabTarget\(focusStops, document\.activeElement, event\.shiftKey\)/);

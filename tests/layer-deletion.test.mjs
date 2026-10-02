@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
-import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from '../src/layer-deletion.js';
+import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
 import { hitTestPage } from '../src/renderer.js';
 import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
 
@@ -28,16 +28,17 @@ test('a layer menu keeps its opening selection as the delete target', () => {
   assert.deepEqual(layerMenuDeleteTargets([], 'menu-layer'), ['menu-layer']);
 });
 
-test('only an anchor belonging to the selected path intercepts the Delete key', () => {
-  const selectedAnchor = { nodeId: 'path-1', index: 2, contourIndex: 0 };
+test('Delete and Backspace always delete the selected layer; vector anchors use the explicit inspector action', () => {
+  const keydown = editorSource.slice(editorSource.indexOf('function onKeyDown(event) {'));
+  assert.match(keydown, /if \(key === 'delete' \|\| key === 'backspace'\) \{[\s\S]*?deleteSelected\(targetIds\); return;/,
+    'layer deletion keyboard handling should not be intercepted by vector anchor selection');
+  assert.doesNotMatch(keydown, /deleteSelectedVectorPoint\(\)/,
+    'vector point deletion stays on its explicit inspector action');
+});
 
-  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], selectedAnchor), true);
-  assert.equal(shouldDeleteSelectedVectorAnchor(['image-1'], selectedAnchor), false,
-    'a stale anchor cannot consume Delete after another layer becomes selected');
-  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1', 'image-1'], selectedAnchor), false,
-    'layer multi-selection uses layer deletion, not one stale anchor');
-  assert.equal(shouldDeleteSelectedVectorAnchor([], selectedAnchor), false);
-  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], null), false);
+test('vector inspector explains separate layer and anchor deletion actions', () => {
+  assert.match(editorSource, /data-action="delete-vector-point"[\s\S]*?Delete or Backspace removes the layer/,
+    'anchor editing should leave a clear, layer-level keyboard deletion path');
 });
 
 test('vector point deletion tells users that the layer remains and where to delete it', () => {

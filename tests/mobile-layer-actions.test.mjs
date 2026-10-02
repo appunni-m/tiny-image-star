@@ -87,8 +87,8 @@ test('placing imported images resets selection through the shared invariant path
   const startKeydown = source.indexOf('function onKeyDown(event) {');
   const endKeydown = source.indexOf('\nfunction ', startKeydown + 1);
   const keydown = source.slice(startKeydown, endKeydown);
-  assert.match(keydown, /shouldDeleteSelectedVectorAnchor\(state\.selectedIds, state\.selectedVectorPoint\)[\s\S]*?deleteSelectedVectorPoint\(\)/,
-    'Delete should target vector anchors only when their layer is still selected');
+  assert.doesNotMatch(keydown, /shouldDeleteSelectedVectorAnchor|deleteSelectedVectorPoint\(\)/,
+    'keyboard Delete should remove the selected layer instead of silently retaining it after a point deletion');
 });
 
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {

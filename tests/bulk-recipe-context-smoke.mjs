@@ -286,8 +286,8 @@ try {
 
   speed.value = String(workerBudget);
   speed.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
-  assert(app.querySelector('#bulk-speed-value').textContent.includes(`${workerBudget} worker`),
-    'Changing the paused speed control did not update its live worker readout.');
+  assert(app.querySelector('#bulk-speed-value').textContent === `0/${workerBudget} active`,
+    'Changing the paused speed control did not retain the selected cap beside live active workers.');
   workerGate.hold = false;
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied'
