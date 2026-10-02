@@ -1315,6 +1315,10 @@ function setTool(tool) {
     state.commentPlacementArmed = false;
   }
   state.tool = tool;
+  // Mobile panels make the canvas inert while open. Entering Comment mode
+  // requires canvas taps to select objects or place a pin, so dismiss the
+  // panel here; beginCommentAt() will reopen it when the user needs to type.
+  if (tool === 'comment' && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
   if (tool === 'comment' && state.inspectorTab !== 'comments') setInspectorTab('comments');
   $$('.tool-button').forEach(button => {
     const selected = button.dataset.tool === tool;

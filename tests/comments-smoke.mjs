@@ -109,7 +109,21 @@ try {
   await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'mobile comments panel');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose textarea')).minHeight) >= 88, 'The phone comment composer should provide a comfortable touch target.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose .primary-button')).minHeight) >= 40, 'The phone reply button should remain finger-sized.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, commentModeCanvasClicksSelectObjects: true, optionClickPlacesCommentOnObject: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, touchSizedActions: true })}`;
+  click(app.querySelector('[data-tool="comment"]'));
+  await waitFor(() => !app.querySelector('#right-panel').classList.contains('is-open'), 'mobile panel dismissal when returning to canvas comments');
+  assert(!app.querySelector('#canvas-region').inert, 'Activating Comment mode should restore canvas input on mobile.');
+  const mobileCanvas = app.querySelector('#scene-canvas');
+  const mobileRect = mobileCanvas.getBoundingClientRect();
+  mobileCanvas.dispatchEvent(new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId: 81, pointerType: 'touch', shiftKey: true,
+    clientX: mobileRect.left + mobileRect.width / 2, clientY: mobileRect.top + mobileRect.height / 2
+  }));
+  mobileCanvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', {
+    bubbles: true, button: 0, pointerId: 81, pointerType: 'touch'
+  }));
+  assert(app.querySelector(`[data-layer-id="${nestedFrame.id}"]`)?.classList.contains('is-selected'),
+    'A mobile Comment-mode tap should be able to select a frame after dismissing the inspector.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, commentModeCanvasClicksSelectObjects: true, optionClickPlacesCommentOnObject: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, mobileCanvasSelection: true, touchSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
