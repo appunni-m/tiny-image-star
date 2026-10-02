@@ -77,6 +77,15 @@ try {
   canvas.dispatchEvent(point);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 80, pointerType: 'mouse' }));
   assert(!app.querySelector('#comment-draft'), 'Repeated clicks on an already-selected frame must not hijack selection to start a comment.');
+  click(app.querySelector('[data-comment-action="new"]'));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId: 82, pointerType: 'mouse',
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+  }));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 82, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'),
+    'A pending New comment action must not prevent selecting a component or frame.');
+  assert(!app.querySelector('#comment-draft'), 'Selecting an object while Comment mode is active should not place a comment.');
   const commentPoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 79, pointerType: 'mouse', altKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
   canvas.dispatchEvent(commentPoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 79, pointerType: 'mouse' }));

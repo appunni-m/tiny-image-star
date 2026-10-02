@@ -2963,7 +2963,7 @@ function handleCommentAction(button) {
     state.commentPlacementArmed = true;
     setTool('comment');
     setInspectorTab('comments');
-    showToast('Tap anywhere on the canvas to place your comment.');
+    showToast('Tap empty canvas to place a comment. Tap an object to select it, or Alt/Option-click to comment on it.');
   } else if (action === 'open') openCommentThread(threadId);
   else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
   else if (action === 'cancel') { state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
@@ -4587,11 +4587,11 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'comment') {
     const target = commentTargetAt(world);
     const action = commentCanvasAction(target, {
-      addCommentShortcut: event.altKey,
-      placementArmed: state.commentPlacementArmed
+      addCommentShortcut: event.altKey
     });
     if (action === 'select') {
       const wasSelected = state.selectedIds.length === 1 && state.selectedIds[0] === target.id;
+      state.commentPlacementArmed = false;
       setSelection([target.id]);
       if (state.inspectorTab === 'comments') setInspectorTab('design');
       if (!wasSelected) showToast(`Selected “${target.name}”.`);

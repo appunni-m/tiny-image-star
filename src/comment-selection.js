@@ -12,6 +12,6 @@ export function commentSelectionTarget(entry, { preferComponent = true } = {}) {
 }
 
 /** Resolve whether a Comment-tool canvas click selects an object or places a pin. */
-export function commentCanvasAction(target, { addCommentShortcut = false, placementArmed = false } = {}) {
-  return addCommentShortcut || placementArmed || !target ? 'place-comment' : 'select';
+export function commentCanvasAction(target, { addCommentShortcut = false } = {}) {
+  return addCommentShortcut || !target ? 'place-comment' : 'select';
 }

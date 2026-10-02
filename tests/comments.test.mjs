@@ -53,10 +53,14 @@ test('Comment mode keeps object clicks for selection and uses explicit gestures 
   assert.match(editorSource.slice(placement, editorSource.indexOf('if (clearPrototypeConnectPromptIfSourceMissing())', placement)),
     /commentCanvasAction\(target,[\s\S]*?addCommentShortcut: event\.altKey[\s\S]*?if \(action === 'select'\)[\s\S]*?setSelection\(\[target\.id\]\)[\s\S]*?else beginCommentAt\(world\)/,
     'object clicks must select even an already-selected frame/component; explicit placement gestures add comments');
+  assert.match(editorSource.slice(placement, editorSource.indexOf('if (clearPrototypeConnectPromptIfSourceMissing())', placement)),
+    /if \(action === 'select'\) \{[\s\S]*?state\.commentPlacementArmed = false;[\s\S]*?setSelection\(\[target\.id\]\)/,
+    'selecting an object must exit pending comment placement so later taps can select normally');
   assert.equal(commentCanvasAction({ id: 'frame' }), 'select');
   assert.equal(commentCanvasAction({ id: 'component' }), 'select');
   assert.equal(commentCanvasAction({ id: 'frame' }, { addCommentShortcut: true }), 'place-comment');
-  assert.equal(commentCanvasAction({ id: 'frame' }, { placementArmed: true }), 'place-comment');
+  assert.equal(commentCanvasAction({ id: 'frame' }, { addCommentShortcut: false }), 'select',
+    'an object hit remains a selection target unless the explicit placement shortcut is used');
   assert.equal(commentCanvasAction(null), 'place-comment');
   assert.match(editorSource, /function commentTargetAt\(world, options\)[\s\S]*?commentSelectionTarget\(entry, options\)/,
     'canvas hits must resolve to an eligible frame or component');
