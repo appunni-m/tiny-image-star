@@ -5,6 +5,7 @@ import { isValidImageEraseStrokes, normalizeImageEraseStrokes } from './inpaint-
 import { isValidImageExpansionRatio, isValidImageExpansionState } from './image-expansion-geometry.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
+import { defaultImageRecipeName } from './image-recipe-name.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
@@ -1569,7 +1570,7 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
   const quality = output.quality ?? imageNode.outputQuality ?? 90;
   if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
-  const fallbackName = `${imageNode.name || 'Image'} recipe`.slice(0, 60);
+  const fallbackName = defaultImageRecipeName(imageNode.name, ' recipe');
   const recipeName = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || fallbackName;
   if (recipeName.length > 60) throw new TypeError('Image recipe names can contain up to 60 characters.');
   return {

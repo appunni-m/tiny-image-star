@@ -33,6 +33,7 @@ import { summarizeTextRunRange } from './text-run-selection.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-processing.js';
+import { defaultImageRecipeName } from './image-recipe-name.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
@@ -12357,7 +12358,7 @@ function openImageRecipeDialog(type, { nodeId = null, recipeId = null } = {}) {
     if (transforms.rotation) active.push(`Rotate ${transforms.rotation}°`);
     if (transforms.flipHorizontal) active.push('Flip horizontal');
     if (transforms.flipVertical) active.push('Flip vertical');
-    $('#recipe-name').value = `${node.name} look`;
+    $('#recipe-name').value = defaultImageRecipeName(node.name);
     $('#recipe-preview-summary').dataset.editSummary = active.length ? active.join(' · ') : 'Original image look · No adjustments';
     $('#recipe-format').value = node.outputFormat ?? 'png';
     $('#recipe-quality').value = String(node.outputQuality ?? 90);
