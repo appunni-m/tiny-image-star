@@ -80,7 +80,7 @@ test('canvas tool buttons expose the active tool at startup and when it changes'
 
 test('compact phones keep direct Share reachable and preserve the main-menu route', () => {
   const openMenu = main.match(/function openFileMenu\([\s\S]*?\n\}/)?.[0] || '';
-  assert.match(openMenu, /label: 'Share local design…', action: shareDesignFile/);
+  assert.match(openMenu, /label: 'Send design file…', action: shareDesignFile/);
   assert.match(openMenu, /label: 'Save local copy…'.*action: exportDesign/u);
   const directShareRules = [...stylesheet.matchAll(/#share-button\s*\{([^}]*)\}/g)].map(([, declarations]) => declarations);
   assert.ok(directShareRules.some(declarations => /\bdisplay\s*:\s*flex\b/u.test(declarations)),

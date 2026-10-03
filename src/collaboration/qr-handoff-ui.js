@@ -25,7 +25,7 @@ function installDialog() {
   dialog.innerHTML = `
     <section class="live-qr-content">
       <div class="modal-title-row">
-        <div><span class="modal-eyebrow">LOCAL · QR HANDOFF</span><h2 id="live-qr-title">Share live design</h2></div>
+        <div><span class="modal-eyebrow">SHARE BY QR CODE</span><h2 id="live-qr-title">Share live design</h2></div>
         <button class="icon-button" id="live-qr-close" type="button" aria-label="Close QR sharing">×</button>
       </div>
       <p class="modal-copy" id="live-qr-note"></p>
@@ -55,11 +55,12 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   const offerField = document.querySelector('#live-offer-value');
   const shareButton = document.querySelector('#live-share-capsules');
   const hostAnswerField = document.querySelector('#live-answer-value');
+  const hostAnswerActions = document.querySelector('#live-answer-actions');
   const joinInvitationField = document.querySelector('#live-join-invite');
   const joinOfferField = document.querySelector('#live-join-offer');
   const answerField = document.querySelector('#live-guest-answer');
   const copyAnswerButton = document.querySelector('#live-copy-answer');
-  if (!invitationField || !offerField || !shareButton || !hostAnswerField || !joinInvitationField || !joinOfferField || !answerField || !copyAnswerButton) {
+  if (!invitationField || !offerField || !shareButton || !hostAnswerField || !hostAnswerActions || !joinInvitationField || !joinOfferField || !answerField || !copyAnswerButton) {
     throw new Error('The live collaboration QR controls could not find their handoff fields.');
   }
 
@@ -69,13 +70,17 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   stylesheet.dataset.liveQrStyles = 'true';
   document.head.append(stylesheet);
 
-  const showInvitationButton = makeButton('live-show-invitation-qr', 'Show QR for guest', { hidden: true });
+  const joinMessageField = document.querySelector('#live-join-message');
+  const joinActions = document.querySelector('#live-join-actions');
+  if (!joinMessageField || !joinActions) throw new Error('The live collaboration invite message controls are missing.');
+
+  const showInvitationButton = makeButton('live-show-invitation-qr', 'Show QR code', { hidden: true });
   shareButton.after(showInvitationButton);
-  const scanAnswerButton = makeButton('live-scan-answer-qr', 'Scan guest answer QR', { disabled: true });
-  hostAnswerField.after(scanAnswerButton);
-  const scanInvitationButton = makeButton('live-scan-invitation-qr', 'Scan owner’s QR');
-  joinOfferField.after(scanInvitationButton);
-  const showAnswerButton = makeButton('live-show-answer-qr', 'Show answer QR', { hidden: true });
+  const scanAnswerButton = makeButton('live-scan-answer-qr', 'Scan their QR reply', { disabled: true });
+  hostAnswerActions.append(scanAnswerButton);
+  const scanInvitationButton = makeButton('live-scan-invitation-qr', 'Scan QR code');
+  joinActions.append(scanInvitationButton);
+  const showAnswerButton = makeButton('live-show-answer-qr', 'Reply with QR', { hidden: true });
   copyAnswerButton.after(showAnswerButton);
   const dialog = installDialog();
   let runtimePromise = null;
@@ -158,14 +163,14 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       const invitation = invitationField.value.trim();
       const offer = offerField.value.trim();
       validateInvitation(invitation);
-      await showTransfer(createLiveInvitationQrPayload(invitation, offer), 'Scan to join this live design',
-        'This QR carries the edit invitation and short-lived WebRTC offer. Anyone who captures all frames can request edit access while the offer is valid. Share it only with the intended guest.');
+      await showTransfer(createLiveInvitationQrPayload(invitation, offer), 'Invite QR code',
+        'Ask the other person to open Join a design and scan this code. It includes the design invite and temporary connection code, so show it only to the person you trust.');
     } catch (error) { notify(error.message || 'The live invitation is not ready to share.'); }
   }
   async function showAnswer() {
     try {
-      await showTransfer(createLiveAnswerQrPayload(answerField.value.trim()), 'Scan the guest answer',
-        'This signed, one-time answer completes the direct WebRTC handshake. Anyone who captures it may attempt to complete this short-lived session, so share it only with the owner.');
+      await showTransfer(createLiveAnswerQrPayload(answerField.value.trim()), 'Your reply QR code',
+        'Ask the design owner to choose Invite someone, then Scan their QR reply. This code expires soon, so show it only to the owner.');
     } catch (error) { notify(error.message || 'The guest answer is not ready to share.'); }
   }
   async function openScanner(target) {
@@ -174,10 +179,10 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       const qrRuntime = await runtime();
       mode = target;
       assembler = createQrTransferAssembler();
-      dialog.querySelector('#live-qr-title').textContent = target === 'guest' ? 'Scan the owner’s handoff' : 'Scan the guest answer';
+      dialog.querySelector('#live-qr-title').textContent = target === 'guest' ? 'Scan invite QR code' : 'Scan their reply';
       dialog.querySelector('#live-qr-note').textContent = target === 'guest'
-        ? 'Point the camera at the owner’s repeating QR frames. The scanned invitation and offer stay in this browser and are checked again when you join.'
-        : 'Point the camera at the guest’s repeating answer QR. The answer stays in this browser until you connect that guest.';
+        ? 'Point your camera at the owner’s QR code. Keep it in view while the code updates; this page reads the full invite automatically.'
+        : 'Point your camera at the other person’s reply QR code. The reply is checked when you connect them.';
       dialog.querySelector('#live-qr-display').hidden = true;
       dialog.querySelector('#live-qr-scan').hidden = false;
       dialog.querySelector('#live-qr-scan-status').textContent = 'Start the camera or scan QR images one by one.';
@@ -193,11 +198,11 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   async function completePayload(value) {
     const payload = readLiveQrPayload(value);
     if (mode === 'guest') {
-      if (payload.kind !== 'live-invitation') throw new TypeError('Scan the owner’s invitation and session-offer QR.');
+      if (payload.kind !== 'live-invitation') throw new TypeError('Scan the design owner’s invite QR code.');
       validateInvitation(payload.invitation);
       onGuestHandoff(payload);
     } else if (mode === 'host') {
-      if (payload.kind !== 'live-answer') throw new TypeError('Scan the guest’s answer QR.');
+      if (payload.kind !== 'live-answer') throw new TypeError('Scan the other person’s reply QR code.');
       onHostAnswer(payload.answer);
     } else {
       throw new Error('The QR scanner is no longer active.');

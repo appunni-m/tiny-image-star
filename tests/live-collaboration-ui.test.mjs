@@ -4,11 +4,18 @@ import { readFile } from 'node:fs/promises';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
-test('live sharing distinguishes the stable invitation and offer and discloses channel-visible network details', () => {
+test('live sharing starts with plain two-step language and keeps advanced connection details collapsed', () => {
+  assert.match(html, /id="live-start-host"[^>]*>Start sharing<\/button>/);
+  assert.match(html, /id="live-share-capsules"[^>]*>Send invite/);
+  assert.match(html, /id="live-join-message"/);
+  assert.match(html, /id="live-join-session"[^>]*>Join design<\/button>/);
+  assert.match(html, /id="live-guest-reply"[^>]*hidden/);
+  assert.match(html, /<summary>Advanced: enter link and code separately<\/summary>/);
+  assert.match(html, /<summary>Privacy and connection details<\/summary>/);
   assert.match(html, /id="live-invite-value"/);
   assert.match(html, /id="live-offer-value"/);
-  assert.match(html, /The channel you use can read both items, including network details in the offer/);
-  assert.match(html, /The service carrying your answer can read its network details/);
+  assert.match(html, /chat service you use can see the invite and its connection details/);
+  assert.match(html, /connection details visible to the chat service you use/);
 });
 
 test('live sharing offers a bundled QR handoff and a local answer scanner without removing text fallback', async () => {
@@ -25,8 +32,18 @@ test('live sharing offers a bundled QR handoff and a local answer scanner withou
   assert.match(qrUi, /await scanner\.start\(\)/);
   assert.match(qrUi, /readLiveSharingQrImage\(file\)/);
   assert.match(qrUi, /dialog\.addEventListener\('close'/);
-  assert.match(qrUi, /Anyone who captures all frames can request edit access/);
+  assert.match(qrUi, /Invite QR code/);
+  assert.match(qrUi, /Scan invite QR code/);
   assert.match(qrCss, /@media \(max-width: 600px\)/);
+});
+
+test('the owner’s invite is one message, and scanning fills the same guest paste field', async () => {
+  const script = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const qrUi = await readFile(new URL('../src/collaboration/qr-handoff-ui.js', import.meta.url), 'utf8');
+  assert.match(script, /formatLiveShareMessage\(\$\('#live-invite-value'\)\.value, \$\('#live-offer-value'\)\.value\)/);
+  assert.match(script, /parseLiveShareMessage\(\$\('#live-join-message'\)\.value\)/);
+  assert.match(script, /\$\('#live-join-message'\)\.value = formatLiveShareMessage\(invitation, offer\)/);
+  assert.match(qrUi, /joinActions\.append\(scanInvitationButton\)/);
 });
 
 test('host collaboration exposes a guest roster, selectable answers, independent offers, and per-peer disconnect controls', async () => {

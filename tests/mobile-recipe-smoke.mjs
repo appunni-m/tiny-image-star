@@ -140,8 +140,8 @@ try {
     'the compact phone top bar keeps a directly reachable Share button.');
   assert(shareBox.left >= 0 && shareBox.right <= 390,
     'the direct Share button should fit inside the phone viewport.');
-  assert([...app.querySelectorAll('#context-menu [role="menuitem"]')].some(button => button.textContent.includes('Share local design')),
-    'the mobile main menu should retain a second route to local design sharing.');
+  assert([...app.querySelectorAll('#context-menu [role="menuitem"]')].some(button => button.textContent.includes('Send design file')),
+    'the mobile main menu should retain a second route to sending a local design file.');
   tap(app, newDesign);
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'new local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');
