@@ -3,7 +3,7 @@ export function workspaceOnboardingCopy({ folderPickerAvailable = false } = {}) 
   if (folderPickerAvailable) {
     return {
       description: 'Choose a folder to keep your designs as local files. Existing browser designs are copied and verified before editing.',
-      status: 'Choose a folder to create or reconnect your workspace. Existing browser designs will be copied and verified before the editor opens.'
+      status: 'Choose a folder to create or reconnect your workspace. If folder setup is unavailable here, you can continue with browser storage instead.'
     };
   }
   return {

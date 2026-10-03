@@ -582,7 +582,33 @@ try {
   const fractionalEdgePixel = fractionalSliceContext.getImageData(20, 20, 1, 1).data;
   assert(fractionalEdgePixel[1] > 100 && fractionalEdgePixel[0] < 30 && fractionalEdgePixel[3] > 0,
     `The fractional slice edge must retain only cropped green artwork, excluding red artwork just outside the crop; got ${Array.from(fractionalEdgePixel).join(',')}.`);
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg', 'vector-pdf'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, selectedVectorPdf: true, vectorPdfPages: 2, slicePngCropAndTransparentPadding: true, sliceWebpScaleAndQuality: true, sliceJpegWhitePadding: true, fractionalSliceBackdropEdgeClipped: true, rasterExportUnaffectedByOutlineView: true })}`;
+  click(app.querySelector('#file-menu-button'));
+  const pagePdfMenuItem = [...app.querySelectorAll('#context-menu button')]
+    .find(button => button.textContent.includes('Export page to PDF'));
+  assert(pagePdfMenuItem, 'The file menu should offer a paper-sized PDF export for the current page.');
+  click(pagePdfMenuItem);
+  const pagePdfDialog = app.querySelector('#page-pdf-dialog');
+  assert(pagePdfDialog?.open && pagePdfDialog.querySelector('#page-pdf-size'),
+    'Page PDF export should open a size chooser instead of requiring frame-only output.');
+  const pageSize = pagePdfDialog.querySelector('#page-pdf-size');
+  const customWidth = pagePdfDialog.querySelector('#page-pdf-custom-width');
+  const customHeight = pagePdfDialog.querySelector('#page-pdf-custom-height');
+  pageSize.value = 'custom'; pageSize.dispatchEvent(new view.Event('change', { bubbles: true }));
+  customWidth.value = '100'; customWidth.dispatchEvent(new view.Event('input', { bubbles: true }));
+  customHeight.value = '150'; customHeight.dispatchEvent(new view.Event('input', { bubbles: true }));
+  assert(pagePdfDialog.querySelector('#page-pdf-status').textContent.includes('100.0 × 150.0 mm'),
+    'Custom page dimensions should update the live export preview.');
+  pagePdfDialog.querySelector('#page-pdf-form').dispatchEvent(new view.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => downloads.length === 19, 'custom-size current-page PDF');
+  const pageRasterPdf = downloads[18];
+  assert(pageRasterPdf.filename === 'Page 1.pdf' && pageRasterPdf.blob?.type === 'application/pdf',
+    'Page PDF should be delivered using the page name and PDF MIME type.');
+  const pageRasterPdfText = new TextDecoder('latin1').decode(await pageRasterPdf.blob.arrayBuffer());
+  assert(pageRasterPdfText.includes('/Type /Pages /Count 1')
+    && /\/MediaBox \[0 0 283\.46\d+ 425\.19\d+\]/.test(pageRasterPdfText)
+    && pageRasterPdfText.includes('/Subtype /Image'),
+  'Page PDF should contain one Pillow-RS raster page with the selected 100 × 150 mm physical size.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg', 'vector-pdf'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, selectedVectorPdf: true, vectorPdfPages: 2, customSizePagePdf: true, customPaperSizeMm: [100, 150], slicePngCropAndTransparentPadding: true, sliceWebpScaleAndQuality: true, sliceJpegWhitePadding: true, fractionalSliceBackdropEdgeClipped: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

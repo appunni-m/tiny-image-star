@@ -195,6 +195,25 @@
         </section>
       </dialog>
 
+      <dialog class="modal page-pdf-dialog" id="page-pdf-dialog" aria-labelledby="page-pdf-title">
+        <form id="page-pdf-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">PAGE EXPORT</span><h2 id="page-pdf-title">Export page to PDF</h2></div></div>
+          <p class="modal-copy">Choose a paper size for this page. All visible artwork is fitted inside the page with print margins.</p>
+          <div class="page-pdf-controls">
+            <label class="page-pdf-field"><span>Paper size</span><select class="select-field" id="page-pdf-size" aria-label="PDF paper size">
+              <option value="a4">A4</option><option value="letter">US Letter</option><option value="legal">US Legal</option><option value="a3">A3</option><option value="custom">Custom size</option>
+            </select></label>
+            <label class="page-pdf-field"><span>Orientation</span><select class="select-field" id="page-pdf-orientation" aria-label="PDF page orientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
+            <div class="page-pdf-custom-size" id="page-pdf-custom-size" hidden>
+              <label class="page-pdf-field"><span>Width · mm</span><input class="text-field" id="page-pdf-custom-width" type="number" inputmode="decimal" min="25" max="2000" step="0.1" value="210" aria-label="Custom PDF page width in millimeters" /></label>
+              <label class="page-pdf-field"><span>Height · mm</span><input class="text-field" id="page-pdf-custom-height" type="number" inputmode="decimal" min="25" max="2000" step="0.1" value="297" aria-label="Custom PDF page height in millimeters" /></label>
+            </div>
+          </div>
+          <p class="page-pdf-status" id="page-pdf-status" role="status" aria-live="polite"></p>
+          <div class="dialog-actions"><button class="secondary-button" id="page-pdf-cancel" type="button">Cancel</button><button class="primary-button" id="page-pdf-export" type="submit">Export PDF</button></div>
+        </form>
+      </dialog>
+
       <div class="context-menu" id="context-menu" role="menu" aria-label="Editor actions" hidden></div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />

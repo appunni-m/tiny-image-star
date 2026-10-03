@@ -5,6 +5,26 @@ import { createPageNodeIndex } from '../src/page-node-index.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
+function relativeLuminance(hex) {
+  const channels = hex.match(/[a-f\d]{2}/gi).map(channel => parseInt(channel, 16) / 255);
+  const linear = channels.map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+}
+
+function contrastRatio(first, second) {
+  const values = [relativeLuminance(first), relativeLuminance(second)].sort((left, right) => right - left);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
+test('new neutral vector objects stay visible on white artboards and the dark canvas', () => {
+  for (const type of ['rectangle', 'ellipse', 'polygon', 'boolean']) {
+    const fill = createNode(type).fill;
+    assert.match(fill, /^#[0-9a-f]{6}$/i, `${type} should have a valid solid default fill`);
+    assert.ok(contrastRatio(fill, '#ffffff') >= 3, `${type} default should contrast with white frames`);
+    assert.ok(contrastRatio(fill, '#20232a') >= 3, `${type} default should contrast with the dark work surface`);
+  }
+});
+
 test('new file has an active page and a valid empty layer tree', () => {
   const document = createDocument();
   assert.equal(document.pages.length, 1);

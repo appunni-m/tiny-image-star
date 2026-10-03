@@ -77,9 +77,10 @@ import { addGridTrack, deleteGridTrack, gridTrackCount, gridTrackMoveRange, grid
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
-import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
+import { exportNodeToSvg, exportPageToSvg, getPageContentBounds } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
+import { fitPdfContent, pdfContentRenderScale, planPdfPage, PDF_PAGE_PRESETS } from './pdf-page-layout.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
@@ -1276,7 +1277,15 @@ async function chooseWorkspaceFolder() {
     }
     return await activateWorkspace(handle, { migrate: true });
   } catch (error) {
-    if (error?.name !== 'AbortError') showToast(error.message || 'Could not open the selected folder workspace.');
+    if (error?.name !== 'AbortError') {
+      const message = error.message || 'Could not open the selected folder workspace.';
+      const status = $('#workspace-onboarding-status');
+      if (state.workspaceOnboardingRequired && status) {
+        status.textContent = `Workspace setup could not finish${error.code || error.name ? ` (${error.code || error.name})` : ''}: ${message}`;
+        status.classList.add('is-error');
+      }
+      showToast(message);
+    }
     return false;
   }
 }
@@ -1289,10 +1298,12 @@ function syncWorkspaceOnboardingDialog() {
   }
   const pickerAvailable = typeof window.showDirectoryPicker === 'function';
   const copy = workspaceOnboardingCopy({ folderPickerAvailable: pickerAvailable });
-  $('#workspace-onboarding-browser-fallback').hidden = pickerAvailable;
+  const status = $('#workspace-onboarding-status');
+  $('#workspace-onboarding-browser-fallback').hidden = false;
+  $('#workspace-onboarding-browser-fallback').textContent = pickerAvailable ? 'Use browser storage instead' : 'Continue with browser storage';
   $('#workspace-onboarding-choose-folder').disabled = !pickerAvailable;
   $('#workspace-onboarding-copy').textContent = copy.description;
-  $('#workspace-onboarding-status').textContent = copy.status;
+  if (!status.textContent.trim()) status.textContent = copy.status;
   if (!dialog.open) {
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else dialog.setAttribute('open', '');
@@ -1300,7 +1311,7 @@ function syncWorkspaceOnboardingDialog() {
 }
 
 async function continueWithBrowserStorage() {
-  if (typeof window.showDirectoryPicker === 'function' || !state.workspaceOnboardingRequired) return false;
+  if (!state.workspaceOnboardingRequired) return false;
   state.workspaceOnboardingRequired = false;
   setDocumentEditingBlocked(true);
   try {
@@ -1316,7 +1327,11 @@ async function continueWithBrowserStorage() {
   } catch (error) {
     state.workspaceOnboardingRequired = true;
     setDocumentEditingBlocked(true);
-    showToast(error.message || 'Browser storage could not be prepared. Your existing local designs were preserved.');
+    const message = error.message || 'Browser storage could not be prepared. Your existing local designs were preserved.';
+    const status = $('#workspace-onboarding-status');
+    status.textContent = `Browser storage setup could not finish: ${message}`;
+    status.classList.add('is-error');
+    showToast(message);
     return false;
   }
 }
@@ -13565,6 +13580,7 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
     { label: exportLabel, action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
     { label: 'Export selected frame as 1× raster PDF', action: () => { exportSelectedFrameRasterPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a raster PDF.')); }, disabled: !selectedFrame },
+    { label: 'Export page to PDF…', action: openPagePdfDialog },
     { label: 'Export current page frames as multipage raster PDF', action: () => { exportActivePageRasterPdf().catch(error => showToast(error.message || 'Could not export this page as a raster PDF.')); } },
     { label: 'Export selected frame as vector PDF', action: () => { exportSelectedFrameVectorPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a vector PDF.')); }, disabled: !selectedFrame },
     { label: 'Export current page frames as multipage vector PDF', action: () => { exportActivePageVectorPdf().catch(error => showToast(error.message || 'Could not export this page as a vector PDF.')); } },
@@ -17213,7 +17229,10 @@ function abortIfExportCanceled(signal) {
   if (signal?.aborted) throw new DOMException('Image export canceled.', 'AbortError');
 }
 
-async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent = () => {}, refreshImages = true, replaceKey = null, queueGroup = null } = {}) {
+async function renderExportBlob(ids, setting, baseName, {
+  signal, assertCurrent = () => {}, refreshImages = true, replaceKey = null, queueGroup = null,
+  renderBounds = null, rawPng = false
+} = {}) {
   const checkCurrent = () => { abortIfExportCanceled(signal); assertCurrent(); };
   checkCurrent();
   if (!ids.length) throw new Error('Select a layer to export.');
@@ -17256,7 +17275,7 @@ async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent 
     sliceSurfacePlan = planSliceRenderSurface(slicePlan, bleed);
     renderIds = page.children.map(root => root.id);
   } else {
-    const boundsList = ids.map(exportBoundsForNode).filter(Boolean);
+    const boundsList = renderBounds ? [renderBounds] : ids.map(exportBoundsForNode).filter(Boolean);
     if (!boundsList.length) throw new Error('The selected layer is no longer available.');
     left = Math.min(...boundsList.map(item => item.x)); top = Math.min(...boundsList.map(item => item.y));
     const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
@@ -17369,6 +17388,7 @@ async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent 
     catch (error) { reject(error); }
   });
   checkCurrent();
+  if (rawPng) return { blob: rasterized, filename: `${safeExportName(baseName)}.png`, width, height };
   const sourceBytes = new Uint8Array(await rasterized.arrayBuffer());
   checkCurrent();
   const rasterAssetId = createId('raster-export');
@@ -17698,6 +17718,159 @@ async function exportActivePageRasterPdf() {
   const frameIds = orderedVisibleFrameIds(page.children);
   if (!frameIds.length) throw new Error('The current page has no visible top-level frames to export.');
   await exportRasterPdf(frameIds, { page, baseName: page.name || 'Page' });
+}
+
+function pagePdfRootIds(page = activePage()) {
+  return (page?.children || [])
+    .filter(node => node?.type !== 'slice' && getNodePropertyValue(state.document, node, 'visible') !== false && typeof node.id === 'string')
+    .map(node => node.id);
+}
+
+function pagePdfPlanFromDialog() {
+  return planPdfPage({
+    preset: $('#page-pdf-size').value,
+    orientation: $('#page-pdf-orientation').value,
+    widthMm: Number($('#page-pdf-custom-width').value),
+    heightMm: Number($('#page-pdf-custom-height').value),
+    dpi: 144,
+    marginMm: 12,
+  });
+}
+
+function updatePagePdfDialog() {
+  const custom = $('#page-pdf-size').value === 'custom';
+  $('#page-pdf-custom-size').hidden = !custom;
+  const status = $('#page-pdf-status');
+  const submit = $('#page-pdf-export');
+  try {
+    const page = pagePdfPlanFromDialog();
+    status.textContent = `${page.label} · ${page.orientation} · ${page.widthMm.toFixed(1)} × ${page.heightMm.toFixed(1)} mm · ${page.widthPx.toLocaleString()} × ${page.heightPx.toLocaleString()} px at ${page.dpi} DPI. Artwork fits inside 12 mm margins.`;
+    status.classList.remove('is-error');
+    submit.disabled = false;
+  } catch (error) {
+    status.textContent = error.message || 'This PDF page size is not supported.';
+    status.classList.add('is-error');
+    submit.disabled = true;
+  }
+}
+
+function openPagePdfDialog() {
+  const page = activePage();
+  if (!page) { showToast('There is no active page to export.'); return; }
+  if (!pagePdfRootIds(page).length) {
+    showToast('This page has no visible artwork yet. Add a shape or frame, then export the page as PDF.');
+    return;
+  }
+  $('#page-pdf-size').value = 'a4';
+  $('#page-pdf-orientation').value = 'portrait';
+  $('#page-pdf-custom-width').value = String(PDF_PAGE_PRESETS.a4.widthMm);
+  $('#page-pdf-custom-height').value = String(PDF_PAGE_PRESETS.a4.heightMm);
+  updatePagePdfDialog();
+  const dialog = $('#page-pdf-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+async function exportActivePagePdf(pagePlan) {
+  if (state.imageExportAbortController) throw new Error('An export is already running. Press Escape to cancel it.');
+  const page = activePage();
+  if (!page) throw new Error('There is no active page to export.');
+  const rootIds = pagePdfRootIds(page);
+  if (!rootIds.length) throw new Error('This page has no visible artwork to export. Add a shape or frame, then retry.');
+  const documentSnapshot = state.document;
+  const generation = state.documentGeneration;
+  const pageId = page.id;
+  const pageSignature = JSON.stringify(page);
+  const bounds = getPageContentBounds(page, { document: documentSnapshot, measureText: createSvgTextMeasurer() });
+  const renderScale = pdfContentRenderScale(bounds);
+  const controller = new AbortController();
+  const queueKey = `page-pdf:${generation}:${Date.now()}`;
+  const queueGroup = `page-pdf:${generation}`;
+  const rasterAssetId = createId('page-pdf');
+  const sheet = document.createElement('canvas');
+  let sourceBitmap = null;
+  let pageRasterBytes = null;
+  let renderedOutput = null;
+  let pdfImageBytes = null;
+  let pdfBytes = null;
+  const assertCurrent = () => {
+    abortIfExportCanceled(controller.signal);
+    if (state.document !== documentSnapshot || state.documentGeneration !== generation || state.documentTransitioning
+      || state.document.activePageId !== pageId || activePage() !== page || JSON.stringify(page) !== pageSignature) {
+      throw new Error('The page changed while its PDF was being prepared. Retry the export.');
+    }
+  };
+  state.imageExportAbortController = controller;
+  controller.signal.addEventListener('abort', () => imageEngine.cancelQueuedByKey(queueKey), { once: true });
+  try {
+    assertCurrent();
+    showToast(`Preparing ${page.name || 'page'} for ${pagePlan.label} PDF at ${pagePlan.dpi} DPI… Press Escape to cancel.`, 5000);
+    const artwork = await renderExportBlob(rootIds, {
+      format: 'png', quality: 100, scale: renderScale, suffix: ''
+    }, page.name || 'Page', {
+      signal: controller.signal,
+      assertCurrent,
+      replaceKey: queueKey,
+      queueGroup,
+      renderBounds: bounds,
+      rawPng: true,
+    });
+    assertCurrent();
+    if (typeof createImageBitmap !== 'function') throw new Error('This browser cannot prepare the page image for PDF export.');
+    sourceBitmap = await createImageBitmap(artwork.blob);
+    assertCurrent();
+    sheet.width = pagePlan.widthPx;
+    sheet.height = pagePlan.heightPx;
+    const context = sheet.getContext('2d', { alpha: false });
+    if (!context) throw new Error('This browser could not create the PDF page surface.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, sheet.width, sheet.height);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    const imageRect = fitPdfContent(sourceBitmap.width, sourceBitmap.height, pagePlan);
+    context.drawImage(sourceBitmap, imageRect.x, imageRect.y, imageRect.width, imageRect.height);
+    sourceBitmap.close?.();
+    sourceBitmap = null;
+    const composedPng = await new Promise((resolve, reject) => {
+      try { sheet.toBlob(blob => blob ? resolve(blob) : reject(new Error('The browser could not prepare this PDF page for Pillow-RS.')), 'image/png'); }
+      catch (error) { reject(error); }
+    });
+    assertCurrent();
+    pageRasterBytes = new Uint8Array(await composedPng.arrayBuffer());
+    assertCurrent();
+    renderedOutput = await imageEngine.renderOutput(rasterAssetId, pageRasterBytes, {}, {}, {
+      format: 'jpeg', quality: 92, replaceKey: queueKey, queueGroup
+    });
+    assertCurrent();
+    const jpegBlob = encodeRenderedImageOutput(renderedOutput, { format: 'jpeg', quality: 92 }).blob;
+    if (jpegBlob.type !== 'image/jpeg') throw new Error('Pillow-RS did not return a JPEG page for the PDF.');
+    if (jpegBlob.size > PDF_EXPORT_JPEG_LIMIT) {
+      throw new RangeError(`This PDF page exceeds the local ${Math.round(PDF_EXPORT_JPEG_LIMIT / 1024 / 1024)} MiB image limit.`);
+    }
+    pdfImageBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+    assertCurrent();
+    pdfBytes = createMultipagePdf([{
+      jpeg: pdfImageBytes,
+      width: pagePlan.widthPx,
+      height: pagePlan.heightPx,
+      pdfWidth: pagePlan.widthPt,
+      pdfHeight: pagePlan.heightPt,
+    }], { maxAggregateJpegBytes: PDF_EXPORT_JPEG_LIMIT });
+    assertCurrent();
+    const filename = `${safeExportName(page.name || 'Page')}.pdf`;
+    downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), filename);
+    showToast(`Downloaded ${pagePlan.label} PDF · ${pagePlan.widthMm.toFixed(1)} × ${pagePlan.heightMm.toFixed(1)} mm · ${filename}.`);
+  } catch (error) {
+    if (error?.name === 'AbortError') showToast('Page PDF export canceled. No PDF was downloaded.');
+    else throw error;
+  } finally {
+    sourceBitmap?.close?.();
+    pageRasterBytes?.fill(0);
+    renderedOutput?.bytes?.fill?.(0);
+    pdfImageBytes?.fill(0);
+    pdfBytes?.fill(0);
+    imageEngine.dispose(rasterAssetId);
+    if (state.imageExportAbortController === controller) state.imageExportAbortController = null;
+  }
 }
 
 function assertVectorPdfTreeSupported(documentSnapshot, frame) {
@@ -20326,9 +20499,10 @@ function initEvents() {
     const status = $('#workspace-onboarding-status');
     button.disabled = true;
     status.textContent = 'Opening the folder picker…';
+    status.classList.remove('is-error');
     const opened = await chooseWorkspaceFolder();
     button.disabled = false;
-    if (!opened && state.workspaceOnboardingRequired) {
+    if (!opened && state.workspaceOnboardingRequired && status.textContent === 'Opening the folder picker…') {
       status.textContent = 'Choose a folder to begin. Your existing local designs will remain unchanged if setup is cancelled or cannot be completed.';
     }
   });
@@ -20337,9 +20511,25 @@ function initEvents() {
     button.disabled = true;
     const status = $('#workspace-onboarding-status');
     status.textContent = 'Preparing browser storage…';
+    status.classList.remove('is-error');
     const continued = await continueWithBrowserStorage();
     button.disabled = false;
-    if (!continued && state.workspaceOnboardingRequired) status.textContent = 'Browser storage could not be prepared. Your existing local designs were preserved; retry or choose a writable folder.';
+    if (!continued && state.workspaceOnboardingRequired && status.textContent === 'Preparing browser storage…') {
+      status.textContent = 'Browser storage could not be prepared. Your existing local designs were preserved; retry or choose a writable folder.';
+    }
+  });
+  $('#page-pdf-cancel').addEventListener('click', () => $('#page-pdf-dialog').close());
+  $('#page-pdf-size').addEventListener('change', updatePagePdfDialog);
+  $('#page-pdf-orientation').addEventListener('change', updatePagePdfDialog);
+  $('#page-pdf-custom-width').addEventListener('input', updatePagePdfDialog);
+  $('#page-pdf-custom-height').addEventListener('input', updatePagePdfDialog);
+  $('#page-pdf-form').addEventListener('submit', event => {
+    event.preventDefault();
+    let pagePlan;
+    try { pagePlan = pagePdfPlanFromDialog(); }
+    catch (error) { updatePagePdfDialog(); showToast(error.message || 'Choose a supported PDF page size.'); return; }
+    $('#page-pdf-dialog').close();
+    exportActivePagePdf(pagePlan).catch(error => showToast(error.message || 'Could not export this page as a PDF.'));
   });
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50, null, event.currentTarget));
   $('#design-library-close').addEventListener('click', () => $('#design-library-dialog').close());

@@ -869,7 +869,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .workspace-onboarding-dialog { width: min(480px, calc(100vw - 28px)); }
 .workspace-onboarding-content { padding: 22px; }
 .workspace-onboarding-status { min-height: 34px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.workspace-onboarding-status.is-error, .page-pdf-status.is-error { color: #b33a31; }
 .workspace-onboarding-content .dialog-actions { justify-content: flex-end; flex-wrap: wrap; }
+.page-pdf-dialog { width: min(470px, calc(100vw - 28px)); }
+.page-pdf-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.page-pdf-field { min-width: 0; display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+.page-pdf-field .select-field, .page-pdf-field .text-field { width: 100%; min-width: 0; min-height: 38px; }
+.page-pdf-custom-size { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.page-pdf-custom-size[hidden] { display: none; }
+.page-pdf-status { min-height: 36px; margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.page-pdf-dialog .dialog-actions > button { min-height: 40px; }
 .recipe-recovery-card { display: grid; gap: 5px; margin: 14px 0; padding: 12px; border: 1px solid #e5e2eb; border-radius: 8px; background: #f8f7fa; }
 .recipe-recovery-card strong { overflow: hidden; color: #38343e; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .recipe-recovery-card span { color: #77717f; font-size: 11px; line-height: 1.45; }
@@ -2811,6 +2820,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
     scroll-padding-block: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-bottom));
   }
+  .page-pdf-dialog .select-field,
+  .page-pdf-dialog .text-field,
+  .page-pdf-dialog .dialog-actions > button { min-height: 44px; }
+  .page-pdf-dialog .select-field,
+  .page-pdf-dialog .text-field { font-size: 16px; }
   .mobile-panel-toggle,
   .present-button,
   .topbar #share-button,

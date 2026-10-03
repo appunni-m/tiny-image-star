@@ -1912,6 +1912,12 @@ function svgDocument(markup, defs, bounds, { width, height } = {}) {
   return `${note}<svg xmlns="http://www.w3.org/2000/svg" width="${number(svgWidth)}px" height="${number(svgHeight)}px" viewBox="${number(bounds.x)} ${number(bounds.y)} ${number(bounds.width)} ${number(bounds.height)}">${defsMarkup}${markup}</svg>`;
 }
 
+/** Return the visible page artwork's bounds using the same geometry as SVG export. */
+export function getPageContentBounds(page, { document = null, measureText } = {}) {
+  if (!page || !Array.isArray(page.children)) throw new TypeError('Page bounds require a page with child layers.');
+  return getBounds(page.children, { document: document || emptyDocument, measureText });
+}
+
 /**
  * Export one editor layer as a self-contained, editable SVG, with its origin at the layer's bounds.
  * Text layers require a canvas-based `measureText` callback so SVG line breaks match the editor.

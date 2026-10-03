@@ -58,6 +58,21 @@ test('accepts ArrayBuffer and maps pixel size directly to 72 dpi page points', (
   assert.match(text, /1 0 0 2 0 0 cm/);
 });
 
+test('supports a correctly sized print page with a centered raster inset', () => {
+  const pdf = createMultipagePdf([{
+    jpeg: jpegA, width: 1191, height: 1684,
+    pdfWidth: 595.276, pdfHeight: 841.89,
+    imageRect: { x: 8, y: 16, width: 579.276, height: 809.89 },
+  }]);
+  const text = Buffer.from(pdf).toString('latin1');
+  assert.match(text, /\/MediaBox \[0 0 595\.276 841\.89\]/);
+  assert.ok(text.includes('q\n579.276 0 0 809.89 8 16 cm\n/Im1 Do\nQ\n'));
+  assert.throws(() => createMultipagePdf([{
+    jpeg: jpegA, width: 10, height: 10, pdfWidth: 10, pdfHeight: 10,
+    imageRect: { x: 8, y: 0, width: 3, height: 10 },
+  }]), /must fit inside its PDF page/);
+});
+
 test('rejects empty or excessive page lists and malformed page records', () => {
   assert.throws(() => createMultipagePdf([]), /between 1 and/);
   assert.throws(() => createMultipagePdf(new Array(PDF_PACKAGER_LIMITS.maxPages + 1).fill({

@@ -6,7 +6,7 @@ import { isValidGradientFill, moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { layerBlendModes } from '../src/layer-blend.js';
 import { convertFigDocument } from '../src/fig-import.js';
-import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
+import { exportNodeToSvg, exportPageToSvg, getPageContentBounds, SvgExportError } from '../src/svg-export.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 
@@ -27,6 +27,15 @@ function findNestedLayer(nodes, predicate) {
   }
   return null;
 }
+
+test('page content bounds include visible off-origin artwork and ignore hidden layers and slices', () => {
+  const document = createDocument();
+  const visible = createNode('rectangle', { x: -24, y: 18, width: 60, height: 30 });
+  const hidden = createNode('rectangle', { x: -400, y: -300, width: 90, height: 80, visible: false });
+  const slice = createNode('slice', { x: -1000, y: -1000, width: 250, height: 250 });
+  document.pages[0].children.push(visible, hidden, slice);
+  assert.deepEqual(getPageContentBounds(document.pages[0], { document }), { x: -24, y: 18, width: 60, height: 30 });
+});
 
 function figSourceNode(type, localID, parent, position, properties = {}) {
   return {

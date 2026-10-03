@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 const stylesheet = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 const document = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const renderer = await readFile(new URL('../src/renderer.js', import.meta.url), 'utf8');
 
 function ruleBlock(startIndex) {
   const open = stylesheet.indexOf('{', startIndex);
@@ -91,6 +92,15 @@ test('dark theme gives individually colored editor labels readable foregrounds',
   }
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.comment-message p[\s\S]*color:\s*#a6acb6/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.comment-row-copy strong[\s\S]*color:\s*#e0e4eb/);
+});
+
+test('canvas backing pixels follow the themed dark workspace instead of washing it out', () => {
+  assert.match(renderer, /closest\?\.\('\.canvas-region'\)[\s\S]*?getComputedStyle\?\.\(region\)\?\.backgroundColor/,
+    'the drawing surface must use the actual active canvas-region color, not its transparent scroll parent');
+  assert.doesNotMatch(renderer, /ctx\.fillStyle = '#e9e9e9'/,
+    'the obsolete light canvas fill made neutral shapes blend into the workspace');
+  assert.match(stylesheet, /--canvas-base:\s*#262a32/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\][\s\S]*?--canvas-base:\s*#20232a/);
 });
 
 test('independent corner controls keep readable labels and phone-sized touch targets', () => {

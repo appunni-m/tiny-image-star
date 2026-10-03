@@ -1296,6 +1296,7 @@ export class SceneRenderer {
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
     this.visiblePreviewKeys = new Set();
     this.frame = 0;
+    this.workspacePattern = null;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
     this.textPaintSurfaces = { glyph: null, paint: null };
@@ -1316,6 +1317,31 @@ export class SceneRenderer {
     this.booleanCache.clear();
     this.booleanCachePixels = 0;
     this.invalidate();
+  }
+
+  workspaceBackgroundColor() {
+    const view = this.canvas.ownerDocument?.defaultView || globalThis;
+    const region = this.canvas.closest?.('.canvas-region') || this.canvas.parentElement;
+    const color = region ? view.getComputedStyle?.(region)?.backgroundColor : null;
+    return color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent' ? color : '#262a32';
+  }
+
+  workspaceBackgroundPattern(dpr) {
+    const size = Math.max(1, Math.round(24 * dpr));
+    if (this.workspacePattern?.size === size) return this.workspacePattern.pattern;
+    const tile = this.canvas.ownerDocument?.createElement?.('canvas');
+    if (!tile || typeof this.context.createPattern !== 'function') return null;
+    tile.width = size;
+    tile.height = size;
+    const patternContext = tile.getContext('2d');
+    if (!patternContext) return null;
+    patternContext.fillStyle = 'rgba(255,255,255,.11)';
+    patternContext.beginPath();
+    patternContext.arc(size / 2, size / 2, .8 * size / 24, 0, Math.PI * 2);
+    patternContext.fill();
+    const pattern = this.context.createPattern(tile, 'repeat');
+    this.workspacePattern = { size, tile, pattern };
+    return pattern;
   }
 
   resize() {
@@ -1409,7 +1435,7 @@ export class SceneRenderer {
     const context = this.samplingSurface.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!context) throw new Error('This browser cannot sample the local design canvas.');
     context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = '#e9e9e9';
+    context.fillStyle = this.workspaceBackgroundColor();
     context.fillRect(0, 0, width, height);
     context.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) {
@@ -1427,8 +1453,14 @@ export class SceneRenderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
     if (!this.transparent) {
-      ctx.fillStyle = '#e9e9e9';
+      // The canvas element covers .canvas-region's CSS background, so painting
+      // a light gray here accidentally erased the dark workspace surface and
+      // made new neutral shapes almost disappear. Read the active theme color
+      // from the region so CSS remains the single source of truth.
+      ctx.fillStyle = this.workspaceBackgroundColor();
       ctx.fillRect(0, 0, width, height);
+      const pattern = this.workspaceBackgroundPattern(dpr);
+      if (pattern) { ctx.fillStyle = pattern; ctx.fillRect(0, 0, width, height); }
     }
     const page = state.document.pages.find(item => item.id === state.document.activePageId);
     if (!page) { this.visiblePreviewKeys.clear(); this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }

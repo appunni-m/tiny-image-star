@@ -18,6 +18,7 @@ test('workspace onboarding describes only storage choices available on this brow
   assert.match(browser.description, /Export a local design file/);
   assert.match(browser.status, /cannot choose a writable folder/);
   assert.match(browser.status, /stay in this browser profile/);
+  assert.match(folder.status, /continue with browser storage instead/);
 });
 
 test('folder permission recovery keeps File navigation available and canvas editing blocked', () => {
@@ -140,4 +141,26 @@ test('browser-storage onboarding stays gated until the initial document save suc
   assert.match(fallback, /state\.workspaceOnboardingRequired = false;[\s\S]*?setDocumentEditingBlocked\(true\)[\s\S]*?ensureImageLibraryCompatibility\(state\.document\)[\s\S]*?persistCurrentDocumentNow\(\)[\s\S]*?if \(!saved\) throw[\s\S]*?workspace-onboarding-dialog'\)\.close/);
   assert.match(fallback, /catch \(error\) \{[\s\S]*?state\.workspaceOnboardingRequired = true;[\s\S]*?setDocumentEditingBlocked\(true\)/,
     'a failed browser-storage save must return to the blocked onboarding state');
+});
+
+test('folder onboarding keeps the concrete setup failure instead of replacing it with the generic prompt', () => {
+  const pickerStart = mainSource.indexOf('async function chooseWorkspaceFolder()');
+  const pickerEnd = mainSource.indexOf('\nfunction syncWorkspaceOnboardingDialog()', pickerStart);
+  assert.ok(pickerStart >= 0 && pickerEnd > pickerStart);
+  const picker = mainSource.slice(pickerStart, pickerEnd);
+  assert.match(picker, /Workspace setup could not finish[\s\S]*?\$\{message\}/,
+    'folder setup errors need to remain visible in the blocking onboarding dialog');
+  const handlerStart = mainSource.indexOf("$('#workspace-onboarding-choose-folder').addEventListener");
+  const handlerEnd = mainSource.indexOf("$('#workspace-onboarding-browser-fallback').addEventListener", handlerStart);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(mainSource.slice(handlerStart, handlerEnd), /status\.textContent === 'Opening the folder picker…'/,
+    'the fallback copy must not overwrite an actual folder initialization failure');
+  const onboarding = mainSource.slice(mainSource.indexOf('function syncWorkspaceOnboardingDialog()'), mainSource.indexOf('\nasync function continueWithBrowserStorage()'));
+  assert.match(onboarding, /workspace-onboarding-browser-fallback'\)\.hidden = false/,
+    'users must have an explicit local fallback if a usable folder picker still cannot initialize a workspace');
+  assert.match(onboarding, /if \(!status\.textContent\.trim\(\)\) status\.textContent = copy\.status/,
+    'rendering onboarding again must not erase actionable failure or migration progress');
+  const browserFallback = mainSource.slice(mainSource.indexOf('async function continueWithBrowserStorage()'), mainSource.indexOf('\nasync function reconnectWorkspaceFolder'));
+  assert.doesNotMatch(browserFallback, /showDirectoryPicker/,
+    'the browser-storage fallback remains available even on browsers that expose folder picking');
 });

@@ -43,13 +43,25 @@ function validatePages(pages, maxAggregateJpegBytes) {
     if (aggregateBytes > maxAggregateJpegBytes) {
       throw new RangeError(`JPEG payloads exceed ${maxAggregateJpegBytes} bytes`);
     }
-    return { width, height, jpeg };
+    const pdfWidth = page.pdfWidth ?? width;
+    const pdfHeight = page.pdfHeight ?? height;
+    if (![pdfWidth, pdfHeight].every(value => Number.isFinite(value) && value > 0 && value <= DEFAULT_LIMITS.maxPageDimension)) {
+      throw new RangeError(`Page ${index + 1} PDF dimensions must be positive finite values within the supported limit`);
+    }
+    const imageRect = page.imageRect || { x: 0, y: 0, width: pdfWidth, height: pdfHeight };
+    if (!imageRect || ![imageRect.x, imageRect.y, imageRect.width, imageRect.height].every(Number.isFinite)
+      || imageRect.x < 0 || imageRect.y < 0 || imageRect.width <= 0 || imageRect.height <= 0
+      || imageRect.x + imageRect.width > pdfWidth + 1e-7 || imageRect.y + imageRect.height > pdfHeight + 1e-7) {
+      throw new RangeError(`Page ${index + 1} image placement must fit inside its PDF page`);
+    }
+    return { width, height, pdfWidth, pdfHeight, imageRect, jpeg };
   });
 }
 
 /**
- * Package rendered RGB JPEG pages into a PDF with one full-page JPEG image per page.
- * Pixel dimensions map directly to PDF points (72 pixels per inch). Input byte
+ * Package rendered RGB JPEG pages into a PDF. Pixel dimensions map directly
+ * to PDF points by default; `pdfWidth`/`pdfHeight` and `imageRect` allow a
+ * raster image to be fitted onto a correctly sized physical sheet. Input byte
  * views are consumed as-is; the returned Uint8Array owns the final PDF bytes.
  */
 export function createMultipagePdf(inputPages, options = {}) {
@@ -83,15 +95,15 @@ export function createMultipagePdf(inputPages, options = {}) {
   const kids = pages.map((_, index) => `${3 + index * 3} 0 R`).join(' ');
   object(2, [`<< /Type /Pages /Count ${pages.length} /Kids [${kids}] >>`]);
 
-  pages.forEach(({ width, height, jpeg }, index) => {
+  pages.forEach(({ width, height, pdfWidth, pdfHeight, imageRect, jpeg }, index) => {
     const pageId = 3 + index * 3;
     const imageId = pageId + 1;
     const contentId = pageId + 2;
     const resourceName = `Im${index + 1}`;
-    const content = ascii(`q\n${width} 0 0 ${height} 0 0 cm\n/${resourceName} Do\nQ\n`);
+    const content = ascii(`q\n${imageRect.width} 0 0 ${imageRect.height} ${imageRect.x} ${imageRect.y} cm\n/${resourceName} Do\nQ\n`);
 
     object(pageId, [
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] `
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfWidth} ${pdfHeight}] `
         + `/Resources << /XObject << /${resourceName} ${imageId} 0 R >> >> `
         + `/Contents ${contentId} 0 R >>`,
     ]);

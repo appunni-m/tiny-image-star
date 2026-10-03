@@ -220,17 +220,21 @@ export function createDocument() {
   };
 }
 
+// Neutral vector paint stays visible on white artboards and the dark editor
+// workspace (at least 3:1 contrast against both surfaces).
+const DEFAULT_SHAPE_FILL = '#767676';
+
 const defaults = {
   frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true, overflowBehavior: 'none' },
   section: { name: 'Section', width: 480, height: 320, fill: '#e6e6e6', clip: false },
   slice: { name: 'Slice', width: 100, height: 100, fill: 'transparent', stroke: null, strokeWidth: 0, clip: false },
   group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false, mask: false },
-  boolean: { name: 'Boolean group', width: 120, height: 80, fill: '#d9d9d9', operation: 'union', clip: false },
-  rectangle: { name: 'Rectangle', width: 120, height: 80, fill: '#d9d9d9', radius: 0 },
-  ellipse: { name: 'Ellipse', width: 100, height: 100, fill: '#d9d9d9' },
+  boolean: { name: 'Boolean group', width: 120, height: 80, fill: DEFAULT_SHAPE_FILL, operation: 'union', clip: false },
+  rectangle: { name: 'Rectangle', width: 120, height: 80, fill: DEFAULT_SHAPE_FILL, radius: 0 },
+  ellipse: { name: 'Ellipse', width: 100, height: 100, fill: DEFAULT_SHAPE_FILL },
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
-  polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
+  polygon: { name: 'Polygon', width: 100, height: 100, fill: DEFAULT_SHAPE_FILL, points: 6 },
   text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
@@ -778,7 +782,7 @@ export function createLayerEffect(type, overrides = {}) {
   throw new TypeError(`Unsupported layer effect: ${type}`);
 }
 
-export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
+export function createGradientFill(type = 'linear', firstColor = DEFAULT_SHAPE_FILL) {
   if (!['linear', 'radial', 'angular'].includes(type)) throw new TypeError(`Unsupported gradient fill: ${type}`);
   if (!/^#[0-9a-f]{6}$/i.test(firstColor)) throw new TypeError('Gradient stops require six-digit hex colors.');
   return {
@@ -793,7 +797,7 @@ export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
 export function createFillLayer(type = 'solid', overrides = {}) {
   if (!['solid', 'linear', 'radial', 'angular', 'image'].includes(type)) throw new TypeError(`Unsupported fill type: ${type}`);
   const base = { id: createId('fill'), type, visible: true, opacity: 1, blendMode: 'normal' };
-  if (type === 'solid') return { ...base, color: '#d9d9d9', ...overrides };
+  if (type === 'solid') return { ...base, color: DEFAULT_SHAPE_FILL, ...overrides };
   if (type === 'linear' || type === 'radial' || type === 'angular') return { ...base, gradient: createGradientFill(type), ...overrides };
   if (typeof overrides.assetId !== 'string' && typeof overrides.imageFill?.assetId !== 'string') {
     throw new TypeError('Choose an image already placed in this design.');
@@ -1458,7 +1462,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   const group = createNode('boolean', {
     name: `${operationNames[operation]} group`, operation,
     x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top),
-    fill: styleSource.fill || '#d9d9d9', fillOpacity: styleSource.fillOpacity ?? 1,
+    fill: styleSource.fill || DEFAULT_SHAPE_FILL, fillOpacity: styleSource.fillOpacity ?? 1,
     ...(styleSource.fillStyleId ? { fillStyleId: styleSource.fillStyleId } : {}),
     ...(styleSource.fillVariableId ? { fillVariableId: styleSource.fillVariableId } : {}),
     children: selectedEntries.map(entry => {
