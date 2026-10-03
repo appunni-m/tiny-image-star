@@ -9,7 +9,7 @@ function normalizedValue(value) {
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const key of Object.keys(value).sort()) {
-    // Paint and gradient-stop IDs are editing metadata, not visible style.
+    // Layer-owned IDs and names are editing metadata, not visible style.
     if (key === 'id' || key === 'name') continue;
     result[key] = normalizedValue(value[key]);
   }
@@ -35,7 +35,8 @@ function signatureFor(node, kind, getPaintStack) {
 export function selectLayersWithSamePaint(rootNodes, referenceNode, kind, {
   getPaintStack = (node, paintKind) => paintKind === 'fill'
     ? fillStackForNode(node)
-    : strokeStackForNode(node)
+    : strokeStackForNode(node),
+  document = null
 } = {}) {
   if (!paintKinds.has(kind)) throw new TypeError('Paint kind must be fill or stroke.');
   if (!Array.isArray(rootNodes) || !referenceNode || typeof referenceNode.id !== 'string' || typeof getPaintStack !== 'function') {
@@ -54,7 +55,7 @@ export function selectLayersWithSamePaint(rootNodes, referenceNode, kind, {
     const { node, hidden: parentHidden, locked: parentLocked } = pending.pop();
     if (!node || typeof node !== 'object' || visited.has(node)) continue;
     visited.add(node);
-    const hidden = parentHidden || node.visible === false;
+    const hidden = parentHidden || (document ? getNodePropertyValue(document, node, 'visible') : node.visible) === false;
     const locked = parentLocked || node.locked === true;
     if (!hidden && !locked) {
       const signature = signatureFor(node, kind, getPaintStack);
@@ -72,6 +73,59 @@ export function selectLayersWithSamePaint(rootNodes, referenceNode, kind, {
   }
   if (!referenceFound || !referenceSignature) return [];
   return entries.filter(entry => entry.signature === referenceSignature).map(entry => entry.id);
+}
+
+function visibleEffectsSignature(node) {
+  if (!Array.isArray(node.effects)) return null;
+  const effects = node.effects.filter(effect => effect && effect.visible !== false);
+  return effects.length ? JSON.stringify(effects.map(normalizedValue)) : null;
+}
+
+function selectLayersBySignature(rootNodes, document, referenceNode, signatureFor) {
+  const visited = new WeakSet();
+  const entries = [];
+  const pending = [];
+  for (let index = rootNodes.length - 1; index >= 0; index -= 1) {
+    pending.push({ node: rootNodes[index], hidden: false, locked: false });
+  }
+  let referenceSignature = null;
+  while (pending.length) {
+    const { node, hidden: parentHidden, locked: parentLocked } = pending.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    visited.add(node);
+    const hidden = parentHidden || getNodePropertyValue(document, node, 'visible') === false;
+    const locked = parentLocked || node.locked === true;
+    if (!hidden && !locked) {
+      const signature = signatureFor(node);
+      if (node === referenceNode || node.id === referenceNode.id) referenceSignature = signature;
+      if (signature) entries.push({ id: node.id, signature });
+    }
+    if (Array.isArray(node.children)) {
+      for (let index = node.children.length - 1; index >= 0; index -= 1) {
+        pending.push({ node: node.children[index], hidden, locked });
+      }
+    }
+  }
+  if (!referenceSignature) return [];
+  return entries.filter(entry => entry.signature === referenceSignature).map(entry => entry.id);
+}
+
+/**
+ * Return active-page layer IDs whose ordered visible effect stack matches the
+ * reference. Effect IDs and names are ignored; effect parameters and order are
+ * significant. Hidden or locked layers and descendants are skipped.
+ */
+export function selectLayersWithSameEffects(rootNodes, document, referenceNode) {
+  if (!Array.isArray(rootNodes) || !document || !referenceNode || typeof referenceNode.id !== 'string') return [];
+  return selectLayersBySignature(rootNodes, document, referenceNode, visibleEffectsSignature);
+}
+
+/** Return all visible, unlocked instances of the same component on this page. */
+export function selectLayersWithSameInstance(rootNodes, document, referenceNode) {
+  if (!Array.isArray(rootNodes) || !document || !referenceNode?.isInstance
+    || typeof referenceNode.id !== 'string' || typeof referenceNode.componentId !== 'string' || !referenceNode.componentId) return [];
+  return selectLayersBySignature(rootNodes, document, referenceNode, node =>
+    node.isInstance && node.componentId === referenceNode.componentId ? node.componentId : null);
 }
 
 function firstFontFamily(value) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectLayersWithSameFont, selectLayersWithSamePaint } from '../src/select-similar-layers.js';
-import { addNode, bindVariable, createDocument, createNode, createVariable, createVariableCollection } from '../src/model.js';
+import { selectLayersWithSameEffects, selectLayersWithSameFont, selectLayersWithSameInstance, selectLayersWithSamePaint } from '../src/select-similar-layers.js';
+import { addNode, bindVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection } from '../src/model.js';
 
 const solid = (id, color, overrides = {}) => ({ id, type: 'solid', color, visible: true, opacity: 1, ...overrides });
 const rectangle = (id, fills, overrides = {}) => ({ id, type: 'rectangle', fills, children: [], ...overrides });
@@ -48,6 +48,24 @@ test('same-stroke selection compares stroke appearance without merging different
   assert.deepEqual(selectLayersWithSamePaint([reference, same, thick, dashed], reference, 'stroke'), ['reference', 'same']);
 });
 
+test('same-paint selection respects variable-bound visibility in the active mode', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Visibility');
+  const hidden = createVariable(document, collection.id, 'Hidden', 'boolean', false);
+  const reference = createNode('rectangle', { fills: [solid('reference-fill', '#123456')] });
+  const visible = createNode('ellipse', { fills: [solid('visible-fill', '#123456')] });
+  const hiddenLayer = createNode('path', { fills: [solid('hidden-fill', '#123456')] });
+  addNode(document, reference);
+  addNode(document, visible);
+  addNode(document, hiddenLayer);
+  bindVariable(document, hiddenLayer.id, hidden.id, 'visible');
+
+  assert.deepEqual(
+    selectLayersWithSamePaint(document.pages[0].children, reference, 'fill', { document }),
+    [reference.id, visible.id]
+  );
+});
+
 test('same-paint selection skips hidden and locked ancestors and never reaches outside its page tree', () => {
   const reference = rectangle('reference', [solid('a', '#123456')]);
   const hiddenChild = rectangle('hidden-child', [solid('b', '#123456')]);
@@ -63,6 +81,121 @@ test('same-paint selection skips hidden and locked ancestors and never reaches o
   assert.deepEqual(selectLayersWithSamePaint(roots, reference, 'fill'), ['reference', 'visible-child']);
   assert.deepEqual(selectLayersWithSamePaint([visibleChild], reference, 'fill'), []);
   assert.throws(() => selectLayersWithSamePaint(roots, reference, 'effect'), /Paint kind must be fill or stroke/);
+});
+
+test('same-effects selection compares visible ordered effect values while ignoring effect identity', () => {
+  const makeLayer = (id, effects) => ({ id, type: 'rectangle', effects, children: [] });
+  const reference = makeLayer('reference', [
+    createLayerEffect('drop-shadow', { id: 'effect-a', name: 'Soft shadow', offsetX: 2, blur: 9 }),
+    createLayerEffect('layer-blur', { id: 'effect-b', radius: 3 })
+  ]);
+  const sameAppearance = makeLayer('same', [
+    createLayerEffect('drop-shadow', { id: 'other-a', name: 'Card shadow', offsetX: 2, blur: 9 }),
+    createLayerEffect('layer-blur', { id: 'other-b', radius: 3 })
+  ]);
+  const hiddenExtra = makeLayer('hidden-extra', [
+    ...sameAppearance.effects.map(effect => ({ ...effect, id: `hidden-${effect.id}` })),
+    createLayerEffect('noise', { visible: false })
+  ]);
+  const changedSetting = makeLayer('changed', [
+    createLayerEffect('drop-shadow', { offsetX: 3, blur: 9 }),
+    createLayerEffect('layer-blur', { radius: 3 })
+  ]);
+  const reversed = makeLayer('reversed', [...sameAppearance.effects].reverse());
+  const noEffects = makeLayer('none', []);
+  const noiseA = makeLayer('noise-a', [createLayerEffect('noise', { id: 'noise-effect-a', name: 'Grain' })]);
+  const noiseB = makeLayer('noise-b', [createLayerEffect('noise', { id: 'noise-effect-b', name: 'Film grain' })]);
+  const textureA = makeLayer('texture-a', [createLayerEffect('texture', { id: 'texture-effect-a' })]);
+  const textureB = makeLayer('texture-b', [createLayerEffect('texture', { id: 'texture-effect-b' })]);
+  const glassThenBlur = makeLayer('glass-then-blur', [createLayerEffect('glass', { id: 'glass-a' }), createLayerEffect('background-blur', { id: 'blur-a' })]);
+  const blurThenGlass = makeLayer('blur-then-glass', [createLayerEffect('background-blur', { id: 'blur-b' }), createLayerEffect('glass', { id: 'glass-b' })]);
+  const document = createDocument();
+
+  assert.deepEqual(
+    selectLayersWithSameEffects([reference, sameAppearance, hiddenExtra, changedSetting, reversed, noEffects], document, reference),
+    ['reference', 'same', 'hidden-extra'],
+    'effect parameters and stack order matter, invisible effects do not, and IDs/names are not visible appearance'
+  );
+  assert.deepEqual(selectLayersWithSameEffects([noEffects], document, noEffects), []);
+  assert.deepEqual(selectLayersWithSameEffects([noiseA, noiseB], document, noiseA), ['noise-a', 'noise-b'],
+    'equal noise settings match even though per-layer randomization may render different pixels');
+  assert.deepEqual(selectLayersWithSameEffects([textureA, textureB], document, textureA), ['texture-a', 'texture-b']);
+  assert.deepEqual(selectLayersWithSameEffects([glassThenBlur, blurThenGlass], document, glassThenBlur), ['glass-then-blur'],
+    'backdrop effect order is part of the authored stack');
+});
+
+test('same-effects selection excludes hidden and locked subtrees, variable-hidden layers, and other pages', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Visibility');
+  const hidden = createVariable(document, collection.id, 'Hidden', 'boolean', false);
+  const effects = [createLayerEffect('inner-shadow')];
+  const reference = createNode('rectangle', { name: 'Reference', effects: effects.map(effect => ({ ...effect })) });
+  const visible = createNode('ellipse', { name: 'Visible', effects: effects.map(effect => ({ ...effect, id: 'visible-effect' })) });
+  const hiddenLayer = createNode('path', { name: 'Variable hidden', effects: effects.map(effect => ({ ...effect, id: 'hidden-effect' })) });
+  const hiddenParent = createNode('group', {
+    visible: false,
+    children: [createNode('rectangle', { effects: effects.map(effect => ({ ...effect, id: 'hidden-child-effect' })) })]
+  });
+  const lockedParent = createNode('group', {
+    locked: true,
+    children: [createNode('rectangle', { effects: effects.map(effect => ({ ...effect, id: 'locked-child-effect' })) })]
+  });
+  addNode(document, reference);
+  addNode(document, visible);
+  addNode(document, hiddenLayer);
+  addNode(document, hiddenParent);
+  addNode(document, lockedParent);
+  bindVariable(document, hiddenLayer.id, hidden.id, 'visible');
+  const otherPage = createNode('rectangle', { effects: effects.map(effect => ({ ...effect, id: 'other-page-effect' })) });
+  document.pages.push({ id: 'other-page', name: 'Other', children: [otherPage], guides: [] });
+
+  assert.deepEqual(selectLayersWithSameEffects(document.pages[0].children, document, reference), [reference.id, visible.id]);
+  assert.deepEqual(selectLayersWithSameEffects([visible], document, reference), []);
+  assert.deepEqual(selectLayersWithSameEffects(document.pages[1].children, document, reference), []);
+});
+
+test('same-instance selection matches component identity across the active page, not layer names or variants', () => {
+  const document = createDocument();
+  const reference = { id: 'instance-a', name: 'Primary button', isInstance: true, componentId: 'component-button', children: [] };
+  const sameWithDifferentName = { id: 'instance-b', name: 'Button copy', isInstance: true, componentId: 'component-button', children: [] };
+  const nestedSameInstance = { id: 'nested-instance', name: 'Button slot', isInstance: true, componentId: 'component-button', children: [] };
+  const group = { id: 'group', type: 'group', children: [nestedSameInstance] };
+  const otherVariant = { id: 'variant', isInstance: true, componentId: 'component-button-active', children: [] };
+  const componentMaster = { id: 'master', isComponent: true, componentId: 'component-button', children: [] };
+  const detachedLookalike = { id: 'detached', componentId: 'component-button', children: [] };
+  const unrelated = { id: 'unrelated', isInstance: true, componentId: 'component-card', children: [] };
+
+  assert.deepEqual(
+    selectLayersWithSameInstance([reference, sameWithDifferentName, group, otherVariant, componentMaster, detachedLookalike, unrelated], document, reference),
+    ['instance-a', 'instance-b', 'nested-instance'],
+    'instance identity follows the exact main component ID through nested page content'
+  );
+  assert.deepEqual(selectLayersWithSameInstance([sameWithDifferentName], document, reference), []);
+  assert.deepEqual(selectLayersWithSameInstance([reference], document, componentMaster), []);
+});
+
+test('same-instance selection excludes hidden, locked, and variable-hidden instances and stays page-scoped', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Visibility');
+  const hidden = createVariable(document, collection.id, 'Hidden', 'boolean', false);
+  const instance = (id, overrides = {}) => ({ id, isInstance: true, componentId: 'component-card', children: [], ...overrides });
+  const reference = instance('reference');
+  const visible = instance('visible');
+  const variableHidden = instance('variable-hidden');
+  const hiddenParent = { id: 'hidden-parent', visible: false, children: [instance('hidden-child')] };
+  const lockedParent = { id: 'locked-parent', locked: true, children: [instance('locked-child')] };
+  addNode(document, reference);
+  addNode(document, visible);
+  addNode(document, variableHidden);
+  addNode(document, hiddenParent);
+  addNode(document, lockedParent);
+  bindVariable(document, variableHidden.id, hidden.id, 'visible');
+  const otherPageInstance = instance('other-page');
+  document.pages.push({ id: 'other-page', name: 'Other', children: [otherPageInstance], guides: [] });
+
+  assert.deepEqual(selectLayersWithSameInstance(document.pages[0].children, document, reference), ['reference', 'visible']);
+  assert.deepEqual(selectLayersWithSameInstance([visible], document, reference), []);
+  assert.deepEqual(selectLayersWithSameInstance(document.pages[1].children, document, reference), []);
 });
 
 test('same-font selection compares effective family only and honors rich-text run overrides', () => {

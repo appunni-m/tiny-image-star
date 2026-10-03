@@ -24,7 +24,7 @@ import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason,
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
 import { beginCanvasDragAfterSlop } from './canvas-drag-slop.js';
 import { createPageNodeIndex } from './page-node-index.js';
-import { selectLayersWithSameFont, selectLayersWithSamePaint } from './select-similar-layers.js';
+import { selectLayersWithSameEffects, selectLayersWithSameFont, selectLayersWithSameInstance, selectLayersWithSamePaint } from './select-similar-layers.js';
 import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount, componentPropertyExposureGroups, componentPropertyTargetInstanceId } from './component-property-exposure.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
@@ -13497,7 +13497,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
       }, { separator: true });
     }
     for (const kind of ['fill', 'stroke']) {
-      const matchingIds = selectLayersWithSamePaint(pageNodes, node, kind, { getPaintStack: paintStack });
+      const matchingIds = selectLayersWithSamePaint(pageNodes, node, kind, { getPaintStack: paintStack, document: state.document });
       if (matchingIds.length < 2) continue;
       const label = kind === 'fill' ? 'fill' : 'stroke';
       items.splice(items.length - 2, 0, {
@@ -13508,6 +13508,22 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
         }
       }, { separator: true });
     }
+    const matchingEffectIds = selectLayersWithSameEffects(pageNodes, state.document, node);
+    if (matchingEffectIds.length > 1) items.splice(items.length - 2, 0, {
+      label: `Select all with same effects (${matchingEffectIds.length})`,
+      action: () => {
+        setSelection(matchingEffectIds, { source: 'programmatic' });
+        showToast(`Selected ${matchingEffectIds.length} layers with the same effects.`);
+      }
+    }, { separator: true });
+    const matchingInstanceIds = selectLayersWithSameInstance(pageNodes, state.document, node);
+    if (matchingInstanceIds.length > 1) items.splice(items.length - 2, 0, {
+      label: `Select all with same instance (${matchingInstanceIds.length})`,
+      action: () => {
+        setSelection(matchingInstanceIds, { source: 'programmatic' });
+        showToast(`Selected ${matchingInstanceIds.length} instances of this component.`);
+      }
+    }, { separator: true });
   }
   const shapeEntries = shapeBuilderEntries(rootSelectedIds());
   if (canStartShapeBuilder(shapeEntries)) items.unshift({
