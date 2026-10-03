@@ -1208,6 +1208,7 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
   setSaveState('saving', migrate ? 'Preparing folder workspace…' : 'Reconnecting folder…');
   try {
     const { workspace, opened } = await initializeWorkspaceForHandle(handle, { migrate });
+    const pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
     const previousDocument = state.document;
     state.imageExportAbortController?.abort();
     releaseImageRuntimeForDocumentSwitch();
@@ -1218,7 +1219,11 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     state.workspaceOnboardingRequired = false;
     $('#document-name').readOnly = false;
     state.document = opened.document;
-    state.pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
+    state.pendingRecipeRecovery = pendingRecipeRecovery;
+    // The folder is now verified, persisted, and installed as the active
+    // workspace. Later font/image restoration can still report a recoverable
+    // error; it must not leave the blocking first-run picker over the editor.
+    $('#workspace-onboarding-dialog').close?.();
     state.workspaceVerifiedImageIds.clear();
     state.workspaceVerifiedFontIds.clear();
     const assetIds = collectReferencedAssets(opened.document).imageAssetIds;
@@ -1239,7 +1244,6 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     if (previousDocument !== state.document) history.undoStack.length = history.redoStack.length = 0;
     setSaveState('saved', savedStatusText());
     showToast(reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
-    $('#workspace-onboarding-dialog').close?.();
     renderRecipeRecoveryPrompt();
     if (!state.pendingRecipeRecovery && location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
     return true;

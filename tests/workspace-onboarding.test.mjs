@@ -50,8 +50,28 @@ test('workspace activation surfaces a saved recipe recovery before it can start 
   const end = mainSource.indexOf('\nasync function chooseWorkspaceFolder', start);
   assert.ok(start >= 0 && end > start);
   const activation = mainSource.slice(start, end);
-  assert.match(activation, /state\.pendingRecipeRecovery\s*=\s*await recipeRecoveryForDocument[\s\S]*?renderRecipeRecoveryPrompt\(\)/);
+  assert.match(activation, /const pendingRecipeRecovery = await recipeRecoveryForDocument[\s\S]*?state\.pendingRecipeRecovery = pendingRecipeRecovery;[\s\S]*?renderRecipeRecoveryPrompt\(\)/);
   assert.match(activation, /!state\.pendingRecipeRecovery\s*&&\s*location\.hash\.startsWith\('#tisd1\.'\)/);
+});
+
+test('verified folder activation closes onboarding before optional asset restoration can fail', () => {
+  const start = mainSource.indexOf('async function activateWorkspace(handle');
+  const end = mainSource.indexOf('\nasync function chooseWorkspaceFolder', start);
+  const activation = mainSource.slice(start, end);
+  const workspaceInstalled = activation.indexOf('state.workspace = workspace;');
+  const onboardingCleared = activation.indexOf('state.workspaceOnboardingRequired = false;');
+  const dialogClosed = activation.indexOf("$('#workspace-onboarding-dialog').close?.();");
+  const fontsRestored = activation.indexOf('await refreshLocalFontAssets(');
+  const imagesRestored = activation.indexOf('await restoreImageAssets(');
+  assert.ok(workspaceInstalled >= 0 && onboardingCleared > workspaceInstalled,
+    'the selected folder must be installed before setup is considered complete');
+  assert.ok(dialogClosed > onboardingCleared && dialogClosed < fontsRestored && dialogClosed < imagesRestored,
+    'post-activation font or image recovery errors must not leave the blocking folder picker visible');
+
+  const pickerStart = mainSource.indexOf('async function chooseWorkspaceFolder()');
+  const pickerEnd = mainSource.indexOf('\nfunction syncWorkspaceOnboardingDialog()', pickerStart);
+  assert.match(mainSource.slice(pickerStart, pickerEnd), /showToast\(message\)/,
+    'restoration failures must remain visible after the onboarding dialog closes');
 });
 
 test('a deferred stable-link invitation opens after recipe recovery is resolved', () => {
