@@ -22,6 +22,16 @@ export function commentSelectionTarget(entry, options = {}) {
   return commentSelectionTargets(entry, options)?.[0] || null;
 }
 
+/** Prefer the geometric container under a point when paint hit-testing finds an unrelated overlap. */
+export function commentSelectionEntryForHit(hitEntry, geometricContainerEntry) {
+  if (!hitEntry?.node) return geometricContainerEntry?.node ? geometricContainerEntry : null;
+  if (!geometricContainerEntry?.node) return hitEntry;
+  const containerId = geometricContainerEntry.node.id;
+  const hitIsWithinContainer = hitEntry.node.id === containerId
+    || hitEntry.parents?.some(parent => parent.id === containerId);
+  return hitIsWithinContainer ? hitEntry : geometricContainerEntry;
+}
+
 /** Cycle a repeated touch hit through the containers under that point. */
 export function nextCommentSelectionTarget(entry, currentTargetId, options = {}) {
   const targets = commentSelectionTargets(entry, options) || [];

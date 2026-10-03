@@ -5,7 +5,7 @@ import {
   addCommentReply, addNode, createCommentThread, createComponent, createDocument, createNode, findNode, parseDocument,
   removeCommentThread, serializeDocument, setCommentResolved, validateDocument
 } from '../src/model.js';
-import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionTarget, commentSelectionTargets, commentPanelCanvasIsInteractive, nextCommentSelectionTarget, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentPanelOverridesCanvasTool, commentSelectionOverridesCanvasTool } from '../src/comment-selection.js';
+import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionEntryForHit, commentSelectionTarget, commentSelectionTargets, commentPanelCanvasIsInteractive, nextCommentSelectionTarget, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentPanelOverridesCanvasTool, commentSelectionOverridesCanvasTool } from '../src/comment-selection.js';
 import { deepestContainerAtPagePoint, hitTestPage } from '../src/renderer.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
@@ -280,8 +280,35 @@ test('Comment mode can select transparent or empty frames from their blank inter
 
   const entryPoint = editorSource.indexOf('function commentSelectionEntryAt(world');
   const entryEnd = editorSource.indexOf('\nfunction commentTargetAt', entryPoint);
-  assert.match(editorSource.slice(entryPoint, entryEnd), /hitTestPage\([\s\S]*?if \(hitEntry\?\.node\) return hitEntry;[\s\S]*?deepestContainerAtPagePoint\(page\.children, world, state\.document\)[\s\S]*?findNode\(state\.document, container\.node\.id, page\.id\)/,
-    'canvas review selection should resolve painted content first, then fall back to visible container geometry');
+  assert.match(editorSource.slice(entryPoint, entryEnd), /hitTestPage\([\s\S]*?deepestContainerAtPagePoint\(page\.children, world, state\.document\)[\s\S]*?findNode\(state\.document, container\.node\.id, page\.id\)[\s\S]*?commentSelectionEntryForHit\(hitEntry, containerEntry\)/,
+    'canvas review selection should combine paint hits with visible container geometry');
+});
+
+test('Comment mode selects a transparent component or frame beneath unrelated painted overlaps', () => {
+  const document = createDocument();
+  const component = createNode('frame', { name: 'Component', x: 0, y: 0, width: 300, height: 200, fill: 'transparent' });
+  addNode(document, component);
+  createComponent(document, component.id, component.name);
+  const frame = createNode('frame', { name: 'Nested frame', x: 10, y: 10, width: 100, height: 100, fill: 'transparent' });
+  addNode(document, frame, { parentId: component.id });
+  const frameCover = createNode('rectangle', { name: 'Frame overlap', x: 24, y: 24, width: 40, height: 40, fill: '#ff0000' });
+  addNode(document, frameCover);
+  const componentCover = createNode('rectangle', { name: 'Component overlap', x: 220, y: 130, width: 40, height: 40, fill: '#00ff00' });
+  addNode(document, componentCover);
+
+  for (const [point, expected] of [
+    [{ x: 40, y: 40 }, frame],
+    [{ x: 240, y: 150 }, component]
+  ]) {
+    const hit = hitTestPage(document.pages[0], point, null, document, null, 1, { allowAnyClippedNodes: true });
+    assert.ok(hit && hit.id !== expected.id, 'paint hit should be an unrelated overlapping layer');
+    const hitEntry = findNode(document, hit.id);
+    const geometric = deepestContainerAtPagePoint(document.pages[0].children, point, document);
+    const geometricEntry = findNode(document, geometric.node.id);
+    const selectionEntry = commentSelectionEntryForHit(hitEntry, geometricEntry);
+    assert.equal(commentSelectionTarget(selectionEntry, { preferHitContainer: true })?.id, expected.id,
+      `Comment mode should select the ${expected.name} under the overlapping artwork`);
+  }
 });
 
 test('Comment-mode clicks keep directly hit nested frames selectable', () => {

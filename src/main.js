@@ -122,7 +122,7 @@ import { snapToAlignmentGuides } from './smart-guides.js';
 import { preserveCanvasWorldCenterOnResize } from './canvas-viewport.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionTarget, commentPanelCanvasIsInteractive, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentSelectionOverridesCanvasTool } from './comment-selection.js';
+import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionEntryForHit, commentSelectionTarget, commentPanelCanvasIsInteractive, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentSelectionOverridesCanvasTool } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
@@ -4917,14 +4917,13 @@ function commentSelectionEntryAt(world) {
     (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
     state.document, null, state.zoom, { allowAnyClippedNodes: true });
   const hitEntry = hit ? findNode(state.document, hit.id, page.id) : null;
-  if (hitEntry?.node) return hitEntry;
-
-  // Comment review must still be able to select a frame when its interior has
-  // no painted child or visible fill. Ordinary hit testing is paint-oriented;
-  // use the frame's geometric bounds as the fallback, honoring visibility and
-  // ancestor clipping through deepestContainerAtPagePoint.
   const container = deepestContainerAtPagePoint(page.children, world, state.document);
-  return container?.node ? findNode(state.document, container.node.id, page.id) : null;
+  // Paint hit testing can return an unrelated layer drawn over a transparent
+  // frame. Include the geometric container under the pointer so Comment mode
+  // can still select that component/frame instead of trapping selection on
+  // the overlapping paint layer.
+  const containerEntry = container?.node ? findNode(state.document, container.node.id, page.id) : null;
+  return commentSelectionEntryForHit(hitEntry, containerEntry);
 }
 function commentTargetAt(world, options) {
   const entry = commentSelectionEntryAt(world);
