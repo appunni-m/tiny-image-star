@@ -13,14 +13,14 @@ export function formatLiveShareMessage(invitationUrl, sessionCode) {
   const offer = String(sessionCode ?? '').trim();
   if (!invitation || !offer.startsWith('tisc1.')) throw new TypeError('A design invitation and fresh connection code are required.');
   return [
-    'Join my Tiny Image Star design',
+    'Open this Tiny Image Star design',
     '',
     invitation,
     '',
-    'Temporary connection code (expires in about 5 minutes):',
+    'Use this code within 5 minutes:',
     offer,
     '',
-    'Paste this whole message in Tiny Image Star and tap Join design.'
+    'In Tiny Image Star, paste this whole message and tap Join design. Then send your reply back to me.'
   ].join('\n');
 }
 
@@ -29,11 +29,11 @@ export function formatLiveReplyMessage(sessionCode) {
   const code = String(sessionCode ?? '').trim();
   if (!code.startsWith('tisc1.')) throw new TypeError('A fresh connection reply is required.');
   return [
-    'Tiny Image Star reply',
+    'Reply to join this Tiny Image Star design',
     '',
     code,
     '',
-    'Paste this whole reply in the owner’s Tiny Image Star window.'
+    'Send this whole message to the owner. They will paste it to finish connecting you.'
   ].join('\n');
 }
 

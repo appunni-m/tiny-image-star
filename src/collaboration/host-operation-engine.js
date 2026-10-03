@@ -36,7 +36,7 @@ const SHA256_K = [
 const NODE_PROPERTIES = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked',
   'blendMode', 'fill', 'fills', 'fillOpacity', 'fillStyleId', 'stroke', 'strokeWidth',
-  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit',
+  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit',
   'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'maskSourceId', 'effects',
   'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
   'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',

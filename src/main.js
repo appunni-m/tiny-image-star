@@ -34,6 +34,7 @@ import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.j
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-processing.js';
 import { defaultImageRecipeName } from './image-recipe-name.js';
+import { createRecipeRecoveryForkDocument, recipeRecoveryForkName } from './recipe-recovery-fork.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
@@ -11671,6 +11672,96 @@ async function recipeRecoveryForDocument(documentId) {
   }
 }
 
+async function createRecipeRecoveryDesignFork(recovery, source) {
+  if (!source) throw new Error('The last saved design could not be found, so no recovery copy was created.');
+  const name = recipeRecoveryForkName(source.name);
+  if (!state.workspace) {
+    const duplicate = await duplicateStoredDocument(recovery.documentId, name);
+    if (!duplicate) throw new Error('The last saved design could not be duplicated.');
+    return parseDocument(duplicate);
+  }
+
+  const duplicate = createRecipeRecoveryForkDocument(source, createId('file'));
+  let created = false;
+  try {
+    const initial = await createWorkspaceDesign(state.workspace, workspaceSeedDocument(duplicate));
+    created = true;
+    const requirements = collectReferencedAssets(duplicate);
+    for (const assetId of requirements.imageAssetIds) {
+      const asset = await readWorkspaceImageAsset(state.workspace, recovery.documentId, assetId);
+      await saveWorkspaceImageAsset(state.workspace, duplicate.id, assetId, asset.bytes, { mimeType: asset.metadata.mimeType });
+    }
+    const sourceFonts = await listWorkspaceFontAssets(state.workspace, recovery.documentId);
+    const usedFonts = sourceFonts.filter(font => requirements.fontSpecs.some(spec =>
+      spec.family.toLocaleLowerCase() === font.metadata.family.toLocaleLowerCase()
+        && spec.weight === font.metadata.weight && spec.style === font.metadata.style));
+    for (const font of usedFonts) await saveWorkspaceFontAsset(state.workspace, duplicate.id, font);
+    const committed = await commitWorkspaceDesign(state.workspace, duplicate.id, duplicate, {
+      expectedHead: initial.head,
+      pageId: duplicate.activePageId || duplicate.pages[0].id
+    });
+    if (committed.acknowledged !== true) throw new Error('The folder workspace did not confirm the recovery copy.');
+    state.workspaceVerifiedImageIds.set(duplicate.id, new Set(requirements.imageAssetIds));
+    state.workspaceVerifiedFontIds.set(duplicate.id, new Set(usedFonts.map(font => font.metadata.id)));
+    try { await saveDocument(duplicate, { expectedRevision: null }); }
+    catch (error) { console.warn('The recovery copy was saved to the folder, but its optional browser library mirror could not be updated.', error); }
+    return duplicate;
+  } catch (error) {
+    if (created) {
+      try { await deleteWorkspaceDesign(state.workspace, duplicate.id); }
+      catch (cleanupError) { console.warn('Could not clean up the incomplete recipe recovery copy.', cleanupError); }
+    }
+    throw error;
+  }
+}
+
+async function forkInterruptedRecipeAndResume() {
+  const recovery = state.pendingRecipeRecovery;
+  const button = $('#recipe-recovery-fork');
+  if (!recovery || state.documentTransitioning) return false;
+  button.disabled = true;
+  $('#recipe-recovery-status').textContent = 'Saving a separate copy of the last saved design…';
+  try {
+    const current = await loadRecipeBatchRecovery(recovery.documentId);
+    if (!current) throw new Error('This recipe recovery has already been resolved. Reload the original design to continue.');
+    const source = state.workspace
+      ? (await openWorkspaceDesign(state.workspace, recovery.documentId)).document
+      : await loadDocumentById(recovery.documentId);
+    if (!source) throw new Error('The last saved design could not be found.');
+    if (current.status !== 'complete') {
+      const index = createPageNodeIndex(source, current.pageId, { nodeIds: current.targetIds });
+      if (!current.targetIds.some(id => isEditableImageRecipeTarget(index.find(id)))) {
+        throw new Error('This saved recipe has no editable images left to resume. The original design is unchanged.');
+      }
+    }
+    const fork = await createRecipeRecoveryDesignFork(current, source);
+    const switched = await switchToDocument(fork, {
+      saveCurrent: false,
+      versionLabel: 'Forked image recipe recovery',
+      message: `Created a separate local copy: “${fork.name}”.`
+    });
+    if (!switched) throw new Error('The recovery copy was saved, but this tab could not open it. It is available in Your designs.');
+    if (current.status !== 'complete') {
+      const started = startRecipe(structuredClone(current.recipe), current.targetIds, {
+        concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY,
+        pageId: current.pageId
+      });
+      if (!started) {
+        showToast(`The recovery copy “${fork.name}” is open. Select its image layers and apply “${current.recipe.name || 'Image recipe'}” when ready.`, 8000);
+        return false;
+      }
+      showToast(`Applying “${current.recipe.name || 'Image recipe'}” to the recovery copy. The original design is unchanged.`, 6000);
+    } else {
+      showToast(`The completed image edits were copied to “${fork.name}”. The original design is unchanged.`, 6000);
+    }
+    return true;
+  } catch (error) {
+    $('#recipe-recovery-status').textContent = error.message || 'Could not create a separate recovery copy. The original design is unchanged.';
+    button.disabled = false;
+    return false;
+  }
+}
+
 function initializeRecipeBatchCoordination() {
   if (typeof BroadcastChannel !== 'function' || recipeBatchCoordinationChannel) return;
   try { recipeBatchCoordinationChannel = new BroadcastChannel('tiny-image-star-recipe-batch-recovery-v1'); }
@@ -11825,16 +11916,20 @@ function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
   const leaseActive = Number.isFinite(recovery.leaseExpiresAt) && recovery.leaseExpiresAt > Date.now();
   const keepButton = $('#recipe-recovery-keep');
   const resumeButton = $('#recipe-recovery-resume');
+  const forkButton = $('#recipe-recovery-fork');
   const stopButton = $('#recipe-recovery-stop-other');
   $('#recipe-recovery-recipe').textContent = recovery.recipe.name || 'Image recipe';
   $('#recipe-recovery-copy').textContent = leaseActive
-    ? recipeBatchCoordinationChannel
-      ? `Another tab is using this ${recovery.recipe.name || 'image recipe'} batch. You can stop it safely and recover here. Saved edits are kept.`
-      : `Another tab is using this ${recovery.recipe.name || 'image recipe'} batch. Switch to it and finish or close it. If it is running an older version, the lock expires within two minutes after it stops renewing. Saved edits are kept.`
+    ? `A saved ${recovery.recipe.name || 'image recipe'} batch still holds its lock. Make a separate copy and continue there now. The original stays untouched.`
     : `${recovery.targetIds.length} image layer${recovery.targetIds.length === 1 ? '' : 's'} were in this batch. Resume the saved recipe, or keep the image edits that were already saved.`;
+  keepButton.hidden = leaseActive;
+  resumeButton.hidden = leaseActive;
   keepButton.disabled = leaseActive;
   resumeButton.disabled = leaseActive;
-  stopButton.hidden = !leaseActive || !recipeBatchCoordinationChannel;
+  forkButton.hidden = !leaseActive;
+  forkButton.disabled = false;
+  forkButton.textContent = recovery.status === 'complete' ? 'Fork saved edits' : 'Fork and resume recipe';
+  stopButton.hidden = true;
   stopButton.disabled = recipeStopRequestPending;
   if (!dialog.open) {
     $('#recipe-recovery-status').textContent = '';
@@ -13423,22 +13518,26 @@ function liveStatus(role, message) {
   const target = role === 'host' ? $('#live-host-status') : $('#live-guest-status');
   if (target) target.textContent = message || '';
 }
+function revealLiveHostReplyStep(message = 'Invite sent. Ask them to send their reply back.') {
+  $('#live-host-reply-step').hidden = false;
+  liveStatus('host', message);
+}
 function liveTerminal(status) {
   return ['closed', 'revoked', 'failed', 'timeout', 'disconnected', 'overloaded', 'rejected', 'diverged', 'fork-saved', 'fork-unsaved', 'disconnected-before-snapshot'].includes(status);
 }
 function liveHostStatusCopy(status) {
   return {
     preparing: 'Preparing your invite…',
-    'waiting-answer': 'Invite ready. Send the message or QR to your guest; it expires in about five minutes.',
+    'waiting-answer': 'Invite ready. Send it to the other person to get started.',
     'verifying-answer': 'Checking their reply…',
     connecting: 'Connecting to your guest…',
-    'waiting-guest': 'Connected. Waiting for your guest to finish joining…',
-    connected: 'Guest connected. Accepted edits save to your folder.',
+    'waiting-guest': 'Reply accepted. Waiting for the other person to finish joining…',
+    connected: 'Connected. Their edits save to your folder.',
     'sending-assets': 'Sending images and fonts…',
     revoked: 'Sharing stopped. This invite can no longer be used.',
     closed: 'Sharing ended.',
-    failed: 'Could not connect. If you are on different networks, both people can try Google STUN in More sharing options. Otherwise, start a fresh invite.',
-    timeout: 'This invite expired. Start sharing again to make a new one.',
+    failed: 'Could not connect. If you are on different networks, both people can turn on “Use Google to help connect” under More options, then create a new invite.',
+    timeout: 'This invite expired. Create a new invite and send it again.',
     overloaded: 'The connection closed because it sent too much data.',
     rejected: 'This guest could not be connected.',
     diverged: 'Your guest’s changes were saved as a separate local copy.'
@@ -13475,7 +13574,8 @@ function renderLiveHostPeers(session) {
           $('#live-answer-value').value = peer.answerDraft || '';
           $('#live-accept-answer').hidden = false;
           $('#live-share-capsules').hidden = false;
-          liveStatus('host', `Invite for ${peer.label} selected. Send it, then paste their reply here.`);
+          $('#live-host-reply-step').hidden = false;
+          liveStatus('host', `Invite for ${peer.label} selected. Send it, then connect their reply.`);
           renderLiveHostPeers(session);
         });
         item.append(select);
@@ -13499,7 +13599,7 @@ function refreshLiveHostRoomUi(session) {
   const allRevoked = peers.length > 0 && peers.every(peer => peer.status === 'revoked');
   if (connected) {
     session.status = 'connected';
-    liveStatus('host', `${connected} ${connected === 1 ? 'person' : 'people'} connected. Their accepted edits save in your folder.`);
+    liveStatus('host', `${connected} ${connected === 1 ? 'person' : 'people'} connected. Their edits save in your folder.`);
     setLiveEditorBlocked(false);
     queueLivePresenceSync();
   } else if (waiting) {
@@ -13666,8 +13766,8 @@ function openLiveDialog(role) {
   $('#live-guest-panel').hidden = role !== 'guest';
   $('#live-collaboration-title').textContent = role === 'host' ? 'Invite someone' : 'Join a design';
   $('#live-collaboration-copy').textContent = role === 'host'
-    ? 'Your design stays in your folder. Accepted edits save here.'
-    : 'Join someone’s design and save your own local copy.';
+    ? 'Your device saves the original. The guest can edit while you follow along.'
+    : 'Your device saves a local copy. The owner’s device saves the original.';
   dialog.showModal();
 }
 async function prepareLiveWorkspace() {
@@ -13706,16 +13806,28 @@ async function copyLiveField(fieldId) {
     field.focus(); field.select();
     showToast('The text is selected. Copy it using your device’s copy command.');
   }
+  if (fieldId === 'live-share-message-value') revealLiveHostReplyStep('Invite copied. Ask them to send their reply back.');
 }
 async function shareLiveCapsules() {
   const text = formatLiveShareMessage($('#live-invite-value').value, $('#live-offer-value').value);
   $('#live-share-message-value').value = text;
   if (typeof navigator.share === 'function') {
-    try { await navigator.share({ title: 'Tiny Image Star live design', text }); return; }
+    try {
+      await navigator.share({ title: 'Tiny Image Star live design', text });
+      revealLiveHostReplyStep();
+      return;
+    }
     catch (error) { if (error?.name === 'AbortError') return; }
   }
-  try { await navigator.clipboard.writeText(text); showToast('Invite copied. Send the message to your guest.'); }
-  catch { $('#live-share-message-value').focus(); $('#live-share-message-value').select(); showToast('The invite is selected. Copy and send the whole message.'); }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Invite copied. Send the message to your guest.');
+  } catch {
+    $('#live-share-message-value').focus();
+    $('#live-share-message-value').select();
+    showToast('The invite is selected. Copy and send the whole message.');
+  }
+  revealLiveHostReplyStep();
 }
 async function shareLiveAnswer() {
   const text = $('#live-guest-answer').value.trim();
@@ -13786,6 +13898,7 @@ async function startLiveHost() {
     $('#live-host-start').hidden = true;
     $('#live-start-host').hidden = true;
     $('#live-host-active').hidden = false;
+    $('#live-host-reply-step').hidden = true;
     $('#live-add-guest').hidden = false;
     $('#live-accept-answer').hidden = false;
     const link = new URL(location.href);
@@ -13804,6 +13917,7 @@ async function startLiveHost() {
     $('#live-host-start').hidden = false;
     $('#live-start-host').hidden = false;
     $('#live-host-active').hidden = true;
+    $('#live-host-reply-step').hidden = true;
     liveStatus('host', error.message || 'Could not prepare this live session.');
     showToast(error.message || 'Could not prepare this live session.');
   } finally { $('#live-start-host').disabled = false; }
@@ -13847,7 +13961,8 @@ async function addLiveHostGuest() {
     $('#live-answer-value').value = '';
     $('#live-accept-answer').hidden = false;
     $('#live-share-capsules').hidden = false;
-    liveStatus('host', `Invite for ${peer.label} ready. Send it, then connect their reply here.`);
+    $('#live-host-reply-step').hidden = true;
+    liveStatus('host', `Invite for ${peer.label} ready. Send it, then paste or scan their reply here.`);
     renderLiveHostPeers(session);
   } catch (error) {
     peer.status = 'failed';
@@ -14018,9 +14133,9 @@ async function startLiveGuest() {
     const pasted = parseLiveShareMessage($('#live-join-message').value);
     const inviteText = pasted.invitation || $('#live-join-invite').value.trim();
     const offerCapsule = pasted.sessionCode || $('#live-join-offer').value.trim();
-    if (!inviteText) throw new Error('Paste the full invite message from the design owner.');
+    if (!inviteText) throw new Error('Paste the invite message from the owner, or scan their invite QR code.');
     const invite = invitationFromText(inviteText);
-    if (!offerCapsule) throw new Error('This design link is ready. Ask the owner for the full invite message or temporary connection code, then paste it here.');
+    if (!offerCapsule) throw new Error('This is only the design link. Ask the owner for the full invite message or scan their invite QR code.');
     await prepareLiveWorkspace();
     if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before joining a live session.');
     const localSeed = createDocument();
@@ -14047,13 +14162,13 @@ async function startLiveGuest() {
         session.status = status;
         const copy = {
           'preparing-answer': 'Preparing your reply…', 'answer-ready': 'Reply ready. Send it to the owner to finish joining.',
-          'authenticating': 'Reply sent. Checking the owner and receiving the design…',
-          'connected': 'Connected. Your local copy is saved in the chosen folder.',
+          'authenticating': 'Reply sent. Connecting and loading the design…',
+          'connected': 'Connected. A local copy is saved in your folder.',
           'pending': 'Your local copy is safe; the owner is saving this edit…',
           'fork-saved': 'The connection ended. Your work is saved as a separate local copy.',
           'fork-unsaved': 'The connection ended. Retry saving your local copy before continuing.',
           'disconnected-before-snapshot': 'The connection ended before the design arrived. No edits were made.',
-          'failed': 'Could not connect. If you are on different networks, ask the owner to enable Google STUN too.', 'closed': 'Live design closed.'
+          'failed': 'Could not connect. If you are on different networks, both of you can turn on “Use Google to help connect” under More options, then ask the owner for a new invite.', 'closed': 'You left the shared design.'
         };
         liveStatus('guest', copy[status] || `Live session: ${status}.`);
         if (liveTerminal(status)) state.remotePresence.clear();
@@ -14139,6 +14254,7 @@ async function startLiveGuest() {
     session.controller = controller;
     session.sessionId = controller.sessionId;
     $('#live-guest-answer').value = controller.answerCapsule;
+    $('#live-guest-join-step').hidden = true;
     $('#live-guest-reply').hidden = false;
     $('#live-copy-answer').hidden = false;
     $('#live-stop-guest').hidden = false;
@@ -14187,10 +14303,11 @@ function startJoinFromStableLink() {
   if (state.workspaceOnboardingRequired || state.workspacePermissionNeeded || state.pendingRecipeRecovery) return false;
   const invitationUrl = `${location.origin}${location.pathname}${location.search}${hash}`;
   $('#live-join-invite').value = invitationUrl;
-  $('#live-join-message').value = invitationUrl;
+  $('#live-join-message').value = '';
+  $('#live-guest-join-step').hidden = false;
   history.replaceState(history.state, '', `${location.pathname}${location.search}`);
   openLiveDialog('guest');
-  liveStatus('guest', 'Link loaded. Paste the full invite message from the owner to continue.');
+  liveStatus('guest', 'This is part of the invite. Paste the owner’s full message or scan their QR code to join.');
   return true;
 }
 function toggleLayoutGuides() { state.showLayoutGuides = !state.showLayoutGuides; renderer.invalidate(); }
@@ -18957,21 +19074,24 @@ function trapMobilePanelTab(event) {
 function initEvents() {
   initializeRecipeBatchCoordination();
   initializeCollaborationQrHandoff({
+    onInvitationShown: () => revealLiveHostReplyStep('Invite shown. Ask them to scan it, then send their reply back.'),
     validateInvitation: invitationFromText,
     onGuestHandoff: ({ invitation, offer }) => {
       $('#live-join-invite').value = invitation;
       $('#live-join-offer').value = offer;
       $('#live-join-message').value = formatLiveShareMessage(invitation, offer);
+      $('#live-guest-join-step').hidden = false;
       liveStatus('guest', 'Invite scanned. Tap Join design to continue.');
       showToast('Invite scanned. Tap Join design to continue.');
     },
     onHostAnswer: answer => {
       const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
-      if (!session?.currentHostPeer?.controller && !session?.controller) throw new Error('Start sharing before scanning a reply.');
+      if (!session?.currentHostPeer?.controller && !session?.controller) throw new Error('Create an invite before scanning a reply.');
       $('#live-answer-value').value = answer;
+      $('#live-host-reply-step').hidden = false;
       if (session.currentHostPeer) session.currentHostPeer.answerDraft = answer;
-      liveStatus('host', 'Reply scanned. Tap Connect to finish.');
-      showToast('Reply scanned. Tap Connect to finish.');
+      liveStatus('host', 'Reply scanned. Tap Connect.');
+      showToast('Reply scanned. Tap Connect.');
     },
     notify: showToast
   });
@@ -18990,6 +19110,7 @@ function initEvents() {
       else {
         $('#live-host-start').hidden = false;
         $('#live-host-active').hidden = true;
+        $('#live-host-reply-step').hidden = true;
         $('#live-start-host').hidden = false;
         $('#live-start-host').disabled = false;
         $('#live-accept-answer').hidden = true;
@@ -19002,7 +19123,7 @@ function initEvents() {
         $('#live-share-capsules').hidden = true;
         $('#live-peer-list').replaceChildren();
         $('#live-transfer-status').textContent = '';
-        liveStatus('host', 'Start sharing to create an invite.');
+        liveStatus('host', 'Start sharing when you’re ready.');
         openLiveDialog('host');
       }
     })();
@@ -19014,6 +19135,7 @@ function initEvents() {
       $('#live-join-message').value = '';
       $('#live-join-invite').value = '';
       $('#live-join-offer').value = '';
+      $('#live-guest-join-step').hidden = false;
       $('#live-guest-answer').value = '';
       $('#live-copy-answer').hidden = true;
       $('#live-guest-reply').hidden = true;
@@ -19032,7 +19154,7 @@ function initEvents() {
     const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
     const peer = session?.currentHostPeer || null;
     const controller = peer?.controller || session?.controller || null;
-    if (!controller) { showToast('Start sharing before connecting a reply.'); return; }
+    if (!controller) { showToast('Create an invite before connecting a reply.'); return; }
     let answer;
     try { answer = parseLiveReplyMessage($('#live-answer-value').value); }
     catch (error) {
@@ -20243,6 +20365,7 @@ function initEvents() {
   recoveryDialog.addEventListener('cancel', event => event.preventDefault());
   $('#recipe-recovery-keep').addEventListener('click', () => { void keepInterruptedRecipeChanges(); });
   $('#recipe-recovery-resume').addEventListener('click', resumeInterruptedRecipe);
+  $('#recipe-recovery-fork').addEventListener('click', () => { void forkInterruptedRecipeAndResume(); });
   $('#recipe-recovery-stop-other').addEventListener('click', requestRecipeBatchHandoff);
   $('#recipe-recovery-handoff-reload').addEventListener('click', () => location.reload());
   $('#toggle-rulers').addEventListener('click', event => {

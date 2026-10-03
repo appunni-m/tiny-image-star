@@ -7,8 +7,9 @@ const code = `tisc1.${'a'.repeat(128)}`;
 
 test('a single friendly invite message round-trips as one link and one short-lived code', () => {
   const message = formatLiveShareMessage(invitation, code);
-  assert.match(message, /Join my Tiny Image Star design/);
-  assert.match(message, /expires in about 5 minutes/);
+  assert.match(message, /Open this Tiny Image Star design/);
+  assert.match(message, /Use this code within 5 minutes/);
+  assert.match(message, /send your reply back to me/);
   assert.deepEqual(parseLiveShareMessage(message), { invitation, sessionCode: code });
 });
 
@@ -19,7 +20,7 @@ test('the guest can paste the whole message or a standalone stable invitation li
 
 test('the owner can paste a whole phone-shared reply or the raw code', () => {
   const message = formatLiveReplyMessage(code);
-  assert.match(message, /Paste this whole reply in the owner’s Tiny Image Star window/);
+  assert.match(message, /Send this whole message to the owner/);
   assert.equal(parseLiveReplyMessage(message), code);
   assert.equal(parseLiveReplyMessage(code), code);
   assert.throws(() => parseLiveReplyMessage(`${code}\n${code.replace(/a/g, 'b')}`), /more than one reply/);

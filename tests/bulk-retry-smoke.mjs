@@ -1,5 +1,5 @@
 import { addNode, createDocument, createImageRecipe, createNode } from '../src/model.js';
-import { claimRecipeBatchRecovery, deleteRecipeBatchRecovery, deleteStoredDocument, loadDocumentById, loadRecipeBatchRecovery, RECIPE_BATCH_RECOVERY_LEASE_MS, saveDocument } from '../src/storage.js';
+import { claimRecipeBatchRecovery, deleteRecipeBatchRecovery, deleteStoredDocument, listSavedDocuments, loadDocumentById, loadRecipeBatchRecovery, RECIPE_BATCH_RECOVERY_LEASE_MS, saveDocument } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -30,6 +30,7 @@ function imageRecipeState(node) {
   });
 }
 
+const designIds = new Set();
 let designId = null;
 let outcome;
 try {
@@ -41,6 +42,7 @@ try {
   const recipe = createImageRecipe(image, 'Retry missing preview', { format: 'png', quality: 90 });
   design.recipes.push(recipe);
   designId = design.id;
+  designIds.add(design.id);
   await saveDocument(design);
   const priorOwnerToken = 'run-bulk-retry-fixture';
   await claimRecipeBatchRecovery({
@@ -84,13 +86,52 @@ try {
   await waitFor(() => app.querySelector('#bulk-bar').hidden, 'recovered batch result dismissal');
   assert((await loadRecipeBatchRecovery(designId)) === null, 'Dismissing the saved result should clear its recovery journal.');
   assert(app.querySelector('#bulk-bar').hidden, 'The drained retry result should be dismissible.');
-  outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true })}`;
+
+  const activeDesign = createDocument();
+  activeDesign.name = `Active recovery source ${Date.now()}`;
+  const activeImage = createNode('image', { name: 'Still missing', assetId: 'missing-active-recovery-asset', width: 120, height: 80 });
+  addNode(activeDesign, activeImage);
+  const activeRecipe = createImageRecipe(activeImage, 'Resume without the other tab', { format: 'png', quality: 90 });
+  activeDesign.recipes.push(activeRecipe);
+  designIds.add(activeDesign.id);
+  await saveDocument(activeDesign);
+  const activeOwnerToken = 'run-bulk-retry-active-fixture';
+  await claimRecipeBatchRecovery({
+    documentId: activeDesign.id, ownerToken: activeOwnerToken, recipe: activeRecipe,
+    pageId: activeDesign.activePageId, targetIds: [activeImage.id], status: 'running'
+  }, { now: Date.now(), leaseMs: RECIPE_BATCH_RECOVERY_LEASE_MS });
+
+  tap(app, app.querySelector('#main-menu-button'));
+  const secondLibraryItem = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Your designs'));
+  tap(app, secondLibraryItem);
+  const activeDesignButton = await waitFor(() => libraryDialog.open
+    && libraryDialog.querySelector(`[data-design-id="${activeDesign.id}"][data-design-action="open"]`), 'active-lease fixture in local library');
+  tap(app, activeDesignButton);
+  const activeRecoveryDialog = await waitFor(() => app.querySelector('#recipe-recovery-dialog')?.open
+    && !app.querySelector('#recipe-recovery-fork')?.hidden, 'fork action for an active recovery lease');
+  assert(!app.querySelector('#recipe-recovery-fork').disabled, 'A live-looking lease must allow a safe copy without waiting for another tab.');
+  tap(app, app.querySelector('#recipe-recovery-fork'));
+  const forkName = `${activeDesign.name} (recipe recovery copy)`;
+  const forkRecord = await waitFor(async () => (await listSavedDocuments()).find(item => item.name === forkName), 'saved recipe recovery copy');
+  designIds.add(forkRecord.id);
+  await waitFor(() => app.querySelector('#document-name')?.value === forkName, 'recovery copy opened in this tab');
+  const forkRecovery = await waitFor(async () => {
+    const record = await loadRecipeBatchRecovery(forkRecord.id);
+    return record?.ownerToken && record.ownerToken !== activeOwnerToken ? record : null;
+  }, 'recipe started under the new design identity');
+  const originalRecovery = await loadRecipeBatchRecovery(activeDesign.id);
+  assert.equal(originalRecovery?.ownerToken, activeOwnerToken, 'Forking must leave the possibly active original lease untouched.');
+  assert.equal(forkRecovery.targetIds[0], activeImage.id, 'The same saved image target is resumed in the fork.');
+  const forkedDesign = await loadDocumentById(forkRecord.id);
+  assert.equal(forkedDesign.pages[0].children[0].assetId, activeImage.assetId,
+    'The fork retains the original local image reference.');
+  outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true, activeLeaseForked: true, originalLeasePreserved: true, resumedUnderForkIdentity: true })}`;
 } catch (error) {
   outcome = `FAIL\n${error?.stack || error}`;
 } finally {
   frame.src = 'about:blank';
   await new Promise(resolve => setTimeout(resolve, 50));
-  if (designId) {
+  for (const designId of designIds) {
     const recovery = await loadRecipeBatchRecovery(designId).catch(() => null);
     if (recovery?.ownerToken) await deleteRecipeBatchRecovery(designId, recovery.ownerToken).catch(() => {});
     await deleteStoredDocument(designId).catch(() => {});

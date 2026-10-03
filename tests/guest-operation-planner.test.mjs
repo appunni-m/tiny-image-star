@@ -4,6 +4,7 @@ import { addNode, createDocument, createNode, findNode, moveNode, parseDocument,
 import { createHostOperationEngine } from '../src/collaboration/host-operation-engine.js';
 import { planGuestOperationSnapshots } from '../src/collaboration/guest-operation-planner.js';
 import { validateCollaborationMessage } from '../src/collaboration/protocol.js';
+import { addStroke, createStroke, updateStroke } from '../src/strokes.js';
 
 function fixture() {
   const document = createDocument();
@@ -145,6 +146,21 @@ test('plans fixed-position scroll behavior as a validated collaborative property
   assert.equal(plan[0].operation.targetId, 'rectangle-a');
   assert.equal(plan[0].operation.property, 'fixedPositionWhenScrolling');
   assert.equal(plan[0].operation.value, true);
+});
+
+test('plans custom stroke dash edits through the same host-validated property path', async () => {
+  const { document, pageId } = fixture();
+  const rectangle = findNode(document, 'rectangle-a', pageId).node;
+  assert.equal(addStroke(rectangle, createStroke({ id: 'stroke-custom', width: 2, pattern: 'custom', dashArray: [3, 5] })), true);
+  validateDocument(document);
+
+  const after = structuredClone(document);
+  assert.ok(updateStroke(findNode(after, 'rectangle-a', pageId).node, 'stroke-custom', { dashArray: [4, 6, 2, 3] }));
+  validateDocument(after);
+
+  const plan = await assertPlanMatchesHost(document, after, ['SetProperty', 'SetProperty']);
+  assert.deepEqual(plan.map(entry => entry.operation.property), ['strokeDashArray', 'strokes']);
+  assert.deepEqual(findNode(plan.at(-1).snapshot, 'rectangle-a', pageId).node.strokeDashArray, [4, 6, 2, 3]);
 });
 
 test('plans text truncation properties in host-valid order and supports clearing the line limit', async () => {

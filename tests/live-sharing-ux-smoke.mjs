@@ -47,7 +47,7 @@ try {
   const join = app.querySelector('#live-join-session');
   const scan = app.querySelector('#live-scan-invitation-qr');
   assertFitsPhone(app, join, 'Join design');
-  assertFitsPhone(app, scan, 'Scan QR code');
+  assertFitsPhone(app, scan, 'Scan invite QR');
   assert(app.querySelector('#live-join-actions').getBoundingClientRect().right <= app.defaultView.innerWidth,
     'The join and scan actions should fit within a narrow phone layout.');
   click(app, app.querySelector('#live-collaboration-close'));
@@ -56,15 +56,16 @@ try {
   app.querySelector('#live-host-panel').hidden = false;
   app.querySelector('#live-guest-panel').hidden = true;
   app.querySelector('#live-collaboration-title').textContent = 'Invite someone';
-  app.querySelector('#live-collaboration-copy').textContent = 'Invite someone to edit with you. Your original stays in your folder.';
+  app.querySelector('#live-collaboration-copy').textContent = 'Your device saves the design. Send an invite, then connect the reply they send back.';
   dialog.showModal();
   assert(!app.querySelector('#live-host-start').hidden, 'A first-time owner should see one clear Start sharing action.');
   assertFitsPhone(app, app.querySelector('#live-start-host'), 'Start sharing');
-  assert(app.querySelector('#live-host-active').hidden, 'Technical codes and reply steps should stay out of the initial screen.');
+  assert(app.querySelector('#live-host-active').hidden, 'Invite details and reply steps should stay out of the initial screen.');
+  assert(app.querySelector('#live-host-reply-step').hidden, 'The owner should see the reply step only after sending the invite.');
   const hostAdvanced = app.querySelector('#live-host-active .live-advanced');
   assert(hostAdvanced && !hostAdvanced.open, 'Extra host options should be collapsed by default.');
 
-  result.textContent = `PASS\n${JSON.stringify({ mobileWidth: app.defaultView.innerWidth, joinWithOneMessage: true, cameraScanAvailable: true, technicalDetailsCollapsed: true, hostStartSharingClear: true, localFileShareDifferentiated: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ mobileWidth: app.defaultView.innerWidth, joinWithOneMessage: true, cameraScanAvailable: true, technicalDetailsCollapsed: true, progressiveSteps: true, localFileShareDifferentiated: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

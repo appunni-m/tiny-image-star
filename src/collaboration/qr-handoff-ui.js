@@ -37,10 +37,10 @@ function installDialog() {
         <video id="live-qr-video" class="live-qr-video" muted playsinline></video>
         <p class="live-qr-progress" id="live-qr-scan-status" role="status" aria-live="polite">Start the camera or scan QR images one by one.</p>
         <div class="live-qr-scan-actions">
-          <button class="secondary-button" id="live-qr-start-camera" type="button">Start camera</button>
-          <label class="secondary-button live-qr-image-label" for="live-qr-image-input">Scan an image</label>
+          <button class="secondary-button" id="live-qr-start-camera" type="button">Use camera</button>
+          <label class="secondary-button live-qr-image-label" for="live-qr-image-input">Choose QR image</label>
           <input id="live-qr-image-input" class="sr-only" type="file" accept="image/*" />
-          <button class="secondary-button" id="live-qr-reset-scan" type="button">Reset scan</button>
+          <button class="secondary-button" id="live-qr-reset-scan" type="button">Start over</button>
         </div>
       </div>
       <div class="dialog-actions"><button class="secondary-button" id="live-qr-close-action" type="button">Close</button></div>
@@ -50,7 +50,7 @@ function installDialog() {
 }
 
 /** Add the local QR transport beside the existing text-based collaboration controls. */
-export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHandoff, onHostAnswer, notify = () => {} } = {}) {
+export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHandoff, onHostAnswer, onInvitationShown = () => {}, notify = () => {} } = {}) {
   const invitationField = document.querySelector('#live-invite-value');
   const offerField = document.querySelector('#live-offer-value');
   const shareButton = document.querySelector('#live-share-capsules');
@@ -74,13 +74,13 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   const joinActions = document.querySelector('#live-join-actions');
   if (!joinMessageField || !joinActions) throw new Error('The live collaboration invite message controls are missing.');
 
-  const showInvitationButton = makeButton('live-show-invitation-qr', 'Show QR code', { hidden: true });
+  const showInvitationButton = makeButton('live-show-invitation-qr', 'Show invite QR', { hidden: true });
   shareButton.after(showInvitationButton);
-  const scanAnswerButton = makeButton('live-scan-answer-qr', 'Scan their QR reply', { disabled: true });
+  const scanAnswerButton = makeButton('live-scan-answer-qr', 'Scan reply QR', { disabled: true });
   hostAnswerActions.append(scanAnswerButton);
-  const scanInvitationButton = makeButton('live-scan-invitation-qr', 'Scan QR code');
+  const scanInvitationButton = makeButton('live-scan-invitation-qr', 'Scan invite QR');
   joinActions.append(scanInvitationButton);
-  const showAnswerButton = makeButton('live-show-answer-qr', 'Reply with QR', { hidden: true });
+  const showAnswerButton = makeButton('live-show-answer-qr', 'Show reply QR', { hidden: true });
   copyAnswerButton.after(showAnswerButton);
   const dialog = installDialog();
   let runtimePromise = null;
@@ -128,7 +128,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       await current.runtime.drawLiveSharingQr(dialog.querySelector('#live-qr-canvas'), current.frames[currentIndex]);
       if (playback !== current) return;
       dialog.querySelector('#live-qr-frame-status').textContent = current.frames.length > 1
-        ? `Frame ${currentIndex + 1} of ${current.frames.length} · scans repeat automatically`
+        ? `Code ${currentIndex + 1} of ${current.frames.length} · changes automatically`
         : 'Ready to scan';
     } catch (error) {
       dialog.querySelector('#live-qr-frame-status').textContent = error.message || 'Could not draw this QR frame.';
@@ -153,9 +153,11 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       dialog.querySelector('#live-qr-scan').hidden = true;
       dialog.showModal();
       await drawFrame();
+      return true;
     } catch (error) {
       await stopActivities();
       notify(error.message || 'Could not prepare the local QR handoff.');
+      return false;
     }
   }
   async function showInvitation() {
@@ -163,14 +165,15 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       const invitation = invitationField.value.trim();
       const offer = offerField.value.trim();
       validateInvitation(invitation);
-      await showTransfer(createLiveInvitationQrPayload(invitation, offer), 'Invite QR code',
-        'Ask the other person to open Join a design and scan this code. It includes the design invite and temporary connection code, so show it only to the person you trust.');
+      const shown = await showTransfer(createLiveInvitationQrPayload(invitation, offer), 'Show your invite',
+        'Have the other person open Join a design and scan this screen. Keep it open while their camera reads the changing code.');
+      if (shown) onInvitationShown();
     } catch (error) { notify(error.message || 'The live invitation is not ready to share.'); }
   }
   async function showAnswer() {
     try {
-      await showTransfer(createLiveAnswerQrPayload(answerField.value.trim()), 'Your reply QR code',
-        'Ask the design owner to choose Invite someone, then Scan their QR reply. This code expires soon, so show it only to the owner.');
+      await showTransfer(createLiveAnswerQrPayload(answerField.value.trim()), 'Show your reply',
+        'Have the design owner scan this screen to finish connecting. Keep it open while their camera reads the changing code.');
     } catch (error) { notify(error.message || 'The guest answer is not ready to share.'); }
   }
   async function openScanner(target) {
@@ -179,15 +182,15 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       const qrRuntime = await runtime();
       mode = target;
       assembler = createQrTransferAssembler();
-      dialog.querySelector('#live-qr-title').textContent = target === 'guest' ? 'Scan invite QR code' : 'Scan their reply';
+      dialog.querySelector('#live-qr-title').textContent = target === 'guest' ? 'Scan the owner’s invite' : 'Scan their reply';
       dialog.querySelector('#live-qr-note').textContent = target === 'guest'
-        ? 'Point your camera at the owner’s QR code. Keep it in view while the code updates; this page reads the full invite automatically.'
-        : 'Point your camera at the other person’s reply QR code. The reply is checked when you connect them.';
+        ? 'Point your camera at the owner’s screen and keep the code in view until it is read.'
+        : 'Point your camera at the other person’s screen and keep the code in view until it is read.';
       dialog.querySelector('#live-qr-display').hidden = true;
       dialog.querySelector('#live-qr-scan').hidden = false;
-      dialog.querySelector('#live-qr-scan-status').textContent = 'Start the camera or scan QR images one by one.';
+      dialog.querySelector('#live-qr-scan-status').textContent = 'Start your camera, or choose a saved QR image.';
       dialog.querySelector('#live-qr-start-camera').disabled = false;
-      dialog.querySelector('#live-qr-start-camera').textContent = 'Start camera';
+      dialog.querySelector('#live-qr-start-camera').textContent = 'Use camera';
       dialog.showModal();
       scanner = qrRuntime.createLiveSharingScanner(dialog.querySelector('#live-qr-video'), value => { void acceptFrame(value); }, () => {});
     } catch (error) {
@@ -215,9 +218,9 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
     try {
       const result = await assembler.accept(value);
       if (result.status === 'different-transfer') {
-        dialog.querySelector('#live-qr-scan-status').textContent = 'A different transfer is in progress. Reset the scan to switch handoffs.';
+        dialog.querySelector('#live-qr-scan-status').textContent = 'Another code is being read. Start over to scan a different one.';
       } else if (result.status === 'progress' || result.status === 'duplicate') {
-        dialog.querySelector('#live-qr-scan-status').textContent = `Scanning handoff · ${result.received} of ${result.total} QR frames`;
+        dialog.querySelector('#live-qr-scan-status').textContent = `Reading code · ${result.received} of ${result.total} parts`;
       } else if (result.status === 'complete') {
         await completePayload(result.value);
       }
@@ -232,13 +235,13 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
     dialog.querySelector('#live-qr-scan-status').textContent = 'Requesting camera access…';
     try {
       await scanner.start();
-      button.textContent = 'Camera running';
-      dialog.querySelector('#live-qr-scan-status').textContent = 'Point the camera at the QR code. The scanner collects repeating frames automatically.';
+      button.textContent = 'Camera on';
+      dialog.querySelector('#live-qr-scan-status').textContent = 'Keep the other person’s changing QR code in view.';
     } catch (error) {
       button.disabled = false;
       dialog.querySelector('#live-qr-scan-status').textContent = error?.name === 'NotAllowedError'
-        ? 'Camera access was denied or is unavailable here. Scan saved QR images or use copy and paste.'
-        : `Camera unavailable: ${error.message || 'scan saved QR images or use copy and paste.'}`;
+        ? 'Camera access is unavailable. Choose a saved QR image or use copy and paste instead.'
+        : 'Camera unavailable. Choose a saved QR image or use copy and paste instead.';
     }
   }
   async function scanImage(file) {
@@ -267,7 +270,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   dialog.querySelector('#live-qr-start-camera').addEventListener('click', () => { void startCamera(); });
   dialog.querySelector('#live-qr-reset-scan').addEventListener('click', () => {
     assembler?.reset();
-    dialog.querySelector('#live-qr-scan-status').textContent = 'Scan the QR handoff again. The frame counter has been reset.';
+    dialog.querySelector('#live-qr-scan-status').textContent = 'Ready. Scan a QR code again.';
   });
   dialog.querySelector('#live-qr-image-input').addEventListener('change', event => { void scanImage(event.currentTarget.files?.[0]); });
   for (const [id, direction] of [['live-qr-previous', -1], ['live-qr-next', 1]]) {

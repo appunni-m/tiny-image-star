@@ -3,19 +3,31 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
-test('live sharing starts with plain two-step language and keeps advanced connection details collapsed', () => {
+test('live sharing reveals one clear next step for each person', () => {
   assert.match(html, /id="live-start-host"[^>]*>Start sharing<\/button>/);
-  assert.match(html, /id="live-share-capsules"[^>]*>Send invite/);
+  assert.match(html, /id="live-share-capsules"[^>]*>Share invite<\/button>/);
+  assert.match(html, /id="live-host-reply-step"[^>]*hidden/);
+  assert.match(html, /2 · Connect their reply/);
+  assert.match(html, /id="live-accept-answer"[^>]*>Connect<\/button>/);
+  assert.match(html, /id="live-guest-join-step"/);
   assert.match(html, /id="live-join-message"/);
   assert.match(html, /id="live-join-session"[^>]*>Join design<\/button>/);
+  assert.match(html, /2 · Send your reply/);
+  assert.match(html, /Send this reply to the owner/);
   assert.match(html, /id="live-guest-reply"[^>]*hidden/);
-  assert.match(html, /<summary>Advanced: enter link and code separately<\/summary>/);
+  assert.match(html, /<summary>More options<\/summary>/);
   assert.match(html, /<summary>Privacy and connection details<\/summary>/);
   assert.match(html, /id="live-invite-value"/);
   assert.match(html, /id="live-offer-value"/);
-  assert.match(html, /chat service you use can see the invite and its connection details/);
-  assert.match(html, /connection details visible to the chat service you use/);
+  assert.match(html, /Your chat app can see the invite/);
+  assert.match(html, /Your chat app can see the invite and reply/);
+  assert.match(main, /Your device saves the original\. The guest can edit while you follow along\./);
+  assert.match(main, /Your device saves a local copy\. The owner’s device saves the original\./);
+  assert.match(main, /This is only the design link\. Ask the owner for the full invite message or scan their invite QR code\./);
+  assert.match(main, /revealLiveHostReplyStep\(\)/);
+  assert.match(main, /\$\('#live-guest-join-step'\)\.hidden = true/);
 });
 
 test('live sharing offers a bundled QR handoff and a local answer scanner without removing text fallback', async () => {
@@ -32,8 +44,9 @@ test('live sharing offers a bundled QR handoff and a local answer scanner withou
   assert.match(qrUi, /await scanner\.start\(\)/);
   assert.match(qrUi, /readLiveSharingQrImage\(file\)/);
   assert.match(qrUi, /dialog\.addEventListener\('close'/);
-  assert.match(qrUi, /Invite QR code/);
-  assert.match(qrUi, /Scan invite QR code/);
+  assert.match(qrUi, /Show your invite/);
+  assert.match(qrUi, /Scan the owner’s invite/);
+  assert.match(qrUi, /onInvitationShown\(\)/);
   assert.match(qrCss, /@media \(max-width: 600px\)/);
 });
 

@@ -182,7 +182,7 @@
           <p class="modal-copy">Tiny Image Star saved a recovery point before this batch began.</p>
           <div class="recipe-recovery-card"><strong id="recipe-recovery-recipe">Image recipe</strong><span id="recipe-recovery-copy"></span></div>
           <p class="recipe-recovery-status" id="recipe-recovery-status" role="status" aria-live="polite"></p>
-          <div class="dialog-actions"><button class="secondary-button" id="recipe-recovery-stop-other" type="button" hidden>Stop other tab and recover here</button><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
+          <div class="dialog-actions"><button class="primary-button" id="recipe-recovery-fork" type="button" hidden>Fork and resume recipe</button><button class="secondary-button" id="recipe-recovery-stop-other" type="button" hidden>Recover same design from other tab</button><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
         </section>
       </dialog>
 
@@ -282,32 +282,32 @@
       <dialog class="modal live-collaboration-dialog" id="live-collaboration-dialog" aria-labelledby="live-collaboration-title">
         <section class="live-collaboration-content">
           <div class="modal-title-row">
-            <div><span class="modal-eyebrow">LIVE DESIGN INVITE</span><h2 id="live-collaboration-title">Invite someone</h2></div>
+            <div><span class="modal-eyebrow">SHARE THIS DESIGN</span><h2 id="live-collaboration-title">Invite someone</h2></div>
             <button class="icon-button" id="live-collaboration-close" type="button" aria-label="Close live collaboration">×</button>
           </div>
-          <p class="modal-copy" id="live-collaboration-copy">Your design stays on your device. Accepted edits are saved to your folder.</p>
+          <p class="modal-copy" id="live-collaboration-copy">Your device saves the original design.</p>
           <section id="live-host-panel" hidden>
             <div id="live-host-start" class="live-share-step">
-              <p class="live-collaboration-note">Invite someone to edit this design with you. Your original stays in your folder, and their accepted edits save here. Your own editing pauses while they are connected.</p>
+              <p class="live-collaboration-note">Invite someone to edit with you. Your folder keeps the saved design.</p>
               <button class="primary-button live-join-button" id="live-start-host" type="button">Start sharing</button>
             </div>
             <p class="live-status" id="live-host-status" role="status" aria-live="polite"></p>
             <div id="live-host-active" hidden>
-              <div class="live-share-step">
-                <span class="live-step-label">1 · Send the invite</span>
-                <p class="live-collaboration-note">Send one message using any chat app, or show a QR code. The invite expires in about five minutes.</p>
-                <div class="live-action-row"><button class="primary-button" id="live-share-capsules" type="button" hidden>Send invite…</button></div>
+              <div class="live-share-step" id="live-host-invite-step">
+                <span class="live-step-label">1 · Send your invite</span>
+                <p class="live-collaboration-note">Send one message using any chat app. The other person will send one reply back to connect.</p>
+                <div class="live-action-row"><button class="primary-button" id="live-share-capsules" type="button" hidden>Share invite</button></div>
               </div>
-              <div class="live-share-step">
+              <div class="live-share-step" id="live-host-reply-step" hidden>
                 <span class="live-step-label">2 · Connect their reply</span>
-                <p class="live-collaboration-note">When they reply, paste the code here or scan their QR.</p>
-                <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste their reply here" aria-label="Guest reply"></textarea>
+                <p class="live-collaboration-note">Ask them to send their reply. Paste it here, or scan the QR code on their screen.</p>
+                <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste their reply here" aria-label="Reply from the other person"></textarea>
                 <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect</button></div>
               </div>
               <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
               <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
               <details class="live-advanced">
-                <summary>More sharing options</summary>
+                <summary>More options</summary>
                 <div class="live-advanced-content">
                   <button class="secondary-button" id="live-add-guest" type="button" hidden>Invite another person</button>
                   <label class="field-label" for="live-share-message-value">Full invite message for manual copy</label>
@@ -319,39 +319,41 @@
                   <label class="field-label" for="live-offer-value">Temporary connection code</label>
                   <textarea class="text-field live-capsule-field" id="live-offer-value" readonly spellcheck="false" aria-label="One-time WebRTC offer"></textarea>
                   <button class="secondary-button live-copy-button" type="button" data-copy-field="live-offer-value">Copy code</button>
-                  <label class="live-stun-option"><input id="live-stun-opt-in" type="checkbox" /><span>Try Google STUN when you are on different networks (Google can see network metadata)</span></label>
-                  <p class="live-collaboration-note">Anyone with the complete invite can request edit access. The chat service you use can see the invite and its connection details. Your device checks and saves accepted edits; your editing pauses while someone is connected so the shared copy stays in sync.</p>
+                  <label class="live-stun-option"><input id="live-stun-opt-in" type="checkbox" /><span>Use Google to help connect across different networks (Google receives network metadata)</span></label>
+                  <p class="live-collaboration-note">Only share the invite with people you trust: anyone who gets it can request edits. Your chat app can see the invite. Your device checks and saves edits. While someone is connected, you can follow along but cannot edit.</p>
                 </div>
               </details>
               <div class="dialog-actions"><button class="secondary-button" id="live-stop-host" type="button">Stop sharing</button></div>
             </div>
           </section>
           <section id="live-guest-panel" hidden>
-            <p class="live-collaboration-note">Paste the full invite message they sent you, or scan their QR code. Your edits are saved in your own folder and sent to the owner for approval.</p>
-            <label class="field-label" for="live-join-message">Invite message</label>
-            <textarea class="text-field live-capsule-field live-join-message" id="live-join-message" spellcheck="false" autocomplete="off" placeholder="Paste the whole invite message here"></textarea>
-            <div class="live-action-row live-join-actions" id="live-join-actions"><button class="primary-button" id="live-join-session" type="button">Join design</button></div>
-            <details class="live-advanced">
-              <summary>Advanced: enter link and code separately</summary>
-              <div class="live-advanced-content">
-                <label class="field-label" for="live-join-invite">Design link</label>
-                <textarea class="text-field live-capsule-field" id="live-join-invite" spellcheck="false" autocomplete="off" placeholder="Paste the design link"></textarea>
-                <label class="field-label" for="live-join-offer">Temporary connection code</label>
-                <textarea class="text-field live-capsule-field" id="live-join-offer" spellcheck="false" autocomplete="off" placeholder="Paste the temporary code"></textarea>
-                <label class="live-stun-option"><input id="live-guest-stun-opt-in" type="checkbox" /><span>Try Google STUN when you are on different networks (Google can see network metadata)</span></label>
-              </div>
-            </details>
+            <div id="live-guest-join-step">
+              <p class="live-collaboration-note">Paste the full invite message from the owner, or scan the QR code on their screen.</p>
+              <label class="field-label" for="live-join-message">Invite message</label>
+              <textarea class="text-field live-capsule-field live-join-message" id="live-join-message" spellcheck="false" autocomplete="off" placeholder="Paste the whole invite message here"></textarea>
+              <div class="live-action-row live-join-actions" id="live-join-actions"><button class="primary-button" id="live-join-session" type="button">Join design</button></div>
+              <details class="live-advanced">
+                <summary>More options</summary>
+                <div class="live-advanced-content">
+                  <label class="field-label" for="live-join-invite">Design link</label>
+                  <textarea class="text-field live-capsule-field" id="live-join-invite" spellcheck="false" autocomplete="off" placeholder="Paste the design link"></textarea>
+                  <label class="field-label" for="live-join-offer">Temporary connection code</label>
+                  <textarea class="text-field live-capsule-field" id="live-join-offer" spellcheck="false" autocomplete="off" placeholder="Paste the temporary code"></textarea>
+                  <label class="live-stun-option"><input id="live-guest-stun-opt-in" type="checkbox" /><span>Use Google to help connect across different networks (Google receives network metadata)</span></label>
+                </div>
+              </details>
+            </div>
             <div id="live-guest-reply" class="live-share-step" hidden>
-              <span class="live-step-label">Send your reply to the owner</span>
-              <p class="live-collaboration-note">This short-lived code finishes the connection. Send it back in the same chat.</p>
+              <span class="live-step-label">2 · Send your reply</span>
+              <p class="live-collaboration-note">Send this reply to the owner. They’ll connect you when they receive it.</p>
               <textarea class="text-field live-capsule-field" id="live-guest-answer" readonly spellcheck="false" aria-label="Your one-time reply"></textarea>
-              <div class="live-action-row"><button class="secondary-button live-copy-button" id="live-copy-answer" type="button" hidden>Send reply…</button></div>
+              <div class="live-action-row"><button class="secondary-button live-copy-button" id="live-copy-answer" type="button" hidden>Send reply</button></div>
             </div>
             <p class="live-status" id="live-guest-status" role="status" aria-live="polite"></p>
             <p class="live-status" id="live-guest-transfer-status" role="status" aria-live="polite"></p>
             <details class="live-advanced">
               <summary>Privacy and connection details</summary>
-              <div class="live-advanced-content"><p class="live-collaboration-note">Tiny Image Star has no signaling server. The invite and reply contain connection details visible to the chat service you use, so use a service you trust. The owner’s device is the saved original. If the connection ends or your changes cannot be fast-forwarded, your work is kept as a separate local copy.</p></div>
+              <div class="live-advanced-content"><p class="live-collaboration-note">Tiny Image Star has no sharing server. Your chat app can see the invite and reply. The owner’s device saves the original. If the connection ends or your edits cannot be added safely, your work stays in a separate local copy.</p></div>
             </details>
             <div class="dialog-actions"><button class="secondary-button" id="live-retry-fork" type="button" hidden>Retry saving local copy</button><button class="secondary-button" id="live-stop-guest" type="button" hidden>Leave live design</button></div>
           </section>

@@ -850,7 +850,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .recipe-recovery-content { padding: 22px; }
 .recipe-recovery-content .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .recipe-recovery-content .dialog-actions button { min-height: 44px; }
-#recipe-recovery-stop-other { grid-column: 1 / -1; }
+#recipe-recovery-fork, #recipe-recovery-stop-other { grid-column: 1 / -1; }
 .workspace-onboarding-dialog { width: min(480px, calc(100vw - 28px)); }
 .workspace-onboarding-content { padding: 22px; }
 .workspace-onboarding-status { min-height: 34px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
@@ -1440,7 +1440,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .design-library-content { padding: 16px; }
   .recipe-recovery-content { padding: 16px; }
   .recipe-recovery-content .dialog-actions { grid-template-columns: 1fr; }
-  #recipe-recovery-stop-other { grid-column: auto; }
+  #recipe-recovery-fork, #recipe-recovery-stop-other { grid-column: auto; }
   .live-collaboration-content { padding: 16px; }
   .live-collaboration-content button { min-height: 44px; }
   .live-share-step { padding: 12px; }

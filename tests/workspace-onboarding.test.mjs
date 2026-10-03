@@ -82,8 +82,26 @@ test('recipe recovery stays blocked until an expired batch lease is actually cla
     'the expiry reload must not race the in-progress recovery claim');
 
   const recoveryDialog = htmlSource.slice(htmlSource.indexOf('id="recipe-recovery-dialog"'), htmlSource.indexOf('</dialog>', htmlSource.indexOf('id="recipe-recovery-dialog"')));
-  assert.match(recoveryDialog, /id="recipe-recovery-stop-other"/,
-    'the active lease prompt needs a direct cross-tab recovery action');
+  assert.match(recoveryDialog, /id="recipe-recovery-fork"[^>]*>Fork and resume recipe/,
+    'the active lease prompt must offer a local fork that does not wait for another tab');
+  const promptStart = mainSource.indexOf('function renderRecipeRecoveryPrompt(');
+  const promptEnd = mainSource.indexOf('\nasync function keepInterruptedRecipeChanges', promptStart);
+  assert.ok(promptStart >= 0 && promptEnd > promptStart);
+  const prompt = mainSource.slice(promptStart, promptEnd);
+  assert.match(prompt, /keepButton\.hidden = leaseActive/);
+  assert.match(prompt, /resumeButton\.hidden = leaseActive/);
+  assert.match(prompt, /stopButton\.hidden = true/,
+    'the active recovery flow must not send the user to another tab');
+  const forkStart = mainSource.indexOf('async function forkInterruptedRecipeAndResume()');
+  const forkEnd = mainSource.indexOf('\nfunction initializeRecipeBatchCoordination', forkStart);
+  assert.ok(forkStart >= 0 && forkEnd > forkStart);
+  const fork = mainSource.slice(forkStart, forkEnd);
+  assert.match(fork, /createRecipeRecoveryDesignFork\(current, source\)/);
+  assert.match(fork, /saveCurrent: false/,
+    'opening the recovery copy must not save over the locked source design');
+  assert.match(fork, /startRecipe\(structuredClone\(current\.recipe\), current\.targetIds/);
+  assert.doesNotMatch(fork, /releaseRecipeBatchRecoveryLease|deleteRecipeBatchRecovery/,
+    'forking must preserve the original design’s lease and recovery record');
 });
 
 test('browser-storage onboarding stays gated until the initial document save succeeds', () => {
