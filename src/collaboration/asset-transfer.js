@@ -1,5 +1,6 @@
 import {
   CollaborationProtocolError,
+  COLLABORATION_PROTOCOL_VERSION,
   MAX_ASSET_BYTES,
   MAX_ASSET_CHUNK_BYTES,
   decodeCollaborationMessage,
@@ -42,12 +43,12 @@ function assertDirection(value) {
 
 function normalizeContext(context) {
   if (!context || typeof context !== 'object' || Array.isArray(context)
-    || context.v !== 1 || Object.keys(context).length !== 4
+    || context.v !== COLLABORATION_PROTOCOL_VERSION || Object.keys(context).length !== 4
     || Object.keys(context).some(key => !['v', 'designId', 'sessionId', 'actorId'].includes(key))) {
     fail('INVALID_CONTEXT', 'A complete protocol, design, session, and sender actor context is required.');
   }
   return {
-    v: 1,
+    v: COLLABORATION_PROTOCOL_VERSION,
     designId: assertId(context.designId, 'Design ID'),
     sessionId: assertId(context.sessionId, 'Session ID'),
     actorId: assertId(context.actorId, 'Sender actor ID')

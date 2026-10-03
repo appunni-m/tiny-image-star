@@ -9,6 +9,7 @@ const MAX_FEATURES = 64;
 const MAX_VARIATIONS = 64;
 const MAX_GLYPHS = 65_536;
 const MAX_PATH_CHARACTERS = 8 * 1024 * 1024;
+const MAX_FONT_COVERAGE_CODEPOINTS = 300_000;
 const WOFF_SIGNATURE = 0x774f4646;
 const SFNT_SIGNATURES = new Set([0x00010000, 0x4f54544f, 0x74727565, 0x74797031]);
 const fonts = new Map();
@@ -212,6 +213,8 @@ function loadFont({ fontId, bytes }) {
   const binary = new hb.Blob(bytes);
   const face = new hb.Face(binary);
   if (!Number.isSafeInteger(face.upem) || face.upem <= 0 || face.upem > 16_384) fail('The local font has invalid glyph units.');
+  const coverage = face.collectUnicodes().sort();
+  if (coverage.length > MAX_FONT_COVERAGE_CODEPOINTS) fail('The local font has too many mapped Unicode code points for preview.');
   const record = { binary, face, byteLength: bytes.byteLength };
   fonts.set(fontId, record);
   totalFontBytes += bytes.byteLength;
@@ -220,6 +223,7 @@ function loadFont({ fontId, bytes }) {
     gsubFeatures: face.getTableFeatureTags('GSUB'),
     gposFeatures: face.getTableFeatureTags('GPOS'),
     upem: face.upem,
+    coverage,
     evictedFontIds
   };
 }

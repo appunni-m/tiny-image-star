@@ -226,7 +226,8 @@ test('canvas rendering positions editable graphemes on the path and reverses ori
     }
   });
   assert.equal(drawTextAlongPath(ctx, 'A🙂', node, 5, 8, value => value === 'A' ? 8 : 12), true);
-  assert.deepEqual(calls.filter(call => call[0] === 'text').map(call => call[1]), ['A', '🙂']);
+  assert.deepEqual(calls.filter(call => call[0] === 'text').map(call => call[1]), ['A🙂'],
+    'unsupported emoji sequences stay in a browser-shaped text run instead of being split into individual graphemes');
   const forwardAngle = calls.find(call => call[0] === 'rotate')[1];
   calls.length = 0;
   node.textPath.flipped = true;
@@ -321,6 +322,29 @@ test('text on a path shapes complete styled runs locally and places glyph cluste
   });
   assert.deepEqual(clusterPaints, [{ text: 'fi', glyphs: 1, x: -6, topY: -8 }],
     'a ligature is placed and painted as one HarfBuzz cluster rather than as two independent letters');
+});
+
+test('mixed local and browser-shaped script runs stay connected on editable text paths', () => {
+  const painted = [];
+  const fallback = [];
+  const ctx = {
+    font: '', fillStyle: '', strokeStyle: '', globalAlpha: 1, textBaseline: '', textAlign: '',
+    save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
+    fillText(text) { fallback.push(text); }, strokeText(text) { fallback.push(text); }
+  };
+  const node = createNode('text', {
+    text: 'Aمرحبا', fontSize: 10, letterSpacing: 1,
+    textPath: { width: 120, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], closed: false, startOffset: 0, flipped: false }
+  });
+  assert.equal(drawTextAlongPath(ctx, node.text, node, 0, 0, value => [...value].length * 5, {
+    shapeText: () => ({ mixedRuns: [
+      { text: 'A', shaped: { upem: 1000, extents: { ascender: 800 }, glyphs: [{ cluster: 0, xAdvance: 1000, path: 'M0 0' }] } },
+      { text: 'مرحبا', shaped: null }
+    ] }),
+    drawShaped(_context, shaped, text) { painted.push({ text, count: shaped.glyphs.length }); return true; }
+  }), true);
+  assert.deepEqual(painted, [{ text: 'A', count: 1 }], 'the locally covered run still uses its HarfBuzz outline');
+  assert.deepEqual(fallback, ['مرحبا'], 'the browser shapes the complete unsupported RTL run without breaking joining');
 });
 
 test('SVG exports editable textPath markup with a stable geometry reference and flip control', () => {

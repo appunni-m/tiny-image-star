@@ -206,6 +206,60 @@ test('converts independent-corner rectangle quadratics into equivalent vector PD
   assertValidXref(pdf);
 });
 
+test('keeps editor alpha and vector masks as bounded PDF soft-mask forms', () => {
+  for (const maskMode of ['alpha', 'vector']) {
+    const source = createNode('ellipse', {
+      id: `${maskMode}-source`, x: 8, y: 6, width: 52, height: 34,
+      fill: '#cc3300', fillOpacity: maskMode === 'alpha' ? .5 : 0,
+      stroke: '#00aa00', strokeWidth: 6, strokeOpacity: 0, opacity: .4,
+    });
+    const content = createNode('rectangle', {
+      id: `${maskMode}-content`, width: 80, height: 60, fill: '#3366cc',
+    });
+    const group = createNode('group', {
+      id: `${maskMode}-mask`, width: 80, height: 60, mask: true, maskMode,
+      maskSourceId: source.id, children: [content, source],
+    });
+    const svg = exportNodeToSvg(group);
+    const pdf = createVectorPdf(svg);
+    const text = pdfText(pdf);
+
+    assert.match(text, /\/SMask << \/S \/Alpha \/G \d+ 0 R >>/,
+      `${maskMode} masks map to an alpha soft mask without flattening the page`);
+    assert.match(text, /\/BBox \[0 0 80 60\]/,
+      'the PDF mask form is clipped to the exported mask region');
+    assert.match(text, /\/Subtype \/Form .*\/Group << \/S \/Transparency \/CS \/DeviceRGB \/I true \/K false >>/);
+    assert.match(text, /\/Fm\d+ Do/);
+    assert.doesNotMatch(text, /\/Subtype \/Image/,
+      'mask and content geometry remain vector PDF objects');
+    if (maskMode === 'vector') {
+      assert.match(text, /1 1 1 rg/, 'vector-mask fill and stroke colors are canonical opaque white');
+      assert.doesNotMatch(text, /\/ca 0\.2 \/CA 0\.2/, 'source layer alpha is ignored by vector-mask coverage');
+    } else {
+      assert.match(text, /\/ca 0\.2 \/CA 1/, 'alpha-mask source opacity remains part of fill coverage');
+    }
+    assertValidXref(pdf);
+  }
+
+  const directMaskSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10">'
+    + '<defs><mask id="m" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10">'
+    + '<ellipse cx="5" cy="5" rx="3" ry="3" fill="#ffffff"/></mask></defs>'
+    + '<rect width="10" height="10" fill="#cc3300" mask="url(#m)"/></svg>';
+  const directPdf = createVectorPdf(directMaskSvg);
+  assert.match(pdfText(directPdf), /\/SMask << \/S \/Alpha \/G \d+ 0 R >>/,
+    'PDF preserves an alpha mask attached directly to a vector shape');
+  assertValidXref(directPdf);
+
+  const nestedMaskSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs>'
+    + '<mask id="inner" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><ellipse cx="5" cy="5" rx="3" ry="3" fill="#fff"/></mask>'
+    + '<mask id="outer" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><g mask="url(#inner)"><rect width="10" height="10" fill="#fff"/></g></mask>'
+    + '</defs><g mask="url(#outer)"><rect width="10" height="10" fill="#3366cc"/></g></svg>';
+  const nestedPdf = createVectorPdf(nestedMaskSvg);
+  assert.equal((pdfText(nestedPdf).match(/\/SMask << \/S \/Alpha \/G \d+ 0 R >>/g) || []).length, 2,
+    'nested acyclic alpha masks each retain their own soft-mask form');
+  assertValidXref(nestedPdf);
+});
+
 test('preserves editor PNG image layers as PDF image XObjects with a soft alpha mask and vector neighbors', () => {
   const png = rgbaPng();
   const decoded = decodePdfImageDataUri(`data:image/png;base64,${png.toString('base64')}`);
@@ -407,20 +461,36 @@ test('fails closed with specific errors for unsupported rendered SVG features', 
   const textSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><text x="0" y="0">Hi</text></svg>';
   const gradientSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="10"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/></linearGradient></defs><rect width="10" height="10" fill="url(#g)"/></svg>';
   const effectSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><filter id="f"/></defs><g filter="url(#f)"><rect width="10" height="10"/></g></svg>';
-  const maskSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><mask id="m"/></defs><g mask="url(#m)"><rect width="10" height="10"/></g></svg>';
+  const maskSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><mask id="m" mask-type="luminance"/></defs><g mask="url(#m)"><rect width="10" height="10"/></g></svg>';
   for (const [svg, feature] of [
     [textSvg, /text layers/],
     [effectSvg, /layer effects/],
-    [maskSvg, /alpha masks and Boolean masks/],
+    [maskSvg, /luminance masks/],
   ]) {
     assert.throws(() => createVectorPdf(svg), error => error instanceof PdfVectorExportError && feature.test(error.message));
   }
+  const missingMask = '<svg width="10px" height="10px" viewBox="0 0 10 10"><g mask="url(#missing)"><rect width="10" height="10"/></g></svg>';
+  assert.throws(() => createVectorPdf(missingMask), /references missing mask/);
+  const cyclicMask = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs>'
+    + '<mask id="m" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><g mask="url(#m)"><rect width="10" height="10" fill="#fff"/></g></mask>'
+    + '</defs><g mask="url(#m)"><rect width="10" height="10"/></g></svg>';
+  assert.throws(() => createVectorPdf(cyclicMask), error => error instanceof PdfVectorExportError && /cyclic alpha masks/.test(error.message));
+  const objectBoundingBoxMask = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs>'
+    + '<mask id="m" mask-type="alpha" maskUnits="objectBoundingBox" x="0" y="0" width="1" height="1"/>'
+    + '</defs><g mask="url(#m)"><rect width="10" height="10"/></g></svg>';
+  assert.throws(() => createVectorPdf(objectBoundingBoxMask), error => error instanceof PdfVectorExportError && /object-bounding-box masks/.test(error.message));
   const unsupportedImageSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><image x="0" y="0" width="10" height="10" href="data:image/webp;base64,AA=="/></svg>';
   const malformedImageSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><image x="0" y="0" width="10" height="10" href="data:image/png;base64,AA=="/></svg>';
   assert.throws(() => createVectorPdf(unsupportedImageSvg), error => error instanceof PdfVectorExportError
     && error.feature === 'embedded raster image' && /image\/webp/.test(error.message) && /PNG or JPEG/.test(error.message));
   assert.throws(() => createVectorPdf(malformedImageSvg), error => error instanceof PdfVectorExportError
     && error.feature === 'embedded raster image' && /PNG header is invalid/.test(error.message));
+  const tileLayer = createNode('image', { assetId: 'tile-photo', width: 10, height: 10, fit: 'tile', scalingFactor: 0.5 });
+  const tileSvg = exportNodeToSvg(tileLayer, { assets: new Map([['tile-photo', {
+    id: 'tile-photo', type: 'image/png', width: 2, height: 2, sourceBytes: new Uint8Array([1, 2, 3])
+  }]]) });
+  assert.throws(() => createVectorPdf(tileSvg), error => error instanceof PdfVectorExportError
+    && error.feature === 'SVG definition <pattern>', 'vector PDF must fail closed on Tile patterns instead of dropping the repeated image');
   assert.throws(() => createVectorPdf('<svg width="10px" height="10px" viewBox="0 0 10 10"><image width="10" height="10"/></svg>'),
     error => error instanceof PdfVectorExportError && /external raster images/.test(error.message));
   const invisibleUnsupportedImage = createVectorPdf('<svg width="10px" height="10px" viewBox="0 0 10 10"><g opacity="0"><image width="10" height="10" href="data:image/webp;base64,AA=="/></g></svg>');

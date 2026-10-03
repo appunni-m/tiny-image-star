@@ -6,8 +6,8 @@ function assert(value, message) { if (!value) throw new Error(message); }
 function waitFor(test, label, timeout = 10000) {
   const start = performance.now();
   return new Promise((resolve, reject) => {
-    const poll = () => {
-      try { if (test()) { resolve(); return; } } catch { /* Wait for editor initialization. */ }
+    const poll = async () => {
+      try { if (await test()) { resolve(); return; } } catch { /* Wait for editor initialization. */ }
       if (performance.now() - start > timeout) { reject(new Error(`Timed out waiting for ${label}.`)); return; }
       setTimeout(poll, 30);
     };
@@ -59,7 +59,8 @@ try {
   const design = createDocument();
   const guide = createLayoutGuide('grid', { id: 'uniform-grid', size: 50, color: '#ff0000', opacity: 0.1 });
   const artboard = createNode('frame', { name: 'Artboard', x: 0, y: 0, width: 200, height: 200, fill: '#ffffff', layoutGuides: [guide] });
-  addNode(design, artboard);
+  const pasteTarget = createNode('frame', { name: 'Guide paste target', x: 260, y: 0, width: 200, height: 200, fill: '#ffffff' });
+  addNode(design, artboard); addNode(design, pasteTarget);
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
   transfer.items.add(new File([packageFile(design)], 'guides-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(input, 'files', { configurable: true, value: transfer.files });
@@ -105,6 +106,29 @@ try {
   assert(savedGuides[1].alignment === 'left' && savedGuides[1].bandSize === 60 && savedGuides[1].offset === 20, 'Fixed guide settings should persist locally.');
   assert(savedGuides[2].type === 'rows', 'A frame can combine grid, column, and row guide types.');
 
+  click(app.querySelector(`[data-layout-guide="${columnId}"] [data-action="select-layout-guide"]`));
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true }));
+  click(app.querySelector(`[data-layer-id="${pasteTarget.id}"]`));
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true }));
+  app.body.dispatchEvent(new app.defaultView.Event('paste', { bubbles: true, cancelable: true }));
+  await waitFor(() => readDocument(design.id).then(savedDocument => savedDocument?.pages[0].children
+    ?.find(node => node.id === pasteTarget.id)?.layoutGuides?.length === 1), 'single-guide paste to another frame');
+  const pastedGuide = (await readDocument(design.id)).pages[0].children
+    .find(node => node.id === pasteTarget.id).layoutGuides[0];
+  assert(pastedGuide.id !== columnId && pastedGuide.type === 'columns'
+    && pastedGuide.alignment === 'left' && pastedGuide.bandSize === 60 && pastedGuide.offset === 20,
+  'Copy/paste should preserve one selected guide and assign a fresh target-local identity.');
+  click(app.querySelector(`[data-layout-guide="${pastedGuide.id}"] [data-action="select-layout-guide"]`));
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true }));
+  await waitFor(() => readDocument(design.id).then(savedDocument => savedDocument?.pages[0].children
+    ?.find(node => node.id === pasteTarget.id)?.layoutGuides?.length === 2), 'layout-guide duplicate shortcut');
+  const duplicatedGuide = (await readDocument(design.id)).pages[0].children
+    .find(node => node.id === pasteTarget.id).layoutGuides[1];
+  assert(duplicatedGuide.id !== pastedGuide.id && duplicatedGuide.type === pastedGuide.type
+    && duplicatedGuide.alignment === pastedGuide.alignment && duplicatedGuide.bandSize === pastedGuide.bandSize,
+  'Duplicate should create an independently identified guide with the same settings.');
+  click(app.querySelector(`[data-layer-id="${artboard.id}"]`));
+
   const downloads = []; const blobs = new Map(); let urlNumber = 0; const view = app.defaultView;
   view.URL.createObjectURL = blob => { const url = `blob:tiny-image-star-guides-${++urlNumber}`; blobs.set(url, blob); return url; };
   const originalAnchorClick = view.HTMLAnchorElement.prototype.click;
@@ -120,7 +144,7 @@ try {
   const outputContext = output.getContext('2d'); outputContext.drawImage(bitmap, 0, 0); bitmap.close();
   const exportPixel = outputContext.getImageData(30, 100, 1, 1).data;
   assert(exportPixel[0] === 255 && exportPixel[1] === 255 && exportPixel[2] === 255, 'Non-printing layout guides must not be baked into frame exports.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', guideTypes: ['grid', 'columns', 'rows'], combinedGuides: true, fixedColumns: true, globalShortcut: 'Shift+G', perGuideVisibility: true, mobileControls: true, localPersistence: true, exportsExcludeGuides: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', guideTypes: ['grid', 'columns', 'rows'], combinedGuides: true, fixedColumns: true, globalShortcut: 'Shift+G', singleGuideCopyPaste: true, duplicateGuideShortcut: true, perGuideVisibility: true, mobileControls: true, localPersistence: true, exportsExcludeGuides: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -1,5 +1,6 @@
 import * as ort from 'onnxruntime-web/wasm';
 import { compositeInpaintRgbPixels, rasterizeInpaintMask, resolveImageEraseStrokes, validateInpaintDimensions } from '../inpaint-mask.js';
+import { compositeExpandedImageRgba, createImageExpansionMask, planImageExpansion } from '../image-expansion-plan.js';
 
 const modelUrl = new URL('../../wasm/models/migan_pipeline_v2.onnx', import.meta.url).href;
 const wasmBaseUrl = new URL('../../wasm/onnxruntime/', import.meta.url).href;
@@ -54,9 +55,12 @@ async function inpaint(message) {
   let imageTensor;
   let maskTensor;
   let outputs;
+  let sourcePixels;
   try {
-    if (!(message.sourceBytes instanceof ArrayBuffer) || !Array.isArray(message.strokes)) {
-      throw new TypeError('Object erase needs image bytes and at least one brush stroke.');
+    const isExpansion = message.type === 'expand';
+    if (!(message.sourceBytes instanceof ArrayBuffer)
+      || (!isExpansion && !Array.isArray(message.strokes))) {
+      throw new TypeError('Local image editing needs image bytes and valid edit parameters.');
     }
     postStage(requestId, 'loading-model');
     const session = await getSession();
@@ -64,19 +68,39 @@ async function inpaint(message) {
 
     postStage(requestId, 'decoding-image');
     bitmap = await createImageBitmap(new Blob([message.sourceBytes]));
-    const { width, height } = bitmap;
+    const sourceWidth = bitmap.width;
+    const sourceHeight = bitmap.height;
+    validateInpaintDimensions(sourceWidth, sourceHeight);
+    const plan = isExpansion
+      ? planImageExpansion(message.plan?.sourceWidth, message.plan?.sourceHeight, message.plan?.padding)
+      : null;
+    if (plan && (plan.sourceWidth !== sourceWidth || plan.sourceHeight !== sourceHeight)) {
+      throw new Error('The expansion plan dimensions do not match the source image.');
+    }
+    const width = plan?.width ?? sourceWidth;
+    const height = plan?.height ?? sourceHeight;
     const pixelCount = validateInpaintDimensions(width, height);
     const canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) throw new Error('This browser cannot create a local image surface for object erase.');
-    context.drawImage(bitmap, 0, 0);
+    context.drawImage(bitmap, plan?.offsetX ?? 0, plan?.offsetY ?? 0);
     bitmap.close();
     bitmap = null;
     const pixels = context.getImageData(0, 0, width, height);
     if (cancelled(requestId)) return;
 
-    const pixelStrokes = resolveImageEraseStrokes(message.strokes, width, height);
-    const mask = rasterizeInpaintMask(width, height, pixelStrokes);
+    let mask;
+    if (plan) {
+      sourcePixels = new Uint8ClampedArray(sourceWidth * sourceHeight * 4);
+      for (let row = 0; row < sourceHeight; row += 1) {
+        const sourceStart = ((plan.offsetY + row) * width + plan.offsetX) * 4;
+        sourcePixels.set(pixels.data.subarray(sourceStart, sourceStart + sourceWidth * 4), row * sourceWidth * 4);
+      }
+      mask = createImageExpansionMask(plan);
+    } else {
+      const pixelStrokes = resolveImageEraseStrokes(message.strokes, width, height);
+      mask = rasterizeInpaintMask(width, height, pixelStrokes);
+    }
     const image = new Uint8Array(pixelCount * 3);
     const planeSize = pixelCount;
     for (let sourceIndex = 0, pixelIndex = 0; pixelIndex < pixelCount; sourceIndex += 4, pixelIndex += 1) {
@@ -98,6 +122,12 @@ async function inpaint(message) {
 
     postStage(requestId, 'encoding-preview');
     compositeInpaintRgbPixels(pixels.data, result.data, mask, width, height);
+    if (plan) {
+      for (let index = 0; index < pixelCount; index += 1) {
+        if (mask[index] === 0) pixels.data[index * 4 + 3] = 255;
+      }
+      pixels.data.set(compositeExpandedImageRgba(sourcePixels, pixels.data, plan));
+    }
     context.putImageData(pixels, 0, 0);
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     if (cancelled(requestId)) return;
@@ -113,6 +143,7 @@ async function inpaint(message) {
     bitmap?.close();
     imageTensor?.dispose?.();
     maskTensor?.dispose?.();
+    sourcePixels?.fill(0);
     if (outputs) for (const tensor of Object.values(outputs)) tensor?.dispose?.();
     cancelledRequests.delete(requestId);
     activeRequests.delete(requestId);
@@ -126,7 +157,8 @@ self.onmessage = event => {
     if (activeRequests.has(message.requestId)) cancelledRequests.add(message.requestId);
     return;
   }
-  if (message?.type === 'inpaint' && typeof message.requestId === 'string' && message.requestId) {
+  if ((message?.type === 'inpaint' || message?.type === 'expand')
+    && typeof message.requestId === 'string' && message.requestId) {
     if (activeRequests.size) {
       self.postMessage({ type: 'error', requestId: message.requestId, message: 'Object erase is busy with another image. Wait for it to finish, then retry.' });
       return;

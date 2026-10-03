@@ -266,6 +266,49 @@ test('LocalImageEngine resends oversized source bytes for each ephemeral render'
   });
 });
 
+test('LocalImageEngine drains a 2048-image queue with bounded workers and unique completions', async () => {
+  const imageCount = 2048;
+  const workerCount = 4;
+  const onePixelPng = pngHeader(1, 1);
+  const onePixelWorkingSet = 32 + onePixelPng.byteLength;
+
+  await withEngine(async engine => {
+    engine.setConcurrency(workerCount);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const expectedIds = Array.from({ length: imageCount }, (_, index) => `stress-image-${index}`);
+    const results = expectedIds.map(assetId => engine.render(assetId, onePixelPng, {}));
+    const admitted = engine.metrics();
+    assert.equal(admitted.active, workerCount,
+      'the available worker pool should start at its requested concurrency');
+    assert.equal(admitted.queued, imageCount - workerCount,
+      'only work that fits the active memory budget should be admitted');
+    assert.ok(admitted.active <= workerCount);
+
+    const completed = await Promise.all(results);
+    assert.deepEqual(completed.map(result => result.assetId), expectedIds,
+      'every queued image should resolve exactly once in caller order');
+    const submittedIds = engine.workers.flatMap(slot => slot.worker.renderRequests.map(request => request.assetId));
+    assert.equal(submittedIds.length, imageCount);
+    assert.equal(new Set(submittedIds).size, imageCount,
+      'no image should be duplicated or omitted while workers drain the large queue');
+    assert.deepEqual(engine.metrics(), {
+      concurrency: workerCount,
+      workersReady: workerCount,
+      active: 0,
+      activeRenderBytes: 0,
+      maxActiveRenderBytes: workerCount * onePixelWorkingSet,
+      queued: 0,
+      paused: false,
+    }, 'a fully drained batch must release every worker and memory reservation');
+  }, {
+    maxWorkers: workerCount,
+    maxCachedPixels: 0,
+    maxActiveRenderBytes: workerCount * onePixelWorkingSet,
+    maxSingleRenderBytes: onePixelWorkingSet,
+  });
+});
+
 test('LocalImageEngine propagates active-source intent and preserves a fitting decoded source through cache pressure', async () => {
   await withEngine(async engine => {
     engine.setActiveSource('active');
@@ -778,6 +821,41 @@ test('active render admission honors the byte budget, uses available parallelism
     await Promise.all([first, second, third]);
     assert.equal(engine.metrics().activeRenderBytes, 0);
   }, { maxWorkers: 2, maxCachedPixels: 10, maxActiveRenderBytes: 304, deferRenders: true });
+});
+
+test('external local-model CPU reservations cap renders without rebuilding the Pillow worker pool', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(2);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const first = engine.render('first', pngHeader(1, 1), {});
+    const second = engine.render('second', pngHeader(1, 1), {});
+    assert.equal(engine.metrics().active, 2);
+    assert.equal(engine.workers.length, 2);
+
+    engine.setExternalCpuReservations(1);
+    assert.equal(engine.activeWorkerLimit, 1);
+    const third = engine.render('third', pngHeader(1, 1), {});
+    assert.equal(engine.metrics().active, 2, 'running renders are allowed to drain without interruption');
+    assert.equal(engine.metrics().queued, 1);
+
+    engine.workers[0].worker.completeNextRender();
+    await first;
+    assert.equal(engine.metrics().active, 1);
+    assert.equal(engine.metrics().queued, 1, 'the reserved model slot prevents a replacement render from starting');
+    engine.workers[1].worker.completeNextRender();
+    await second;
+    assert.equal(engine.metrics().active, 1, 'one queued render can use the remaining CPU slot');
+    assert.equal(engine.metrics().queued, 0);
+    assert.equal(engine.workers.length, 2, 'temporary reservations preserve warm Pillow workers and their source caches');
+    assert.equal(engine.workers.every(slot => !slot.worker.terminated), true);
+
+    const thirdWorker = engine.workers.find(slot => slot.worker.pendingRenderMessages.length);
+    thirdWorker.worker.completeNextRender();
+    await third;
+    engine.setExternalCpuReservations(0);
+    assert.equal(engine.activeWorkerLimit, 2);
+  }, { maxWorkers: 2, maxCachedPixels: 10, maxActiveRenderBytes: 1000, deferRenders: true });
 });
 
 test('a memory-blocked queue head does not idle a worker when a later image fits', async () => {

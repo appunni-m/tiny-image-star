@@ -2,7 +2,9 @@ import { isValidLayerEffects } from './layer-effects.js';
 import { ensureFillStack, fillStackForNode, isFillStackSupported, isValidFillStack, isValidGradientFill, syncLegacyFillFields } from './fills.js';
 import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageAdjustments, isValidImageFill, normalizeImageAdjustments } from './image-fills.js';
 import { isValidImageEraseStrokes, normalizeImageEraseStrokes } from './inpaint-mask.js';
+import { isValidImageExpansionRatio, isValidImageExpansionState } from './image-expansion-geometry.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
+import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
@@ -16,6 +18,9 @@ import { isValidPrototypeEasing } from './prototype-easing.js';
 import { createTextPathGeometry, isValidTextPathGeometry } from './text-on-path.js';
 import { isValidFontVariationValues } from './font-variation.js';
 import { isValidFontFeatureValues } from './font-features.js';
+import { isValidVariableScopes, normalizeVariableScopes } from './variable-scopes.js';
+import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount } from './component-property-exposure.js';
+import { isValidVertexRadii, MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -33,11 +38,16 @@ const variableBindingSpecs = {
   rotation: { type: 'number' },
   visible: { type: 'boolean' },
   opacity: { type: 'number' },
-  radius: { type: 'number', nodeTypes: ['rectangle', 'frame', 'section', 'image'] },
+  radius: { type: 'number', nodeTypes: ['rectangle', 'frame', 'section', 'image', 'star', 'polygon'] },
   text: { type: 'string', nodeTypes: ['text'] },
+  fontFamily: { type: 'string', nodeTypes: ['text'] },
   fontSize: { type: 'number', nodeTypes: ['text'] },
+  fontWeight: { type: 'number', nodeTypes: ['text'] },
+  fontStyle: { type: 'string', nodeTypes: ['text'] },
   lineHeight: { type: 'number', nodeTypes: ['text'] },
   letterSpacing: { type: 'number', nodeTypes: ['text'] },
+  paragraphSpacing: { type: 'number', nodeTypes: ['text'] },
+  firstLineIndent: { type: 'number', nodeTypes: ['text'] },
   'autoLayout.axis': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.align': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.justify': { type: 'string', nodeTypes: ['frame'] },
@@ -79,9 +89,13 @@ function isVariableBindingValue(property, value) {
   const spec = variableBindingSpecs[property];
   if (!spec || !isVariableValue(spec.type, value)) return false;
   if (property === 'opacity') return value >= 0 && value <= 1;
-  if (property === 'radius') return value >= 0;
+  if (property === 'radius') return value >= 0 && value <= 100_000;
   if (property === 'width' || property === 'height') return value >= 0;
   if (property === 'fontSize' || property === 'lineHeight') return value > 0;
+  if (property === 'fontFamily') return value.trim().length > 0 && value.length <= 160 && !/[\x00-\x1f]/.test(value);
+  if (property === 'fontWeight') return isValidFontWeight(value);
+  if (property === 'fontStyle') return ['normal', 'italic'].includes(value);
+  if (property === 'paragraphSpacing' || property === 'firstLineIndent') return value >= 0 && value <= 10_000;
   if (property.startsWith('autoLayout.')) {
     if (property.endsWith('.axis')) return ['vertical', 'horizontal', 'grid'].includes(value);
     if (property.endsWith('.align')) return ['start', 'center', 'end', 'stretch'].includes(value);
@@ -192,6 +206,7 @@ export function createDocument() {
     colorStyles: [],
     typographyStyles: [],
     effectStyles: [],
+    layoutGuideStyles: [],
     variableCollections: [],
     variables: [],
     comments: [],
@@ -221,7 +236,17 @@ const defaults = {
 };
 const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
-const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
+const prototypeTransitionDirections = ['left', 'right', 'up', 'down'];
+const prototypeTransitions = new Set([
+  'instant', 'dissolve',
+  ...prototypeTransitionDirections.map(direction => `move-in-${direction}`),
+  ...prototypeTransitionDirections.map(direction => `move-${direction}`),
+  ...prototypeTransitionDirections.map(direction => `move-out-${direction}`),
+  ...prototypeTransitionDirections.map(direction => `push-${direction}`),
+  ...prototypeTransitionDirections.map(direction => `slide-in-${direction}`),
+  ...prototypeTransitionDirections.map(direction => `slide-out-${direction}`),
+  'smart-animate', 'scroll'
+]);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const prototypeNumericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
 const prototypeConditionOperators = new Set(['equals', 'not-equals', ...prototypeNumericConditionOperators]);
@@ -320,10 +345,10 @@ function hasInvalidPrototypeInteractions(interactions, document) {
     if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
     if (item.easing != null && !isValidPrototypeEasing(item.easing, item.easingBezier)) return true;
     if (item.easing == null && Object.hasOwn(item, 'easingBezier')) return true;
-    if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
+    if (item.transition === 'smart-animate' && !['navigate', 'swap-overlay'].includes(item.action)) return true;
     if (item.transition === 'scroll' && item.action !== 'scroll-to') return true;
     if (item.action === 'scroll-to' && item.transition != null && !['instant', 'scroll'].includes(item.transition)) return true;
-    if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
+    if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 10_000)) return true;
     if (item.trigger === 'after-delay'
       ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
         || !Number.isInteger(item.delay) || item.delay < 100 || item.delay > 10_000)
@@ -385,9 +410,12 @@ export function reconcilePrototypeScrollInteractions(document, onPrune = null) {
 }
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
+const MAX_LAYOUT_GUIDES_PER_FRAME = 32;
+const MAX_LAYOUT_GUIDE_STYLES = 1000;
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const textCases = new Set(['none', 'uppercase', 'lowercase', 'capitalize']);
 const textDecorations = new Set(['none', 'underline', 'line-through']);
+const textTruncations = new Set(['disabled', 'ending']);
 const textAlignments = new Set(['left', 'center', 'right', 'justify']);
 const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
 const strokeCaps = new Set(['butt', 'round', 'square']);
@@ -399,15 +427,15 @@ const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both'
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -460,6 +488,7 @@ export function createNode(type, overrides = {}) {
     ...(Array.isArray(overrides.fills) ? { fills: clone(overrides.fills) } : {}),
     ...(Array.isArray(overrides.strokes) ? { strokes: clone(overrides.strokes) } : {}),
     ...(overrides.cornerRadii ? { cornerRadii: clone(overrides.cornerRadii) } : {}),
+    ...(Array.isArray(overrides.vertexRadii) ? { vertexRadii: clone(overrides.vertexRadii) } : {}),
     ...(Array.isArray(overrides.paragraphStyles) ? { paragraphStyles: clone(overrides.paragraphStyles) } : {}),
     ...(type === 'image' ? {
       adjustments: normalizeImageAdjustments(overrides.adjustments ?? preset.adjustments),
@@ -482,6 +511,171 @@ export function createLayoutGuide(type = 'grid', overrides = {}) {
     size: 10, count: 4, alignment: 'stretch', gutter: 20, margin: 20, bandSize: 80, offset: 0,
     ...overrides
   };
+}
+
+const LAYOUT_GUIDE_CLIPBOARD_SCHEMA = 'tiny-image-star/layout-guide-clipboard';
+
+/** Copy one validated layout guide into an editor-local clipboard value. */
+export function copyLayoutGuide(document, nodeId, guideId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (node?.type !== 'frame' || !isValidLayoutGuideList(node.layoutGuides || [])) {
+    throw new TypeError('Select a frame with a valid layout guide to copy.');
+  }
+  const guide = node.layoutGuides.find(item => item.id === guideId);
+  if (!guide) throw new TypeError('Select a layout guide to copy.');
+  return { schema: LAYOUT_GUIDE_CLIPBOARD_SCHEMA, version: 1, guide: clone(guide) };
+}
+
+/** Paste one copied guide onto one or more frames with fresh frame-local IDs. */
+export function pasteLayoutGuide(document, clipboard, nodeIds, pageId = document.activePageId) {
+  if (!clipboard || typeof clipboard !== 'object' || Array.isArray(clipboard)
+    || Object.keys(clipboard).some(key => !['schema', 'version', 'guide'].includes(key))
+    || clipboard.schema !== LAYOUT_GUIDE_CLIPBOARD_SCHEMA || clipboard.version !== 1
+    || !isValidLayoutGuideList([clipboard.guide])) {
+    throw new TypeError('The copied layout guide is invalid. Copy a guide again and retry.');
+  }
+  const targets = [...new Set(Array.isArray(nodeIds) ? nodeIds : [])];
+  if (!targets.length || targets.some(id => typeof id !== 'string' || !id)) {
+    throw new TypeError('Select one or more frames before pasting a layout guide.');
+  }
+  const candidate = clone(document);
+  const nodes = targets.map(id => findNode(candidate, id, pageId)?.node);
+  if (nodes.some(node => node?.type !== 'frame')) throw new TypeError('Layout guides can only be pasted onto frames.');
+  if (nodes.some(node => !isValidLayoutGuideList(node.layoutGuides || []))) {
+    throw new TypeError('A selected frame has invalid layout guides.');
+  }
+  if (nodes.some(node => (node.layoutGuides || []).length >= MAX_LAYOUT_GUIDES_PER_FRAME)) {
+    throw new RangeError('A frame can have up to 32 layout guides.');
+  }
+  for (const node of nodes) {
+    node.layoutGuides ||= [];
+    node.layoutGuides.push({ ...clone(clipboard.guide), id: createId('guide') });
+    // A direct edit detaches this frame from its shared guide style. Other
+    // frames linked to that style retain their own guide stack.
+    delete node.layoutGuideStyleId;
+  }
+  validateDocument(candidate);
+  return { document: candidate, nodeIds: targets };
+}
+
+function isValidLayoutGuideList(guides) {
+  if (!Array.isArray(guides) || guides.length > MAX_LAYOUT_GUIDES_PER_FRAME) return false;
+  const guideIds = new Set();
+  for (const guide of guides) {
+    const validMeasurement = value => Number.isFinite(value) && value >= 0 && value <= 10_000;
+    if (!guide || typeof guide.id !== 'string' || !guide.id || guideIds.has(guide.id)
+      || !layoutGuideTypes.has(guide.type) || typeof guide.visible !== 'boolean'
+      || !/^#[0-9a-f]{6}$/i.test(guide.color) || !Number.isFinite(guide.opacity) || guide.opacity < 0 || guide.opacity > 1) return false;
+    if (guide.type === 'grid') {
+      if (!Number.isFinite(guide.size) || guide.size < 1 || guide.size > 500) return false;
+    } else {
+      const alignments = guide.type === 'columns' ? ['stretch', 'left', 'center', 'right'] : ['stretch', 'top', 'center', 'bottom'];
+      if (!Number.isInteger(guide.count) || guide.count < 1 || guide.count > 64 || !alignments.includes(guide.alignment)
+        || !validMeasurement(guide.gutter) || !validMeasurement(guide.margin)
+        || !Number.isFinite(guide.bandSize) || guide.bandSize < 1 || guide.bandSize > 10_000
+        || !validMeasurement(guide.offset)) return false;
+    }
+    guideIds.add(guide.id);
+  }
+  return true;
+}
+
+function layoutGuideStyleName(name, fallback = 'Layout guide style') {
+  const cleaned = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  const safeFallback = String(fallback ?? 'Layout guide style').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || 'Layout guide style';
+  return (cleaned || safeFallback).slice(0, 120);
+}
+
+function guideCopiesForFrame(guides, currentGuides = []) {
+  return guides.map((guide, index) => ({
+    ...clone(guide),
+    // Guide IDs are local to a frame. Keep a target's IDs stable when an
+    // update changes values, and allocate fresh IDs for newly added rows.
+    id: currentGuides[index]?.id || createId('guide')
+  }));
+}
+
+function syncLayoutGuideStyleFrames(document, style) {
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (node.type !== 'frame' || node.layoutGuideStyleId !== style.id) return;
+    node.layoutGuides = guideCopiesForFrame(style.guides, node.layoutGuides || []);
+    const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+    const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+    if (override?.layoutGuideStyleId === style.id) override.layoutGuides = clone(node.layoutGuides);
+  });
+}
+
+/** Save a frame's guide stack as a reusable, linked layout-guide style. */
+export function createLayoutGuideStyle(document, nodeId, name, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (node?.type !== 'frame') throw new Error('Select a frame before saving a layout guide style.');
+  const guides = node.layoutGuides || [];
+  if (!guides.length || !isValidLayoutGuideList(guides)) throw new TypeError('Add at least one valid layout guide before saving a style.');
+  document.layoutGuideStyles ||= [];
+  if (document.layoutGuideStyles.length >= MAX_LAYOUT_GUIDE_STYLES) throw new Error(`A design can contain up to ${MAX_LAYOUT_GUIDE_STYLES.toLocaleString()} layout guide styles.`);
+  const style = {
+    id: createId('layout-guide-style'),
+    name: layoutGuideStyleName(name, `${node.name} guides`),
+    guides: clone(guides)
+  };
+  document.layoutGuideStyles.push(style);
+  node.layoutGuideStyleId = style.id;
+  return style;
+}
+
+/** Apply and link a reusable guide stack to a frame. */
+export function applyLayoutGuideStyle(document, nodeId, styleId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.layoutGuideStyles?.find(item => item.id === styleId);
+  if (node?.type !== 'frame' || !style || !isValidLayoutGuideList(style.guides)) return false;
+  node.layoutGuides = guideCopiesForFrame(style.guides, node.layoutGuides || []);
+  node.layoutGuideStyleId = style.id;
+  return true;
+}
+
+/** Replace a shared style from a frame and refresh every frame linked to it. */
+export function updateLayoutGuideStyle(document, styleId, nodeId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.layoutGuideStyles?.find(item => item.id === styleId);
+  if (node?.type !== 'frame' || !style || !node.layoutGuides?.length || !isValidLayoutGuideList(node.layoutGuides)) return false;
+  style.guides = clone(node.layoutGuides);
+  node.layoutGuideStyleId = style.id;
+  syncLayoutGuideStyleFrames(document, style);
+  return true;
+}
+
+/** Detach one frame while keeping its current guide values. */
+export function detachLayoutGuideStyle(document, nodeId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (node?.type !== 'frame' || !node.layoutGuideStyleId) return false;
+  delete node.layoutGuideStyleId;
+  return true;
+}
+
+export function renameLayoutGuideStyle(document, styleId, name) {
+  const style = document.layoutGuideStyles?.find(item => item.id === styleId);
+  if (!style || typeof name !== 'string') return false;
+  style.name = layoutGuideStyleName(name, style.name);
+  return true;
+}
+
+/** Remove a shared style without changing any frame's visible guide stack. */
+export function deleteLayoutGuideStyle(document, styleId) {
+  const styles = document.layoutGuideStyles || [];
+  const index = styles.findIndex(style => style.id === styleId);
+  if (index < 0) return false;
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (node.layoutGuideStyleId !== styleId) return;
+    delete node.layoutGuideStyleId;
+    const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+    const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+    if (override?.layoutGuideStyleId === styleId) {
+      override.layoutGuideStyleId = null;
+      override.layoutGuides = clone(node.layoutGuides || []);
+    }
+  });
+  styles.splice(index, 1);
+  return true;
 }
 
 export function createLayerEffect(type, overrides = {}) {
@@ -794,6 +988,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   // group when its source shape is deleted.
   if (removesMaskSource) {
     entry.parent.mask = false;
+    delete entry.parent.maskMode;
     delete entry.parent.maskSourceId;
   }
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
@@ -1165,13 +1360,28 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   return group;
 }
 
-const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text', 'image', 'group', 'frame', 'section']);
-function isMaskSource(node) {
-  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
+const maskModes = new Set(['alpha', 'vector']);
+const alphaMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text', 'image', 'group', 'frame', 'section']);
+const vectorMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
+export function isMaskSource(node, maskMode = 'alpha') {
+  if (!node) return false;
+  if (maskMode === 'alpha') {
+    return Boolean(alphaMaskSourceTypes.has(node.type)
+      && (node.type !== 'path' || hasFillablePathContour(node))
+      && (node.type !== 'network' || (node.faces || []).length > 0));
+  }
+  if (maskMode !== 'vector' || !vectorMaskSourceTypes.has(node.type)) return false;
+  if (node.type === 'path') {
+    return [{ points: node.points, closed: node.closed }, ...(node.subpaths || [])]
+      .some(contour => Array.isArray(contour.points) && contour.points.length >= 2);
+  }
+  if (node.type === 'network') return (node.faces || []).length > 0 || (node.edges || []).length > 0;
+  return true;
 }
 
 /** Return whether selected sibling layers can become a live alpha-mask group. */
-export function canCreateMaskGroup(document, nodeIds, pageId = document.activePageId) {
+export function canCreateMaskGroup(document, nodeIds, pageId = document.activePageId, maskMode = 'alpha') {
+  if (!maskModes.has(maskMode)) return false;
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   if (entries.some(entry => !entry || entry.node.locked || entry.node.type === 'slice')) return false;
@@ -1179,12 +1389,12 @@ export function canCreateMaskGroup(document, nodeIds, pageId = document.activePa
   const parent = entries[0].parent;
   if (!entries.every(entry => entry.parent === parent)) return false;
   const frontmost = entries.reduce((top, entry) => entry.index > top.index ? entry : top);
-  return isMaskSource(frontmost.node);
+  return isMaskSource(frontmost.node, maskMode);
 }
 
-/** Group sibling layers under the frontmost selected supported alpha mask. */
-export function createMaskGroup(document, nodeIds, pageId = document.activePageId) {
-  if (!canCreateMaskGroup(document, nodeIds, pageId)) throw new Error('Select at least two unlocked sibling layers and place a supported mask source at the front.');
+/** Group sibling layers under the frontmost selected supported mask source. */
+export function createMaskGroup(document, nodeIds, pageId = document.activePageId, maskMode = 'alpha') {
+  if (!canCreateMaskGroup(document, nodeIds, pageId, maskMode)) throw new Error('Select at least two unlocked sibling layers and place a supported mask source at the front.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   detachTextPathLinksCrossingNodes(document, nodeIds);
   const page = document.pages.find(item => item.id === pageId);
@@ -1206,7 +1416,7 @@ export function createMaskGroup(document, nodeIds, pageId = document.activePageI
   const group = createNode('group', {
     name: 'Mask group', x: left, y: top,
     width: Math.max(1, right - left), height: Math.max(1, bottom - top),
-    mask: true, maskSourceId: maskEntry.node.id, children
+    mask: true, maskMode, maskSourceId: maskEntry.node.id, children
   });
   const insertionIndex = list.slice(0, maskEntry.index).filter(node => !selectedIds.has(node.id)).length;
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
@@ -1350,7 +1560,7 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
   const opacity = document ? getNodePropertyValue(document, imageNode, 'opacity') ?? imageNode.opacity ?? 1 : imageNode.opacity ?? 1;
   const blendMode = imageNode.blendMode ?? 'normal';
   const effects = clone(imageNode.effects || []);
-  if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
+  if (!['cover', 'contain', 'tile'].includes(fit)) throw new TypeError('Image recipe fit must be Fill, Fit, or Tile.');
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
   if (!isValidLayerBlendMode(blendMode)) throw new TypeError('Image recipe blend mode is invalid.');
   if (!isValidLayerEffects(effects)) throw new TypeError('Image recipe effect stack is invalid.');
@@ -1366,8 +1576,16 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
     name: recipeName,
     adjustments: normalizeImageAdjustments(imageNode.adjustments || {}),
     transforms: createImageTransforms(imageNode.transforms || {}),
-    inpaintStrokes: normalizeImageEraseStrokes(imageNode.inpaintStrokes || []),
+    // Erase marks are source-relative. Expanded images store their original
+    // source marks separately; copying the remapped marks would shift them a
+    // second time when the saved expansion recipe is applied to another image.
+    inpaintStrokes: normalizeImageEraseStrokes(imageNode.imageExpansion?.originalInpaintStrokes ?? imageNode.inpaintStrokes ?? []),
+    backgroundRemoved: imageNode.backgroundRemoved === true,
+    resolutionBoosted: imageNode.resolutionBoosted === true,
+    imageExpansionPaddingRatio: imageNode.imageExpansion?.paddingRatio ?? null,
     fit,
+    ...(fit === 'tile' || imageNode.scalingFactor != null
+      ? { scalingFactor: imageNode.scalingFactor ?? DEFAULT_IMAGE_TILE_SCALE } : {}),
     opacity,
     effects,
     blendMode,
@@ -1411,8 +1629,13 @@ export function deleteImageRecipe(document, recipeId) {
   return true;
 }
 
-export function applyImageRecipe(document, nodeId, recipe, pageId = document.activePageId) {
-  const entry = findNode(document, nodeId, pageId);
+export function applyImageRecipe(document, nodeId, recipe, pageId = document.activePageId, {
+  deferBackgroundRemoval = false, deferResolutionBoost = false, targetEntry = null
+} = {}) {
+  const entry = targetEntry
+    ? targetEntry.document === document && targetEntry.page?.id === pageId
+      && targetEntry.node?.id === nodeId && targetEntry.isCurrent?.() ? targetEntry : null
+    : findNode(document, nodeId, pageId);
   if (!entry || entry.node.type !== 'image') return false;
   if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) throw new TypeError('Image recipe must be an object.');
   const format = recipe.format ?? 'png';
@@ -1424,10 +1647,23 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   const hasOpacity = Object.hasOwn(recipe, 'opacity') && recipe.opacity != null;
   const hasEffects = recipe.effects != null;
   const blendMode = recipe.blendMode ?? entry.node.blendMode ?? 'normal';
-  if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
+  const scalingFactor = recipe.scalingFactor ?? entry.node.scalingFactor ?? DEFAULT_IMAGE_TILE_SCALE;
+  if (!['cover', 'contain', 'tile'].includes(fit)) throw new TypeError('Image recipe fit must be Fill, Fit, or Tile.');
+  if (recipe.scalingFactor != null && !isValidImageTileScale(recipe.scalingFactor)) throw new TypeError('Image recipe tile scale is invalid.');
+  if (fit === 'tile' && !isValidImageTileScale(scalingFactor)) throw new TypeError('Image recipe tile scale is invalid.');
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
   if (!isValidLayerBlendMode(blendMode)) throw new TypeError('Image recipe blend mode is invalid.');
   if (hasEffects && !isValidLayerEffects(recipe.effects)) throw new TypeError('Image recipe effect stack is invalid.');
+  if (Object.hasOwn(recipe, 'backgroundRemoved') && typeof recipe.backgroundRemoved !== 'boolean') {
+    throw new TypeError('Image recipe background removal must be a boolean.');
+  }
+  if (Object.hasOwn(recipe, 'resolutionBoosted') && typeof recipe.resolutionBoosted !== 'boolean') {
+    throw new TypeError('Image recipe resolution boost must be a boolean.');
+  }
+  if (Object.hasOwn(recipe, 'imageExpansionPaddingRatio') && recipe.imageExpansionPaddingRatio !== null
+    && !isValidImageExpansionRatio(recipe.imageExpansionPaddingRatio)) {
+    throw new TypeError('Image recipe expansion padding must use side ratios from 0 to 100 percent.');
+  }
   // Normalize every recipe field before mutation so malformed data cannot leave
   // a partially-applied image look behind.
   const adjustments = normalizeImageAdjustments(recipe.adjustments || {});
@@ -1443,11 +1679,18 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   entry.node.transforms = transforms;
   if (inpaintStrokes) entry.node.inpaintStrokes = inpaintStrokes;
   entry.node.fit = fit;
+  if (fit === 'tile' || recipe.scalingFactor != null) entry.node.scalingFactor = scalingFactor;
   entry.node.opacity = opacity;
   entry.node.outputFormat = format;
   entry.node.outputQuality = quality;
   if (hasEffects) entry.node.effects = effects;
   if (recipe.blendMode != null) entry.node.blendMode = blendMode;
+  if (!deferBackgroundRemoval && Object.hasOwn(recipe, 'backgroundRemoved')) {
+    entry.node.backgroundRemoved = recipe.backgroundRemoved;
+  }
+  if (!deferResolutionBoost && Object.hasOwn(recipe, 'resolutionBoosted')) {
+    entry.node.resolutionBoosted = recipe.resolutionBoosted;
+  }
   if (hasOpacity && entry.node.variableBindings?.opacity) {
     if (variableBindings && Object.keys(variableBindings).length) entry.node.variableBindings = variableBindings;
     else delete entry.node.variableBindings;
@@ -1492,7 +1735,10 @@ export function createVariable(document, collectionId, name, type = 'color', val
   const nextName = String(name).trim() || `${type[0].toUpperCase()}${type.slice(1)} ${(document.variables || []).filter(item => item.collectionId === collectionId).length + 1}`;
   if ((document.variables || []).some(variable => variable.collectionId === collectionId && variable.name.toLowerCase() === nextName.toLowerCase())) throw new TypeError('A variable with that name already exists in this collection.');
   const valuesByMode = Object.fromEntries(collection.modes.map(mode => [mode.id, value]));
-  const variable = { id: createId('variable'), collectionId, name: nextName, type, valuesByMode };
+  const variable = {
+    id: createId('variable'), collectionId, name: nextName, type, valuesByMode,
+    ...(type === 'boolean' ? {} : { scopes: ['ALL_SCOPES'] })
+  };
   document.variables ||= [];
   document.variables.push(variable);
   return variable;
@@ -1500,6 +1746,16 @@ export function createVariable(document, collectionId, name, type = 'color', val
 
 export function createColorVariable(document, collectionId, name, value = '#1e1e1e') {
   return createVariable(document, collectionId, name, 'color', value);
+}
+
+/** Edit picker visibility scopes without invalidating existing bindings. */
+export function setVariableScopes(document, variableId, scopes) {
+  const variable = document.variables?.find(item => item.id === variableId);
+  if (!variable) return false;
+  const normalized = normalizeVariableScopes(variable.type, scopes);
+  if (!normalized) return false;
+  variable.scopes = normalized;
+  return true;
 }
 
 export function setVariableValue(document, variableId, value, modeId = null) {
@@ -2215,7 +2471,8 @@ export function createComponentProperty(document, componentId, { id = null, name
   if (type === 'SLOT' && !isComponentSlotTarget(target, component)) throw new Error('A slot must target a nested frame, group, or section inside the component.');
   if (type === 'SLOT' && treeContainsSlice(target.children || [])) throw new Error('A component slot source cannot contain slices.');
   component.componentProperties ||= [];
-  if (component.componentProperties.length >= 100) throw new Error('A component can have at most 100 component properties.');
+  const exposedNestedPropertyCount = exposedNestedInstancePropertyCount(document, component);
+  if (componentPropertyDefinitionCount(document, component) + exposedNestedPropertyCount >= 100) throw new Error('A component can expose at most 100 properties.');
   if (component.componentProperties.some(property => property.name.toLocaleLowerCase() === propertyName.toLocaleLowerCase())) throw new Error('Component property names must be unique.');
   if (component.componentProperties.some(property => property.type === type && property.targetSourceId === target.id)) throw new Error('That layer already has a property of this type.');
 
@@ -2239,6 +2496,99 @@ export function createComponentProperty(document, componentId, { id = null, name
   if (!componentPropertyValueIsValid(document, component, property, defaultValue)) throw new Error('The component property default is invalid.');
   component.componentProperties.push(property);
   return property;
+}
+
+function nestedComponentIdsAllowedForExposure(ownerComponent, nestedInstanceSourceId, nestedInstance) {
+  const allowed = new Set(nestedInstance?.componentId ? [nestedInstance.componentId] : []);
+  for (const property of ownerComponent.componentProperties || []) {
+    if (property.type !== 'INSTANCE_SWAP' || property.targetSourceId !== nestedInstanceSourceId) continue;
+    if (typeof property.defaultValue === 'string') allowed.add(property.defaultValue);
+    for (const candidateId of property.preferredComponentIds || []) allowed.add(candidateId);
+  }
+  return allowed;
+}
+
+function nestedInstanceExposurePropertyCount(document, ownerComponent, nestedInstanceSourceId) {
+  const target = typeof nestedInstanceSourceId === 'string'
+    ? findComponentPropertyTarget(document, ownerComponent, nestedInstanceSourceId) : null;
+  if (!target?.isInstance) return 0;
+  let maximum = 0;
+  for (const candidateId of nestedComponentIdsAllowedForExposure(ownerComponent, nestedInstanceSourceId, target)) {
+    const candidate = document.components?.find(item => item.id === candidateId);
+    maximum = Math.max(maximum, componentPropertyDefinitionCount(document, candidate));
+  }
+  return maximum;
+}
+
+function exposedNestedInstancePropertyCount(document, ownerComponent) {
+  return componentExposedNestedInstanceSourceIds(document, ownerComponent)
+    .reduce((sum, sourceId) => sum + nestedInstanceExposurePropertyCount(document, ownerComponent, sourceId), 0);
+}
+
+/** Replace the exposed nested-instance list after validating the full edit. */
+export function setComponentNestedInstanceExposures(document, componentId, nestedInstanceSourceIds) {
+  if (!Array.isArray(nestedInstanceSourceIds)
+    || nestedInstanceSourceIds.some(sourceId => typeof sourceId !== 'string' || !sourceId)
+    || new Set(nestedInstanceSourceIds).size !== nestedInstanceSourceIds.length) {
+    throw new TypeError('Choose each nested component instance at most once.');
+  }
+  const component = document.components?.find(item => item.id === componentId);
+  if (!component) throw new Error('The owning component no longer exists.');
+  const selectedTargets = [];
+  for (const sourceId of nestedInstanceSourceIds) {
+    const nestedInstance = findComponentPropertyTarget(document, component, sourceId);
+    if (!nestedInstance?.isInstance) throw new Error('Choose a nested component instance to expose.');
+    selectedTargets.push(nestedInstance);
+  }
+  const set = document.componentSets?.find(item => item.id === component.componentSetId);
+  const members = set
+    ? set.componentIds.map(id => document.components?.find(item => item.id === id)).filter(Boolean)
+    : [component];
+  const plannedExposures = members.map(member => {
+    const memberRoot = findNodeAcrossPages(document, member.rootNodeId)?.node;
+    const memberByVariantKey = new Map();
+    const visit = (node, isRoot = false) => {
+      if (!node || typeof node !== 'object') return;
+      if (node.isInstance && node.variantNodeKey) memberByVariantKey.set(node.variantNodeKey, node.id);
+      if (!isRoot && node.isInstance) return;
+      for (const child of node.children || []) visit(child);
+    };
+    visit(memberRoot, true);
+    const ids = member.id === component.id
+      ? [...nestedInstanceSourceIds]
+      : selectedTargets.map(target => target.variantNodeKey ? memberByVariantKey.get(target.variantNodeKey) : null).filter(Boolean);
+    const total = componentPropertyDefinitionCount(document, member)
+      + ids.reduce((sum, sourceId) => sum + nestedInstanceExposurePropertyCount(document, member, sourceId), 0);
+    if (total > 100) throw new Error('A component can expose at most 100 properties.');
+    return { member, ids };
+  });
+  let changed = false;
+  for (const { member, ids } of plannedExposures) {
+    const previous = Array.isArray(member.exposedNestedInstances) ? member.exposedNestedInstances : [];
+    if (previous.length === ids.length && previous.every((sourceId, index) => sourceId === ids[index])) continue;
+    if (ids.length) member.exposedNestedInstances = ids;
+    else delete member.exposedNestedInstances;
+    changed = true;
+  }
+  return changed;
+}
+
+/** Expose or hide a nested instance's complete set of component properties. */
+export function setComponentNestedInstanceExposure(document, componentId, nestedInstanceSourceId, exposed = true) {
+  if (typeof exposed !== 'boolean') throw new TypeError('Nested instance exposure must be enabled or disabled.');
+  const component = document.components?.find(item => item.id === componentId);
+  if (!component) throw new Error('The owning component no longer exists.');
+  const exposures = componentExposedNestedInstanceSourceIds(document, component);
+  const index = exposures.indexOf(nestedInstanceSourceId);
+  if (exposed && index >= 0) return false;
+  if (!exposed && index < 0) return false;
+  const next = exposed ? [...exposures, nestedInstanceSourceId] : exposures.filter(sourceId => sourceId !== nestedInstanceSourceId);
+  return setComponentNestedInstanceExposures(document, componentId, next);
+}
+
+/** Compatibility adapter for the earlier per-property draft; exposure is now instance-scoped. */
+export function setComponentNestedPropertyExposure(document, componentId, nestedInstanceSourceId, _nestedComponentId, _propertyId, exposed = true) {
+  return setComponentNestedInstanceExposure(document, componentId, nestedInstanceSourceId, exposed);
 }
 
 function findInstancePropertyTarget(instance, targetSourceId) {
@@ -2337,7 +2687,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -2641,6 +2991,10 @@ export function createComponentSet(document, componentIds, name = null) {
   const propertyNames = [...new Set(rawValues.flatMap(properties => Object.keys(properties)))];
   const combinations = rawValues.map(properties => JSON.stringify(propertyNames.map(propertyName => String(properties[propertyName] || 'Default'))));
   if (new Set(combinations).size !== combinations.length) throw new Error('Each variant needs a unique combination of property values. Rename layers with distinct variant names before combining.');
+  if (components.some(component => (component.componentProperties?.length || 0)
+    + exposedNestedInstancePropertyCount(document, component) + propertyNames.length > 100)) {
+    throw new Error('A component can expose at most 100 properties.');
+  }
   set.properties = propertyNames.map(propertyName => ({
     name: propertyName,
     values: [...new Set(rawValues.map(properties => String(properties[propertyName] || 'Default')))]
@@ -2746,6 +3100,11 @@ export function addComponentVariantFromMaster(document, setId, sourceComponentId
     if (!targetSourceId) throw new Error(`Cannot copy component property “${property.name}” because its target is outside the source variant.`);
     return { ...clone(property), id: createId('component-property'), targetSourceId };
   });
+  const exposedNestedInstances = (sourceComponent.exposedNestedInstances || []).map(sourceId => {
+    const nestedInstanceSourceId = cloneBySourceId.get(sourceId);
+    if (!nestedInstanceSourceId) throw new Error('Cannot copy an exposed nested instance because it is outside the source variant.');
+    return nestedInstanceSourceId;
+  });
   detachComponentInstance(document, cloneRoot.id, sourceEntry.page.id);
   if (sourceEntry.parent?.autoLayout) {
     // The variant master is a sibling on the canvas, but should not perturb an
@@ -2757,6 +3116,7 @@ export function addComponentVariantFromMaster(document, setId, sourceComponentId
   component.componentSetId = set.id;
   component.variantProperties = variantValues;
   if (sourceProperties.length) component.componentProperties = sourceProperties;
+  if (exposedNestedInstances.length) component.exposedNestedInstances = exposedNestedInstances;
   assignVariantNodeKeys(cloneRoot);
   set.componentIds.push(component.id);
   for (const property of set.properties) {
@@ -2945,6 +3305,10 @@ function removeDanglingComponentProperties(document, removedNodeIds, removedComp
     });
     if (!component.componentProperties.length) delete component.componentProperties;
   }
+  for (const component of document.components || []) {
+    component.exposedNestedInstances = (component.exposedNestedInstances || []).filter(sourceId => !removedNodeIds.has(sourceId));
+    if (!component.exposedNestedInstances.length) delete component.exposedNestedInstances;
+  }
   for (const page of document.pages || []) walkNodes(page.children || [], ({ node }) => {
     if (!node.componentPropertyValues) return;
     const component = document.components?.find(item => item.id === node.componentId);
@@ -3076,10 +3440,26 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     ? clone(instance?.componentOverrides || master.componentOverrides || {}) : null;
   const componentPropertyValues = instance?.componentPropertyValues && typeof instance.componentPropertyValues === 'object'
     ? clone(instance.componentPropertyValues) : clone(master.componentPropertyValues || {});
-  const nodeOverrides = overrides?.[master.id];
   const nestedComponentRootSourceId = instance?.nestedComponentSourceId
     || master.nestedComponentSourceId || master.componentSourceId || master.id;
   const nestedRootOverrides = nestedComponentOverrides?.[nestedComponentRootSourceId];
+  const nestedSourceId = instance?.nestedComponentSourceId
+    || master.nestedComponentSourceId || master.componentSourceId;
+  const nestedNodeOverrides = !isRoot && nestedSourceId && nestedSourceId !== master.id
+    ? overrides?.[nestedSourceId] : null;
+  const ownerNodeOverrides = overrides?.[master.id];
+  const nodeOverrides = nestedNodeOverrides || ownerNodeOverrides
+    ? {
+      ...(nestedNodeOverrides || {}),
+      ...(ownerNodeOverrides || {}),
+      ...((nestedNodeOverrides?.__deletedChildren || ownerNodeOverrides?.__deletedChildren)
+        ? { __deletedChildren: [...new Set([
+          ...(nestedNodeOverrides?.__deletedChildren || []),
+          ...(ownerNodeOverrides?.__deletedChildren || [])
+        ])] }
+        : {})
+    }
+    : null;
   const oldChildren = instance?.children || [];
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
@@ -3087,7 +3467,9 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const slotContentKey = componentSlotContentKey(ownerInstanceId, master.id);
   const hasSlotContent = slotContentsBySourceId.has(slotContentKey);
   const childOwnerInstanceId = master.isInstance && !isRoot ? (instance?.id || master.id) : ownerInstanceId;
-  const childOverrides = nestedComponentOverrides || overrides;
+  const childOverrides = nestedComponentOverrides
+    ? { ...overrides, ...nestedComponentOverrides }
+    : overrides;
   let children = hasSlotContent ? slotContentsBySourceId.get(slotContentKey).slice() : (master.children || []).map((child, index) => {
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
     const sourceMatchedChild = oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey);
@@ -3141,8 +3523,6 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     y: isRoot ? rootY : copy.y,
     name: isRoot ? rootName : copy.name
   });
-  const nestedSourceId = instance?.nestedComponentSourceId
-    || master.nestedComponentSourceId || master.componentSourceId;
   if (nestedSourceId) target.nestedComponentSourceId = nestedSourceId;
   else delete target.nestedComponentSourceId;
   if (target.type !== 'frame') delete target.overflowBehavior;
@@ -3176,6 +3556,10 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     for (const [key, value] of Object.entries(nestedRootOverrides)) {
       if (key !== '__childOrder' && key !== '__deletedChildren' && componentOverrideProperties.has(key)) target[key] = clone(value);
     }
+  }
+  if (target.mask === false) {
+    delete target.maskMode;
+    delete target.maskSourceId;
   }
   return target;
 }
@@ -3279,7 +3663,8 @@ function validNetworkGeometry(node) {
   if (!Array.isArray(node.vertices) || node.vertices.length < 2 || !Array.isArray(node.edges) || !node.edges.length || !Array.isArray(node.faces || [])) return false;
   const vertexIds = new Set();
   for (const vertex of node.vertices) {
-    if (!vertex || typeof vertex.id !== 'string' || !vertex.id || vertexIds.has(vertex.id) || !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) return false;
+    if (!vertex || typeof vertex.id !== 'string' || !vertex.id || vertexIds.has(vertex.id) || !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)
+      || (vertex.cornerRadius != null && (!Number.isFinite(vertex.cornerRadius) || vertex.cornerRadius < 0 || vertex.cornerRadius > 100_000))) return false;
     if (Object.hasOwn(vertex, 'mode') && !vectorAnchorModes.has(vertex.mode)) return false;
     if (vertex.split != null) {
       const split = vertex.split;
@@ -3425,8 +3810,22 @@ export function validateDocument(document) {
       if (node.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(node.type) || !isValidCornerRadii(node.cornerRadii))) {
         throw new TypeError(`Invalid independent corner radii on layer ${node.name || node.id}.`);
       }
+      if (node.cornerSmoothing != null && (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(node.type)
+        || !Number.isFinite(node.cornerSmoothing) || node.cornerSmoothing < 0 || node.cornerSmoothing > 1)) {
+        throw new TypeError(`Invalid corner smoothing on layer ${node.name || node.id}.`);
+      }
+      if (node.radius != null && (!Number.isFinite(node.radius) || node.radius < 0 || node.radius > 100_000
+        || (node.radius > 0 && !['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(node.type)))) {
+        throw new TypeError(`Invalid corner radius on layer ${node.name || node.id}.`);
+      }
+      if (node.vertexRadii != null && !isValidVertexRadii(node.type, node.points, node.vertexRadii)) {
+        throw new TypeError(`Invalid independent vertex radii on layer ${node.name || node.id}.`);
+      }
       if (node.cornerRadii != null && node.variableBindings?.radius != null) {
         throw new TypeError(`Independent corner radii cannot use a uniform radius variable binding on layer ${node.name || node.id}.`);
+      }
+      if (node.vertexRadii != null && node.variableBindings?.radius != null) {
+        throw new TypeError(`Independent vertex radii cannot use a uniform radius variable binding on layer ${node.name || node.id}.`);
       }
       if (Object.hasOwn(node, 'overflowBehavior') && (node.type !== 'frame' || !frameOverflowBehaviors.has(node.overflowBehavior))) {
         throw new TypeError(`Invalid frame overflow behavior on layer ${node.name || node.id}.`);
@@ -3439,6 +3838,12 @@ export function validateDocument(document) {
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
+      if (Object.hasOwn(node, 'textTruncation') && (node.type !== 'text' || !textTruncations.has(node.textTruncation))) throw new TypeError(`Invalid text truncation mode on layer ${node.name || node.id}.`);
+      if (Object.hasOwn(node, 'maxLines') && (node.type !== 'text' || (node.maxLines !== null && (!Number.isSafeInteger(node.maxLines) || node.maxLines < 1)))) throw new TypeError(`Invalid text maximum line count on layer ${node.name || node.id}.`);
+      if (node.type === 'text' && node.maxLines != null
+        && (node.textTruncation !== 'ending' || node.maxHeight != null)) {
+        throw new TypeError(`Text maximum lines require ending truncation and cannot be combined with maxHeight on layer ${node.name || node.id}.`);
+      }
       if (node.textPath != null && (node.type !== 'text' || !isValidTextPathGeometry(node.textPath))) throw new TypeError(`Invalid text path on layer ${node.name || node.id}.`);
       if (node.lineHeightUnit != null && (node.type !== 'text' || !lineHeightUnits.has(node.lineHeightUnit) || node.lineHeight == null)) throw new TypeError(`Invalid line-height unit on layer ${node.name || node.id}.`);
       if (node.lineHeight != null && (node.type !== 'text' || !isValidLineHeight(node.lineHeight, node.lineHeightUnit || 'ratio'))) throw new TypeError(`Invalid line height on layer ${node.name || node.id}.`);
@@ -3462,11 +3867,17 @@ export function validateDocument(document) {
       if (node.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(node.fontStyle))) throw new TypeError(`Invalid font style on layer ${node.name || node.id}.`);
       if (node.fontAxes != null && (node.type !== 'text' || !isValidFontVariationValues(node.fontAxes))) throw new TypeError(`Invalid variable-font axes on layer ${node.name || node.id}.`);
       if (node.fontFeatures != null && (node.type !== 'text' || !isValidFontFeatureValues(node.fontFeatures))) throw new TypeError(`Invalid OpenType features on layer ${node.name || node.id}.`);
-      if (['polygon', 'star'].includes(node.type) && node.points != null && (!Number.isFinite(node.points) || node.points < 3 || node.points > 32)) throw new TypeError(`Invalid shape point count on layer ${node.name || node.id}.`);
+      if (['polygon', 'star'].includes(node.type) && node.points != null
+        && (!Number.isFinite(node.points) || node.points < MIN_STAR_POINTS
+          || node.points > (node.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS))) {
+        throw new TypeError(`Invalid shape point count on layer ${node.name || node.id}.`);
+      }
       if (node.type === 'star' && node.innerRadius != null && (!Number.isFinite(node.innerRadius) || node.innerRadius < 0 || node.innerRadius > 1)) throw new TypeError(`Invalid star inner radius on layer ${node.name || node.id}.`);
       if (node.type !== 'star' && node.innerRadius != null) throw new TypeError(`Star inner radius is only supported on star layers (${node.name || node.id}).`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
+      if (node.fit != null && (node.type !== 'image' || !['cover', 'contain', 'tile'].includes(node.fit))) throw new TypeError(`Invalid image fit mode on layer ${node.name || node.id}.`);
+      if (node.scalingFactor != null && (node.type !== 'image' || !isValidImageTileScale(node.scalingFactor))) throw new TypeError(`Invalid image tile scale on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'text'].includes(node.type)
         && !(node.type === 'path' && hasFillablePathContour(node)) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
@@ -3476,12 +3887,26 @@ export function validateDocument(document) {
       if (node.adjustments != null && (node.type !== 'image' || !isValidImageAdjustments(node.adjustments))) throw new TypeError(`Invalid image adjustments on layer ${node.name || node.id}.`);
       if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
       if (node.inpaintStrokes != null && (node.type !== 'image' || !isValidImageEraseStrokes(node.inpaintStrokes))) throw new TypeError(`Invalid object-erase strokes on layer ${node.name || node.id}.`);
+      if (node.imageExpansion != null && (node.type !== 'image' || !isValidImageExpansionState(node.imageExpansion))) throw new TypeError(`Invalid image expansion state on layer ${node.name || node.id}.`);
+      if (node.backgroundRemoved != null && (node.type !== 'image' || typeof node.backgroundRemoved !== 'boolean')) throw new TypeError(`Invalid background-removal setting on layer ${node.name || node.id}.`);
+      for (const property of ['backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId']) {
+        if (node[property] != null && (node.type !== 'image' || typeof node[property] !== 'string' || !node[property])) {
+          throw new TypeError(`Invalid background-removal asset reference on layer ${node.name || node.id}.`);
+        }
+      }
+      if (node.resolutionBoosted != null && (node.type !== 'image' || typeof node.resolutionBoosted !== 'boolean')) throw new TypeError(`Invalid resolution-boost setting on layer ${node.name || node.id}.`);
+      for (const property of ['resolutionBoostSourceAssetId', 'resolutionBoostAssetId']) {
+        if (node[property] != null && (node.type !== 'image' || typeof node[property] !== 'string' || !node[property])) {
+          throw new TypeError(`Invalid resolution-boost asset reference on layer ${node.name || node.id}.`);
+        }
+      }
       if (node.outputFormat != null && (node.type !== 'image' || !exportFormats.has(node.outputFormat))) throw new TypeError(`Invalid image output format on layer ${node.name || node.id}.`);
       if (node.outputQuality != null && (node.type !== 'image' || !Number.isInteger(node.outputQuality) || node.outputQuality < 1 || node.outputQuality > 100)) throw new TypeError(`Invalid image output quality on layer ${node.name || node.id}.`);
       if (node.type === 'path' && !validVectorPath(node)) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
-      if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
+      if (node.maskMode != null && (!maskModes.has(node.maskMode) || node.type !== 'group' || node.mask !== true)) throw new TypeError(`Invalid mask mode on layer ${node.name || node.id}.`);
+      if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId), node.maskMode || 'alpha'))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
       if (node.exportSettings != null) {
         const settingIds = new Set();
         if (!Array.isArray(node.exportSettings) || node.exportSettings.length > 8 || node.exportSettings.some(setting => {
@@ -3494,23 +3919,10 @@ export function validateDocument(document) {
         })) throw new TypeError(`Invalid export settings on layer ${node.name || node.id}.`);
       }
       if (node.layoutGuides != null) {
-        const guideIds = new Set();
-        if (node.type !== 'frame' || !Array.isArray(node.layoutGuides) || node.layoutGuides.length > 32 || node.layoutGuides.some(guide => {
-          const validMeasurement = value => Number.isFinite(value) && value >= 0 && value <= 10_000;
-          if (!guide || typeof guide.id !== 'string' || !guide.id || guideIds.has(guide.id)
-            || !layoutGuideTypes.has(guide.type) || typeof guide.visible !== 'boolean'
-            || !/^#[0-9a-f]{6}$/i.test(guide.color) || !Number.isFinite(guide.opacity) || guide.opacity < 0 || guide.opacity > 1) return true;
-          if (guide.type === 'grid') {
-            if (!Number.isFinite(guide.size) || guide.size < 1 || guide.size > 500) return true;
-          } else {
-            const alignments = guide.type === 'columns' ? ['stretch', 'left', 'center', 'right'] : ['stretch', 'top', 'center', 'bottom'];
-            if (!Number.isInteger(guide.count) || guide.count < 1 || guide.count > 64 || !alignments.includes(guide.alignment)
-              || !validMeasurement(guide.gutter) || !validMeasurement(guide.margin)
-              || !Number.isFinite(guide.bandSize) || guide.bandSize < 1 || guide.bandSize > 10_000
-              || !validMeasurement(guide.offset)) return true;
-          }
-          guideIds.add(guide.id); return false;
-        })) throw new TypeError(`Invalid layout guides on layer ${node.name || node.id}.`);
+        if (node.type !== 'frame' || !isValidLayoutGuideList(node.layoutGuides)) throw new TypeError(`Invalid layout guides on layer ${node.name || node.id}.`);
+      }
+      if (node.layoutGuideStyleId != null && (node.type !== 'frame' || typeof node.layoutGuideStyleId !== 'string' || !node.layoutGuideStyleId)) {
+        throw new TypeError(`Invalid layout guide style on layer ${node.name || node.id}.`);
       }
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout) {
@@ -3527,7 +3939,11 @@ export function validateDocument(document) {
               : track.value === undefined && track.weight === undefined;
           const validMinimum = track.minSize === undefined || (Number.isFinite(track.minSize) && track.minSize >= 0 && track.minSize <= 100_000);
           const validContentMinimum = track.minContent === undefined || track.minContent === true;
-          return validMode && validMinimum && validContentMinimum && !(track.minSize !== undefined && track.minContent === true);
+          const validFlexibleMinimum = track.minWeight === undefined || (track.mode === 'fill'
+            && Number.isFinite(track.minWeight) && track.minWeight >= 0.01
+            && track.minWeight <= (track.weight ?? 1) && track.minWeight <= 100_000);
+          return validMode && validMinimum && validContentMinimum && validFlexibleMinimum
+            && !(track.minSize !== undefined && track.minContent === true);
         }));
         const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
         if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)
@@ -3582,13 +3998,31 @@ export function validateDocument(document) {
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string'))) || (overrides.__deletedChildren != null && (!Array.isArray(overrides.__deletedChildren) || overrides.__deletedChildren.length > 100_000 || overrides.__deletedChildren.some(id => typeof id !== 'string' || !id || id.length > 160) || new Set(overrides.__deletedChildren).size !== overrides.__deletedChildren.length))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
           const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+          if (Object.hasOwn(overrides, 'textTruncation')
+            && (sourceNode?.type !== 'text' || !textTruncations.has(overrides.textTruncation))) {
+            throw new TypeError(`Invalid component text truncation override on ${node.name || node.id}.`);
+          }
+          if (Object.hasOwn(overrides, 'maxLines')
+            && (sourceNode?.type !== 'text' || (overrides.maxLines !== null && (!Number.isSafeInteger(overrides.maxLines) || overrides.maxLines < 1)))) {
+            throw new TypeError(`Invalid component text maximum line count override on ${node.name || node.id}.`);
+          }
+          const effectiveMaxLines = Object.hasOwn(overrides, 'maxLines') ? overrides.maxLines : sourceNode?.maxLines;
+          const effectiveTextTruncation = Object.hasOwn(overrides, 'textTruncation') ? overrides.textTruncation : sourceNode?.textTruncation;
+          const effectiveMaxHeight = Object.hasOwn(overrides, 'maxHeight') ? overrides.maxHeight : sourceNode?.maxHeight;
+          if (sourceNode?.type === 'text' && effectiveMaxLines != null
+            && (effectiveTextTruncation !== 'ending' || effectiveMaxHeight != null)) {
+            throw new TypeError(`Component text maximum lines require ending truncation and cannot be combined with maxHeight on ${node.name || node.id}.`);
+          }
           if (Object.hasOwn(overrides, 'lineReverseY')
             && (sourceNode?.type !== 'line' || typeof overrides.lineReverseY !== 'boolean')) {
             throw new TypeError(`Invalid component line direction override on ${node.name || node.id}.`);
           }
           if (Object.hasOwn(overrides, 'points')) {
             if (['polygon', 'star'].includes(sourceNode?.type)) {
-              if (!Number.isFinite(overrides.points) || overrides.points < 3 || overrides.points > 32) throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
+              if (!Number.isFinite(overrides.points) || overrides.points < MIN_STAR_POINTS
+                || overrides.points > (sourceNode.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS)) {
+                throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
+              }
             } else if (sourceNode?.type === 'path') {
               if (!Array.isArray(overrides.points) || overrides.points.some(point => !point
                 || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
@@ -3597,6 +4031,23 @@ export function validateDocument(document) {
                 throw new TypeError(`Invalid component vector path points override on ${node.name || node.id}.`);
               }
             } else throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
+          }
+          if (Object.hasOwn(overrides, 'vertexRadii')) {
+            const effectivePoints = Object.hasOwn(overrides, 'points') ? overrides.points : sourceNode?.points;
+            if (!isValidVertexRadii(sourceNode?.type, effectivePoints, overrides.vertexRadii)) {
+              throw new TypeError(`Invalid component independent vertex-radius override on ${node.name || node.id}.`);
+            }
+            if (overrides.variableBindings?.radius != null) {
+              throw new TypeError(`Independent vertex-radius overrides cannot use a uniform radius variable binding on ${node.name || node.id}.`);
+            }
+          }
+          if (['vertices', 'edges', 'faces'].some(property => Object.hasOwn(overrides, property))) {
+            if (sourceNode?.type !== 'network') throw new TypeError(`Invalid component vector network geometry override on ${node.name || node.id}.`);
+            const candidate = { ...sourceNode };
+            for (const property of ['vertices', 'edges', 'faces']) {
+              if (Object.hasOwn(overrides, property)) candidate[property] = overrides[property];
+            }
+            if (!validNetworkGeometry(candidate)) throw new TypeError(`Invalid component vector network geometry override on ${node.name || node.id}.`);
           }
           const pathGeometryProperties = ['points', 'subpaths', 'closed', 'fillRule'];
           const hasPathGeometryOverride = ['subpaths', 'closed', 'fillRule'].some(property => Object.hasOwn(overrides, property))
@@ -3611,6 +4062,10 @@ export function validateDocument(document) {
           }
           if (overrides.innerRadius != null && (sourceNode?.type !== 'star' || !Number.isFinite(overrides.innerRadius) || overrides.innerRadius < 0 || overrides.innerRadius > 1)) throw new TypeError(`Invalid component star inner-radius override on ${node.name || node.id}.`);
           if (overrides.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(sourceNode?.type) || !isValidCornerRadii(overrides.cornerRadii))) throw new TypeError(`Invalid component corner-radius override on ${node.name || node.id}.`);
+          if (overrides.cornerSmoothing != null && (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(sourceNode?.type)
+            || !Number.isFinite(overrides.cornerSmoothing) || overrides.cornerSmoothing < 0 || overrides.cornerSmoothing > 1)) throw new TypeError(`Invalid component corner-smoothing override on ${node.name || node.id}.`);
+          if (overrides.radius != null && (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(sourceNode?.type)
+            || !Number.isFinite(overrides.radius) || overrides.radius < 0 || overrides.radius > 100_000)) throw new TypeError(`Invalid component corner-radius override on ${node.name || node.id}.`);
           if (overrides.interactions != null) {
             if (hasInvalidPrototypeInteractions(overrides.interactions, document)) throw new TypeError(`Invalid component interactions override on ${node.name || node.id}.`);
             const matchingInstanceNodes = [];
@@ -3735,7 +4190,14 @@ export function validateDocument(document) {
       componentIds.add(component.id);
     }
     for (const component of document.components) {
+      if (component.exposedNestedInstances != null
+        && (!Array.isArray(component.exposedNestedInstances) || component.exposedNestedInstances.length > 100)) {
+        throw new TypeError(`Invalid exposed nested instances on ${component.name || component.id}.`);
+      }
       if (component.componentProperties != null && (!Array.isArray(component.componentProperties) || component.componentProperties.length > 100)) throw new TypeError(`Invalid component properties on ${component.name || component.id}.`);
+      const ownPropertyCount = componentPropertyDefinitionCount(document, component);
+      const exposedPropertyCount = exposedNestedInstancePropertyCount(document, component);
+      if (ownPropertyCount + exposedPropertyCount > 100) throw new TypeError(`Too many component properties on ${component.name || component.id}.`);
       const propertyNames = new Set(); const propertyTargets = new Set();
       for (const property of component.componentProperties || []) {
         const nameKey = typeof property?.name === 'string' ? property.name.trim().toLocaleLowerCase() : '';
@@ -3760,6 +4222,16 @@ export function validateDocument(document) {
             || new Set(property.preferredComponentIds).size !== property.preferredComponentIds.length
             || property.preferredComponentIds.some(targetId => !componentPropertyValueIsValid(document, component, property, targetId))) throw new TypeError(`Invalid swap choices on component property ${property.name}.`);
         }
+      }
+      const exposedInstances = new Set();
+      for (const nestedInstanceSourceId of component.exposedNestedInstances || []) {
+        const target = typeof nestedInstanceSourceId === 'string'
+          ? findComponentPropertyTarget(document, component, nestedInstanceSourceId) : null;
+        if (typeof nestedInstanceSourceId !== 'string' || !nestedInstanceSourceId
+          || !target?.isInstance || exposedInstances.has(nestedInstanceSourceId)) {
+          throw new TypeError(`Invalid exposed nested instance on ${component.name || component.id}.`);
+        }
+        exposedInstances.add(nestedInstanceSourceId);
       }
     }
     for (const page of document.pages) walkNodes(page.children, ({ node }) => {
@@ -3837,6 +4309,7 @@ export function validateDocument(document) {
     const values = variable.valuesByMode;
     const nameKey = `${variable.collectionId}:${String(variable.name || '').toLocaleLowerCase()}`;
     if (!variable.id || variableIds.has(variable.id) || !modes || typeof variable.name !== 'string' || !variable.name.trim() || variableNames.has(nameKey) || !variableTypes.has(variable.type) || !values || typeof values !== 'object' || Array.isArray(values)) throw new TypeError('Invalid or duplicate variable.');
+    if (Object.hasOwn(variable, 'scopes') && !isValidVariableScopes(variable.type, variable.scopes)) throw new TypeError(`Invalid scopes for variable ${variable.name}.`);
     if (Object.keys(values).length !== modes.size || [...modes].some(modeId => !isVariableValue(variable.type, values[modeId]))) throw new TypeError(`Invalid mode values for variable ${variable.name}.`);
     variableIds.add(variable.id); variableNames.add(nameKey); variableById.set(variable.id, variable);
   }
@@ -3915,6 +4388,16 @@ export function validateDocument(document) {
   if (document.recipes.some(recipe => recipe?.inpaintStrokes != null && !isValidImageEraseStrokes(recipe.inpaintStrokes))) {
     throw new TypeError('Invalid object-erase strokes in image recipe.');
   }
+  if (document.recipes.some(recipe => recipe?.backgroundRemoved != null && typeof recipe.backgroundRemoved !== 'boolean')) {
+    throw new TypeError('Invalid background-removal setting in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.resolutionBoosted != null && typeof recipe.resolutionBoosted !== 'boolean')) {
+    throw new TypeError('Invalid resolution-boost setting in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.imageExpansionPaddingRatio != null
+    && !isValidImageExpansionRatio(recipe.imageExpansionPaddingRatio))) {
+    throw new TypeError('Invalid image expansion padding in image recipe.');
+  }
   if (document.recipes.some(recipe => recipe?.format != null && !exportFormats.has(recipe.format))) {
     throw new TypeError('Invalid image output format in image recipe.');
   }
@@ -3922,8 +4405,11 @@ export function validateDocument(document) {
     && (!Number.isInteger(recipe.quality) || recipe.quality < 1 || recipe.quality > 100))) {
     throw new TypeError('Invalid image output quality in image recipe.');
   }
-  if (document.recipes.some(recipe => recipe?.fit != null && !['cover', 'contain'].includes(recipe.fit))) {
+  if (document.recipes.some(recipe => recipe?.fit != null && !['cover', 'contain', 'tile'].includes(recipe.fit))) {
     throw new TypeError('Invalid image fit mode in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.scalingFactor != null && !isValidImageTileScale(recipe.scalingFactor))) {
+    throw new TypeError('Invalid image tile scale in image recipe.');
   }
   if (document.recipes.some(recipe => recipe?.opacity != null
     && (!Number.isFinite(recipe.opacity) || recipe.opacity < 0 || recipe.opacity > 1))) {
@@ -4000,6 +4486,39 @@ export function validateDocument(document) {
       styleIds.add(style.id);
     }
   }
+  const hasLayoutGuideStyleReferences = document.pages.some(page => {
+    let found = false;
+    walkNodes(page.children, ({ node }) => {
+      if (node.layoutGuideStyleId != null
+        || Object.values(node.componentOverrides || {}).some(overrides => overrides?.layoutGuideStyleId != null)) found = true;
+    });
+    return found;
+  });
+  if (document.layoutGuideStyles != null || hasLayoutGuideStyleReferences) {
+    if (!Array.isArray(document.layoutGuideStyles) || document.layoutGuideStyles.length > MAX_LAYOUT_GUIDE_STYLES) {
+      throw new TypeError(`Layout guide styles must be a list of up to ${MAX_LAYOUT_GUIDE_STYLES.toLocaleString()} presets.`);
+    }
+    const styleIds = new Set();
+    for (const style of document.layoutGuideStyles) {
+      if (!style || typeof style.id !== 'string' || !style.id || styleIds.has(style.id)
+        || typeof style.name !== 'string' || !style.name.trim() || style.name.length > 120 || /[\x00-\x1f\x7f]/.test(style.name)
+        || !Array.isArray(style.guides) || style.guides.length === 0 || !isValidLayoutGuideList(style.guides)) {
+        throw new TypeError('Invalid or duplicate layout guide style.');
+      }
+      styleIds.add(style.id);
+    }
+    for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+      if (node.layoutGuideStyleId != null && !styleIds.has(node.layoutGuideStyleId)) {
+        throw new TypeError(`Missing layout guide style on frame ${node.name || node.id}.`);
+      }
+      for (const [sourceId, overrides] of Object.entries(node.componentOverrides || {})) {
+        if (overrides?.layoutGuideStyleId == null) continue;
+        if (!styleIds.has(overrides.layoutGuideStyleId) || findNodeAcrossPages(document, sourceId)?.node?.type !== 'frame') {
+          throw new TypeError(`Missing layout guide style override on layer ${node.name || node.id}.`);
+        }
+      }
+    });
+  }
   for (const { node, parent, page } of nodeEntries.values()) {
     const sourceId = node.type === 'text' ? node.textPath?.sourceId : null;
     if (sourceId == null) continue;
@@ -4022,6 +4541,24 @@ export function parseDocument(json) {
   // enough to fail inside cloning before ordinary validation gets control.
   assertDocumentTreeBounds(source);
   const document = typeof json === 'string' ? source : clone(source);
+  // Earlier in-progress builds stored exposed nested properties one at a time.
+  // Promote those entries to the Figma-style instance-level exposure without
+  // losing which nested instances the user chose to reveal.
+  for (const component of document.components || []) {
+    if (component.exposedNestedComponentProperties == null) continue;
+    if (!Array.isArray(component.exposedNestedComponentProperties)) {
+      throw new TypeError(`Invalid legacy nested property exposures on ${component.name || component.id}.`);
+    }
+    if (component.exposedNestedInstances != null && !Array.isArray(component.exposedNestedInstances)) {
+      throw new TypeError(`Invalid exposed nested instances on ${component.name || component.id}.`);
+    }
+    const legacyInstances = component.exposedNestedComponentProperties.map(exposure => exposure?.nestedInstanceSourceId);
+    const currentInstances = Array.isArray(component.exposedNestedInstances) ? component.exposedNestedInstances : [];
+    const exposedNestedInstances = [...new Set([...currentInstances, ...legacyInstances])];
+    if (exposedNestedInstances.length) component.exposedNestedInstances = exposedNestedInstances;
+    else delete component.exposedNestedInstances;
+    delete component.exposedNestedComponentProperties;
+  }
   // Image libraries were added after the initial local document format. Older
   // designs and packages have no manifest; promote them to an empty library.
   if (!Object.hasOwn(document, 'imageLibrary')) document.imageLibrary = [];

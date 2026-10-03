@@ -92,6 +92,9 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
     const loaded = await harness.client.loadFont('inter-variable', sfnt);
     assert.equal(loaded.upem, 2048);
     assert.deepEqual(Object.keys(loaded.axes).sort(), ['opsz', 'wght']);
+    assert.ok(loaded.coverage instanceof Uint32Array);
+    assert.ok(loaded.coverage.includes('A'.codePointAt(0)), 'the worker reports local cmap coverage for fallback itemization');
+    assert.equal(loaded.coverage.includes('م'.codePointAt(0)), false, 'the Latin fixture does not claim Arabic coverage');
     assert.ok(loaded.gposFeatures.includes('kern'));
 
     const base = await harness.client.shape('inter-variable', {

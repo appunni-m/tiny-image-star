@@ -188,6 +188,15 @@ test('smart animation interpolates independent corner radii continuously and pre
   assert.deepEqual(to, originalTo, 'interpolation leaves the destination radii unchanged');
 });
 
+test('smart animation interpolates the shared corner-smoothing value continuously', () => {
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', radius: 20, cornerSmoothing: 0.2 })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', radius: 20, cornerSmoothing: 0.8 })] });
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+  assert.equal(layerAt(0).cornerSmoothing, 0.2);
+  assert.equal(layerAt(0.5).cornerSmoothing, 0.5);
+  assert.equal(layerAt(1).cornerSmoothing, 0.8);
+});
+
 test('smart animation transitions smoothly between linked and independent corner radii', () => {
   const independent = { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 };
   const independentStart = createNode('frame', { children: [createNode('rectangle', {
@@ -228,6 +237,31 @@ test('smart animation interpolates independent radii on the transition frames th
   const endpoint = interpolateSmartFrame(from, to, 1);
   assert.equal(Object.hasOwn(endpoint, 'cornerRadii'), false);
   assert.equal(endpoint.radius, 20);
+});
+
+test('smart animation blends matching per-vertex radii and switches arrays with shape topology', () => {
+  const fromRadii = Array(10).fill(2);
+  const toRadii = Array.from({ length: 10 }, (_, index) => 4 + index);
+  const from = createNode('frame', { children: [createNode('star', {
+    name: 'Badge', points: 5, radius: 1, vertexRadii: fromRadii
+  })] });
+  const to = createNode('frame', { children: [createNode('star', {
+    name: 'Badge', points: 5, radius: 2, vertexRadii: toRadii
+  })] });
+  const midpoint = interpolateSmartFrame(from, to, .5).children[0];
+  assert.deepEqual(midpoint.vertexRadii, fromRadii.map((radius, index) => (radius + toRadii[index]) / 2));
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].vertexRadii, fromRadii);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].vertexRadii, toRadii);
+
+  const changedTopology = createNode('frame', { children: [createNode('star', {
+    name: 'Badge', points: 6, radius: 2, vertexRadii: Array(12).fill(8)
+  })] });
+  const beforeSwitch = interpolateSmartFrame(from, changedTopology, .25).children[0];
+  const afterSwitch = interpolateSmartFrame(from, changedTopology, .75).children[0];
+  assert.equal(beforeSwitch.points, 5);
+  assert.equal(beforeSwitch.vertexRadii.length, 10);
+  assert.equal(afterSwitch.points, 6);
+  assert.deepEqual(afterSwitch.vertexRadii, Array(12).fill(8));
 });
 
 test('smart animation uses the resolved variable radius when blending into independent corners', () => {
@@ -1140,7 +1174,7 @@ test('smart animation morphs compound contours only when every contour keeps its
 test('smart animation morphs a compatible vector network without crossfading its graph', () => {
   const fromNetwork = {
     vertices: [
-      { id: 'v1', x: 0, y: 0, label: 'start' },
+      { id: 'v1', x: 0, y: 0, label: 'start', cornerRadius: 4 },
       { id: 'v2', x: 1, y: 0 },
       { id: 'v3', x: .5, y: 1 }
     ],
@@ -1153,7 +1187,7 @@ test('smart animation morphs a compatible vector network without crossfading its
   };
   const toNetwork = {
     vertices: [
-      { id: 'v1', x: .2, y: .4, label: 'end' },
+      { id: 'v1', x: .2, y: .4, label: 'end', cornerRadius: 12 },
       { id: 'v2', x: .8, y: .2 },
       { id: 'v3', x: .4, y: .8 }
     ],
@@ -1185,6 +1219,8 @@ test('smart animation morphs a compatible vector network without crossfading its
   assert.deepEqual(end[0].faces, toNetwork.faces, 'the destination face style is exact');
 
   assert.deepEqual(middle[0].vertices.map(({ x, y }) => [x, y]), [[.1, .2], [.9, .1], [.45, .9]]);
+  assert.equal(middle[0].vertices[0].cornerRadius, 8, 'matching network vertex corner radii interpolate continuously');
+  assert.equal(beforeMidpoint.vertices[0].cornerRadius, 7.992, 'the radius morph remains continuous before the midpoint');
   const closePoint = (actual, expected) => {
     assert.ok(Math.abs(actual.x - expected.x) < 1e-12);
     assert.ok(Math.abs(actual.y - expected.y) < 1e-12);

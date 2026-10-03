@@ -5,7 +5,7 @@ import { isValidStrokeStack } from './strokes.js';
 import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { defaultImageAdjustments, isValidImageFill } from './image-fills.js';
 
-const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'cornerSmoothing', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent', 'listSpacing'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'baselineShift'];
@@ -14,7 +14,7 @@ const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letter
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
-  'affineTransform',
+  'affineTransform', 'points', 'innerRadius', 'vertexRadii',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior'
 ];
@@ -574,6 +574,11 @@ function interpolateNetwork(from, to, progress, geometryProgress = progress) {
     const source = sourceVertices.get(target.id);
     const vertex = structuredClone(progress < 0.5 ? source : target);
     Object.assign(vertex, interpolateNetworkPoint(source, target, geometryProgress));
+    const sourceRadius = finiteStyleNumber(source.cornerRadius) ?? 0;
+    const targetRadius = finiteStyleNumber(target.cornerRadius) ?? 0;
+    const radius = interpolateFiniteNumber(sourceRadius, targetRadius, geometryProgress);
+    if (radius > 0) vertex.cornerRadius = Math.max(0, Math.min(100_000, radius));
+    else delete vertex.cornerRadius;
     return vertex;
   });
   copy.edges = to.edges.map(target => {
@@ -712,6 +717,25 @@ function interpolateCornerRadii(copy, from, to, progress, resolveRadius = null) 
   }));
 }
 
+function interpolateVertexRadii(copy, from, to, progress, resolveRadius = null) {
+  if (progress === 0 || progress === 1) {
+    snapProperty(copy, from, to, 'vertexRadii', progress);
+    return;
+  }
+  if (!['star', 'polygon'].includes(from.type) || from.type !== to.type
+    || (from.points ?? (from.type === 'star' ? 5 : 6)) !== (to.points ?? (to.type === 'star' ? 5 : 6))) return;
+  if (from.vertexRadii == null && to.vertexRadii == null) return;
+  const radiusFor = node => finiteStyleNumber(resolveRadius?.(node)) ?? finiteStyleNumber(node.radius) ?? 0;
+  const count = from.type === 'star' ? 2 * Math.round(from.points ?? 5) : Math.round(from.points ?? 6);
+  const fromRadii = Array.isArray(from.vertexRadii) && from.vertexRadii.length === count
+    ? from.vertexRadii : Array.from({ length: count }, () => radiusFor(from));
+  const toRadii = Array.isArray(to.vertexRadii) && to.vertexRadii.length === count
+    ? to.vertexRadii : Array.from({ length: count }, () => radiusFor(to));
+  if (![...fromRadii, ...toRadii].every(value => Number.isFinite(value) && value >= 0 && value <= 100_000)) return;
+  copy.vertexRadii = fromRadii.map((radius, index) => Math.max(0, Math.min(100_000,
+    interpolateFiniteNumber(radius, toRadii[index], progress))));
+}
+
 function fadeLayer(node, progress, entering) {
   const copy = structuredClone(node);
   if (copy.visible !== false) {
@@ -775,6 +799,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
     if (affineTransform) copy.affineTransform = affineTransform;
   }
   interpolateCornerRadii(copy, from, to, geometryProgress, resolveRadius);
+  interpolateVertexRadii(copy, from, to, geometryProgress, resolveRadius);
   for (const property of colorProperties) {
     if (property === 'color' && from.type === 'text' && to.type === 'text'
       && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {

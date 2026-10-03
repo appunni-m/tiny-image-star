@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createFillLayer, createGradientFill, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, deleteImageRecipe, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, renameImageRecipe, serializeDocument, setComponentSlotContent, syncComponentInstances, updateImageRecipe, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, applyLayoutGuideStyle, bindVariable, canBindVariable, canCreateMaskGroup, copyLayoutGuide, createComponent, createComponentInstance, createComponentProperty, createDocument, createFillLayer, createGradientFill, createImageRecipe, createLayerEffect, createLayoutGuide, createLayoutGuideStyle, createMaskGroup, createNode, createVariable, createVariableCollection, deleteImageRecipe, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, pasteLayoutGuide, removeNode, renameImageRecipe, serializeDocument, setComponentSlotContent, syncComponentInstances, updateImageRecipe, updateNode, validateDocument } from '../src/model.js';
+import { createPageNodeIndex } from '../src/page-node-index.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -11,6 +12,41 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.deepEqual(document.pages[0].guides, []);
   assert.deepEqual(document.motion, { durationMs: 1000, tracks: [] });
   assert.equal(validateDocument(document), true);
+});
+
+test('vector mask modes validate and survive save/reload while legacy mask groups default to alpha', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Content' });
+  const lineMask = createNode('line', { name: 'Stroke mask', stroke: '#123456', strokeWidth: 4 });
+  addNode(document, content);
+  addNode(document, lineMask);
+  assert.equal(canCreateMaskGroup(document, [content.id, lineMask.id], document.activePageId, 'vector'), true);
+  const group = createMaskGroup(document, [content.id, lineMask.id], document.activePageId, 'vector');
+  assert.equal(group.maskMode, 'vector');
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reopened, group.id).node.maskMode, 'vector');
+  assert.equal(validateDocument(reopened), true);
+
+  const legacyDocument = createDocument();
+  const legacyContent = createNode('rectangle');
+  const alphaSource = createNode('ellipse');
+  addNode(legacyDocument, legacyContent); addNode(legacyDocument, alphaSource);
+  const legacyGroup = createMaskGroup(legacyDocument, [legacyContent.id, alphaSource.id]);
+  delete legacyGroup.maskMode;
+  assert.equal(validateDocument(legacyDocument), true, 'older alpha masks remain valid when mode is omitted');
+  assert.equal(parseDocument(serializeDocument(legacyDocument)).pages[0].children[0].maskMode, undefined);
+
+  const unsupportedMode = structuredClone(reopened);
+  findNode(unsupportedMode, group.id).node.maskMode = 'luminance';
+  assert.throws(() => validateDocument(unsupportedMode), /Invalid mask mode/);
+
+  const unsupportedSource = createDocument();
+  const text = createNode('text', { text: 'Not a vector mask source' });
+  const painted = createNode('rectangle');
+  addNode(unsupportedSource, painted); addNode(unsupportedSource, text);
+  const alphaGroup = createMaskGroup(unsupportedSource, [painted.id, text.id]);
+  alphaGroup.maskMode = 'vector';
+  assert.throws(() => validateDocument(unsupportedSource), /Invalid mask group/);
 });
 
 test('motion tracks persist with a design, validate their layer references, and migrate older files', () => {
@@ -91,6 +127,54 @@ test('page ruler guides reject malformed records, duplicate ids, invalid coordin
     document.pages[0].guides = guides;
     assert.throws(() => validateDocument(document), /Invalid ruler guides/, label);
   }
+});
+
+test('layout guide copy/paste clones one guide, assigns frame-local IDs, and detaches only pasted frames', () => {
+  const document = createDocument();
+  const sourceGuide = createLayoutGuide('columns', {
+    id: 'source-columns', visible: false, color: '#123456', opacity: 0.65,
+    count: 3, alignment: 'stretch', gutter: 12.5, margin: 18
+  });
+  const source = createNode('frame', { name: 'Source', layoutGuides: [sourceGuide] });
+  const target = createNode('frame', { name: 'Target' });
+  const linkedPeer = createNode('frame', { name: 'Linked peer' });
+  addNode(document, source); addNode(document, target); addNode(document, linkedPeer);
+  const style = createLayoutGuideStyle(document, source.id, 'Columns');
+  assert.equal(applyLayoutGuideStyle(document, target.id, style.id), true);
+  assert.equal(applyLayoutGuideStyle(document, linkedPeer.id, style.id), true);
+
+  const clipboard = copyLayoutGuide(document, source.id, sourceGuide.id);
+  const original = structuredClone(document);
+  const result = pasteLayoutGuide(document, clipboard, [target.id]);
+  const updatedTarget = findNode(result.document, target.id).node;
+  const pastedGuide = updatedTarget.layoutGuides.at(-1);
+
+  assert.deepEqual(clipboard.guide, sourceGuide);
+  assert.equal(pastedGuide.id === sourceGuide.id, false);
+  assert.equal(pastedGuide.id === target.layoutGuides[0].id, false);
+  assert.deepEqual({ ...pastedGuide, id: sourceGuide.id }, sourceGuide);
+  assert.equal(updatedTarget.layoutGuides.length, 2);
+  assert.equal(updatedTarget.layoutGuideStyleId, undefined);
+  assert.equal(findNode(result.document, linkedPeer.id).node.layoutGuideStyleId, style.id);
+  assert.deepEqual(document, original, 'pasting must leave the input document unchanged');
+  assert.equal(validateDocument(result.document), true);
+});
+
+test('layout guide paste validates its clipboard and applies atomically at the per-frame guide limit', () => {
+  const document = createDocument();
+  const source = createNode('frame', { layoutGuides: [createLayoutGuide('grid', { id: 'copy-grid' })] });
+  const full = createNode('frame', {
+    layoutGuides: Array.from({ length: 32 }, (_, index) => createLayoutGuide('grid', { id: `full-grid-${index}` }))
+  });
+  const other = createNode('frame');
+  addNode(document, source); addNode(document, full); addNode(document, other);
+  const clipboard = copyLayoutGuide(document, source.id, 'copy-grid');
+  const before = structuredClone(document);
+
+  assert.throws(() => pasteLayoutGuide(document, clipboard, [other.id, full.id]), /up to 32 layout guides/);
+  assert.deepEqual(document, before, 'a rejected multi-frame paste must not partially update any target');
+  assert.throws(() => pasteLayoutGuide(document, { ...clipboard, version: 2 }, [other.id]), /copied layout guide is invalid/);
+  assert.throws(() => pasteLayoutGuide(document, clipboard, [source.id, 'missing-frame']), /only be pasted onto frames/);
 });
 
 test('slice export regions stay top-level, positive-size, unrotated, and survive round-trip', () => {
@@ -261,6 +345,76 @@ test('paragraph spacing and first-line indentation validate and survive local se
   assert.throws(() => validateDocument(document), /Invalid paragraph typography/);
 });
 
+test('text truncation fields validate, persist, and stay independent from generic auto-layout size limits', () => {
+  const document = createDocument();
+  const layout = createNode('frame', { autoLayout: { axis: 'vertical' } });
+  const text = createNode('text', { text: 'One\nTwo\nThree', textTruncation: 'ending', maxLines: 2 });
+  const boundedText = createNode('text', { text: 'Bounded by layout', maxHeight: 72 });
+  addNode(document, layout);
+  addNode(document, text, { parentId: layout.id });
+  addNode(document, boundedText, { parentId: layout.id });
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(findNode(restored, text.id).node.textTruncation, 'ending');
+  assert.equal(findNode(restored, text.id).node.maxLines, 2);
+  assert.equal(findNode(restored, boundedText.id).node.maxHeight, 72,
+    'the existing generic auto-layout maximum-height behavior remains valid for text');
+  assert.equal(validateDocument(restored), true);
+
+  const invalid = [
+    ['unknown truncation mode', node => { node.textTruncation = 'middle'; }],
+    ['null truncation mode', node => { node.textTruncation = null; }],
+    ['zero max lines', node => { node.textTruncation = 'ending'; node.maxLines = 0; }],
+    ['fractional max lines', node => { node.textTruncation = 'ending'; node.maxLines = 1.5; }],
+    ['max lines without ending truncation', node => { node.textTruncation = 'disabled'; node.maxLines = 2; }],
+    ['max lines with maximum height', node => { node.textTruncation = 'ending'; node.maxLines = 2; node.maxHeight = 72; }]
+  ];
+  for (const [label, mutate] of invalid) {
+    const candidate = structuredClone(restored);
+    const target = findNode(candidate, text.id).node;
+    mutate(target);
+    assert.throws(() => validateDocument(candidate), /text (?:maximum|truncation)|geometry or type/i, label);
+  }
+
+  const nonTextDocument = createDocument();
+  addNode(nonTextDocument, createNode('rectangle', { textTruncation: 'ending' }));
+  assert.throws(() => validateDocument(nonTextDocument), /Invalid text truncation mode/);
+});
+
+test('component text truncation and max-line overrides are type-checked and round-trip', () => {
+  const document = createDocument();
+  const master = createNode('frame');
+  const sourceText = createNode('text', { text: 'Master text' });
+  addNode(document, master);
+  addNode(document, sourceText, { parentId: master.id });
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  instanceNode.componentOverrides[sourceText.id] = { textTruncation: 'ending', maxLines: 3 };
+  syncComponentInstances(document, component.id);
+
+  assert.equal(instanceNode.children[0].textTruncation, 'ending');
+  assert.equal(instanceNode.children[0].maxLines, 3);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const invalidMode = structuredClone(document);
+  findNode(invalidMode, instance.id).node.componentOverrides[sourceText.id].textTruncation = 'fade';
+  assert.throws(() => validateDocument(invalidMode), /component text truncation override/);
+
+  const invalidType = structuredClone(document);
+  const rectangle = createNode('rectangle');
+  addNode(invalidType, rectangle);
+  const rectangleComponent = createComponent(invalidType, rectangle.id);
+  const rectangleInstance = createComponentInstance(invalidType, rectangleComponent.id);
+  const rectangleSourceId = findNode(invalidType, rectangleInstance.id).node.componentSourceId;
+  findNode(invalidType, rectangleInstance.id).node.componentOverrides[rectangleSourceId] = { maxLines: 2 };
+  assert.throws(() => validateDocument(invalidType), /component text maximum line count override/);
+
+  const invalidCombination = structuredClone(document);
+  findNode(invalidCombination, instance.id).node.componentOverrides[sourceText.id].maxHeight = 72;
+  assert.throws(() => validateDocument(invalidCombination), /component text maximum lines.*maxHeight/i);
+});
+
 test('bulleted and numbered paragraph metadata round-trips, stays independent of rich runs, and has bounded validation', () => {
   const document = createDocument();
   const text = createNode('text', {
@@ -349,8 +503,12 @@ test('editable polygon and star geometry persists and rejects invalid shape valu
   assert.equal(validateDocument(zeroRadius), true);
   assert.equal(parseDocument(serializeDocument(zeroRadius)).pages[0].children[1].innerRadius, 0);
 
+  const maximumStar = structuredClone(reopened);
+  maximumStar.pages[0].children[1].points = 60;
+  assert.equal(validateDocument(maximumStar), true, 'stars support the Figma-compatible maximum of 60 outer points');
+
   for (const [nodeIndex, property, invalid] of [
-    [0, 'points', 2], [0, 'points', 33], [1, 'points', 2], [1, 'points', Infinity],
+    [0, 'points', 2], [0, 'points', 33], [1, 'points', 2], [1, 'points', 61], [1, 'points', Infinity],
     [1, 'innerRadius', -0.01], [1, 'innerRadius', 1.01]
   ]) {
     const candidate = structuredClone(reopened);
@@ -376,6 +534,37 @@ test('vector path anchor modes are restricted to supported persisted values', ()
     invalid.pages[0].children[0].points[0].mode = mode;
     assert.throws(() => validateDocument(invalid), /Invalid vector path/);
   }
+});
+
+test('vector-network vertex corner radii persist, validate, and propagate as component geometry overrides', () => {
+  const document = createDocument();
+  const network = createNode('network', {
+    name: 'Rounded network', width: 100, height: 80,
+    vertices: [
+      { id: 'a', x: 0, y: 0, cornerRadius: 12.5 },
+      { id: 'b', x: 1, y: 0 }, { id: 'c', x: 1, y: 1 }, { id: 'd', x: 0, y: 1 }
+    ],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'cd', from: 'c', to: 'd' }, { id: 'da', from: 'd', to: 'a' }],
+    faces: [{ id: 'abcd', vertexIds: ['a', 'b', 'c', 'd'] }]
+  });
+  addNode(document, network);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const component = createComponent(document, network.id);
+  const instance = createComponentInstance(document, component.id);
+  instance.componentOverrides[network.id] = { vertices: network.vertices.map(vertex => vertex.id === 'c' ? { ...vertex, cornerRadius: 7 } : { ...vertex }) };
+  syncComponentInstances(document, component.id);
+  assert.equal(findNode(document, instance.id).node.vertices.find(vertex => vertex.id === 'c').cornerRadius, 7);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  for (const value of [-1, 100_000.01, Infinity, NaN]) {
+    const invalid = structuredClone(document);
+    findNode(invalid, network.id).node.vertices[0].cornerRadius = value;
+    assert.throws(() => validateDocument(invalid), /Invalid vector network/);
+  }
+  const invalidOverride = structuredClone(document);
+  invalidOverride.pages[0].children.find(node => node.id === instance.id).componentOverrides[network.id].vertices[0].cornerRadius = -1;
+  assert.throws(() => validateDocument(invalidOverride), /Invalid component vector network geometry override/);
 });
 
 test('compound vector paths and fill rules survive local document round trips and reject invalid contours', () => {
@@ -532,7 +721,9 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   source.adjustments.brightness = 0;
   source.transforms.crop.left = 0.4;
   target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
-  assert.equal(applyImageRecipe(document, target.id, recipe), true);
+  const indexedTarget = createPageNodeIndex(document, document.activePageId).find(target.id);
+  assert.equal(applyImageRecipe(document, target.id, recipe, document.activePageId, { targetEntry: indexedTarget }), true,
+    'bulk callers can apply the already-indexed current target without a full tree lookup');
   assert.deepEqual(target.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true, flipVertical: false });
   assert.deepEqual([recipe.format, recipe.quality], ['webp', 74]);
@@ -549,6 +740,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   assert.deepEqual(target.effects.map(({ id, ...effect }) => effect), recipe.effects.map(({ id, ...effect }) => effect));
   assert.notEqual(target.effects[0].id, recipe.effects[0].id, 'each application receives fresh per-layer effect identities');
   assert.equal(target.assetId, 'asset-b');
+  assert.equal(target.backgroundRemoved, false, 'the saved operation state is applied without replacing the target source asset');
 
   const reopened = parseDocument(serializeDocument(document));
   const savedRecipe = reopened.recipes[0];
@@ -560,6 +752,169 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   const reopenedTarget = findNode(reopened, target.id).node;
   assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
   assert.deepEqual(reopenedTarget.adjustments, savedRecipe.adjustments, 'creative tone controls round-trip and apply to another source');
+});
+
+test('image recipes persist and apply Tile scale without changing their target source pixels', () => {
+  const document = createDocument();
+  const source = createNode('image', {
+    assetId: 'tile-source', fit: 'tile', scalingFactor: 0.375,
+    transforms: { crop: { left: 0.2, top: 0.1, right: 0.9, bottom: 0.95 }, rotation: 90, flipVertical: true }
+  });
+  const target = createNode('image', { assetId: 'tile-target', fit: 'cover', scalingFactor: 1.25 });
+  addNode(document, source);
+  addNode(document, target);
+  const recipe = createImageRecipe(source, 'Repeating texture');
+  document.recipes.push(recipe);
+
+  assert.equal(recipe.fit, 'tile');
+  assert.equal(recipe.scalingFactor, 0.375);
+  assert.equal(applyImageRecipe(document, target.id, recipe), true);
+  assert.deepEqual([target.assetId, target.fit, target.scalingFactor], ['tile-target', 'tile', 0.375]);
+  assert.deepEqual(target.transforms, source.transforms, 'the recipe keeps rotation and flips while preserving source-relative crop metadata');
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(reopened.recipes[0].scalingFactor, 0.375);
+  assert.deepEqual([findNode(reopened, target.id).node.fit, findNode(reopened, target.id).node.scalingFactor], ['tile', 0.375]);
+  for (const scalingFactor of [0, 16.01, Number.NaN]) {
+    assert.throws(() => applyImageRecipe(reopened, target.id, { ...recipe, scalingFactor }), /tile scale/);
+  }
+});
+
+test('an indexed recipe target from another document is rejected even when page and layer ids match', () => {
+  const document = createDocument();
+  const foreignDocument = createDocument();
+  const pageId = 'shared-page-id';
+  const nodeId = 'shared-image-id';
+  for (const candidate of [document, foreignDocument]) {
+    candidate.pages[0].id = pageId;
+    candidate.activePageId = pageId;
+    const image = createNode('image', { assetId: `asset-${candidate.id}`, x: 10 });
+    image.id = nodeId;
+    addNode(candidate, image, { pageId });
+  }
+  const foreignImage = findNode(foreignDocument, nodeId, pageId).node;
+  const recipe = createImageRecipe(foreignImage, 'Foreign recipe');
+  const foreignEntry = createPageNodeIndex(foreignDocument, pageId, { nodeIds: [nodeId] }).find(nodeId);
+  const originalX = findNode(document, nodeId, pageId).node.x;
+
+  assert.equal(applyImageRecipe(document, nodeId, recipe, pageId, { targetEntry: foreignEntry }), false,
+    'matching IDs and a valid foreign location must not authorize a mutation');
+  assert.equal(findNode(document, nodeId, pageId).node.x, originalX, 'the receiving document remains unchanged');
+});
+
+test('background-removal recipe snapshots an operation and lets batch code defer its asynchronous asset switch', () => {
+  const document = createDocument();
+  const source = createNode('image', {
+    assetId: 'transparent-source', backgroundRemoved: true,
+    backgroundRemovalSourceAssetId: 'source-original', backgroundRemovalAssetId: 'transparent-source',
+  });
+  const target = createNode('image', { assetId: 'target-original' });
+  addNode(document, source); addNode(document, target);
+  const recipe = createImageRecipe(source, 'Subject cutout');
+  assert.equal(recipe.backgroundRemoved, true);
+  document.recipes.push(recipe);
+  const reopened = parseDocument(serializeDocument(document));
+  const savedRecipe = reopened.recipes[0];
+  assert.equal(savedRecipe.backgroundRemoved, true, 'the recipe persists the requested operation');
+  const reopenedTarget = findNode(reopened, target.id).node;
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe, reopened.activePageId, { deferBackgroundRemoval: true }), true);
+  assert.equal(reopenedTarget.assetId, 'target-original', 'applying ordinary recipe settings never copies the recipe source pixels');
+  assert.equal(reopenedTarget.backgroundRemoved, undefined, 'the batch can await target-specific local inference before marking success');
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
+  assert.equal(reopenedTarget.backgroundRemoved, true, 'non-batch callers can still apply the operation state directly');
+});
+
+test('resolution-boost recipes persist the operation and defer target-local 4× asset generation', () => {
+  const document = createDocument();
+  const source = createNode('image', {
+    assetId: 'boost-source-4x', resolutionBoosted: true,
+    resolutionBoostSourceAssetId: 'boost-source', resolutionBoostAssetId: 'boost-source-4x',
+    sourceWidth: 2048, sourceHeight: 1024,
+  });
+  const target = createNode('image', { assetId: 'target-original', sourceWidth: 100, sourceHeight: 80 });
+  addNode(document, source); addNode(document, target);
+
+  const recipe = createImageRecipe(source, 'Sharper export');
+  assert.equal(recipe.resolutionBoosted, true);
+  document.recipes.push(recipe);
+  const reopened = parseDocument(serializeDocument(document));
+  const savedRecipe = reopened.recipes[0];
+  assert.equal(savedRecipe.resolutionBoosted, true);
+  assert.equal(validateDocument(reopened), true);
+
+  const reopenedTarget = findNode(reopened, target.id).node;
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe, reopened.activePageId, {
+    deferResolutionBoost: true,
+  }), true);
+  assert.equal(reopenedTarget.assetId, 'target-original', 'the recipe never copies the source image pixels');
+  assert.equal(reopenedTarget.resolutionBoosted, undefined, 'bulk code awaits target-specific model inference');
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
+  assert.equal(reopenedTarget.resolutionBoosted, true, 'non-batch callers can apply the operation flag directly');
+
+  for (const invalid of [null, 'yes', 1]) {
+    assert.throws(() => applyImageRecipe(reopened, target.id, { ...savedRecipe, resolutionBoosted: invalid }), /resolution boost/);
+  }
+  const corrupted = structuredClone(reopened);
+  findNode(corrupted, target.id).node.resolutionBoosted = 'yes';
+  assert.throws(() => validateDocument(corrupted), /resolution-boost setting/);
+});
+
+test('expanded-image recipes store source-relative settings and defer target-specific pixel generation', () => {
+  const document = createDocument();
+  const source = createNode('image', {
+    assetId: 'expanded-source-output', sourceWidth: 125, sourceHeight: 66,
+    x: -12.5, y: 8.25, width: 250, height: 132,
+    inpaintStrokes: [{ radius: 0.02, points: [{ x: 0.4, y: 0.5 }] }],
+    imageExpansion: {
+      sourceImageAssetId: 'expanded-source-original', sourceWidth: 100, sourceHeight: 60,
+      originalGeometry: { x: 0, y: 0, width: 200, height: 120 },
+      paddingRatio: { top: 0.1, right: 0.2, bottom: 0, left: 0.05 },
+      originalInpaintStrokes: [{ radius: 0.03, points: [{ x: 0.3, y: 0.4 }] }],
+    },
+  });
+  const target = createNode('image', {
+    assetId: 'target-original', sourceWidth: 40, sourceHeight: 30,
+    x: 18.5, y: -2.25, width: 80, height: 60,
+  });
+  addNode(document, source);
+  addNode(document, target);
+
+  const recipe = createImageRecipe(source, 'Expanded frame');
+  assert.deepEqual(recipe.imageExpansionPaddingRatio, { top: 0.1, right: 0.2, bottom: 0, left: 0.05 });
+  assert.deepEqual(recipe.inpaintStrokes, source.imageExpansion.originalInpaintStrokes,
+    'saved erase marks stay relative to the retained unexpanded source');
+  document.recipes.push(recipe);
+  const reopened = parseDocument(serializeDocument(document));
+  const reopenedRecipe = reopened.recipes[0];
+  assert.deepEqual(reopenedRecipe.imageExpansionPaddingRatio, recipe.imageExpansionPaddingRatio);
+  assert.deepEqual(reopenedRecipe.inpaintStrokes, recipe.inpaintStrokes);
+
+  const reopenedTarget = findNode(reopened, target.id).node;
+  const targetBefore = structuredClone(reopenedTarget);
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, reopenedRecipe, reopened.activePageId, { deferBackgroundRemoval: true }), true);
+  assert.equal(reopenedTarget.assetId, targetBefore.assetId, 'the recipe never copies its source image pixels to a target');
+  assert.equal(reopenedTarget.imageExpansion, undefined, 'the batch awaits expansion using this target’s own source');
+  assert.deepEqual(
+    { x: reopenedTarget.x, y: reopenedTarget.y, width: reopenedTarget.width, height: reopenedTarget.height, sourceWidth: reopenedTarget.sourceWidth, sourceHeight: reopenedTarget.sourceHeight },
+    { x: targetBefore.x, y: targetBefore.y, width: targetBefore.width, height: targetBefore.height, sourceWidth: targetBefore.sourceWidth, sourceHeight: targetBefore.sourceHeight },
+    'the async batch operation, not synchronous recipe styling, changes target-specific dimensions and geometry'
+  );
+
+  const legacy = { ...reopenedRecipe };
+  delete legacy.imageExpansionPaddingRatio;
+  const targetExpansion = {
+    sourceImageAssetId: 'target-prior-source', sourceWidth: 40, sourceHeight: 30,
+    originalGeometry: { x: 1, y: 2, width: 80, height: 60 },
+    paddingRatio: { top: 0, right: 0.1, bottom: 0, left: 0 },
+    originalInpaintStrokes: [],
+  };
+  reopenedTarget.imageExpansion = structuredClone(targetExpansion);
+  applyImageRecipe(reopened, reopenedTarget.id, legacy);
+  assert.deepEqual(reopenedTarget.imageExpansion, targetExpansion,
+    'legacy recipes without the field leave the target’s existing expansion alone');
+  assert.throws(() => applyImageRecipe(reopened, reopenedTarget.id, {
+    ...reopenedRecipe, imageExpansionPaddingRatio: { top: 1.1, right: 0, bottom: 0, left: 0 },
+  }), /expansion padding/);
 });
 
 test('saved image recipes can be renamed, refreshed from a layer, and deleted without changing applied images', () => {
@@ -699,7 +1054,7 @@ test('image recipes validate complete fill/output settings before changing an im
     assert.throws(() => validateDocument(corrupted), /Invalid image (effects|blend mode) in image recipe/);
   }
   image.fit = 'stretch';
-  assert.throws(() => createImageRecipe(image, 'Invalid source'), /fit must be Fill or Fit/);
+  assert.throws(() => createImageRecipe(image, 'Invalid source'), /fit must be Fill, Fit, or Tile/);
 });
 
 test('image object-erase edits round-trip, save into recipes, scale across targets, and reject malformed strokes', () => {

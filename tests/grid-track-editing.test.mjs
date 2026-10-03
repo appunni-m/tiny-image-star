@@ -364,7 +364,10 @@ test('grid track Inspector exposes a touch-sized editable lower bound', () => {
   const editor = editorSource.slice(editorStart, editorEnd);
   assert.match(editor, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.minimum"/);
   assert.match(editor, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.minimumValue"/);
+  assert.match(editor, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.minimumWeight"/);
   assert.match(editorSource, /function updateAutoLayoutGridTrack\(node, key, value\)[\s\S]*?minimumValue/);
+  assert.match(editorSource, /field === 'minimumWeight' && track\.mode === 'fill'/);
+  assert.match(editorSource, /track\.minWeight = Math\.min\(track\.minWeight, track\.weight\)/);
   assert.match(editorSource, /track\.minContent \? \{ minContent: true \}[\s\S]*?track\.minSize/,
     'changing a track sizing function should preserve its imported lower bound');
 });

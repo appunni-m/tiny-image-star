@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
+import { readFile } from 'node:fs/promises';
+import { activeImageRecipeRenderTargets, canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, imageRecipeRenderIsCurrent, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
+
+const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
 function deferred() {
   let resolve;
@@ -31,6 +34,85 @@ function hydrationAdmissionOptions(overrides = {}) {
     node,
   };
 }
+
+test('bulk recipe admission reuses a mutation-aware page index across the full job lifecycle', () => {
+  const scheduleStart = editorSource.indexOf('function scheduleBulk()');
+  const scheduleEnd = editorSource.indexOf('\nfunction restoreImageRecipeBatchConcurrency', scheduleStart);
+  const schedule = editorSource.slice(scheduleStart, scheduleEnd);
+  assert.match(schedule, /findBulkRecipeTarget\(bulk, id\)/,
+    'scheduling must resolve targets through the reusable page index');
+  assert.doesNotMatch(schedule, /findNode\(state\.document, id, bulk\.pageId\)/,
+    'each admission must not rescan the entire layer tree');
+  assert.match(schedule, /targetEntry: currentEntry/,
+    'ordinary recipe mutation must reuse the admitted current entry');
+
+  const start = editorSource.indexOf('function startRecipe(');
+  const end = editorSource.indexOf('\nfunction cancelBulkRecipe', start);
+  const startRecipe = editorSource.slice(start, end);
+  assert.match(startRecipe, /const uniqueTargets = \[\.\.\.new Set\(targets\)\];[\s\S]*?createPageNodeIndex\(state\.document, pageId, \{[\s\S]*?nodeIds: uniqueTargets,[\s\S]*?preserveNodeIdentity: true[\s\S]*?\}\)/,
+    'one target-only page traversal should pin selected image IDs before resolving them');
+  assert.match(startRecipe, /localAiRequired = imageRecipeUsesLocalModel\(recipe\)/,
+    'every recipe inference stage, including object erase, should reserve the local model lane');
+  assert.match(startRecipe, /uniqueTargets\.map\(id => \(\{ id, entry: nodeIndex\.find\(id\) \}\)\)/,
+    'initial filtering should be linear in the batch size after the target-only index is built');
+
+  const lookupStart = editorSource.indexOf('function findBulkRecipeTarget(');
+  const lookupEnd = editorSource.indexOf('\nfunction releaseBulkNodeIndexWhenDrained', lookupStart);
+  assert.match(editorSource.slice(lookupStart, lookupEnd), /if \(bulk\?\.nodeIndex && pageId === bulk\.pageId\) return bulk\.nodeIndex\.find\(nodeId\)/,
+    'asynchronous fences must revalidate identity, ancestry, and lock state through the index');
+  assert.match(editorSource, /withLocalModelWorkerSlot\(\s*\(\) => inpaintEngine\.run/,
+    'object erase inference must share the local model lane with background removal and expansion');
+  assert.match(editorSource, /withLocalModelWorkerSlot\(\(\) => objectIsolationEngine\.run/,
+    'subject isolation inference must also share that lane');
+});
+
+test('pre-render recipe failures still use the target start version to fence rollback', () => {
+  const batch = { renderVersions: new Map() };
+  assert.equal(imageRecipeRenderIsCurrent(batch, 'image-a', 3, 3), true);
+  assert.equal(imageRecipeRenderIsCurrent(batch, 'image-a', 3, 4), false,
+    'a newer user preview after the batch started protects that edit from rollback');
+  batch.renderVersions.set('image-a', 8);
+  assert.equal(imageRecipeRenderIsCurrent(batch, 'image-a', 3, 8), true);
+  assert.equal(imageRecipeRenderIsCurrent(batch, 'image-a', 3, 9), false,
+    'a newer edit after the batch preview was admitted protects that edit too');
+});
+
+test('bulk cancellation visits only active recipe renders in large batches', () => {
+  const activeIds = ['queued-current', 'running-current', 'queued-stale', 'hydrating'];
+  const currentVersions = new Map([
+    ['queued-current', 4],
+    ['running-current', 9],
+    ['queued-stale', 12],
+    ['hydrating', 1],
+  ]);
+  const batch = {
+    targets: Array.from({ length: 100_000 }, (_, index) => `image-${index}`),
+    activeControllers: new Map(activeIds.map(id => [id, {}])),
+    renderVersions: new Map([
+      ['queued-current', 4],
+      ['running-current', 9],
+      ['queued-stale', 11],
+      // A hydrating target has no queued Pillow render to cancel yet.
+    ]),
+  };
+  const checkedVersions = [];
+  const renderTargets = activeImageRecipeRenderTargets(batch, id => {
+    checkedVersions.push(id);
+    return currentVersions.get(id);
+  });
+
+  assert.deepEqual(renderTargets, ['queued-current', 'running-current']);
+  assert.deepEqual(checkedVersions, ['queued-current', 'running-current', 'queued-stale'],
+    'version checks skip still-hydrating controllers and scale with active renders, not 100,000 historical targets');
+
+  const cancelStart = editorSource.indexOf('function cancelBulkRecipe()');
+  const cancelEnd = editorSource.indexOf('\nfunction retryFailedRecipeTargets', cancelStart);
+  const cancel = editorSource.slice(cancelStart, cancelEnd);
+  assert.match(cancel, /activeImageRecipeRenderTargets\(bulk, targetId => state\.renderVersion\.get\(targetId\)\)/,
+    'cancellation only probes currently owned renders and still fences newer edits');
+  assert.doesNotMatch(cancel, /bulk\.targets\.slice\(0, bulk\.next\)/,
+    'the old cancellation scan over every previously admitted image must remain absent');
+});
 
 test('recipe target hydration finishes before recipe mutation and render admission', async () => {
   const sourceReady = deferred();
@@ -119,6 +201,32 @@ test('a nominally completed recipe batch is not dismissible while a worker is st
   assert.equal(canDismissImageRecipeBatch(batch), false);
 });
 
+test('drained batches release per-image fences while retaining recovery and retry data', () => {
+  const targets = Array.from({ length: 100_000 }, (_, index) => `image-${index}`);
+  const batch = {
+    targets, next: targets.length, inflight: 1, completed: targets.length - 1,
+    failedTargets: ['image-7'], paused: false, cancelled: false, done: false,
+    activeControllers: new Map([['image-99999', {}]]),
+    renderVersions: new Map(targets.map((id, index) => [id, index + 1])),
+    previousStatuses: new Map(targets.map(id => [id, 'Ready · original image'])),
+    restorePreviews: new Set(targets),
+  };
+
+  assert.equal(completeImageRecipeBatchIfDrained(batch), false,
+    'do not release fences before the last admitted render has settled');
+  assert.equal(batch.renderVersions.size, targets.length);
+
+  batch.inflight = 0;
+  assert.equal(completeImageRecipeBatchIfDrained(batch), true);
+  assert.equal(batch.done, true);
+  assert.equal(batch.activeControllers.size, 0);
+  assert.equal(batch.renderVersions.size, 0);
+  assert.equal(batch.previousStatuses.size, 0);
+  assert.equal(batch.restorePreviews.size, 0);
+  assert.equal(batch.targets, targets, 'target IDs remain available to the recovery lease and result count');
+  assert.equal(batch.failedTargets[0], 'image-7', 'failed targets remain available for targeted retry');
+});
+
 test('a drained batch finishes when its remaining targets are skipped without starting renders', () => {
   const batch = { targets: ['deleted', 'stale'], next: 0, inflight: 0, paused: false, cancelled: false, done: false };
 
@@ -155,6 +263,21 @@ test('failed image IDs are retained once for targeted retry after the batch drai
   assert.deepEqual(batch.failedTargets, ['image-a', 'image-b']);
 });
 
+test('large batches index failed image IDs without repeated linear scans', () => {
+  const targetCount = 25_000;
+  const batch = { completed: 0, failed: 0, failedTargets: [] };
+  for (let index = 0; index < targetCount; index += 1) {
+    recordImageRecipeBatchTarget(batch, { failed: true, targetId: `image-${index}` });
+  }
+
+  assert.equal(batch.failed, targetCount);
+  assert.equal(batch.failedTargets.length, targetCount);
+  assert.equal(batch.failedTargets[0], 'image-0');
+  assert.equal(batch.failedTargets.at(-1), `image-${targetCount - 1}`);
+  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-0' });
+  assert.equal(batch.failedTargets.length, targetCount, 'a repeated failure remains a single retry target');
+});
+
 test('bulk timing reports active images per second and estimates only unfinished targets', () => {
   const batch = { targets: Array.from({ length: 8 }, (_, index) => `image-${index}`), completed: 0, inflight: 0, next: 0, paused: false, cancelled: false, done: false };
   startImageRecipeBatchClock(batch, 1000);
@@ -169,6 +292,21 @@ test('bulk timing reports active images per second and estimates only unfinished
     etaSeconds: 6
   });
   assert.equal(formatImageRecipeBatchTiming(batch, 3000), '1.0 images/s average · now 1.0 images/s · about 6s left');
+});
+
+test('high-rate batch timing keeps a bounded rolling window without rescanning prior results', () => {
+  const batch = { targets: Array.from({ length: 50_000 }, (_, index) => `image-${index}`), completed: 0, inflight: 0, next: 50_000, paused: false, cancelled: false, done: false };
+  startImageRecipeBatchClock(batch, 0);
+  for (let index = 1; index <= 50_000; index += 1) {
+    recordImageRecipeBatchTarget(batch, { now: index });
+  }
+
+  const timing = imageRecipeBatchTiming(batch, 50_000);
+  assert.equal(timing.recentImagesPerSecond, 1000.2, 'the inclusive five-second boundary matches the previous rate definition');
+  assert.ok(batch.timingCompletionHead > 0 || batch.timingCompletionTimes.length < 6000,
+    'old completions are removed from the active rolling window');
+  assert.ok(batch.timingCompletionTimes.length < 12_000,
+    'the stored rate history stays near twice the five-second window even after tens of thousands of results');
 });
 
 test('throughput counts terminal success, failure, superseded, and skipped targets but excludes cancellation', () => {

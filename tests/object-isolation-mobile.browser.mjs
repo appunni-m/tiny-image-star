@@ -11,7 +11,7 @@ design.name = 'Object isolation phone ' + Date.now().toString(36);
 const assetId = 'object-isolation-phone-' + Date.now().toString(36);
 const source = createNode('image', {
   name: 'Phone isolation source', fileName: 'phone-source.png', assetId,
-  sourceWidth: 96, sourceHeight: 96, x: -64, y: -64, width: 128, height: 128,
+  sourceWidth: 96, sourceHeight: 96, x: -64, y: -88, width: 128, height: 128,
   transforms: { crop: { left: .08, top: .08, right: .92, bottom: .92 }, rotation: 90, flipHorizontal: true, flipVertical: false }
 });
 addNode(design, source);

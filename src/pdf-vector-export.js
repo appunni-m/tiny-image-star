@@ -16,7 +16,7 @@ const LIMITS = Object.freeze({
  * It keeps supported geometry as PDF paths and shading functions (never
  * screenshots the page). Paths, solid paints, gradients, clips, and embedded
  * PNG/JPEG image XObjects and isolated group-opacity forms remain editable PDF
- * objects. Text, gradient strokes, filters, masks, and blend modes are rejected
+ * objects. Text, gradient strokes, filters, luminance masks, and blend modes are rejected
  * with a feature-specific error until their PDF semantics can be represented
  * without changing the result.
  */
@@ -273,9 +273,30 @@ function parseGradient(definition) {
   return { type: linear ? 'linear' : 'radial', coordinates, segments, bounds, transform };
 }
 
+function maskRegion(node) {
+  const attrs = node.attributes;
+  const parseRegion = (value, label) => {
+    if (value == null || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) {
+      fail('mask region units', 'only explicit user-space numeric regions are supported');
+    }
+    return finite(value, label);
+  };
+  if ((attrs.maskUnits || 'objectBoundingBox') !== 'userSpaceOnUse'
+    || (attrs.maskContentUnits && attrs.maskContentUnits !== 'userSpaceOnUse')) {
+    fail('object-bounding-box masks', 'only userSpaceOnUse mask regions and contents are supported');
+  }
+  const x = parseRegion(attrs.x, 'mask region x');
+  const y = parseRegion(attrs.y, 'mask region y');
+  const width = parseRegion(attrs.width, 'mask region width');
+  const height = parseRegion(attrs.height, 'mask region height');
+  if (width <= 0 || height <= 0) throw new TypeError('SVG mask regions must have positive dimensions.');
+  return { x, y, width, height };
+}
+
 function scanDefinitions(svgRoot) {
   const clips = new Map();
   const gradients = new Map();
+  const masks = new Map();
   const ids = new Set();
   const collect = (node) => {
     if (node.name === 'defs') {
@@ -301,7 +322,16 @@ function scanDefinitions(svgRoot) {
         } else if (definition.name === 'filter') {
           fail('layer effects', 'SVG filter effects cannot be preserved by the current PDF writer');
         } else if (definition.name === 'mask') {
-          fail('alpha masks and Boolean masks', 'mask compositing is not implemented yet');
+          assertAttributes(definition, new Set([
+            'id', 'maskUnits', 'maskContentUnits', 'mask-type', 'x', 'y', 'width', 'height'
+          ]));
+          const id = definition.attributes.id;
+          if (!id || ids.has(id)) throw new TypeError('SVG definitions require unique IDs.');
+          ids.add(id);
+          if ((definition.attributes['mask-type'] || 'luminance') !== 'alpha') {
+            fail('luminance masks', 'PDF export supports alpha masks only');
+          }
+          masks.set(id, { node: definition, region: maskRegion(definition) });
         } else {
           fail(`SVG definition <${definition.name}>`);
         }
@@ -311,7 +341,7 @@ function scanDefinitions(svgRoot) {
     if (node.children) node.children.forEach(collect);
   };
   collect(svgRoot);
-  return { clips, gradients };
+  return { clips, gradients, masks };
 }
 
 function parseOpacity(value, feature) {
@@ -473,6 +503,63 @@ function alphaState(fillAlpha, strokeAlpha, stateNames) {
   return `/${stateNames.get(key)} gs`;
 }
 
+function reserveForm(context) {
+  if (context.forms.size >= LIMITS.maxTransparencyGroups) {
+    throw new RangeError(`Vector PDF exceeds ${LIMITS.maxTransparencyGroups} isolated transparency groups.`);
+  }
+  const name = `Fm${context.forms.size + 1}`;
+  context.forms.set(name, null);
+  return name;
+}
+
+function softMaskState(maskFormName, stateNames, opacity = 1) {
+  const key = `smask:${maskFormName}:${pdfNumber(opacity)}`;
+  if (!stateNames.has(key)) stateNames.set(key, `GS${stateNames.size + 1}`);
+  return `/${stateNames.get(key)} gs`;
+}
+
+function maskFormFor(maskId, context) {
+  if (context.buildingMaskIds.has(maskId)) fail('cyclic alpha masks', `mask ${maskId} references itself`);
+  const existing = context.maskFormNames.get(maskId);
+  if (existing) return existing;
+  const definition = context.definitions.masks.get(maskId);
+  if (!definition) throw new TypeError(`SVG references missing mask ${maskId}.`);
+  const formName = reserveForm(context);
+  context.maskFormNames.set(maskId, formName);
+  context.buildingMaskIds.add(maskId);
+  try {
+    const formContent = definition.node.children.map(child => renderTree(child, {
+      ...context, opacity: 1, inDefs: false,
+    })).filter(Boolean).join('\n');
+    context.forms.set(formName, {
+      content: `${formContent}${formContent ? '\n' : ''}`,
+      bbox: definition.region,
+    });
+  } catch (error) {
+    context.forms.delete(formName);
+    context.maskFormNames.delete(maskId);
+    throw error;
+  } finally {
+    context.buildingMaskIds.delete(maskId);
+  }
+  return formName;
+}
+
+function maskReference(value) {
+  const match = /^url\(#([^)]+)\)$/.exec(String(value || ''));
+  if (!match) fail('external masks', 'only local alpha-mask references are supported');
+  return match[1];
+}
+
+function formForChildren(node, context, { opacity = 1 } = {}) {
+  const formName = reserveForm(context);
+  const formContent = node.children.map(child => renderTree(child, {
+    ...context, opacity, inDefs: false,
+  })).filter(Boolean).join('\n');
+  context.forms.set(formName, { content: `${formContent}${formContent ? '\n' : ''}` });
+  return formName;
+}
+
 function gradientReference(value, gradients) {
   if (value == null || !value.startsWith('url(')) return null;
   const match = /^url\(#([^)]+)\)$/.exec(value);
@@ -600,7 +687,7 @@ function imageClipPath(clipValue, definitions) {
 
 function paintImage(node, inheritedOpacity, context) {
   const attrs = node.attributes;
-  assertAttributes(node, new Set(['x', 'y', 'width', 'height', 'href', 'xlink:href', 'preserveAspectRatio', 'transform', 'opacity', 'clip-path']));
+  assertAttributes(node, new Set(['x', 'y', 'width', 'height', 'href', 'xlink:href', 'preserveAspectRatio', 'transform', 'opacity', 'clip-path', 'mask']));
   const opacity = inheritedOpacity * parseOpacity(attrs.opacity, 'image opacity');
   if (opacity === 0) return '';
   const href = attrs.href || attrs['xlink:href'];
@@ -656,7 +743,8 @@ function paintImage(node, inheritedOpacity, context) {
   return commands.join('\n');
 }
 
-function renderTree(node, { definitions, stateNames, shadingNames, shadings, imageNames, images, forms, opacity = 1, inDefs = false } = {}) {
+function renderTree(node, context = {}) {
+  const { definitions, stateNames, shadingNames, shadings, imageNames, images, forms, opacity = 1, inDefs = false } = context;
   if (node.name === '#text') return '';
   if (node.name === 'title') {
     assertAttributes(node, new Set());
@@ -665,7 +753,9 @@ function renderTree(node, { definitions, stateNames, shadingNames, shadings, ima
   if (node.name === 'defs') return '';
   if (node.name === 'svg') {
     assertAttributes(node, new Set(['xmlns', 'width', 'height', 'viewBox']));
-    return node.children.map(child => renderTree(child, { definitions, stateNames, shadingNames, shadings, imageNames, images, forms, opacity, inDefs })).join('\n');
+    return node.children.map(child => renderTree(child, {
+      ...context, opacity, inDefs,
+    })).join('\n');
   }
   if (node.name === 'g') {
     const attrs = node.attributes;
@@ -673,7 +763,6 @@ function renderTree(node, { definitions, stateNames, shadingNames, shadings, ima
     const ownOpacity = parseOpacity(attrs.opacity, 'group opacity');
     if (ownOpacity === 0 || opacity === 0) return '';
     if (attrs.filter) fail('layer effects', 'SVG filter effects cannot be preserved by PDF');
-    if (attrs.mask) fail('alpha masks and Boolean masks', 'mask compositing is not implemented yet');
     if (attrs.style) fail('blend modes and inline CSS', 'SVG styles cannot be represented by the current PDF writer');
     const matrix = transformMatrix(attrs.transform);
     const commands = ['q'];
@@ -688,20 +777,25 @@ function renderTree(node, { definitions, stateNames, shadingNames, shadings, ima
       if (!['nonzero', 'evenodd'].includes(clipRule)) throw new TypeError('SVG clip path has an invalid fill rule.');
       commands.push(shapePath(shape, { closeOpen: true }), clipRule === 'evenodd' ? 'W*' : 'W', 'n');
     }
-    if (ownOpacity === 1) {
+    if (attrs.mask) {
+      const maskFormName = maskFormFor(maskReference(attrs.mask), context);
+      const formName = formForChildren(node, context, { opacity: 1 });
+      const groupOpacity = ownOpacity * opacity;
+      if (groupOpacity !== 1) {
+        const groupState = alphaState(groupOpacity, groupOpacity, stateNames);
+        if (groupState) commands.push(groupState);
+      }
+      commands.push(softMaskState(maskFormName, stateNames), `/${formName} Do`);
+    } else if (ownOpacity === 1) {
       for (const child of node.children) commands.push(renderTree(child, {
-        definitions, stateNames, shadingNames, shadings, imageNames, images, forms, opacity, inDefs,
+        ...context, opacity, inDefs,
       }));
     } else {
-      if (forms.size >= LIMITS.maxTransparencyGroups) {
-        throw new RangeError(`Vector PDF exceeds ${LIMITS.maxTransparencyGroups} isolated transparency groups.`);
-      }
-      const formName = `Fm${forms.size + 1}`;
-      forms.set(formName, null);
+      const formName = reserveForm(context);
       const formContent = node.children.map(child => renderTree(child, {
-        definitions, stateNames, shadingNames, shadings, imageNames, images, forms, opacity: 1, inDefs,
+        ...context, opacity: 1, inDefs,
       })).filter(Boolean).join('\n');
-      forms.set(formName, { content: `${formContent}\n` });
+      forms.set(formName, { content: `${formContent}${formContent ? '\n' : ''}` });
       const state = alphaState(ownOpacity, ownOpacity, stateNames);
       if (state) commands.push(state);
       commands.push(`/${formName} Do`);
@@ -711,10 +805,31 @@ function renderTree(node, { definitions, stateNames, shadingNames, shadings, ima
   }
   if (node.name === 'image') {
     if (inDefs) return '';
+    if (node.attributes.mask) {
+      const maskFormName = maskFormFor(maskReference(node.attributes.mask), context);
+      const formName = reserveForm(context);
+      const attributes = { ...node.attributes };
+      delete attributes.mask;
+      const content = paintImage({ ...node, attributes }, opacity, context);
+      forms.set(formName, { content: `${content}${content ? '\n' : ''}` });
+      return `q\n${softMaskState(maskFormName, stateNames)}\n/${formName} Do\nQ`;
+    }
     return paintImage(node, opacity, { definitions, stateNames, imageNames, images });
   }
   if (['path', 'rect', 'ellipse', 'polygon', 'text', 'tspan'].includes(node.name)) {
     if (inDefs) return '';
+    if (node.attributes.mask) {
+      const maskFormName = maskFormFor(maskReference(node.attributes.mask), context);
+      const formName = reserveForm(context);
+      const attributes = { ...node.attributes };
+      delete attributes.mask;
+      const paintNode = { ...node, attributes };
+      const content = paintPath(paintNode, shapePath(paintNode), opacity, {
+        stateNames, gradients: definitions.gradients, shadingNames, shadings,
+      });
+      forms.set(formName, { content: `${content}${content ? '\n' : ''}` });
+      return `q\n${softMaskState(maskFormName, stateNames)}\n/${formName} Do\nQ`;
+    }
     return paintPath(node, shapePath(node), opacity, {
       stateNames, gradients: definitions.gradients, shadingNames, shadings,
     });
@@ -732,6 +847,12 @@ function compileSvg(svg) {
   const imageNames = new Map();
   const images = new Map();
   const forms = new Map();
+  const maskFormNames = new Map();
+  const buildingMaskIds = new Set();
+  const renderContext = {
+    definitions, stateNames, shadingNames, shadings, imageNames, images, forms,
+    maskFormNames, buildingMaskIds,
+  };
   const [vx, vy, vbWidth, vbHeight] = viewBox;
   const sx = finite(width / vbWidth, 'viewport scale');
   const sy = finite(height / vbHeight, 'viewport scale');
@@ -740,7 +861,7 @@ function compileSvg(svg) {
   const content = [
     'q',
     `${pdfNumber(sx)} 0 0 ${pdfNumber(-sy)} ${pdfNumber(e)} ${pdfNumber(f)} cm`,
-    ...root.children.map(child => renderTree(child, { definitions, stateNames, shadingNames, shadings, imageNames, images, forms })),
+    ...root.children.map(child => renderTree(child, renderContext)),
     'Q',
   ].filter(Boolean).join('\n');
   return { width, height, content: `${content}\n`, stateNames, shadings, images, forms };
@@ -801,6 +922,10 @@ function createPdf(pages) {
     const pageId = nextId++;
     const contentId = nextId++;
     const states = [...page.stateNames.entries()].map(([key, name]) => {
+      if (key.startsWith('smask:')) {
+        const [, maskFormName, opacity] = key.split(':');
+        return { name, fillAlpha: opacity, strokeAlpha: opacity, maskFormName, objectId: nextId++ };
+      }
       const [fillAlpha, strokeAlpha] = key.split(':');
       return { name, fillAlpha, strokeAlpha, objectId: nextId++ };
     });
@@ -829,7 +954,11 @@ function createPdf(pages) {
     const bytes = safePdfContent(page.content);
     objects[page.contentId] = `<< /Length ${bytes.byteLength} >>\nstream\n${page.content}endstream`;
     for (const state of page.states) {
-      objects[state.objectId] = `<< /Type /ExtGState /ca ${state.fillAlpha} /CA ${state.strokeAlpha} >>`;
+      const softMask = state.maskFormName
+        ? `/SMask << /S /Alpha /G ${page.formObjects.find(form => form.name === state.maskFormName)?.objectId || 'null'} 0 R >>`
+        : '';
+      if (softMask.includes('/G null')) throw new TypeError(`PDF alpha mask form ${state.maskFormName} was not compiled.`);
+      objects[state.objectId] = `<< /Type /ExtGState /ca ${state.fillAlpha} /CA ${state.strokeAlpha} ${softMask} >>`;
     }
     for (const shading of page.shadingObjects) {
       const { descriptor } = shading;
@@ -865,7 +994,11 @@ function createPdf(pages) {
     for (const item of page.formObjects) {
       const bytes = safePdfContent(item.descriptor.content);
       const bounds = LIMITS.maxCoordinate;
-      const dictionary = `/Type /XObject /Subtype /Form /FormType 1 /BBox [-${bounds} -${bounds} ${bounds} ${bounds}]`
+      const formBounds = item.descriptor.bbox
+        ? [item.descriptor.bbox.x, item.descriptor.bbox.y,
+          item.descriptor.bbox.x + item.descriptor.bbox.width, item.descriptor.bbox.y + item.descriptor.bbox.height]
+        : [-bounds, -bounds, bounds, bounds];
+      const dictionary = `/Type /XObject /Subtype /Form /FormType 1 /BBox [${formBounds.map(pdfNumber).join(' ')}]`
         + ` /Matrix [1 0 0 1 0 0] /Resources ${resourceDictionary(item.descriptor.content, page, { excludeFormName: item.name })}`
         + ' /Group << /S /Transparency /CS /DeviceRGB /I true /K false >>';
       objects[item.objectId] = pdfStreamObject(dictionary, bytes);

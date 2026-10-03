@@ -290,6 +290,7 @@ export class LocalImageEngine {
     this.maxActiveRenderBytes = maxActiveRenderBytes;
     this.maxSingleRenderBytes = maxSingleRenderBytes;
     this.activeRenderBytes = 0;
+    this.externalCpuReservations = 0;
     this.concurrency = Math.min(2, maxWorkers);
     this.workers = [];
     this.queue = [];
@@ -327,6 +328,23 @@ export class LocalImageEngine {
     this.#dispatch();
     this.#notify();
     return next;
+  }
+
+  /** Temporarily reserve whole-device CPU slots for other local workers. */
+  setExternalCpuReservations(value) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new RangeError('External CPU reservations must be a nonnegative safe integer.');
+    }
+    const next = Math.min(this.maxWorkers, value);
+    if (next === this.externalCpuReservations) return this.activeWorkerLimit;
+    this.externalCpuReservations = next;
+    this.#dispatch();
+    this.#notify();
+    return this.activeWorkerLimit;
+  }
+
+  get activeWorkerLimit() {
+    return Math.max(0, this.concurrency - this.externalCpuReservations);
   }
 
   #createWorker(recoveryAttempts = 0) {
@@ -611,7 +629,7 @@ export class LocalImageEngine {
   #dispatch() {
     if (this.dead || this.paused || !this.poolConfigured) return;
     const active = this.workers.filter(slot => slot.busy).length;
-    if (active >= this.concurrency) return;
+    if (active >= this.activeWorkerLimit) return;
     const idle = this.workers.filter(item => item.ready && !item.busy);
     if (!idle.length) return;
     if (this.queuedCount === 0) return;

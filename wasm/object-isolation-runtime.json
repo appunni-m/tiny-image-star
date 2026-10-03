@@ -43,6 +43,7 @@
       }
     },
     "workerBundle": "../src/workers/object-isolation-worker.bundle.js",
+    "workerFormat": "classic",
     "executionProvider": "CPU",
     "concurrency": 1
   }

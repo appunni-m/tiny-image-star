@@ -123,15 +123,19 @@ class FakeNetwork {
       if (description.type !== 'answer') return;
       const guest = this.network.peers.find(peer => peer !== this
         && peer.remoteDescription?.type === 'offer' && peer.localDescription?.type === 'answer');
-      const hostChannel = this.createdChannels[0];
-      if (!guest || !hostChannel) return;
-      const guestChannel = new FakeDataChannel(hostChannel.label, {});
-      hostChannel.peer = guestChannel;
-      guestChannel.peer = hostChannel;
-      guest.dispatch('datachannel', { channel: guestChannel });
+      if (!guest || !this.createdChannels.length) return;
+      const peers = this.createdChannels.map(hostChannel => {
+        const guestChannel = new FakeDataChannel(hostChannel.label, {});
+        hostChannel.peer = guestChannel;
+        guestChannel.peer = hostChannel;
+        guest.dispatch('datachannel', { channel: guestChannel });
+        return [hostChannel, guestChannel];
+      });
       if (this.network.open) queueMicrotask(() => {
-        hostChannel.open();
-        guestChannel.open();
+        for (const [hostChannel, guestChannel] of peers) {
+          hostChannel.open();
+          guestChannel.open();
+        }
         this.connectionState = 'connected';
         guest.connectionState = 'connected';
         this.dispatch('connectionstatechange');
@@ -161,7 +165,7 @@ function isTransportError(code) {
   return error => error instanceof WebRtcSessionTransportError && error.code === code;
 }
 
-test('host and guest exchange gathered signed capsules over an ordered reliable direct channel', async () => {
+test('host and guest exchange signed capsules over separate ordered control and asset channels', async () => {
   const owner = await ownerFixture();
   const network = new FakeNetwork();
   const factory = network.makeFactory();
@@ -175,7 +179,10 @@ test('host and guest exchange gathered signed capsules over an ordered reliable 
   assert.equal(host.state, 'awaiting-answer');
   assert.deepEqual(host.peerConnection.configuration, { iceServers: [] });
   assert.deepEqual(host.dataChannel.options, { ordered: true });
+  assert.deepEqual(host.assetDataChannel.options, { ordered: true });
+  assert.notEqual(host.dataChannel.label, host.assetDataChannel.label);
   assert.equal(host.dataChannel.binaryType, 'arraybuffer');
+  assert.equal(host.assetDataChannel.binaryType, 'arraybuffer');
   assert.equal(host.dataChannel.readyState, 'connecting');
 
   const guest = await createGuestWebRtcSession({
@@ -188,6 +195,7 @@ test('host and guest exchange gathered signed capsules over an ordered reliable 
   assert.equal(guest.state, 'awaiting-connection');
   assert.deepEqual(guest.peerConnection.configuration, { iceServers: [] });
   assert.equal(guest.dataChannel, null);
+  assert.equal(guest.assetDataChannel, null);
   assert.equal(typeof guest.answerCapsule, 'string');
 
   const acceptedHost = await host.acceptAnswer(guest.answerCapsule);
@@ -198,6 +206,8 @@ test('host and guest exchange gathered signed capsules over an ordered reliable 
   assert.equal(openedGuestChannel.readyState, 'open');
   assert.equal(guest.dataChannel, openedGuestChannel);
   assert.equal(openedGuestChannel.binaryType, 'arraybuffer');
+  assert.equal(guest.assetDataChannel.readyState, 'open');
+  assert.equal(acceptedHost.assetDataChannel.readyState, 'open');
 });
 
 test('caller-supplied ICE servers are passed through explicitly', async () => {
@@ -249,7 +259,7 @@ test('malformed or expired guest capsules are rejected before peer connection co
   assert.equal(creations, 0);
 });
 
-test('ICE gathering timeout closes the host peer and its channel', async () => {
+test('ICE gathering timeout closes the host peer and both channels', async () => {
   const owner = await ownerFixture();
   const network = new FakeNetwork({ gather: false });
   const factory = network.makeFactory();
@@ -264,6 +274,7 @@ test('ICE gathering timeout closes the host peer and its channel', async () => {
   assert.equal(network.peers.length, 1);
   assert.equal(network.peers[0].closed, true);
   assert.equal(network.peers[0].createdChannels[0].readyState, 'closed');
+  assert.equal(network.peers[0].createdChannels[1].readyState, 'closed');
 });
 
 test('host rejects an unverified answer before setRemoteDescription and cleans up', async () => {

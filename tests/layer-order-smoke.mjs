@@ -48,13 +48,19 @@ try {
   const middle = createNode('ellipse', { name: 'Middle' });
   const locked = createNode('rectangle', { name: 'Locked', locked: true });
   const top = createNode('rectangle', { name: 'Top' });
-  const frameNode = createNode('frame', { name: 'Container', locked: true });
+  const frameNode = createNode('frame', { name: 'Container' });
+  const lockedFrame = createNode('frame', { name: 'Locked ancestor', locked: true });
+  const lockedNestedGroup = createNode('group', { name: 'Locked nested group' });
+  const lockedNestedTarget = createNode('text', { name: 'Locked nested target' });
   const nestedGroup = createNode('group', { name: 'Unlocked nested group' });
   const nestedTop = createNode('text', { name: 'Nested top' });
   const nestedBottom = createNode('rectangle', { name: 'Nested bottom' });
   addNode(design, bottom); addNode(design, middle); addNode(design, locked); addNode(design, top); addNode(design, frameNode);
   addNode(design, nestedGroup, { parentId: frameNode.id });
   addNode(design, nestedBottom, { parentId: nestedGroup.id }); addNode(design, nestedTop, { parentId: nestedGroup.id });
+  addNode(design, lockedFrame, { parentId: frameNode.id });
+  addNode(design, lockedNestedGroup, { parentId: lockedFrame.id });
+  addNode(design, lockedNestedTarget, { parentId: lockedNestedGroup.id });
   designId = design.id;
   frame.style.width = '390px'; frame.style.height = '844px';
   const app = frame.contentDocument;
@@ -162,11 +168,30 @@ try {
   key(app, 'z', { ctrlKey: true });
   await waitFor(() => row(app, 'Bottom')?.style.paddingLeft === '7px', 'undo cross-container reparent');
 
-  const nestedSource = row(app, 'Nested top');
+  const containerAfterUndo = row(app, 'Container');
+  assert(containerAfterUndo, 'Undo should keep the unlocked container in the layer tree.');
+  if (containerAfterUndo.getAttribute('aria-expanded') !== 'true') containerAfterUndo.querySelector('[data-action="layer-toggle"]').click();
+  await waitFor(() => row(app, 'Locked ancestor'), 'reopened locked ancestor row');
+  const lockedAncestorRow = row(app, 'Locked ancestor');
+  if (lockedAncestorRow.getAttribute('aria-expanded') !== 'true') lockedAncestorRow.querySelector('[data-action="layer-toggle"]').click();
+  await waitFor(() => row(app, 'Locked nested group'), 'reopened locked nested group row');
+  const lockedGroupRow = row(app, 'Locked nested group');
+  if (lockedGroupRow.getAttribute('aria-expanded') !== 'true') lockedGroupRow.querySelector('[data-action="layer-toggle"]').click();
+  await waitFor(() => row(app, 'Locked nested target'), 'reopened locked nested target row');
+  const lockedTarget = row(app, 'Locked nested target');
+  const lockedTargetTransfer = new app.defaultView.DataTransfer();
+  row(app, 'Bottom').dispatchEvent(new app.defaultView.DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: lockedTargetTransfer }));
+  const lockedTargetBounds = lockedTarget.getBoundingClientRect();
+  const blockedDrop = new app.defaultView.DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: lockedTargetTransfer, clientY: lockedTargetBounds.top + 1 });
+  lockedTarget.dispatchEvent(blockedDrop);
+  assert(!blockedDrop.defaultPrevented && !lockedTarget.classList.contains('is-drop-before'), 'a row under a locked ancestor must not accept a cross-container drop.');
+  row(app, 'Bottom').dispatchEvent(new app.defaultView.DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: lockedTargetTransfer }));
+
+  const nestedSource = row(app, 'Locked nested target');
   const lockedAncestorTransfer = new app.defaultView.DataTransfer();
   const lockedAncestorDrag = new app.defaultView.DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: lockedAncestorTransfer });
   assert(!nestedSource.dispatchEvent(lockedAncestorDrag), 'a layer under a locked ancestor must not start a drag.');
-  assert(control('Nested top', 'up')?.disabled && control('Nested top', 'down')?.disabled,
+  assert(control('Locked nested target', 'up')?.disabled && control('Locked nested target', 'down')?.disabled,
     'row-order controls must stay disabled throughout a locked ancestor chain.');
 
   key(app, 'z', { ctrlKey: true });

@@ -424,10 +424,14 @@ function importedNetwork(node, matrix, style, prefix, counter, metadataText) {
   if (scale == null && (payload.paint.strokeWidth > 0 || payload.paint.strokes?.some(stroke => stroke.width > 0 && stroke.visible))) {
     fail('non-uniform-stroke-transform', 'Tiny Image Star vector network metadata uses a non-uniform transform with a visible stroke.', node.tag);
   }
+  if (scale == null && vertices.some(vertex => Number(vertex.cornerRadius) > 0)) {
+    fail('non-uniform-corner-radius-transform', 'Tiny Image Star vector network metadata uses a non-uniform transform with a rounded vertex.', node.tag);
+  }
   const paint = { ...payload.paint };
   if (scale != null && scale !== 1) {
     if (Number.isFinite(paint.strokeWidth)) paint.strokeWidth *= scale;
     if (Array.isArray(paint.strokes)) paint.strokes = paint.strokes.map(stroke => ({ ...stroke, width: stroke.width * scale }));
+    for (const vertex of vertices) if (Number.isFinite(vertex.cornerRadius)) vertex.cornerRadius *= scale;
   }
   const imported = createNode('network', {
     id: `${prefix}-network-${counter.next++}`, name: cleanLayerName(payload.name || localName(node)),
@@ -770,7 +774,7 @@ function parseMaskDefinition(node, ids, gradients) {
   if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
     fail('invalid-mask', 'Every SVG mask must have a unique, simple id.', node.tag);
   }
-  const allowed = new Set(['id', 'maskUnits', 'maskContentUnits', 'mask-type', 'x', 'y', 'width', 'height']);
+  const allowed = new Set(['id', 'maskUnits', 'maskContentUnits', 'mask-type', 'data-tiny-image-star-mask-mode', 'x', 'y', 'width', 'height']);
   for (const key of Object.keys(node.attrs)) {
     if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, node.tag);
     if (!allowed.has(key)) fail('unsupported-mask', `SVG mask attribute “${key}” is unsupported.`, node.tag);
@@ -780,6 +784,10 @@ function parseMaskDefinition(node, ids, gradients) {
   }
   const maskType = node.attrs['mask-type'] ?? 'luminance';
   if (!['alpha', 'luminance'].includes(maskType)) fail('unsupported-mask', 'SVG mask-type must be alpha or luminance.', node.tag);
+  const localMaskMode = node.attrs['data-tiny-image-star-mask-mode'] ?? 'alpha';
+  if (!['alpha', 'vector'].includes(localMaskMode) || (localMaskMode === 'vector' && maskType !== 'alpha')) {
+    fail('unsupported-mask', 'Tiny Image Star vector masks must be encoded as alpha masks with the local mode marker.', node.tag);
+  }
   const region = {
     x: coordinateLength(node.attrs.x, 'mask x', node.tag),
     y: coordinateLength(node.attrs.y, 'mask y', node.tag),
@@ -787,7 +795,7 @@ function parseMaskDefinition(node, ids, gradients) {
     height: length(node.attrs.height, 'mask height', node.tag)
   };
   if (region.width <= 0 || region.height <= 0) fail('invalid-mask', 'SVG mask width and height must be positive.', node.tag);
-  const mask = { id, maskType, region, children: node.children };
+  const mask = { id, maskType, localMaskMode, region, children: node.children };
   ids.add(id);
 
   // Validate every embedded element, including content in an unused mask, so
@@ -1942,27 +1950,43 @@ function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask sourc
   if (style.filterRef || style.clipPathRef || style.maskRef || !style.visible || !style.display) {
     fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', shape.tag);
   }
-  if (style.fill !== '#ffffff' || style.fillColorAlpha !== 1 || style.fillGradient
-    || style.stroke) {
-    fail('unsupported-mask-paint', 'Editable SVG masks must use a plain white vector fill without strokes or gradients.', shape.tag);
+  const vectorMask = mask.localMaskMode === 'vector';
+  if ((style.fill !== '#ffffff' || style.fillColorAlpha !== 1) && !(vectorMask && style.fill == null)
+    || style.fillGradient || (vectorMask
+      ? (style.stroke != null && (style.stroke !== '#ffffff' || style.strokeAlpha !== 1))
+      : style.stroke != null)) {
+    fail('unsupported-mask-paint', 'Editable SVG masks must use opaque white vector geometry without gradients.', shape.tag);
   }
   const paths = elementPaths(shape, budget);
-  if (paths.length !== 1 || paths[0].noFill) {
-    fail('unsupported-mask-graph', 'Editable SVG masks require one closed, fillable vector source.', shape.tag);
+  if (paths.length !== 1 || (paths[0].noFill && (!vectorMask || !style.stroke || !(style.strokeWidth > 0)))) {
+    fail('unsupported-mask-graph', 'Editable SVG masks require one closed fillable source, or a stroked path for a local vector mask.', shape.tag);
   }
   const sourceMatrix = matrixMultiply(matrix, matrixMultiply(
     parseTransform(sourceGroup.attrs.transform, sourceGroup.tag), parseTransform(shape.attrs.transform, shape.tag)
   ));
-  const { base } = makePathNode(paths[0], style, sourceMatrix, prefix, name);
+  const { base, strokeWidth } = makePathNode(paths[0], style, sourceMatrix, prefix, name);
   base.name = cleanLayerName(name);
-  base.fill = '#ffffff';
-  base.fillOpacity = style.fillAlpha;
+  base.fill = style.fill || 'transparent';
+  base.fillOpacity = vectorMask ? 1 : style.fillAlpha;
   base.fillRule = style.fillRule;
   base.opacity = groupStyle.opacity * style.opacity;
-  base.stroke = null;
-  base.strokeWidth = 0;
-  base.closed = true;
-  if (Array.isArray(base.subpaths)) base.subpaths = base.subpaths.map(contour => ({ ...contour, closed: true }));
+  if (vectorMask && style.stroke && strokeWidth > 0) {
+    // Keep fill and stroke on the same editable path. The ordinary SVG paint
+    // importer splits those into sibling layers, but a mask source must remain
+    // one geometry node so the renderer can union its vector coverage once.
+    base.stroke = style.stroke;
+    base.strokeWidth = strokeWidth;
+    base.strokeCap = style.strokeCap;
+    base.strokeJoin = style.strokeJoin;
+    base.strokePattern = style.strokePattern;
+    base.strokeMiterLimit = style.strokeMiterLimit;
+  }
+  if (!vectorMask) {
+    base.stroke = null;
+    base.strokeWidth = 0;
+    base.closed = true;
+    if (Array.isArray(base.subpaths)) base.subpaths = base.subpaths.map(contour => ({ ...contour, closed: true }));
+  }
   const regionBounds = transformedRectBounds(matrix, mask.region.x, mask.region.y, mask.region.width, mask.region.height);
   assertBoundsContained(boundsOf([base]), regionBounds, 'mask');
   return base;
@@ -1981,7 +2005,7 @@ function attachMask(nodes, maskRef, masks, matrix, prefix, serial, name, budget)
   return [createNode('group', {
     id: `${prefix}-mask-wrapper-${serial}`, name: cleanLayerName(name),
     x: bounds.x, y: bounds.y, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
-    opacity: 1, fill: 'transparent', mask: true, maskSourceId: source.id, children
+    opacity: 1, fill: 'transparent', mask: true, maskMode: mask.localMaskMode || 'alpha', maskSourceId: source.id, children
   })];
 }
 

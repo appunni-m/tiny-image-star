@@ -8,9 +8,9 @@ import {
   updateNode,
   validateDocument
 } from '../model.js';
-import { validateCollaborationMessage } from './protocol.js';
+import { COLLABORATION_PROTOCOL_VERSION, validateCollaborationMessage } from './protocol.js';
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = COLLABORATION_PROTOCOL_VERSION;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const MIME_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
@@ -47,7 +47,7 @@ const NODE_PROPERTIES = new Set([
   'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
-  'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
+  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
   'sourceWidth', 'sourceHeight'
 ]);
 

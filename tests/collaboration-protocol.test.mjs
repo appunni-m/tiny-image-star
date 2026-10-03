@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CollaborationProtocolError,
+  COLLABORATION_PROTOCOL_VERSION,
   decodeCollaborationMessage,
   encodeCollaborationMessage,
   MAX_ASSET_CHUNK_BYTES,
@@ -10,7 +11,7 @@ import {
   validateCollaborationMessage
 } from '../src/collaboration/protocol.js';
 
-const context = { v: 1, designId: 'design-a', sessionId: 'session-a', actorId: 'actor-a' };
+const context = { v: COLLABORATION_PROTOCOL_VERSION, designId: 'design-a', sessionId: 'session-a', actorId: 'actor-a' };
 const digest = 'a'.repeat(64);
 const opBase = { opId: 'op-a', baseRevision: 3, pageId: 'page-a' };
 
@@ -48,9 +49,13 @@ test('JSON message types round-trip with strict direction and preserve typed ope
     message('SNAPSHOT', { revision: 4, snapshot: { pages: [{ id: 'page-a', children: [] }] } }),
     message('ROOM_REVISION', { revision: 5, snapshot: { pages: [{ id: 'page-a', children: [{ id: 'node-a' }] }] } }),
     message('VIEW_STATE', { sequence: 1, pageId: 'page-a', zoom: 1.25, centerX: -300.5, centerY: 640 }),
+    message('PRESENCE', { peerActorId: 'actor-a', sequence: 1, active: true, pageId: 'page-a', cursorX: -12.5, cursorY: 240, selectedIds: ['node-a'] }),
     message('FORK_NOTICE', { baseRevision: 3, forkId: 'fork-a', reason: 'DISCONNECTED' }),
     message('PING', { nonce: 'ping-a', sentAt: 1_700_000_000_000 }),
     message('PONG', { nonce: 'ping-a', sentAt: 1_700_000_000_000 }),
+    message('ASSET_READY'),
+    message('ASSET_BARRIER', { barrierId: 'barrier-a' }),
+    message('ASSET_BARRIER_ACK', { barrierId: 'barrier-a' }),
     message('ASSET_BEGIN', { flow: 'guest-to-host', transferId: 'transfer-a', assetId: 'asset-a', assetKind: 'image', mimeType: 'image/png', fontMetadata: null, byteLength: 32_768, chunkCount: 2, sha256: digest }),
     message('ASSET_END', { flow: 'guest-to-host', transferId: 'transfer-a', assetId: 'asset-a', assetKind: 'image', byteLength: 32_768, sha256: digest })
   ];
@@ -64,6 +69,7 @@ test('JSON message types round-trip with strict direction and preserve typed ope
   assertProtocolError(() => validateCollaborationMessage(messages[0], { direction: 'host-to-guest' }), 'INVALID_DIRECTION');
   assertProtocolError(() => validateCollaborationMessage(messages[1], { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
   assertProtocolError(() => validateCollaborationMessage(viewState, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
+  assertProtocolError(() => validateCollaborationMessage(messages.find(item => item.kind === 'ASSET_READY'), { direction: 'host-to-guest' }), 'INVALID_DIRECTION');
   assert.deepEqual(validateCollaborationMessage(viewState, { direction: 'host-to-guest', context }), viewState);
   const roomRevision = messages.find(item => item.kind === 'ROOM_REVISION');
   assert.deepEqual(validateCollaborationMessage(roomRevision, { direction: 'host-to-guest', context }), roomRevision);
@@ -104,8 +110,9 @@ test('asset chunks use bounded binary frames and round-trip without base64 expan
 test('messages and operations reject unknown versions, kinds, operations, and fields', () => {
   assertProtocolError(() => validateCollaborationMessage(message('NOPE')), 'UNKNOWN_KIND');
   assertProtocolError(() => validateCollaborationMessage({ ...message('HELLO', { lastRevision: 0 }), extra: true }), 'INVALID_MESSAGE');
-  assertProtocolError(() => validateCollaborationMessage(message('HELLO', { lastRevision: 0, v: 2 })), 'UNSUPPORTED_VERSION');
-  assertProtocolError(() => validateCollaborationMessage({ ...message('HELLO', { lastRevision: 0 }), v: 2 }), 'UNSUPPORTED_VERSION');
+  assert.equal(COLLABORATION_PROTOCOL_VERSION, 2);
+  assertProtocolError(() => validateCollaborationMessage(message('HELLO', { lastRevision: 0, v: 1 })), 'UNSUPPORTED_VERSION');
+  assertProtocolError(() => validateCollaborationMessage({ ...message('HELLO', { lastRevision: 0 }), v: 1 }), 'UNSUPPORTED_VERSION');
   assertProtocolError(() => validateCollaborationMessage(message('OPERATION', { operation: { ...opBase, type: 'MergeEverything' } })), 'UNKNOWN_OPERATION');
   assertProtocolError(() => validateCollaborationMessage(message('OPERATION', { operation: { ...operations[0], stealth: true } })), 'INVALID_MESSAGE');
   assertProtocolError(() => decodeCollaborationMessage('{broken json'), 'INVALID_MESSAGE');
@@ -126,6 +133,24 @@ test('host view-state messages are bounded, sequenced, and never accepted from g
     { ...good, extra: true }
   ]) assertProtocolError(() => validateCollaborationMessage(invalid), 'INVALID_MESSAGE');
   assertProtocolError(() => validateCollaborationMessage(good, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
+});
+
+test('presence is bounded, sequenced, and valid in both directions without changing design data', () => {
+  const good = message('PRESENCE', {
+    peerActorId: 'actor-a', sequence: 4, active: true, pageId: 'page-a',
+    cursorX: -120.5, cursorY: 300.25, selectedIds: ['node-a', 'node-b']
+  });
+  assert.deepEqual(validateCollaborationMessage(good, { direction: 'guest-to-host', context }), good);
+  assert.deepEqual(validateCollaborationMessage(good, { direction: 'host-to-guest', context }), good);
+  assertProtocolError(() => validateCollaborationMessage({ ...good, peerActorId: '../other' }), 'INVALID_MESSAGE');
+  assertProtocolError(() => validateCollaborationMessage({ ...good, sequence: 0 }), 'INVALID_MESSAGE');
+  assertProtocolError(() => validateCollaborationMessage({ ...good, cursorY: null }), 'INVALID_MESSAGE');
+  assertProtocolError(() => validateCollaborationMessage({ ...good, selectedIds: ['node-a', 'node-a'] }), 'INVALID_MESSAGE');
+  assertProtocolError(() => validateCollaborationMessage({ ...good, selectedIds: Array.from({ length: 129 }, (_, index) => `node-${index}`) }), 'LIMIT_EXCEEDED');
+  assertProtocolError(() => validateCollaborationMessage({ ...good, active: false }), 'INVALID_MESSAGE');
+  const inactive = { ...good, active: false, cursorX: null, cursorY: null, selectedIds: [] };
+  assert.deepEqual(validateCollaborationMessage(inactive), inactive);
+  assertProtocolError(() => validateCollaborationMessage({ ...inactive, selectedIds: ['node-a'] }), 'INVALID_MESSAGE');
 });
 
 test('operation IDs, revisions, property paths, finite JSON, and reserved keys are checked', () => {

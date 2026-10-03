@@ -1,7 +1,8 @@
 import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
-import { layoutPlainText, layoutTextRuns, measureTrackedText, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
+import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
+import { layoutPlainText, layoutTextRuns, measureTrackedText, requiresComplexTextShaping, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
@@ -18,8 +19,11 @@ import { imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRende
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { gridTrackResizeHandles } from './grid-track-editing.js';
 import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js';
+import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDimensions } from './image-tile.js';
 import { canvasFontWeight } from './font-variation.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
+import { regularShapeVertices, traceRoundedPolygonPath } from './polygon-corners.js';
+import { starControlHandles } from './star-controls.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { hitTestVisibleGeometry } from './shape-hit-testing.js';
 import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from './eyedropper.js';
@@ -36,6 +40,12 @@ const MAX_FONT_OUTLINE_PATH_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_FONT_OUTLINE_PATH_BYTES = 256 * 1024;
 const fontOutlinePathCache = new Map();
 let fontOutlinePathCacheBytes = 0;
+
+function remotePresenceColor(actorId) {
+  let hash = 2166136261;
+  for (const char of String(actorId || '')) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return `hsl(${(hash >>> 0) % 360} 78% 38%)`;
+}
 
 function cachedFontOutlinePath(data) {
   if (typeof globalThis.Path2D !== 'function' || !data || data.length * 2 > MAX_FONT_OUTLINE_PATH_BYTES) return null;
@@ -62,7 +72,19 @@ function cachedFontOutlinePath(data) {
   return path;
 }
 
-function shapedTextWidth(shaped, fontSize, letterSpacing = 0) {
+function shapedTextWidth(shaped, fontSize, letterSpacing = 0, context = null) {
+  if (Array.isArray(shaped?.mixedRuns)) {
+    let width = 0;
+    for (const [index, run] of shaped.mixedRuns.entries()) {
+      const segmentWidth = run.shaped
+        ? shapedTextWidth(run.shaped, fontSize, letterSpacing, context)
+        : context ? measureTrackedText(context, run.text, letterSpacing) : null;
+      if (segmentWidth == null) return null;
+      width += segmentWidth;
+      if (index < shaped.mixedRuns.length - 1) width += Number(letterSpacing) || 0;
+    }
+    return width;
+  }
   if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !(shaped.upem > 0)) return null;
   const scale = Math.max(1, Number(fontSize) || 24) / shaped.upem;
   let advances = 0;
@@ -76,6 +98,19 @@ function shapedTextWidth(shaped, fontSize, letterSpacing = 0) {
 }
 
 function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0, paintMode = 'fill') {
+  if (Array.isArray(shaped?.mixedRuns)) {
+    let offset = 0;
+    for (const [index, run] of shaped.mixedRuns.entries()) {
+      const drewLocally = run.shaped && drawShapedText(ctx, run.shaped, run.text, x + offset, topY, fontSize, letterSpacing, paintMode);
+      if (!drewLocally) drawTrackedTextPaint(ctx, run.text, x + offset, topY, letterSpacing, undefined, paintMode);
+      const width = run.shaped && drewLocally
+        ? shapedTextWidth(run.shaped, fontSize, letterSpacing, ctx)
+        : measureTrackedText(ctx, run.text, letterSpacing);
+      offset += width ?? 0;
+      if (index < shaped.mixedRuns.length - 1) offset += Number(letterSpacing) || 0;
+    }
+    return true;
+  }
   if (typeof globalThis.Path2D !== 'function' || !shaped || !Array.isArray(shaped.glyphs)
     || shaped.missingGlyph || !shaped.extents || !(shaped.upem > 0)
     || typeof ctx[paintMode === 'stroke' ? 'stroke' : 'fill'] !== 'function') return false;
@@ -170,28 +205,37 @@ function booleanNodeCacheState(document, node) {
     radius: getNodePropertyValue(document, node, 'radius'),
     ...(node.type === 'text' ? {
       text: getNodePropertyValue(document, node, 'text'),
+      fontFamily: getNodePropertyValue(document, node, 'fontFamily'),
       fontSize: getNodePropertyValue(document, node, 'fontSize'),
+      fontWeight: getNodePropertyValue(document, node, 'fontWeight'),
+      fontStyle: getNodePropertyValue(document, node, 'fontStyle'),
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
-      letterSpacing: getNodePropertyValue(document, node, 'letterSpacing')
+      letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
+      paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing'),
+      firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent')
     } : {}),
     children: (node.children || []).map(child => booleanNodeCacheState(document, child))
   };
 }
 
-function drawTextMask(ctx, node, document, x, y, width, height, shapeText = null) {
+function drawTextMask(ctx, node, document, x, y, width, height, shapeText = null, maskMode = true) {
   const text = getNodePropertyValue(document, node, 'text');
+  const vectorMask = maskMode === 'vector';
+  if (vectorMask && !fillStackForNode(node).some(fill => fill.visible)) return false;
   if (node.textPath) return drawTextLayerContent(ctx, node, document, x, y, width, height, {
     colorOverride: '#ffffff', fillOpacity: 1, overrideRunColors: true, shapeText
   });
   const richTextIsCurrent = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
-  if (!richTextIsCurrent) return drawPlainText(ctx, node, document, x, y, width, height, '#ffffff', { shapeText });
+  if (!richTextIsCurrent) return drawPlainText(ctx, node, document, x, y, width, height, '#ffffff', {
+    shapeText, fillOpacity: vectorMask ? 1 : node.fillOpacity ?? 1
+  });
   const sourceRuns = richTextIsCurrent ? node.textRuns : [{ text }];
   const maskRuns = sourceRuns.map(run => ({ ...run, color: '#ffffff' }));
   return drawTextRuns(ctx, maskRuns, x, y, width, {
-    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontFamily: getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif',
     fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
     fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
-    fontStyle: node.fontStyle || 'normal',
+    fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
     fontAxes: node.fontAxes,
     fontFeatures: node.fontFeatures,
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
@@ -200,14 +244,14 @@ function drawTextMask(ctx, node, document, x, y, width, height, shapeText = null
     color: '#ffffff',
     textCase: node.textCase || 'none',
     textDecoration: node.textDecoration || 'none',
-    paragraphSpacing: node.paragraphSpacing || 0,
+    paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing') || 0,
     listSpacing: node.listSpacing || 0,
     paragraphStyles: node.paragraphStyles || [],
-    firstLineIndent: node.firstLineIndent || 0,
+    firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent') || 0,
     align: node.align || 'left',
     verticalAlign: node.verticalAlign || 'top',
     height,
-    fillOpacity: node.fillOpacity ?? 1,
+    fillOpacity: vectorMask ? 1 : node.fillOpacity ?? 1,
     shapeText
   });
 }
@@ -221,38 +265,45 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   if (paintMode !== 'stroke') ctx.fillStyle = rgba(textColor, fillOpacity);
   const text = transformTextCase(sourceText, node.textCase || 'none');
   const fontSize = getNodePropertyValue(document, node, 'fontSize');
+  const fontFamily = getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif';
+  const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;
+  const fontStyle = getNodePropertyValue(document, node, 'fontStyle') || 'normal';
   const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
-  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
+  const paragraphSpacing = getNodePropertyValue(document, node, 'paragraphSpacing');
+  const firstLineIndent = getNodePropertyValue(document, node, 'firstLineIndent');
+  ctx.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, node.fontAxes)} ${fontSize || 24}px ${fontFamily}`;
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   const shapeStyle = {
-    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontFamily,
     fontSize: fontSize || 24,
-    fontWeight: Number(node.fontWeight) || 400,
-    fontStyle: node.fontStyle || 'normal',
+    fontWeight: Number(fontWeight) || 400,
+    fontStyle,
     fontAxes: node.fontAxes,
     fontFeatures: node.fontFeatures
   };
   const shapedWidth = value => {
     const shaped = options.shapeText?.(value, shapeStyle);
-    return shapedTextWidth(shaped, shapeStyle.fontSize, letterSpacing);
+    return shapedTextWidth(shaped, shapeStyle.fontSize, letterSpacing, ctx);
   };
   const measureText = value => shapedWidth(value) ?? measureTrackedText(ctx, value, letterSpacing);
   const lineHeight = resolvedLineHeight(lineHeightScale || 1.25, fontSize || 24, node.lineHeightUnit || 'ratio');
   const layout = layoutPlainText(text, Math.max(1, width), measureText, {
-    lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
+    lineHeight, paragraphSpacing, listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles, markerStyle: {
-      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-      fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
+      fontFamily, fontSize: fontSize || 24,
+      fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
       fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: letterSpacing || 0, color: textColor
     },
-    firstLineIndent: node.firstLineIndent, align: node.align
+    firstLineIndent, align: node.align,
+    textTruncation: node.textTruncation, maxLines: node.maxLines,
+    maxHeight: node.maxHeight, boxHeight: height
   });
   const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
   layout.lines.forEach(line => {
     if (line.marker) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
-      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-      fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
+      fontFamily, fontSize: fontSize || 24,
+      fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
       letterSpacing: letterSpacing || 0, color: textColor
     }, fillOpacity, paintMode, options.shapeText);
     const availableWidth = Math.max(1, width - line.indent);
@@ -276,57 +327,74 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
   paintMode = 'fill', includeDecorations = true, overrideRunColors = false, shapeText = null
 } = {}) {
   const text = getNodePropertyValue(document, node, 'text');
-  if (node.textPath) {
-    const color = colorOverride ?? getNodeColor(document, node, 'text');
-    if (paintMode !== 'stroke') ctx.fillStyle = rgba(color, fillOpacity);
-    else ctx.strokeStyle = rgba(color, fillOpacity);
-    const fontSize = getNodePropertyValue(document, node, 'fontSize') || 24;
-    const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing') || 0;
-    return drawTextAlongPath(ctx, text, node, x, y,
-      value => measureTrackedText(ctx, value), {
-        fillOpacity, paintMode, fontSize, letterSpacing,
-        fontWeight: canvasFontWeight(node.fontWeight, node.fontAxes), fontStyle: node.fontStyle || 'normal',
-        fontFamily: node.fontFamily || 'Arial, sans-serif', color, fontFeatures: node.fontFeatures,
-        overrideRunColors: overrideRunColors || colorOverride !== undefined,
-        includeDecorations, shapeText, drawShaped: drawShapedText
+  const truncate = node.textTruncation === 'ending';
+  if (truncate) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
+  }
+  try {
+    if (node.textPath) {
+      const color = colorOverride ?? getNodeColor(document, node, 'text');
+      if (paintMode !== 'stroke') ctx.fillStyle = rgba(color, fillOpacity);
+      else ctx.strokeStyle = rgba(color, fillOpacity);
+      const fontSize = getNodePropertyValue(document, node, 'fontSize') || 24;
+      const fontFamily = getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif';
+      const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;
+      const fontStyle = getNodePropertyValue(document, node, 'fontStyle') || 'normal';
+      const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing') || 0;
+      return drawTextAlongPath(ctx, text, node, x, y,
+        value => measureTrackedText(ctx, value), {
+          fillOpacity, paintMode, fontSize, letterSpacing,
+          fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
+          fontFamily, color, fontFeatures: node.fontFeatures,
+          overrideRunColors: overrideRunColors || colorOverride !== undefined,
+          includeDecorations, shapeText, drawShaped: drawShapedText
+        });
+    }
+    const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
+    if (!currentRuns) {
+      return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {
+        fillOpacity, paintMode, includeDecorations, shapeText
       });
-  }
-  const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
-  if (!currentRuns) {
-    return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {
-      fillOpacity, paintMode, includeDecorations, shapeText
-    });
-  }
+    }
 
-  const color = colorOverride ?? getNodeColor(document, node, 'text');
-  const runs = overrideRunColors
-    ? node.textRuns.map(run => ({ ...run, color }))
-    : node.textRuns;
-  return drawTextRuns(ctx, runs, x, y, width, {
-    fontFamily: node.fontFamily || 'Arial, sans-serif',
-    fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
-    fontWeight: node.fontWeight || 400,
-    fontStyle: node.fontStyle || 'normal',
-    fontAxes: node.fontAxes,
-    fontFeatures: node.fontFeatures,
-    lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
-    lineHeightUnit: node.lineHeightUnit || 'ratio',
-    letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
-    color,
-    textCase: node.textCase || 'none',
-    textDecoration: node.textDecoration || 'none',
-    paragraphSpacing: node.paragraphSpacing || 0,
-    listSpacing: node.listSpacing || 0,
-    paragraphStyles: node.paragraphStyles || [],
-    firstLineIndent: node.firstLineIndent || 0,
-    align: node.align || 'left',
-    verticalAlign: node.verticalAlign || 'top',
-    height,
-    fillOpacity,
-    paintMode,
-    includeDecorations,
-    shapeText
-  });
+    const color = colorOverride ?? getNodeColor(document, node, 'text');
+    const runs = overrideRunColors
+      ? node.textRuns.map(run => ({ ...run, color }))
+      : node.textRuns;
+    return drawTextRuns(ctx, runs, x, y, width, {
+      fontFamily: getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif',
+      fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+      fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
+      fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
+      fontAxes: node.fontAxes,
+      fontFeatures: node.fontFeatures,
+      lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+      lineHeightUnit: node.lineHeightUnit || 'ratio',
+      letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
+      color,
+      textCase: node.textCase || 'none',
+      textDecoration: node.textDecoration || 'none',
+      paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing') || 0,
+      listSpacing: node.listSpacing || 0,
+      paragraphStyles: node.paragraphStyles || [],
+      firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent') || 0,
+      align: node.align || 'left',
+      verticalAlign: node.verticalAlign || 'top',
+      textTruncation: node.textTruncation,
+      maxLines: node.maxLines,
+      maxHeight: node.maxHeight,
+      height,
+      fillOpacity,
+      paintMode,
+      includeDecorations,
+      shapeText
+    });
+  } finally {
+    if (truncate) ctx.restore();
+  }
 }
 
 function createTextSurface(width, height) {
@@ -467,8 +535,9 @@ function rgba(hex, alpha = 1) {
   return `rgba(${number >> 16}, ${(number >> 8) & 255}, ${number & 255}, ${alpha})`;
 }
 
-function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
+export function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover', scalingFactor = DEFAULT_IMAGE_TILE_SCALE, transforms = {}, tileSourceSize = null) {
   if (!image || width <= 0 || height <= 0 || !image.width || !image.height) return false;
+  if (fit === 'tile') return drawTiledImage(ctx, image, x, y, width, height, scalingFactor, transforms, tileSourceSize);
   const scale = fit === 'contain'
     ? Math.min(width / image.width, height / image.height)
     : Math.max(width / image.width, height / image.height);
@@ -478,10 +547,56 @@ function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
   return true;
 }
 
+export function drawTiledImage(ctx, image, x, y, width, height, scalingFactor = DEFAULT_IMAGE_TILE_SCALE, transforms = {}, tileSourceSize = null) {
+  if (!image || width <= 0 || height <= 0 || !image.width || !image.height || typeof ctx?.createPattern !== 'function') return false;
+  const normalized = normalizeImageTransforms({ ...transforms, crop: null });
+  const sourceWidth = Number(tileSourceSize?.width) || image.width;
+  const sourceHeight = Number(tileSourceSize?.height) || image.height;
+  const geometry = imageTilePatternTransform({
+    imageWidth: image.width, imageHeight: image.height,
+    sourceWidth, sourceHeight, scalingFactor,
+    rotation: normalized.rotation,
+    flipHorizontal: normalized.flipHorizontal,
+    flipVertical: normalized.flipVertical,
+    x, y
+  });
+  if (!geometry) return false;
+  const pattern = ctx.createPattern(image, 'repeat');
+  if (!pattern || typeof pattern.setTransform !== 'function') return false;
+  pattern.setTransform(geometry.matrix);
+  ctx.save();
+  try {
+    ctx.fillStyle = pattern;
+    ctx.fillRect(x, y, width, height);
+  } finally {
+    ctx.restore();
+  }
+  return true;
+}
+
+function drawImageWithFitMode(ctx, image, node, assets, assetId, x, y, width, height, fit, scalingFactor, transforms, liveSource) {
+  if (fit !== 'tile') {
+    return liveSource
+      ? drawImageWithTransforms(ctx, image, x, y, width, height, fit, transforms)
+      : drawFittedImage(ctx, image, x, y, width, height, fit);
+  }
+  const asset = assetId ? assets.get(assetId) : null;
+  const naturalWidth = Number(asset?.sourceWidth || asset?.width || asset?.bitmap?.width || image.width);
+  const naturalHeight = Number(asset?.sourceHeight || asset?.height || asset?.bitmap?.height || image.height);
+  if (liveSource) {
+    return drawTiledImage(ctx, image, x, y, width, height, scalingFactor, transforms, {
+      width: naturalWidth, height: naturalHeight
+    });
+  }
+  const orientation = imageTileSourceDimensions(naturalWidth, naturalHeight, transforms?.rotation || 0);
+  return drawTiledImage(ctx, image, x, y, width, height, scalingFactor, {}, orientation);
+}
+
 /** Draw from the immutable source using the live image crop/rotation/flip values. */
-export function drawImageWithTransforms(ctx, image, x, y, width, height, fit = 'cover', transforms = {}) {
+export function drawImageWithTransforms(ctx, image, x, y, width, height, fit = 'cover', transforms = {}, scalingFactor = DEFAULT_IMAGE_TILE_SCALE) {
   if (!image || width <= 0 || height <= 0 || !image.width || !image.height) return false;
   const normalized = normalizeImageTransforms(transforms);
+  if (fit === 'tile') return drawTiledImage(ctx, image, x, y, width, height, scalingFactor, normalized);
   const crop = imageCropPixels(normalized.crop, image.width, image.height)
     || { left: 0, top: 0, right: image.width, bottom: image.height };
   const sourceWidth = crop.right - crop.left;
@@ -526,7 +641,7 @@ export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0, flip
   return true;
 }
 
-export function drawCropPreview(ctx, image, x, y, width, height, fit = 'cover', radius = 0) {
+export function drawCropPreview(ctx, image, x, y, width, height, fit = 'cover', radius = 0, smoothing = 0) {
   if (!image || width <= 0 || height <= 0) return false;
   // The worker output already contains the selected crop and rotation. Show it
   // exactly as the committed image will render: fitted to the layer frame and
@@ -534,7 +649,7 @@ export function drawCropPreview(ctx, image, x, y, width, height, fit = 'cover', 
   // this overlay to give the crop handles context.
   ctx.save();
   ctx.beginPath();
-  roundedRect(ctx, x, y, width, height, radius);
+  roundedRect(ctx, x, y, width, height, radius, smoothing);
   ctx.clip();
   const drawn = drawFittedImage(ctx, image, x, y, width, height, fit);
   ctx.restore();
@@ -570,14 +685,21 @@ function fillCurrentPath(ctx, node) {
 
 function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false, fillIndexOffset = 0, motionFillIndexOverride = null, transitionRenderer = null) {
   const fills = fillStackForNode(node);
+  const vectorMask = maskMode === 'vector';
   const motionFillIndex = motionFillIndexOverride ?? fills.findIndex(fill => fill.type === 'solid');
   for (let index = 0; index < fills.length; index += 1) {
     const fill = fills[index];
     const paintIndex = index + fillIndexOffset;
     const animatedFill = paintIndex === motionFillIndex;
     const fillOpacity = animatedFill && Number.isFinite(motionValues?.fillOpacity) ? motionValues.fillOpacity : fill.opacity;
-    if (!fill.visible || fillOpacity <= 0) continue;
+    if (!fill.visible || (!vectorMask && fillOpacity <= 0)) continue;
     ctx.save();
+    if (vectorMask) {
+      ctx.fillStyle = '#ffffff';
+      fillCurrentPath(ctx, node);
+      ctx.restore();
+      continue;
+    }
     // Paint blend modes are compositing operations for this paint. Applying
     // them on the active destination lets the paint see both the already
     // rendered page backdrop and earlier paints on this node, matching the
@@ -628,10 +750,11 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
           const previewStatus = state.imageStatus?.get(imagePreviewKey(node.id, fill.id)) || '';
           if (preview && previewAssetId === imageFill.assetId
             && (previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated'))) {
-            drawFittedImage(ctx, preview, x, y, width, height, imageFill.fit);
+            drawImageWithFitMode(ctx, preview, node, assets, imageFill.assetId, x, y, width, height,
+              imageFill.fit, imageFill.scalingFactor, imageFill.transforms, false);
           }
-        } else if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, imageFill.fit, imageFill.transforms);
-        else drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
+        } else drawImageWithFitMode(ctx, image, node, assets, imageFill.assetId, x, y, width, height,
+          imageFill.fit, imageFill.scalingFactor, imageFill.transforms, Boolean(liveSource));
         ctx.restore();
       }
     }
@@ -641,20 +764,22 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
 
 function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null) {
   const strokes = strokeStackForNode(node);
+  const vectorMask = maskMode === 'vector';
   for (let index = 0; index < strokes.length; index += 1) {
     const stroke = strokes[index];
-    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
+    if (!stroke.visible || (!vectorMask && stroke.opacity <= 0) || stroke.width <= 0
+      || (!stroke.gradient && (!stroke.color || (!vectorMask && stroke.color === 'transparent')))) continue;
     ctx.save();
     // Strokes follow fills in the node paint order, so each stroke composites
     // against the visible backdrop and every earlier fill/stroke.
     if (!maskMode && stroke.blendMode && stroke.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(stroke.blendMode);
-    ctx.globalAlpha *= stroke.opacity;
+    if (!vectorMask) ctx.globalAlpha *= stroke.opacity;
     ctx.lineWidth = stroke.width;
     const color = index === 0 && node.strokeVariableId
       ? getNodeColor(document, node, 'stroke')
       : stroke.color;
-    if ((!stroke.gradient && (!color || color === 'transparent'))) { ctx.restore(); continue; }
-    const paint = stroke.gradient ? createGradientPaint(ctx, stroke.gradient, x, y, width, height) : color;
+    if ((!stroke.gradient && (!color || (!vectorMask && color === 'transparent')))) { ctx.restore(); continue; }
+    const paint = vectorMask ? '#ffffff' : stroke.gradient ? createGradientPaint(ctx, stroke.gradient, x, y, width, height) : color;
     if (!paint) { ctx.restore(); continue; }
     ctx.strokeStyle = paint;
     applyStrokeStyle(ctx, stroke);
@@ -711,8 +836,8 @@ function drawBooleanFillStack(renderer, ctx, node, maskSurface, assets, state, x
         const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
         const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
         if (image) {
-          if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
-          else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+          drawImageWithFitMode(paintContext, image, node, assets, imageFill.assetId, 0, 0, node.width, node.height,
+            imageFill.fit, imageFill.scalingFactor, imageFill.transforms, Boolean(liveSource));
         }
       }
     }
@@ -749,13 +874,13 @@ function drawStrokeEndpointDecorations(ctx, node, stroke, origin, color) {
   }
 }
 
-function roundedRect(ctx, x, y, width, height, radius) {
+function roundedRect(ctx, x, y, width, height, radius, smoothing = 0) {
   const input = typeof radius === 'number'
     ? Object.fromEntries(cornerRadiusKeys.map(key => [key, radius]))
     : radius;
   const radii = clampCornerRadii(width, height, input);
   if (cornerRadiusKeys.every(key => radii[key] === 0)) { ctx.rect(x, y, width, height); return; }
-  traceRoundedRectPath(ctx, x, y, width, height, radii);
+  traceRoundedRectPath(ctx, x, y, width, height, radii, smoothing);
 }
 
 /** Return a sanitized presentation-only scroll offset for a frame. */
@@ -791,35 +916,12 @@ function clipsNodeContents(node) {
 }
 
 /** Clip children to their frame viewport when clipping or presentation scrolling is enabled. */
-export function clipNodeContents(ctx, node, x, y, radius = node?.cornerRadii ?? node?.radius ?? 0) {
+export function clipNodeContents(ctx, node, x, y, radius = node?.cornerRadii ?? node?.radius ?? 0, smoothing = node?.cornerSmoothing ?? 0) {
   if (!clipsNodeContents(node)) return false;
   ctx.beginPath();
-  roundedRect(ctx, x, y, node.width, node.height, radius || 0);
+  roundedRect(ctx, x, y, node.width, node.height, radius || 0, smoothing);
   ctx.clip();
   return true;
-}
-
-function starPath(ctx, cx, cy, radius, points, innerRatio) {
-  const count = Math.max(3, Math.min(32, Number(points) || 5));
-  for (let index = 0; index < count * 2; index += 1) {
-    const angle = -Math.PI / 2 + index * Math.PI / count;
-    const distance = radius * (index % 2 ? innerRatio : 1);
-    const x = cx + Math.cos(angle) * distance;
-    const y = cy + Math.sin(angle) * distance;
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-}
-
-function polygonPath(ctx, cx, cy, radiusX, radiusY, points) {
-  const count = Math.max(3, Math.min(32, Number(points) || 6));
-  for (let index = 0; index < count; index += 1) {
-    const angle = -Math.PI / 2 + index * Math.PI * 2 / count;
-    const x = cx + Math.cos(angle) * radiusX;
-    const y = cy + Math.sin(angle) * radiusY;
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
 }
 
 function hasHandle(point, part) {
@@ -861,7 +963,20 @@ function pathHasClosedContour(node) {
 }
 
 function traceVectorNetworkEdges(ctx, node, x, y) {
+  const edgesByPair = vectorNetworkEdgePairIndex(node);
+  const roundedFaces = (node.faces || []).map(face => ({ face, path: vectorNetworkFacePathCommands(node, face, { x, y }) }))
+    .filter(item => item.path);
+  const roundedEdgeIds = new Set();
+  for (const { face, path } of roundedFaces) {
+    traceNetworkPathCommands(ctx, path);
+    const ids = face.vertexIds || [];
+    for (let index = 0; index < ids.length; index += 1) {
+      const edge = vectorNetworkEdgeForPair(edgesByPair, ids[index], ids[(index + 1) % ids.length]);
+      if (edge) roundedEdgeIds.add(edge.id);
+    }
+  }
   for (const edge of node.edges || []) {
+    if (roundedEdgeIds.has(edge.id)) continue;
     const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
     if (!points) continue;
     const [start, control1, control2, end] = points;
@@ -871,7 +986,25 @@ function traceVectorNetworkEdges(ctx, node, x, y) {
   }
 }
 
+function traceNetworkPathCommands(ctx, path) {
+  if (!path?.start || !Array.isArray(path.commands)) return false;
+  ctx.moveTo(path.start.x, path.start.y);
+  for (const command of path.commands) {
+    if (command.type === 'line') ctx.lineTo(command.end.x, command.end.y);
+    else if (command.type === 'cubic') ctx.bezierCurveTo(
+      command.control1.x, command.control1.y, command.control2.x, command.control2.y,
+      command.end.x, command.end.y
+    );
+    else if (command.type === 'arc') ctx.arc(command.center.x, command.center.y, command.radius,
+      command.startAngle, command.endAngle, command.endAngle < command.startAngle);
+  }
+  ctx.closePath();
+  return true;
+}
+
 function traceVectorNetworkFace(ctx, node, face, x, y) {
+  const rounded = vectorNetworkFacePathCommands(node, face, { x, y });
+  if (rounded && traceNetworkPathCommands(ctx, rounded)) return true;
   const ids = face?.vertexIds || [];
   if (ids.length < 3) return false;
   const edgesByPair = vectorNetworkEdgePairIndex(node);
@@ -910,6 +1043,13 @@ function drawTrackedTextPaint(ctx, text, x, y, letterSpacing = 0, maxWidth = und
       return;
     } finally { ctx.letterSpacing = previous; }
   }
+  if (requiresComplexTextShaping(value)) {
+    // Preserve native joining and bidirectional ordering if this browser does
+    // not implement Canvas letterSpacing. Slightly relaxed tracking is safer
+    // than splitting a script run into disconnected glyphs.
+    drawText(value, x, y, maxWidth);
+    return;
+  }
   const glyphs = textGraphemes(value);
   let prefix = '';
   for (let index = 0; index < glyphs.length; index += 1) {
@@ -927,7 +1067,7 @@ function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace, pain
   for (const [index, segment] of segments.entries()) {
     const whitespace = /^\s+$/u.test(segment);
     const shaped = style ? shapeText?.(segment, style) : null;
-    const width = shapedTextWidth(shaped, style?.fontSize, letterSpacing);
+    const width = shapedTextWidth(shaped, style?.fontSize, letterSpacing, ctx);
     if (!drawShapedText(ctx, shaped, segment, x + offset, y, style?.fontSize, letterSpacing, paintMode)) {
       drawTrackedTextPaint(ctx, segment, x + offset, y, letterSpacing, undefined, paintMode);
     }
@@ -976,7 +1116,7 @@ function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1, 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const shaped = shapeText?.(marker.text, style);
-  const markerWidth = shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+  const markerWidth = shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx)
     ?? measureTrackedText(ctx, marker.text, style.letterSpacing);
   // Right-align within the marker column. Keeping this draw independent from
   // the text-line transform preserves a stable gutter for center/right text.
@@ -996,8 +1136,13 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     layout = layoutTextRuns(runs, Math.max(1, width), baseStyle, (text, style) => {
       ctx.font = richFont(style);
       const shaped = baseStyle.shapeText?.(text, style);
-      return shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+      return shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx)
         ?? measureTrackedText(ctx, text, style.letterSpacing);
+    }, {
+      textTruncation: baseStyle.textTruncation,
+      maxLines: baseStyle.maxLines,
+      maxHeight: baseStyle.maxHeight,
+      boxHeight: baseStyle.height
     });
   } finally {
     ctx.font = previousFont;
@@ -1036,7 +1181,7 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         if (!drawShapedText(ctx, shaped, text, start, -Number(style.baselineShift || 0), style.fontSize, style.letterSpacing, paintMode)) {
           drawTrackedTextPaint(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing, undefined, paintMode);
         }
-        offset += shapedTextWidth(shaped, style.fontSize, style.letterSpacing)
+        offset += shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx)
           ?? measureTrackedText(ctx, text, style.letterSpacing);
         if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
         const bounds = partBounds.get(part) || { start, end: offset };
@@ -1087,9 +1232,10 @@ function richTextStyleForMarker(baseStyle) {
 }
 
 export class SceneRenderer {
-  constructor(canvas, getState, onDraw = null) {
+  constructor(canvas, getState, onDraw = null, { transparent = false } = {}) {
     this.canvas = canvas;
-    this.context = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    this.transparent = Boolean(transparent);
+    this.context = canvas.getContext('2d', { alpha: this.transparent, desynchronized: true });
     this.getState = getState;
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
     this.visiblePreviewKeys = new Set();
@@ -1224,8 +1370,10 @@ export class SceneRenderer {
     const ctx = this.context;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#e9e9e9';
-    ctx.fillRect(0, 0, width, height);
+    if (!this.transparent) {
+      ctx.fillStyle = '#e9e9e9';
+      ctx.fillRect(0, 0, width, height);
+    }
     const page = state.document.pages.find(item => item.id === state.document.activePageId);
     if (!page) { this.visiblePreviewKeys.clear(); this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }
     const zoom = Math.max(.08, Number(state.zoom) || 1);
@@ -1252,6 +1400,10 @@ export class SceneRenderer {
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
     if (state.shapeBuilder) drawShapeBuilderRegions(ctx, state.shapeBuilder.previewContours, state.zoom);
     this.drawSelection(ctx, page.children, state.shapeBuilder ? [] : state.selectedIds, 0, 0);
+    this.drawRemotePresence(ctx, page, state);
+    if (state.componentPropertyHighlightNodeId) {
+      this.drawComponentPropertyHighlight(ctx, page.children, state.componentPropertyHighlightNodeId);
+    }
     drawAlignmentGuides(ctx, state.smartGuides, state.zoom);
     if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);
@@ -1367,7 +1519,7 @@ export class SceneRenderer {
       return;
     }
     const effects = (node.effects || []).filter(effect => effect.visible);
-    const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
+    const outline = !maskMode && !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
     const blendMode = node.blendMode || 'normal';
     const compositeBypassed = renderOptions.compositeBypassNodeId === node.id;
     const cropEditing = !state.presenting && state.imageCropMode && state.imageCropOverlay?.nodeId === node.id;
@@ -1390,13 +1542,15 @@ export class SceneRenderer {
       return;
     }
     const opacity = motionValues?.opacity ?? getNodePropertyValue(document, node, 'opacity');
+    const vectorMask = maskMode === 'vector';
     const radius = node.cornerRadii || getNodePropertyValue(document, node, 'radius');
+    const cornerSmoothing = node.cornerSmoothing || 0;
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     ctx.save();
-    if (blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
-    ctx.globalAlpha *= opacity ?? 1;
+    if (!vectorMask && blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
+    if (!vectorMask) ctx.globalAlpha *= opacity ?? 1;
     if (node.affineTransform) {
       const { a, b, c, d } = node.affineTransform;
       ctx.translate(x, y);
@@ -1422,7 +1576,12 @@ export class SceneRenderer {
       return;
     }
     if (maskMode && node.type === 'text') {
-      drawTextMask(ctx, node, document, x, y, width, height, state.shapeLocalTextRun);
+      drawTextMask(ctx, node, document, x, y, width, height, state.shapeLocalTextRun, maskMode);
+      if (vectorMask) drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
+        outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
+          colorOverride: '#ffffff', fillOpacity: 1, paintMode: 'stroke', includeDecorations: false,
+          overrideRunColors: true, shapeText: state.shapeLocalTextRun
+        }));
       ctx.restore();
       return;
     }
@@ -1430,7 +1589,7 @@ export class SceneRenderer {
       if (node.__smartAnimateImageTransition) {
         ctx.save();
         ctx.beginPath();
-        roundedRect(ctx, x, y, width, height, radius || 0);
+        roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing);
         ctx.clip();
         this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageTransition, assets, state, x, y, width, height);
         ctx.restore();
@@ -1442,10 +1601,10 @@ export class SceneRenderer {
       if (image) {
         ctx.save();
         ctx.beginPath();
-        roundedRect(ctx, x, y, width, height, radius || 0);
+        roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing);
         ctx.clip();
-        if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
-        else drawFittedImage(ctx, image, x, y, width, height, node.fit);
+        drawImageWithFitMode(ctx, image, node, assets, node.assetId, x, y, width, height,
+          node.fit, node.scalingFactor, node.transforms, Boolean(liveTransformSource));
         ctx.restore();
       }
       ctx.restore();
@@ -1482,7 +1641,7 @@ export class SceneRenderer {
       case 'section':
       case 'group':
       case 'rectangle':
-        roundedRect(ctx, x, y, width, height, radius || 0);
+        roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing);
         break;
       case 'ellipse':
         ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
@@ -1492,10 +1651,10 @@ export class SceneRenderer {
         else { ctx.moveTo(x, y); ctx.lineTo(x + width, y + height); }
         break;
       case 'star':
-        starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
+        traceRoundedPolygonPath(ctx, x, y, regularShapeVertices('star', width, height, node.points, node.innerRadius ?? 0.48), node.vertexRadii || Number(radius) || 0, cornerSmoothing);
         break;
       case 'polygon':
-        polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);
+        traceRoundedPolygonPath(ctx, x, y, regularShapeVertices('polygon', width, height, node.points), node.vertexRadii || Number(radius) || 0, cornerSmoothing);
         break;
       case 'path':
         traceVectorPath(ctx, node, x, y);
@@ -1510,7 +1669,7 @@ export class SceneRenderer {
     if (node.type === 'image') {
       if (node.__smartAnimateImageTransition) {
         ctx.save();
-        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
+        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing); ctx.clip();
         const drawn = this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageTransition, assets, state, x, y, width, height);
         if (!drawn && renderOptions.showImageLoadingPlaceholder !== false) {
           ctx.fillStyle = '#d9d9d9'; ctx.fill();
@@ -1533,14 +1692,14 @@ export class SceneRenderer {
             const previewStatus = state.imageStatus?.get(node.id) || '';
             const previewReady = previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated');
             if (cropPreview && previewAssetId === node.assetId && previewReady) {
-              drawCropPreview(ctx, cropPreview, x, y, width, height, node.fit, radius || 0);
+              drawCropPreview(ctx, cropPreview, x, y, width, height, node.fit, radius || 0, cornerSmoothing);
             }
           }
           else {
             ctx.save();
-            ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
-            if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
-            else drawFittedImage(ctx, image, x, y, width, height, node.fit);
+            ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing); ctx.clip();
+            drawImageWithFitMode(ctx, image, node, assets, node.assetId, x, y, width, height,
+              node.fit, node.scalingFactor, node.transforms, Boolean(liveTransformSource));
             ctx.restore();
           }
         } else {
@@ -1555,7 +1714,7 @@ export class SceneRenderer {
           }
         }
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius), maskMode);
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius, cornerSmoothing), maskMode);
     } else if (node.type === 'text') {
       if (Array.isArray(node.fills) && !maskMode) {
         const surfaces = this.textPaintSurfaces || (this.textPaintSurfaces = { glyph: null, paint: null });
@@ -1572,6 +1731,16 @@ export class SceneRenderer {
           fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
         }));
     } else if (node.type === 'network') {
+      if (vectorMask) {
+        const hasVisibleFill = fillStackForNode(node).some(fill => fill.visible);
+        if (hasVisibleFill) for (const face of node.faces || []) {
+          ctx.beginPath();
+          if (traceVectorNetworkFace(ctx, node, face, x, y)) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+          }
+        }
+      } else {
       const fills = fillStackForNode(node);
       for (const face of node.faces || []) {
         // Keep the original one-fill face behavior for old files: an image fill
@@ -1592,8 +1761,8 @@ export class SceneRenderer {
             if (node.imageFill && (fillImage || node.__smartAnimateImageFillTransition)) {
               ctx.clip();
               if (node.__smartAnimateImageFillTransition) this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageFillTransition, assets, state, x, y, width, height);
-              else if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, node.imageFill.fit, node.imageFill.transforms);
-              else drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit);
+              else drawImageWithFitMode(ctx, liveSource || fillImage, node, assets, node.imageFill.assetId, x, y, width, height,
+                node.imageFill.fit, node.imageFill.scalingFactor, node.imageFill.transforms, Boolean(liveSource));
             }
             else { ctx.fillStyle = gradient || rgba(faceFill || color || '#000000', 1); ctx.fill(); }
             ctx.restore();
@@ -1631,12 +1800,13 @@ export class SceneRenderer {
             const image = liveSource || imageForNode(node, assets, state, fill.imageFill.assetId, imagePreviewKey(node.id, fill.id));
             if (image) {
               ctx.clip();
-              if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, fill.imageFill.fit, fill.imageFill.transforms);
-              else drawFittedImage(ctx, image, x, y, width, height, fill.imageFill.fit);
+              drawImageWithFitMode(ctx, image, node, assets, fill.imageFill.assetId, x, y, width, height,
+                fill.imageFill.fit, fill.imageFill.scalingFactor, fill.imageFill.transforms, Boolean(liveSource));
             }
           }
           ctx.restore();
         }
+      }
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
     } else {
@@ -2131,6 +2301,7 @@ export class SceneRenderer {
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     const radius = node.cornerRadii || getNodePropertyValue(state.document, node, 'radius') || 0;
+    const cornerSmoothing = node.cornerSmoothing || 0;
     ctx.beginPath();
     if (node.type === 'slice') {
       ctx.rect(x, y, width, height);
@@ -2144,7 +2315,7 @@ export class SceneRenderer {
         case 'section':
         case 'group':
         case 'rectangle':
-          roundedRect(ctx, x, y, width, height, radius);
+          roundedRect(ctx, x, y, width, height, radius, cornerSmoothing);
           break;
         case 'ellipse':
           ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
@@ -2154,10 +2325,10 @@ export class SceneRenderer {
           else { ctx.moveTo(x, y); ctx.lineTo(x + width, y + height); }
           break;
         case 'star':
-          starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
+          traceRoundedPolygonPath(ctx, x, y, regularShapeVertices('star', width, height, node.points, node.innerRadius ?? 0.48), node.vertexRadii || Number(radius) || 0, cornerSmoothing);
           break;
         case 'polygon':
-          polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);
+          traceRoundedPolygonPath(ctx, x, y, regularShapeVertices('polygon', width, height, node.points), node.vertexRadii || Number(radius) || 0, cornerSmoothing);
           break;
         case 'path':
           traceVectorPath(ctx, node, x, y);
@@ -2166,7 +2337,7 @@ export class SceneRenderer {
           traceVectorNetworkEdges(ctx, node, x, y);
           break;
         case 'image':
-          roundedRect(ctx, x, y, width, height, radius);
+          roundedRect(ctx, x, y, width, height, radius, cornerSmoothing);
           break;
         default:
           ctx.rect(x, y, width, height);
@@ -2226,8 +2397,21 @@ export class SceneRenderer {
     const maskContext = surface.getContext('2d');
     maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
     for (const child of contentNodes) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
-    maskContext.globalCompositeOperation = 'destination-in';
-    this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
+    if (node.maskMode === 'vector') {
+      const vectorSurface = typeof OffscreenCanvas === 'function'
+        ? new OffscreenCanvas(pixelWidth, pixelHeight)
+        : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+      const vectorContext = vectorSurface.getContext('2d');
+      if (vectorContext) {
+        vectorContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
+        this.drawNode(vectorContext, maskNode, 0, 0, assets, false, 'vector', renderOptions);
+        maskContext.globalCompositeOperation = 'destination-in';
+        maskContext.drawImage(vectorSurface, 0, 0);
+      }
+    } else {
+      maskContext.globalCompositeOperation = 'destination-in';
+      this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
+    }
     maskContext.globalCompositeOperation = 'source-over';
     ctx.drawImage(surface, x, y, node.width, node.height);
   }
@@ -2242,7 +2426,7 @@ export class SceneRenderer {
       return;
     }
     ctx.save();
-    if (!Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
+    if (maskMode !== 'vector' && !Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
     ctx.drawImage(surface, x, y, node.width, node.height);
     ctx.restore();
   }
@@ -2272,7 +2456,8 @@ export class SceneRenderer {
         delete cacheNode[property];
       }
     }
-    const key = `${maskMode ? 'mask' : 'paint'}|${JSON.stringify(cacheNode)}|${JSON.stringify(resolvedChildren)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
+    const cacheMode = maskMode === 'vector' ? 'vector-mask' : maskMode ? 'alpha-mask' : 'paint';
+    const key = `${cacheMode}|${JSON.stringify(cacheNode)}|${JSON.stringify(resolvedChildren)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
     let entry = this.booleanCache.get(key);
     if (entry) {
       this.booleanCache.delete(key);
@@ -2301,7 +2486,7 @@ export class SceneRenderer {
         else if (operation === 'subtract') mask.globalCompositeOperation = 'destination-out';
         else if (operation === 'intersect') mask.globalCompositeOperation = 'destination-in';
         else if (operation === 'exclude') mask.globalCompositeOperation = 'xor';
-        this.drawNode(mask, child, 0, 0, assets, false, true, renderOptions);
+        this.drawNode(mask, child, 0, 0, assets, false, maskMode === 'vector' ? 'vector' : true, renderOptions);
         mask.restore();
         if (!visible && operation === 'intersect') {
           mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
@@ -2316,6 +2501,9 @@ export class SceneRenderer {
         // Keep only the Boolean alpha mask in the cache. Paint blend modes
         // depend on the live page backdrop, so they are drawn in order by
         // drawBooleanFillStack when this cached mask is presented.
+      } else if (maskMode === 'vector') {
+        // The operand union/intersection surface is already the vector mask;
+        // source paints and their alpha must not modulate its geometry.
       } else if (Array.isArray(node.fills)) {
         const createSurface = () => typeof OffscreenCanvas === 'function'
           ? new OffscreenCanvas(width, height)
@@ -2346,8 +2534,8 @@ export class SceneRenderer {
             const liveSource = fillLayer.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
             const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fillLayer.id));
             if (!image) continue;
-            if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
-            else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+            drawImageWithFitMode(paintContext, image, node, assets, imageFill.assetId, 0, 0, node.width, node.height,
+              imageFill.fit, imageFill.scalingFactor, imageFill.transforms, Boolean(liveSource));
           }
           paintContext.globalAlpha = 1;
           paintContext.globalCompositeOperation = 'destination-in';
@@ -2362,8 +2550,8 @@ export class SceneRenderer {
         const liveSource = node.__smartAnimateLiveImageFill && node.imageFill ? assets.get(node.imageFill.assetId)?.bitmap : null;
         const fillImage = liveSource || (node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null);
         if (fillImage) {
-          if (liveSource) drawImageWithTransforms(mask, liveSource, 0, 0, node.width, node.height, node.imageFill.fit, node.imageFill.transforms);
-          else drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
+          drawImageWithFitMode(mask, fillImage, node, assets, node.imageFill.assetId, 0, 0, node.width, node.height,
+            node.imageFill.fit, node.imageFill.scalingFactor, node.imageFill.transforms, Boolean(liveSource));
         }
         else {
           const resolvedFill = node.fillGradient
@@ -2657,6 +2845,45 @@ export class SceneRenderer {
 
       const nodeTransform = nodeLocalToPageTransform(node, ancestors);
       const pagePoint = point => transformPoint(nodeTransform, point);
+      if (selected.length === 1 && node.type === 'star' && state.tool === 'select'
+        && !state.layerSelectionMode && !state.presenting && !state.imageCropMode
+        && !(state.inspectorTab === 'motion' && state.motionPreview)
+        && !node.locked && !ancestors.some(parent => parent.locked)) {
+        const source = findNode(state.document, node.id)?.node || node;
+        const controls = starControlHandles({
+          ...node,
+          points: getNodePropertyValue(state.document, source, 'points') ?? source.points ?? node.points,
+          innerRadius: getNodePropertyValue(state.document, source, 'innerRadius') ?? source.innerRadius ?? node.innerRadius,
+          radius: getNodePropertyValue(state.document, source, 'radius') ?? source.radius ?? node.radius
+        }, zoom);
+        for (const handle of controls) {
+          const point = pagePoint(handle.point);
+          const active = state.interaction?.kind === 'star-control'
+            && state.interaction.node?.id === node.id && state.interaction.handle?.kind === handle.kind;
+          ctx.save();
+          ctx.strokeStyle = BLUE;
+          ctx.fillStyle = active ? BLUE : '#ffffff';
+          ctx.lineWidth = 1.5 / zoom;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 5 / zoom, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = active ? '#ffffff' : BLUE;
+          ctx.font = `${9 / zoom}px system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const labelWidth = (handle.label.length * 5.5 + 10) / zoom;
+          const labelHeight = 13 / zoom;
+          const labelX = point.x - labelWidth / 2;
+          const labelY = point.y + 8 / zoom;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
+          ctx.strokeRect(labelX, labelY, labelWidth, labelHeight);
+          ctx.fillStyle = BLUE;
+          ctx.fillText(handle.label, point.x, labelY + labelHeight / 2);
+          ctx.restore();
+        }
+      }
       if (selected.length === 1 && state.tool === 'select' && !state.layerSelectionMode && !state.presenting
         && !(state.inspectorTab === 'motion' && state.motionPreview) && node.type === 'frame'
         && node.autoLayout?.axis === 'grid' && !node.locked && !ancestors.some(parent => parent.locked)) {
@@ -2818,6 +3045,106 @@ export class SceneRenderer {
     ctx.restore();
   }
 
+  drawRemotePresence(ctx, page, state) {
+    const peers = [...(state.remotePresence?.values?.() || [])]
+      .filter(peer => peer.active && peer.pageId === page.id);
+    if (!peers.length) return;
+    const zoom = Math.max(0.08, Number(state.zoom) || 1);
+    const ownersByNodeId = new Map();
+    const selectedPeers = peers.filter(peer => peer.selectedIds?.length);
+    for (const peer of selectedPeers) {
+      const color = remotePresenceColor(peer.peerActorId);
+      for (const id of peer.selectedIds) {
+        const owners = ownersByNodeId.get(id) || [];
+        owners.push(color);
+        ownersByNodeId.set(id, owners);
+      }
+    }
+    if (ownersByNodeId.size) {
+      const collect = (nodes, ancestors = []) => {
+        for (const node of nodes) {
+          const colors = ownersByNodeId.get(node.id);
+          const geometry = getNodeGeometry(state.document, node);
+          const resolvedNode = { ...node, ...geometry, ...(state.motionPreview?.get(node.id) || {}), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
+          if (colors?.length) {
+            const selectionNode = node.type === 'slice' ? { ...resolvedNode, rotation: 0 } : resolvedNode;
+            const { corners } = selectionOverlayGeometry(selectionNode, ancestors, { zoom, rotateOffset: 0 });
+            ctx.save();
+            ctx.lineWidth = 2 / zoom;
+            for (const [index, color] of colors.entries()) {
+              ctx.strokeStyle = color;
+              ctx.setLineDash(index ? [3 / zoom, 3 / zoom] : []);
+              ctx.beginPath();
+              ctx.moveTo(corners[0].x, corners[0].y);
+              for (let point = 1; point < corners.length; point += 1) ctx.lineTo(corners[point].x, corners[point].y);
+              ctx.closePath();
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+          if (node.children?.length) collect(node.children, [...ancestors, resolvedNode]);
+        }
+      };
+      collect(page.children);
+    }
+    for (const peer of peers) {
+      if (!Number.isFinite(peer.cursorX) || !Number.isFinite(peer.cursorY)) continue;
+      const color = remotePresenceColor(peer.peerActorId);
+      const x = peer.cursorX;
+      const y = peer.cursorY;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(1 / zoom, 1 / zoom);
+      ctx.fillStyle = color;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(0, 18); ctx.lineTo(5, 13); ctx.lineTo(9, 21);
+      ctx.lineTo(12, 19); ctx.lineTo(8, 11); ctx.lineTo(15, 11); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      const label = `Guest ${String(peer.peerActorId).slice(-4)}`;
+      ctx.font = '600 12px system-ui, sans-serif';
+      const labelWidth = ctx.measureText(label).width;
+      ctx.fillStyle = color;
+      ctx.fillRect(14, 18, labelWidth + 10, 20);
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, 19, 28);
+      ctx.restore();
+    }
+  }
+
+  drawComponentPropertyHighlight(ctx, nodes, targetId) {
+    const state = this.getState();
+    let target = null;
+    const visit = (list, ancestors = []) => {
+      for (const node of list) {
+        const geometry = getNodeGeometry(state.document, node);
+        const resolvedNode = { ...node, ...geometry, ...(state.motionPreview?.get(node.id) || {}) };
+        if (node.id === targetId) {
+          target = { node: resolvedNode, ancestors };
+          return;
+        }
+        if (visit(node.children || [], [...ancestors, resolvedNode])) return;
+      }
+      return false;
+    };
+    visit(nodes);
+    if (!target || target.node.visible === false || target.ancestors.some(ancestor => ancestor.visible === false)) return false;
+    const zoom = Math.max(.08, state.zoom || 1);
+    const { corners } = selectionOverlayGeometry(target.node, target.ancestors, { zoom, rotateOffset: 0 });
+    ctx.save();
+    ctx.strokeStyle = '#9747ff';
+    ctx.lineWidth = 2 / zoom;
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+    return true;
+  }
+
   drawCommentPins(ctx, page, state, width, height) {
     const comments = [...(state.document.comments || [])]
       .filter(comment => comment.pageId === page.id)
@@ -2942,7 +3269,7 @@ function containsPointInClip(node, point, ancestors, document) {
   const radii = typeof rawRadius === 'number'
     ? Object.fromEntries(cornerRadiusKeys.map(key => [key, rawRadius]))
     : rawRadius;
-  return containsPointInRoundedRect(local.x, local.y, width, height, radii);
+  return containsPointInRoundedRect(local.x, local.y, width, height, radii, node.cornerSmoothing || 0);
 }
 
 function pointInsideAncestorClips(point, ancestors, document) {

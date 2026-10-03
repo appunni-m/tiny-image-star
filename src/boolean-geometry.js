@@ -1,8 +1,10 @@
-import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii } from './corner-radii.js';
+import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectPathCommands } from './corner-radii.js';
+import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS, regularShapeVertices, roundedPolygonPathCommands } from './polygon-corners.js';
 import {
   vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints,
   vectorNetworkVertexPoint, vectorPathContours
 } from './vector-path.js';
+import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
 
 const operations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const MAX_INPUT_SEGMENTS = 512;
@@ -74,14 +76,26 @@ function validateSimpleOperand(node, { root = false } = {}) {
     if (node.variableBindings?.radius) {
       unsupported(`“${node.name || node.type}” has a mode-bound radius; remove that binding before baking its geometry.`);
     }
+    if (node.cornerSmoothing != null && (!finite(node.cornerSmoothing) || node.cornerSmoothing < 0 || node.cornerSmoothing > 1)) {
+      unsupported(`“${node.name || node.type}” has invalid corner-smoothing geometry.`);
+    }
     return;
   }
   if (node.type === 'ellipse') return;
   if (node.type === 'polygon' || node.type === 'star') {
     const count = Number(node.points ?? (node.type === 'star' ? 5 : 6));
-    if (!Number.isInteger(count) || count < 3 || count > 32) unsupported(`“${node.name || node.type}” has a non-integer or unsupported point count.`);
+    const maximum = node.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS;
+    if (!Number.isInteger(count) || count < MIN_STAR_POINTS || count > maximum) unsupported(`“${node.name || node.type}” has a non-integer or unsupported point count.`);
     if (node.type === 'star' && (!finite(node.innerRadius ?? .48) || (node.innerRadius ?? .48) < 0 || (node.innerRadius ?? .48) > 1)) {
       unsupported(`“${node.name || node.type}” has an invalid inner radius.`);
+    }
+    if (node.cornerRadii != null
+      || (node.radius != null && (!finite(node.radius) || node.radius < 0 || node.radius > 100_000))
+      || (node.cornerSmoothing != null && (!finite(node.cornerSmoothing) || node.cornerSmoothing < 0 || node.cornerSmoothing > 1))) {
+      unsupported(`“${node.name || node.type}” has invalid corner-radius or smoothing geometry.`);
+    }
+    if (node.variableBindings?.radius) {
+      unsupported(`“${node.name || node.type}” has a mode-bound radius; remove that binding before baking its geometry.`);
     }
     return;
   }
@@ -211,18 +225,10 @@ function rotate(point, cx, cy, angle) {
 function regularPolygon(node, star = false) {
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
-  const count = Number(node.points ?? (star ? 5 : 6));
-  const result = [];
-  const vertexCount = star ? count * 2 : count;
-  const starRadius = Math.min(node.width, node.height) / 2;
-  for (let index = 0; index < vertexCount; index += 1) {
-    const angle = -Math.PI / 2 + index * (star ? Math.PI : TAU) / count;
-    const ratio = star && index % 2 ? Number(node.innerRadius ?? .48) : 1;
-    const radiusX = (star ? starRadius : node.width / 2) * ratio;
-    const radiusY = (star ? starRadius : node.height / 2) * ratio;
-    result.push(rotate(vector(cx + Math.cos(angle) * radiusX, cy + Math.sin(angle) * radiusY), cx, cy, node.rotation || 0));
-  }
-  return result;
+  return regularShapeVertices(star ? 'star' : 'polygon', node.width, node.height,
+    node.points ?? (star ? 5 : 6), node.innerRadius ?? .48).map(point => rotate(vector(
+    node.x + point.x, node.y + point.y
+  ), cx, cy, node.rotation || 0));
 }
 
 function primitiveContours(node) {
@@ -1145,6 +1151,7 @@ function linearCurvesFromContours(contours) {
 
 function roundedRectangleCurves(node) {
   const radii = rectangleCornerRadii(node);
+  if (node.cornerSmoothing > 0) return smoothedRectangleCurves(node, radii);
   const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = radii;
   const left = node.x;
   const top = node.y;
@@ -1195,6 +1202,64 @@ function roundedRectangleCurves(node) {
   return [contours];
 }
 
+function smoothedRectangleCurves(node, radii) {
+  const path = roundedRectPathCommands(node.width, node.height, radii, node.cornerSmoothing);
+  const centerX = node.x + node.width / 2;
+  const centerY = node.y + node.height / 2;
+  const transform = point => {
+    const placed = vector(node.x + point.x, node.y + point.y);
+    return node.rotation ? rotate(placed, centerX, centerY, node.rotation) : placed;
+  };
+  return curvesFromPathCommands(path, transform);
+}
+
+function curvesFromPathCommands(path, transform) {
+  const curves = [];
+  const appendLine = (start, end) => {
+    const p0 = transform(start); const p3 = transform(end);
+    const delta = subtract(p3, p0);
+    curves.push(cubic(p0, add(p0, scale(delta, 1 / 3)), add(p0, scale(delta, 2 / 3)), p3));
+  };
+  for (const command of path.commands) {
+    if (command.type === 'line') appendLine(command.start, command.end);
+    else if (command.type === 'quadratic') {
+      const p0 = transform(command.start); const control = transform(command.control); const p3 = transform(command.end);
+      curves.push(cubic(p0, add(p0, scale(subtract(control, p0), 2 / 3)), add(p3, scale(subtract(control, p3), 2 / 3)), p3));
+    } else if (command.type === 'cubic') {
+      curves.push(cubic(transform(command.start), transform(command.control1), transform(command.control2), transform(command.end)));
+    } else if (command.type === 'arc') {
+      // Boolean contours are cubic Béziers, so approximate each circular arc
+      // with the standard tangent cubic. Signed sweeps cover concave star corners.
+      const angleSweep = command.endAngle - command.startAngle;
+      const segmentCount = Math.max(1, Math.ceil(Math.abs(angleSweep) / (Math.PI / 2)));
+      for (let index = 0; index < segmentCount; index += 1) {
+        const startAngle = command.startAngle + angleSweep * index / segmentCount;
+        const endAngle = command.startAngle + angleSweep * (index + 1) / segmentCount;
+        const sweep = endAngle - startAngle;
+        const handle = 4 / 3 * Math.tan(sweep / 4) * command.radius;
+        const localStart = vector(command.center.x + Math.cos(startAngle) * command.radius, command.center.y + Math.sin(startAngle) * command.radius);
+        const localEnd = vector(command.center.x + Math.cos(endAngle) * command.radius, command.center.y + Math.sin(endAngle) * command.radius);
+        const localControl1 = vector(localStart.x - Math.sin(startAngle) * handle, localStart.y + Math.cos(startAngle) * handle);
+        const localControl2 = vector(localEnd.x + Math.sin(endAngle) * handle, localEnd.y - Math.cos(endAngle) * handle);
+        curves.push(cubic(transform(localStart), transform(localControl1), transform(localControl2), transform(localEnd)));
+      }
+    }
+  }
+  return [curves];
+}
+
+function roundedPolygonCurves(node) {
+  const vertices = regularShapeVertices(node.type, node.width, node.height, node.points, node.innerRadius ?? .48);
+  const path = roundedPolygonPathCommands(vertices, node.vertexRadii || node.radius || 0, node.cornerSmoothing || 0);
+  const centerX = node.x + node.width / 2;
+  const centerY = node.y + node.height / 2;
+  const transform = point => {
+    const placed = vector(node.x + point.x, node.y + point.y);
+    return node.rotation ? rotate(placed, centerX, centerY, node.rotation) : placed;
+  };
+  return curvesFromPathCommands(path, transform);
+}
+
 function pathCurves(node) {
   return vectorPathContours(node).map(contour => {
     const points = contour.points || [];
@@ -1220,6 +1285,49 @@ function pathCurves(node) {
 }
 
 function networkFaceCurves(node, face, edgesByPair) {
+  const rounded = vectorNetworkFacePathCommands(node, face, { x: node.x, y: node.y });
+  if (rounded) {
+    const cx = node.x + node.width / 2;
+    const cy = node.y + node.height / 2;
+    const transform = point => rotate(point, cx, cy, node.rotation || 0);
+    const curves = [];
+    let current = rounded.start;
+    for (const command of rounded.commands) {
+      if (command.type === 'line') {
+        curves.push(cubicFromLine(transform(current), transform(command.end)));
+        current = command.end;
+      } else if (command.type === 'cubic') {
+        curves.push(cubic(transform(command.start), transform(command.control1), transform(command.control2), transform(command.end)));
+        current = command.end;
+      } else if (command.type === 'arc') {
+        const sweep = command.endAngle - command.startAngle;
+        const segments = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 6)));
+        let start = command.start || vector(command.center.x + command.radius * Math.cos(command.startAngle),
+          command.center.y + command.radius * Math.sin(command.startAngle));
+        for (let index = 1; index <= segments; index += 1) {
+          const startAngle = command.startAngle + sweep * (index - 1) / segments;
+          const endAngle = command.startAngle + sweep * index / segments;
+          const end = index === segments
+            ? command.end
+            : vector(command.center.x + command.radius * Math.cos(endAngle),
+              command.center.y + command.radius * Math.sin(endAngle));
+          const handle = 4 / 3 * Math.tan((endAngle - startAngle) / 4) * command.radius;
+          const startTangent = vector(-Math.sin(startAngle), Math.cos(startAngle));
+          const endTangent = vector(-Math.sin(endAngle), Math.cos(endAngle));
+          curves.push(cubic(
+            transform(start),
+            transform(add(start, scale(startTangent, handle))),
+            transform(subtract(end, scale(endTangent, handle))),
+            transform(end)
+          ));
+          start = end;
+        }
+        current = command.end;
+      }
+    }
+    return curves;
+  }
+
   const ids = face.vertexIds;
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
@@ -1244,6 +1352,11 @@ function networkFaceCurves(node, face, edgesByPair) {
     curves.push(cubic(transform(start), transform(control1), transform(control2), transform(end)));
   }
   return curves;
+}
+
+function cubicFromLine(start, end) {
+  const delta = subtract(end, start);
+  return cubic(start, add(start, scale(delta, 1 / 3)), add(start, scale(delta, 2 / 3)), end);
 }
 
 function networkCurves(node) {
@@ -1298,6 +1411,10 @@ function primitiveCurves(node) {
     const radii = rectangleCornerRadii(node);
     if (cornerRadiusKeys.some(key => radii[key] > 0)) return roundedRectangleCurves(node);
   }
+  if ((node.type === 'polygon' || node.type === 'star')
+    && (node.radius > 0 || node.cornerSmoothing > 0 || node.vertexRadii?.some(radius => radius > 0))) {
+    return roundedPolygonCurves(node);
+  }
   return linearCurvesFromContours(primitiveContours(node) || []);
 }
 
@@ -1345,6 +1462,8 @@ function containsCurvedPath(node) {
   if (node.type === 'rectangle') {
     if (cornerRadiusKeys.some(key => rectangleCornerRadii(node)[key] > 0)) return true;
   }
+  if ((node.type === 'polygon' || node.type === 'star')
+    && (node.radius > 0 || node.vertexRadii?.some(radius => radius > 0))) return true;
   if (node.type === 'path' && vectorPathContours(node).some(contour => contour.points.some(point =>
     !isZeroHandle(point.in) || !isZeroHandle(point.out)))) return true;
   return (node.children || []).some(containsCurvedPath);

@@ -3,12 +3,15 @@ import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { isValidCornerRadii } from './corner-radii.js';
+import { isValidVertexRadii } from './polygon-corners.js';
 import { isValidStrokeStack, strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
 import { isValidFontVariationValues } from './font-variation.js';
 import { isValidFontFeatureValues } from './font-features.js';
 
 const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
+const vertexRadiusNodeTypes = new Set(['star', 'polygon']);
+const networkVertexRadiusNodeTypes = new Set(['network']);
 const textStyleProperties = Object.freeze([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
@@ -48,6 +51,13 @@ export function snapshotAppearance(sourceNode) {
     if (isValidCornerRadii(sourceNode.cornerRadii)) snapshot.cornerRadii = clone(sourceNode.cornerRadii);
     else if (Number.isFinite(sourceNode.radius) && sourceNode.radius >= 0) snapshot.radius = sourceNode.radius;
   }
+  if (vertexRadiusNodeTypes.has(sourceNode.type)) {
+    if (isValidVertexRadii(sourceNode.type, sourceNode.points, sourceNode.vertexRadii)) snapshot.vertexRadii = clone(sourceNode.vertexRadii);
+    else if (Number.isFinite(sourceNode.radius) && sourceNode.radius >= 0) snapshot.radius = sourceNode.radius;
+  }
+  if (networkVertexRadiusNodeTypes.has(sourceNode.type) && Array.isArray(sourceNode.vertices)) {
+    snapshot.networkVertexRadii = sourceNode.vertices.map(vertex => Number.isFinite(vertex.cornerRadius) ? vertex.cornerRadius : 0);
+  }
 
   if (sourceNode.type === 'text') {
     const textStyle = Object.fromEntries(textStyleProperties
@@ -65,7 +75,7 @@ export function snapshotAppearance(sourceNode) {
     'opacity', 'blendMode',
     ...(snapshot.fills === null ? [] : ['fills']),
     'strokes', 'effects',
-    ...(Object.hasOwn(snapshot, 'radius') || Object.hasOwn(snapshot, 'cornerRadii') ? ['radii'] : []),
+    ...(Object.hasOwn(snapshot, 'radius') || Object.hasOwn(snapshot, 'cornerRadii') || Object.hasOwn(snapshot, 'vertexRadii') || Object.hasOwn(snapshot, 'networkVertexRadii') ? ['radii'] : []),
     ...(snapshot.textStyle ? ['textStyle'] : [])
   ];
 
@@ -173,32 +183,56 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
     throw new TypeError('The copied effect stack is invalid.');
   }
 
-  const hasCopiedRadii = Object.hasOwn(appearance, 'radius') || Object.hasOwn(appearance, 'cornerRadii');
+  const hasCopiedRadii = Object.hasOwn(appearance, 'radius') || Object.hasOwn(appearance, 'cornerRadii')
+    || Object.hasOwn(appearance, 'vertexRadii') || Object.hasOwn(appearance, 'networkVertexRadii');
   if (hasCopiedRadii) {
-    if (radiusNodeTypes.has(node.type)
-      && (Object.hasOwn(appearance, 'radius')
-        ? Number.isFinite(appearance.radius) && appearance.radius >= 0
-        : isValidCornerRadii(appearance.cornerRadii))) {
+    const canApplyIndependentVertices = vertexRadiusNodeTypes.has(node.type)
+      && isValidVertexRadii(node.type, node.points, appearance.vertexRadii);
+    const canApplyNetworkVertexRadii = networkVertexRadiusNodeTypes.has(node.type)
+      && Array.isArray(appearance.networkVertexRadii)
+      && appearance.networkVertexRadii.length === node.vertices?.length
+      && appearance.networkVertexRadii.every(value => Number.isFinite(value) && value >= 0 && value <= 100_000);
+    const canApplyIndependentCorners = radiusNodeTypes.has(node.type) && isValidCornerRadii(appearance.cornerRadii);
+    const canApplyUniformRadius = (radiusNodeTypes.has(node.type) || vertexRadiusNodeTypes.has(node.type))
+      && Number.isFinite(appearance.radius) && appearance.radius >= 0;
+    if (canApplyNetworkVertexRadii) {
       const previousBindings = bindingState(before, 'radii');
-      if (Object.hasOwn(appearance, 'cornerRadii')) {
+      node.vertices = node.vertices.map((vertex, index) => {
+        const copy = { ...vertex };
+        if (appearance.networkVertexRadii[index] > 0) copy.cornerRadius = appearance.networkVertexRadii[index];
+        else delete copy.cornerRadius;
+        return copy;
+      });
+      applied.push('networkVertexRadii');
+      if (!sameValue(before.vertices?.map(vertex => Number(vertex.cornerRadius) || 0), appearance.networkVertexRadii)
+        || !sameValue(previousBindings, bindingState(node, 'radii'))) changedFamilies.push('radii');
+    } else if (canApplyIndependentVertices || canApplyIndependentCorners || canApplyUniformRadius) {
+      const previousBindings = bindingState(before, 'radii');
+      if (canApplyIndependentVertices) {
+        node.vertexRadii = clone(appearance.vertexRadii);
+        delete node.cornerRadii;
+        clearVariableBinding(node, 'radius');
+      } else if (canApplyIndependentCorners) {
         node.cornerRadii = clone(appearance.cornerRadii);
+        delete node.vertexRadii;
         delete node.variableBindings?.radius;
         cleanupVariableBindings(node);
       } else {
         node.radius = appearance.radius;
         delete node.cornerRadii;
+        delete node.vertexRadii;
         clearVariableBinding(node, 'radius');
       }
-      const family = Object.hasOwn(appearance, 'cornerRadii') ? 'cornerRadii' : 'radius';
+      const family = canApplyIndependentVertices ? 'vertexRadii' : canApplyIndependentCorners ? 'cornerRadii' : 'radius';
       applied.push(family);
-      const previousRadii = Object.hasOwn(before, 'cornerRadii')
-        ? before.cornerRadii : before.radius;
-      const nextRadii = Object.hasOwn(appearance, 'cornerRadii')
-        ? appearance.cornerRadii : appearance.radius;
+      const previousRadii = Object.hasOwn(before, 'vertexRadii') ? before.vertexRadii
+        : Object.hasOwn(before, 'cornerRadii') ? before.cornerRadii : before.radius;
+      const nextRadii = canApplyIndependentVertices ? appearance.vertexRadii
+        : canApplyIndependentCorners ? appearance.cornerRadii : appearance.radius;
       if (!sameValue(previousRadii, nextRadii)
         || !sameValue(previousBindings, bindingState(node, 'radii'))) changedFamilies.push('radii');
     } else {
-      skipped.push(`radii: ${targetNode.type} does not support the copied corner radii`);
+      skipped.push(`radii: ${targetNode.type} does not support the copied corner radii or vertex radii`);
     }
   } else {
     skipped.push(`radii: ${appearance.sourceType} does not support corner radii`);
@@ -233,7 +267,7 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
     skipped.push(`textStyle: ${appearance.sourceType} has no text styling`);
   }
 
-  const appliedFamilies = [...new Set(applied.map(property => property === 'radius' || property === 'cornerRadii' ? 'radii' : property))];
+  const appliedFamilies = [...new Set(applied.map(property => ['radius', 'cornerRadii', 'vertexRadii', 'networkVertexRadii'].includes(property) ? 'radii' : property))];
   return {
     node,
     applied,

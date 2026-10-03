@@ -68,6 +68,7 @@ export class LocalFontShapingClient {
   }
 
   hasFont(fontId) { return this.#loadedFonts.has(fontId); }
+  fontInfo(fontId) { return this.#loadedFonts.get(fontId) || null; }
 
   async loadFont(fontId, sourceBytes) {
     this.#ensureOpen();

@@ -2,6 +2,7 @@ import { createHostOperationEngine } from './host-operation-engine.js';
 import { createGuestForkRecovery } from './guest-fork-recovery.js';
 import { createCollaborationAssetReceiver, sendCollaborationAsset } from './asset-transfer.js';
 import {
+  COLLABORATION_PROTOCOL_VERSION,
   decodeCollaborationMessage,
   encodeCollaborationMessage,
   validateCollaborationMessage
@@ -82,6 +83,63 @@ function sendMessage(channel, message, direction) {
   }));
 }
 
+function createSignalWaiter(waiters, key, timeoutMs, signal, timeoutMessage) {
+  if (waiters.has(key)) throw new Error('A duplicate collaboration signal is already pending.');
+  let timer;
+  let abortHandler;
+  let settled = false;
+  let resolvePromise;
+  let rejectPromise;
+  const cleanup = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortHandler);
+    waiters.delete(key);
+  };
+  const finish = error => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    if (error) rejectPromise(error);
+    else resolvePromise();
+  };
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  abortHandler = () => finish(new Error('The live asset transfer was cancelled.'));
+  waiters.set(key, finish);
+  timer = setTimeout(() => finish(new Error(timeoutMessage)), timeoutMs);
+  signal?.addEventListener?.('abort', abortHandler, { once: true });
+  if (signal?.aborted) abortHandler();
+  return {
+    promise,
+    cancel: reason => finish(reason instanceof Error ? reason : new Error('The live asset transfer was cancelled.'))
+  };
+}
+
+function resolveSignalWaiter(waiters, key) {
+  const finish = waiters.get(key);
+  if (!finish) return false;
+  finish();
+  return true;
+}
+
+async function synchronizeAssetChannel({
+  assetChannel, context, direction, waiters, timeoutMs, signal, crypto
+}) {
+  const barrierId = makeActorId(crypto, 'barrier');
+  const waiter = createSignalWaiter(
+    waiters, barrierId, timeoutMs, signal, 'The peer did not confirm that the image assets were saved.'
+  );
+  try {
+    sendMessage(assetChannel, { ...context, kind: 'ASSET_BARRIER', barrierId }, direction);
+    await waiter.promise;
+  } catch (error) {
+    waiter.cancel(error);
+    throw error;
+  }
+}
+
 function normalizeFamily(family) {
   return String(family || '').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
 }
@@ -110,6 +168,7 @@ export async function createHostSessionController(options = {}) {
     cancelTimeout = globalThis.clearTimeout?.bind(globalThis),
     onState = () => {},
     onSnapshot = () => {},
+    onPresence = () => {},
     getViewState = () => null,
     peerConnectionFactory = globalThis.RTCPeerConnection,
     createTransport = createHostWebRtcSession,
@@ -132,12 +191,16 @@ export async function createHostSessionController(options = {}) {
     maxSessionAssetCount = 256,
     maxRoomPeers = 4,
     handshakeTimeoutMs = 20_000,
+    assetBarrierTimeoutMs = 30_000,
     room: sharedRoom = null
   } = options;
   requireWorkspace(workspace, locks);
   assertId(designId, 'Design ID');
   if (typeof handshakeTimeoutMs !== 'number' || !Number.isFinite(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 120_000) {
     throw new RangeError('The collaboration handshake timeout is invalid.');
+  }
+  if (!Number.isSafeInteger(assetBarrierTimeoutMs) || assetBarrierTimeoutMs < 1 || assetBarrierTimeoutMs > 120_000) {
+    throw new RangeError('The collaboration asset barrier timeout is invalid.');
   }
   if (typeof scheduleTimeout !== 'function' || typeof cancelTimeout !== 'function') {
     throw new TypeError('Collaboration timeout functions are unavailable.');
@@ -166,6 +229,8 @@ export async function createHostSessionController(options = {}) {
     primarySnapshotCallback: onSnapshot,
     primarySnapshotListener: null,
     viewStateSequence: 0,
+    hostPresenceSequence: 0,
+    presences: new Map(),
     transferredAssetBytes: 0,
     transferredAssetCount: 0,
     stopped: false,
@@ -189,11 +254,12 @@ export async function createHostSessionController(options = {}) {
   let incomingReservation = null;
   let disposed = false;
   const messageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
+  const assetMessageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
   let handshakeTimer = null;
   const removers = [];
   const emit = next => { state = next; try { onState(next); } catch {} };
   const sessionId = () => transport?.session?.sessionId;
-  const baseContext = () => ({ v: 1, designId, sessionId: sessionId(), actorId: hostActorId });
+  const baseContext = () => ({ v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: sessionId(), actorId: hostActorId });
   const ownsRoom = !sharedRoom;
   const snapshotListener = (snapshot, head) => {
     if (ownsRoom ? !roomState.stopped : !disposed) {
@@ -224,6 +290,26 @@ export async function createHostSessionController(options = {}) {
     if (guestActorId) {
       const member = roomState.members.get(guestActorId);
       if (member?.sessionId === sessionId()) {
+        const activePresence = roomState.presences.get(guestActorId);
+        if (activePresence) {
+          const inactive = {
+            ...activePresence,
+            sequence: Math.min(Number.MAX_SAFE_INTEGER, member.lastPresenceSequence + 1),
+            active: false, cursorX: null, cursorY: null, selectedIds: []
+          };
+          roomState.presences.delete(guestActorId);
+          try { onPresence({ ...inactive }); } catch {}
+          for (const other of roomState.members.values()) {
+            if (other !== member && other.ready) {
+              try {
+                sendMessage(other.channel, {
+                  v: COLLABORATION_PROTOCOL_VERSION, kind: 'PRESENCE', designId, sessionId: other.sessionId, actorId: hostActorId,
+                  ...inactive
+                }, 'host-to-guest');
+              } catch { other.close('failed'); }
+            }
+          }
+        }
         roomState.members.delete(guestActorId);
         try { member.abortController?.abort(reason); } catch {}
         member.queuedRevisions.length = 0;
@@ -252,13 +338,38 @@ export async function createHostSessionController(options = {}) {
     for (const member of roomState.members.values()) {
       if (!member.ready) continue;
       sendMessage(member.channel, {
-        v: 1, kind: 'VIEW_STATE', designId, sessionId: member.sessionId, actorId: hostActorId,
+        v: COLLABORATION_PROTOCOL_VERSION, kind: 'VIEW_STATE', designId, sessionId: member.sessionId, actorId: hostActorId,
         sequence, pageId: viewState.pageId, zoom: viewState.zoom,
         centerX: viewState.centerX, centerY: viewState.centerY
       }, 'host-to-guest');
     }
     roomState.engine.setActivePageId(viewState.pageId);
     roomState.viewStateSequence = sequence;
+    return true;
+  }
+
+  function publishPresence(presence) {
+    if (roomState.stopped || !roomState.engine || !presence
+      || !roomState.engine.hasPageId(presence.pageId)) return false;
+    if (roomState.hostPresenceSequence >= Number.MAX_SAFE_INTEGER) throw new Error('The live presence sequence limit was reached.');
+    const record = {
+      peerActorId: hostActorId,
+      sequence: ++roomState.hostPresenceSequence,
+      active: presence.active !== false,
+      pageId: presence.pageId,
+      cursorX: presence.active === false ? null : (presence.cursorX ?? null),
+      cursorY: presence.active === false ? null : (presence.cursorY ?? null),
+      selectedIds: presence.active === false ? [] : [...new Set((presence.selectedIds || []).slice(0, 128))]
+    };
+    validateCollaborationMessage({ ...baseContext(), kind: 'PRESENCE', ...record });
+    if (record.active) roomState.presences.set(hostActorId, record);
+    else roomState.presences.delete(hostActorId);
+    for (const member of roomState.members.values()) {
+      if (!member.ready) continue;
+      sendMessage(member.channel, {
+        v: COLLABORATION_PROTOCOL_VERSION, kind: 'PRESENCE', designId, sessionId: member.sessionId, actorId: hostActorId, ...record
+      }, 'host-to-guest');
+    }
     return true;
   }
 
@@ -332,18 +443,20 @@ export async function createHostSessionController(options = {}) {
 
   async function sendSnapshotAssets(snapshot, member) {
     const requirements = collectDesignAssetRequirements(snapshot);
+    let sentAssetCount = 0;
     const transfer = async ({ assetId, assetKind, mimeType, bytes, fontMetadata = null }) => {
       let release;
       try {
         release = reserveRoomAsset(bytes.byteLength);
         emit('sending-assets');
-        const result = await sendAsset(member.channel, {
-          context: { v: 1, designId, sessionId: member.sessionId, actorId: hostActorId },
+        const result = await sendAsset(member.assetChannel, {
+          context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: member.sessionId, actorId: hostActorId },
           direction: 'host-to-guest',
           transferId: makeActorId(crypto, 'transfer'), assetId, assetKind, mimeType, fontMetadata,
           bytes, crypto, signal: member.abortController.signal
         });
         member.assetIds.add(assetId);
+        sentAssetCount += 1;
         try {
           onAssetTransfer({ phase: 'sent', ...result,
             totalBytes: roomState.transferredAssetBytes, count: roomState.transferredAssetCount });
@@ -384,6 +497,17 @@ export async function createHostSessionController(options = {}) {
         });
       }
     }
+    if (member.separateAssetChannel && sentAssetCount > 0) {
+      await synchronizeAssetChannel({
+        assetChannel: member.assetChannel,
+        context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: member.sessionId, actorId: hostActorId },
+        direction: 'host-to-guest',
+        waiters: member.assetBarrierWaiters,
+        timeoutMs: assetBarrierTimeoutMs,
+        signal: member.abortController.signal,
+        crypto
+      });
+    }
   }
 
   async function sendRoomRevision(member, entry) {
@@ -391,7 +515,7 @@ export async function createHostSessionController(options = {}) {
     await sendSnapshotAssets(entry.snapshot, member);
     if (!member.ready || roomState.members.get(member.actorId) !== member) return;
     sendMessage(member.channel, {
-      v: 1, kind: 'ROOM_REVISION', designId, sessionId: member.sessionId, actorId: hostActorId,
+      v: COLLABORATION_PROTOCOL_VERSION, kind: 'ROOM_REVISION', designId, sessionId: member.sessionId, actorId: hostActorId,
       revision: entry.revision, headHash: entry.headHash, snapshot: safeSnapshot(entry.snapshot)
     }, 'host-to-guest');
     member.deliveredRevision = entry.revision;
@@ -489,6 +613,11 @@ export async function createHostSessionController(options = {}) {
       actorId: guestActorId,
       sessionId: sessionId(),
       channel: transport.dataChannel,
+      assetChannel: transport.assetDataChannel || transport.dataChannel,
+      separateAssetChannel: Boolean(transport.assetDataChannel && transport.assetDataChannel !== transport.dataChannel),
+      assetReady: false,
+      assetReadyWaiters: new Map(),
+      assetBarrierWaiters: new Map(),
       close,
       ready: false,
       assetIds: new Set(),
@@ -498,13 +627,16 @@ export async function createHostSessionController(options = {}) {
       deliveredRevision: null,
       enqueuedRevision: null,
       fanoutQueue: Promise.resolve(),
+      lastPresenceSequence: 0,
+      presenceTokens: 30,
+      presenceUpdatedAt: now(),
       abortController: new AbortController()
     };
     roomState.members.set(guestActorId, member);
     assetReceiver = createCollaborationAssetReceiver({
-      channel: transport.dataChannel,
+      channel: member.assetChannel,
       direction: 'guest-to-host',
-      context: { v: 1, designId, sessionId: sessionId(), actorId: guestActorId },
+      context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: sessionId(), actorId: guestActorId },
       crypto,
       maxBytes: MAX_ASSET_BYTES
     });
@@ -514,6 +646,17 @@ export async function createHostSessionController(options = {}) {
     sendMessage(transport.dataChannel, {
       ...baseContext(), kind: 'WELCOME', hostActorId, revision: initialRevision, headHash: initialHeadHash
     }, 'host-to-guest');
+    if (member.separateAssetChannel) {
+      const readyWaiter = createSignalWaiter(
+        member.assetReadyWaiters,
+        'ready',
+        assetBarrierTimeoutMs,
+        member.abortController.signal,
+        'The guest did not prepare its image channel.'
+      );
+      try { await readyWaiter.promise; }
+      catch (error) { readyWaiter.cancel(error); throw error; }
+    }
     await sendSnapshotAssets(initialSnapshot, member);
     sendMessage(transport.dataChannel, {
       ...baseContext(), kind: 'SNAPSHOT', revision: initialRevision, headHash: initialHeadHash,
@@ -525,15 +668,69 @@ export async function createHostSessionController(options = {}) {
     emit('connected');
     await queuePendingRevisions(member);
     try { publishViewState(getViewState()); } catch { /* A failed initial view hint must not block the authenticated design snapshot. */ }
+    for (const presence of roomState.presences.values()) {
+      sendMessage(member.channel, {
+        v: COLLABORATION_PROTOCOL_VERSION, kind: 'PRESENCE', designId, sessionId: member.sessionId, actorId: hostActorId, ...presence
+      }, 'host-to-guest');
+    }
   }
 
-  async function receive(raw) {
+  function acceptPresence(message) {
+    const member = roomState.members.get(guestActorId);
+    if (!member || !member.ready || message.peerActorId !== guestActorId) {
+      rejectGuest(message, 'PERMISSION_DENIED');
+      return;
+    }
+    if (message.sequence <= member.lastPresenceSequence) return;
+    member.lastPresenceSequence = message.sequence;
+    const timestamp = Number(now());
+    const elapsed = Number.isFinite(timestamp) ? Math.max(0, timestamp - member.presenceUpdatedAt) : 0;
+    member.presenceTokens = Math.min(30, member.presenceTokens + elapsed * 0.03);
+    member.presenceUpdatedAt = Number.isFinite(timestamp) ? timestamp : member.presenceUpdatedAt;
+    if (member.presenceTokens < 1) return;
+    member.presenceTokens -= 1;
+    // A guest can locally change pages before its saved page operation has
+    // reached the host. Ignore that transient reference rather than tearing
+    // down a valid editing session.
+    if (!roomState.engine.hasPageId(message.pageId)) return;
+    const record = {
+      peerActorId: guestActorId,
+      sequence: message.sequence,
+      active: message.active,
+      pageId: message.pageId,
+      cursorX: message.cursorX,
+      cursorY: message.cursorY,
+      selectedIds: [...message.selectedIds]
+    };
+    if (record.active) roomState.presences.set(guestActorId, record);
+    else roomState.presences.delete(guestActorId);
+    try { onPresence({ ...record, selectedIds: [...record.selectedIds] }); } catch {}
+    for (const other of roomState.members.values()) {
+      if (other === member || !other.ready) continue;
+      sendMessage(other.channel, {
+        v: COLLABORATION_PROTOCOL_VERSION, kind: 'PRESENCE', designId, sessionId: other.sessionId, actorId: hostActorId, ...record
+      }, 'host-to-guest');
+    }
+  }
+
+  async function receive(raw, viaAssetChannel = false) {
     if (disposed) return;
     let message;
     const expectedContext = { designId, sessionId: sessionId(), ...(guestActorId ? { actorId: guestActorId } : {}) };
     try { message = decodeCollaborationMessage(raw, { direction: 'guest-to-host', context: expectedContext }); }
     catch { rejectGuest(null, 'INVALID_OPERATION'); return; }
     try {
+      if (message.kind === 'ASSET_BARRIER') {
+        if (!viaAssetChannel || !guestActorId || message.actorId !== guestActorId) {
+          rejectGuest(message, 'PERMISSION_DENIED');
+          return;
+        }
+        sendMessage(transport.dataChannel, {
+          v: COLLABORATION_PROTOCOL_VERSION, kind: 'ASSET_BARRIER_ACK', designId, sessionId: sessionId(), actorId: hostActorId,
+          barrierId: message.barrierId
+        }, 'host-to-guest');
+        return;
+      }
       if (message.kind.startsWith('ASSET_')) {
         if (!assetReceiver || message.actorId !== guestActorId) { rejectGuest(message, 'PERMISSION_DENIED'); return; }
         if (message.kind === 'ASSET_BEGIN') {
@@ -573,6 +770,7 @@ export async function createHostSessionController(options = {}) {
         rejectGuest(message, 'PERMISSION_DENIED'); return;
       }
       if (message.kind === 'FORK_NOTICE') { close('guest-forked'); return; }
+      if (message.kind === 'PRESENCE') { acceptPresence(message); return; }
       if (message.kind !== 'OPERATION') { rejectGuest(message, 'UNSUPPORTED_OPERATION'); return; }
       await locks.request(`tiny-image-star-share-edit:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
         await activeGrantOrClose();
@@ -591,6 +789,33 @@ export async function createHostSessionController(options = {}) {
     }
   }
 
+  function dispatchHostAssetSignal(raw) {
+    let message;
+    try {
+      message = decodeCollaborationMessage(raw, {
+        direction: 'guest-to-host',
+        context: { designId, sessionId: sessionId(), ...(guestActorId ? { actorId: guestActorId } : {}) }
+      });
+    } catch { return false; }
+    if (message.kind !== 'ASSET_READY' && message.kind !== 'ASSET_BARRIER_ACK') return false;
+    const member = roomState.members.get(message.actorId);
+    if (!member || !member.separateAssetChannel || member.sessionId !== sessionId()) {
+      close('protocol-error');
+      return true;
+    }
+    if (message.kind === 'ASSET_READY') {
+      if (member.assetReady) {
+        close('protocol-error');
+        return true;
+      }
+      member.assetReady = true;
+      resolveSignalWaiter(member.assetReadyWaiters, 'ready');
+    } else if (!resolveSignalWaiter(member.assetBarrierWaiters, message.barrierId)) {
+      close('protocol-error');
+    }
+    return true;
+  }
+
   try {
     transport = await createTransport({
       invite: grant.invite,
@@ -607,11 +832,21 @@ export async function createHostSessionController(options = {}) {
   const channel = transport.dataChannel;
   if (!channel) { close('failed'); throw new Error('The host WebRTC channel was not created.'); }
   removers.push(listen(channel, 'message', event => {
-    enqueueBounded(messageQueue, event?.data, receive,
+    if (dispatchHostAssetSignal(event?.data)) return;
+    enqueueBounded(messageQueue, event?.data, raw => receive(raw, false),
       () => close('overloaded'), () => close('failed'));
   }));
   removers.push(listen(channel, 'close', () => close('disconnected')));
   removers.push(listen(channel, 'error', () => close('failed')));
+  const assetChannel = transport.assetDataChannel;
+  if (assetChannel && assetChannel !== channel) {
+    removers.push(listen(assetChannel, 'message', event => {
+      enqueueBounded(assetMessageQueue, event?.data, raw => receive(raw, true),
+        () => close('asset-overloaded'), () => close('failed'));
+    }));
+    removers.push(listen(assetChannel, 'close', () => close('disconnected')));
+    removers.push(listen(assetChannel, 'error', () => close('failed')));
+  }
   emit('waiting-answer');
   const offerExpiry = transport.session?.expiresAt;
   const offerWaitMs = Number.isSafeInteger(offerExpiry) ? offerExpiry - now() : handshakeTimeoutMs;
@@ -677,6 +912,7 @@ export async function createHostSessionController(options = {}) {
       });
     },
     publishViewState,
+    publishPresence,
     close: () => close('closed')
   });
 }
@@ -697,6 +933,7 @@ export async function createGuestSessionController({
   onState = () => {},
   onSnapshot = () => {},
   onViewState = () => {},
+  onPresence = () => {},
   onFork = () => {},
   closeSession = () => {},
   canAdoptRoomRevision = () => true,
@@ -707,11 +944,15 @@ export async function createGuestSessionController({
   maxSessionAssetBytes = 512 * 1024 * 1024,
   maxSessionAssetCount = 256,
   maxPendingOperations = 256,
-  maxPendingBytes = 2 * 1024 * 1024
+  maxPendingBytes = 2 * 1024 * 1024,
+  assetBarrierTimeoutMs = 30_000
 } = {}) {
   assertId(expectedInvite?.designId, 'Design ID');
   if (typeof persistFork !== 'function') throw new TypeError('A local fork persistence callback is required.');
   sessionBudget({ maxSessionAssetBytes, maxSessionAssetCount });
+  if (!Number.isSafeInteger(assetBarrierTimeoutMs) || assetBarrierTimeoutMs < 1 || assetBarrierTimeoutMs > 120_000) {
+    throw new RangeError('The collaboration asset barrier timeout is invalid.');
+  }
   const designId = expectedInvite.designId;
   let state = 'preparing-answer';
   let transport;
@@ -721,6 +962,8 @@ export async function createGuestSessionController({
   let hostHeadHash = null;
   let lastViewState = null;
   let lastViewSequence = 0;
+  let presenceSequence = 0;
+  const lastPresenceSequences = new Map();
   let recovery = null;
   let lastSnapshot = null;
   let lastProposedSnapshot = null;
@@ -734,14 +977,17 @@ export async function createGuestSessionController({
   let outgoingAssetInProgress = false;
   let operationCounter = 0;
   const messageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
+  const assetMessageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
+  const assetBarrierWaiters = new Map();
+  const assetAbortController = new AbortController();
   const pendingByOp = new Map();
   const removers = [];
   const actorId = makeActorId(crypto, 'guest');
   const emit = next => { state = next; try { onState(next); } catch {} };
-  const context = () => ({ v: 1, designId, sessionId: transport.session.sessionId, actorId });
+  const context = () => ({ v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: transport.session.sessionId, actorId });
 
   async function freezeWithFork(reason) {
-    if (!recovery) { emit('disconnected-before-snapshot'); try { transport?.close?.(); } catch {} return null; }
+    if (!recovery) { emit('disconnected-before-snapshot'); assetAbortController.abort(); try { transport?.close?.(); } catch {} return null; }
     const result = reason?.kind === 'REJECT'
       ? await recovery.reject(reason)
       : await recovery.disconnect(reason);
@@ -752,17 +998,26 @@ export async function createGuestSessionController({
 
   function closeFromRecovery() {
     disposed = true;
+    assetAbortController.abort();
     assetReceiver?.cancel?.();
     for (const remove of removers.splice(0)) { try { remove(); } catch {} }
     try { transport?.close?.(); } catch {}
     try { closeSession({ designId, sessionId: transport?.session?.sessionId }); } catch {}
   }
 
-  async function receive(raw) {
+  async function receive(raw, viaAssetChannel = false) {
     if (disposed) return;
     const expectedContext = { designId, sessionId: transport.session.sessionId, ...(hostActorId ? { actorId: hostActorId } : {}) };
     const message = decodeCollaborationMessage(raw, { direction: 'host-to-guest', context: expectedContext });
     if (message.designId !== designId || message.sessionId !== transport.session.sessionId) throw new Error('A message belongs to a different live session.');
+    if (message.kind === 'ASSET_BARRIER') {
+      if (!viaAssetChannel || !hostActorId || message.actorId !== hostActorId) throw new Error('An asset barrier was not sent by the authenticated host.');
+      sendMessage(transport.dataChannel, {
+        v: COLLABORATION_PROTOCOL_VERSION, kind: 'ASSET_BARRIER_ACK', designId, sessionId: transport.session.sessionId, actorId,
+        barrierId: message.barrierId
+      }, 'guest-to-host');
+      return;
+    }
     if (message.kind.startsWith('ASSET_')) {
       if (!assetReceiver || message.actorId !== hostActorId) throw new Error('An asset arrived before the host identity was authenticated.');
       if (message.kind === 'ASSET_BEGIN') {
@@ -803,12 +1058,15 @@ export async function createGuestSessionController({
       hostRevision = message.revision;
       hostHeadHash = message.headHash;
       assetReceiver = createCollaborationAssetReceiver({
-        channel: transport.dataChannel,
+        channel: transport.assetDataChannel || transport.dataChannel,
         direction: 'host-to-guest',
-        context: { v: 1, designId, sessionId: transport.session.sessionId, actorId: hostActorId },
+        context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: transport.session.sessionId, actorId: hostActorId },
         crypto,
         maxBytes: MAX_ASSET_BYTES
       });
+      if (transport.assetDataChannel && transport.assetDataChannel !== transport.dataChannel) {
+        sendMessage(transport.dataChannel, { ...context(), kind: 'ASSET_READY' }, 'guest-to-host');
+      }
       return;
     }
     if (message.actorId !== hostActorId) throw new Error('A message was not sent by the authenticated host.');
@@ -822,6 +1080,27 @@ export async function createGuestSessionController({
         centerX: message.centerX, centerY: message.centerY
       };
       try { onViewState({ ...lastViewState }); } catch {}
+      return;
+    }
+    if (message.kind === 'PRESENCE') {
+      if (!recovery || !lastSnapshot) throw new Error('The host sent presence before the authenticated design snapshot.');
+      const lastSequence = lastPresenceSequences.get(message.peerActorId) || 0;
+      if (message.sequence <= lastSequence) return;
+      lastPresenceSequences.set(message.peerActorId, message.sequence);
+      // Presence may overtake a page-creating ROOM_REVISION on another peer's
+      // independent DataChannel. Ignore it until the replica catches up.
+      if (!lastSnapshot.pages.some(page => page.id === message.pageId)) return;
+      try {
+        onPresence({
+          peerActorId: message.peerActorId,
+          sequence: message.sequence,
+          active: message.active,
+          pageId: message.pageId,
+          cursorX: message.cursorX,
+          cursorY: message.cursorY,
+          selectedIds: [...message.selectedIds]
+        });
+      } catch {}
       return;
     }
     if (message.kind === 'SNAPSHOT') {
@@ -923,6 +1202,21 @@ export async function createGuestSessionController({
     throw new Error(`Unexpected host message ${message.kind}.`);
   }
 
+  function dispatchGuestAssetSignal(raw) {
+    let message;
+    try {
+      message = decodeCollaborationMessage(raw, {
+        direction: 'host-to-guest',
+        context: { designId, sessionId: transport?.session?.sessionId, ...(hostActorId ? { actorId: hostActorId } : {}) }
+      });
+    } catch { return false; }
+    if (message.kind !== 'ASSET_BARRIER_ACK') return false;
+    if (message.actorId !== hostActorId || !resolveSignalWaiter(assetBarrierWaiters, message.barrierId)) {
+      void freezeWithFork({ type: 'protocol-error', reason: 'unexpected-asset-barrier-ack' });
+    }
+    return true;
+  }
+
   try {
     transport = await createTransport({ offerCapsule, expectedInvite, iceServers, crypto, now, peerConnectionFactory });
   } catch (error) {
@@ -932,12 +1226,23 @@ export async function createGuestSessionController({
   const channel = transport.dataChannel;
   if (!channel) { transport.close(); emit('failed'); throw new Error('The guest WebRTC channel was not created.'); }
   removers.push(listen(channel, 'message', event => {
-    enqueueBounded(messageQueue, event?.data, receive,
+    if (dispatchGuestAssetSignal(event?.data)) return;
+    enqueueBounded(messageQueue, event?.data, raw => receive(raw, false),
       () => { void freezeWithFork({ type: 'protocol-error', reason: 'message-queue-limit' }); },
       error => { void freezeWithFork({ type: 'protocol-error', message: error.message }); });
   }));
   removers.push(listen(channel, 'close', () => { void freezeWithFork('transport-disconnected'); }));
   removers.push(listen(channel, 'error', () => { void freezeWithFork('transport-error'); }));
+  const assetChannel = transport.assetDataChannel;
+  if (assetChannel && assetChannel !== channel) {
+    removers.push(listen(assetChannel, 'message', event => {
+      enqueueBounded(assetMessageQueue, event?.data, raw => receive(raw, true),
+        () => { void freezeWithFork({ type: 'protocol-error', reason: 'asset-message-queue-limit' }); },
+        error => { void freezeWithFork({ type: 'protocol-error', message: error.message }); });
+    }));
+    removers.push(listen(assetChannel, 'close', () => { void freezeWithFork('transport-disconnected'); }));
+    removers.push(listen(assetChannel, 'error', () => { void freezeWithFork('transport-error'); }));
+  }
   emit('answer-ready');
   const ready = transport.waitForOpen().then(() => {
     if (disposed) throw new Error('The guest session was closed before it connected.');
@@ -957,6 +1262,21 @@ export async function createGuestSessionController({
     get answerCapsule() { return transport.answerCapsule; },
     get snapshot() { return lastSnapshot && safeSnapshot(lastSnapshot); },
     get viewState() { return lastViewState && { ...lastViewState }; },
+    publishPresence(presence) {
+      if (!recovery || !['connected', 'pending'].includes(state)) return false;
+      if (!presence || !lastSnapshot.pages.some(page => page.id === presence.pageId)) return false;
+      if (presenceSequence >= Number.MAX_SAFE_INTEGER) throw new Error('The local presence sequence limit was reached.');
+      const message = {
+        ...context(), kind: 'PRESENCE', peerActorId: actorId, sequence: ++presenceSequence,
+        active: presence.active !== false,
+        pageId: presence.pageId,
+        cursorX: presence.active === false ? null : (presence.cursorX ?? null),
+        cursorY: presence.active === false ? null : (presence.cursorY ?? null),
+        selectedIds: presence.active === false ? [] : [...new Set((presence.selectedIds || []).slice(0, 128))]
+      };
+      sendMessage(channel, message, 'guest-to-host');
+      return true;
+    },
     get revision() { return recovery?.state.acknowledgedRevision ?? hostRevision; },
     get fork() { return recovery?.state ?? null; },
     markLocalEditsPending() { return recovery?.markLocalEditsPending() ?? false; },
@@ -973,8 +1293,8 @@ export async function createGuestSessionController({
       }
       outgoingAssetInProgress = true;
       try {
-        const result = await sendAsset(channel, {
-          context: { v: 1, designId, sessionId: transport.session.sessionId, actorId },
+        const result = await sendAsset(assetChannel || channel, {
+          context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: transport.session.sessionId, actorId },
           direction: 'guest-to-host',
           transferId: makeActorId(crypto, 'transfer'),
           assetId: asset.assetId,
@@ -984,11 +1304,27 @@ export async function createGuestSessionController({
           bytes: asset.bytes,
           crypto
         });
+        if (assetChannel && assetChannel !== channel) {
+          await synchronizeAssetChannel({
+            assetChannel,
+            context: { v: COLLABORATION_PROTOCOL_VERSION, designId, sessionId: transport.session.sessionId, actorId },
+            direction: 'guest-to-host',
+            waiters: assetBarrierWaiters,
+            timeoutMs: assetBarrierTimeoutMs,
+            signal: assetAbortController.signal,
+            crypto
+          });
+        }
         outgoingAssetCount += 1;
         outgoingAssetBytes += asset.bytes.byteLength;
         if (asset.assetKind === 'image') receivedAssetIds.add(asset.assetId);
         try { onAssetTransfer({ phase: 'sent', ...result, totalBytes: outgoingAssetBytes, count: outgoingAssetCount }); } catch {}
         return result;
+      } catch (error) {
+        if (assetChannel && assetChannel !== channel) {
+          void freezeWithFork({ type: 'asset-transfer-failed', message: error?.message || 'Asset transfer failed.' });
+        }
+        throw error;
       } finally { outgoingAssetInProgress = false; }
     },
     proposeSnapshot(snapshot) {
@@ -1041,6 +1377,18 @@ export async function createGuestSessionController({
       try { onFork(result); } catch {}
       return result;
     },
-    close: () => { if (disposed) return; void freezeWithFork('user-closed'); }
+    close: () => {
+      if (disposed) return;
+      try {
+        if (recovery && ['connected', 'pending'].includes(state)) {
+          sendMessage(channel, {
+            ...context(), kind: 'PRESENCE', peerActorId: actorId, sequence: ++presenceSequence,
+            active: false, pageId: lastSnapshot?.activePageId || lastSnapshot?.pages?.[0]?.id,
+            cursorX: null, cursorY: null, selectedIds: []
+          }, 'guest-to-host');
+        }
+      } catch {}
+      void freezeWithFork('user-closed');
+    }
   });
 }

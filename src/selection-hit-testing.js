@@ -13,9 +13,13 @@ export function nearestScreenHandle(point, handles, radius) {
     const dx = point.x - handle.point.x;
     const dy = point.y - handle.point.y;
     const distanceSquared = dx * dx + dy * dy;
-    // Strict comparison keeps the first candidate on exact ties. Callers can
-    // therefore give resize handles stable priority over a nearby rotate handle.
-    if (distanceSquared <= radiusSquared && (!nearest || distanceSquared < nearest.distanceSquared)) {
+    // Resize is the safer action when a small target puts its resize and rotate
+    // handles at the same screen point. Keep candidate order for other exact
+    // ties so callers can still define priority between equivalent handles.
+    const resizeWinsTie = distanceSquared === nearest?.distanceSquared
+      && handle.kind === 'resize' && nearest.kind === 'rotate';
+    if (distanceSquared <= radiusSquared
+      && (!nearest || distanceSquared < nearest.distanceSquared || resizeWinsTie)) {
       nearest = { ...handle, distanceSquared };
     }
   }

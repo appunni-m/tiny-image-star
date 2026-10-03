@@ -1,4 +1,5 @@
-import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys } from './corner-radii.js';
+import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, roundedRectPathPoints } from './corner-radii.js';
+import { regularShapeVertices, roundedPolygonPathPoints } from './polygon-corners.js';
 import { fillStackForNode } from './fills.js';
 import { getNodeColor, getNodePropertyValue } from './model.js';
 import { strokeStackForNode } from './strokes.js';
@@ -6,6 +7,7 @@ import {
   vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkEdgeForPair,
   vectorNetworkVertexPoint, vectorPathContours, vectorSegmentPoints
 } from './vector-path.js';
+import { vectorNetworkFacePathPoints } from './vector-network-corners.js';
 
 const MAX_FLATTENED_PATH_POINTS = 12_000;
 const MAX_CUBIC_DEPTH = 8;
@@ -131,34 +133,10 @@ function flattenPathContour(node, contourIndex, contour) {
   return points;
 }
 
-function polygonForNode(node) {
-  const center = { x: node.width / 2, y: node.height / 2 };
-  if (node.type === 'star') {
-    const count = Math.max(3, Math.min(32, Number(node.points) || 5));
-    const radius = Math.min(Math.abs(node.width), Math.abs(node.height)) / 2;
-    const innerRadius = node.innerRadius ?? .48;
-    return Array.from({ length: count * 2 }, (_, index) => {
-      const angle = -Math.PI / 2 + index * Math.PI / count;
-      const distance = radius * (index % 2 ? innerRadius : 1);
-      return { x: center.x + Math.cos(angle) * distance, y: center.y + Math.sin(angle) * distance };
-    });
-  }
-  const count = Math.max(3, Math.min(32, Number(node.points) || 6));
-  return Array.from({ length: count }, (_, index) => {
-    const angle = -Math.PI / 2 + index * Math.PI * 2 / count;
-    return { x: center.x + Math.cos(angle) * Math.abs(node.width) / 2, y: center.y + Math.sin(angle) * Math.abs(node.height) / 2 };
-  });
-}
-
-function appendQuadratic(points, start, control, end, segments) {
-  for (let step = 1; step <= segments; step += 1) {
-    const t = step / segments;
-    const inverse = 1 - t;
-    points.push({
-      x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
-      y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y
-    });
-  }
+function polygonForNode(node, document) {
+  const vertices = regularShapeVertices(node.type, node.width, node.height, node.points, node.innerRadius ?? .48);
+  const radius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
+  return roundedPolygonPathPoints(vertices, node.vertexRadii || radius, node.cornerSmoothing || 0);
 }
 
 function roundedRectanglePolygon(node, document) {
@@ -167,21 +145,7 @@ function roundedRectanglePolygon(node, document) {
   const fallbackRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
   const rawRadii = node.cornerRadii || Object.fromEntries(cornerRadiusKeys.map(key => [key, Number(fallbackRadius) || 0]));
   const radii = clampCornerRadii(width, height, rawRadii);
-  const maxRadius = Math.max(...Object.values(radii));
-  const segments = Math.max(6, Math.min(256, Math.ceil(Math.sqrt(maxRadius) * 2)));
-  const points = [{ x: radii.topLeft, y: 0 }, { x: width - radii.topRight, y: 0 }];
-  appendQuadratic(points,
-    { x: width - radii.topRight, y: 0 }, { x: width, y: 0 }, { x: width, y: radii.topRight }, segments);
-  points.push({ x: width, y: height - radii.bottomRight });
-  appendQuadratic(points,
-    { x: width, y: height - radii.bottomRight }, { x: width, y: height }, { x: width - radii.bottomRight, y: height }, segments);
-  points.push({ x: radii.bottomLeft, y: height });
-  appendQuadratic(points,
-    { x: radii.bottomLeft, y: height }, { x: 0, y: height }, { x: 0, y: height - radii.bottomLeft }, segments);
-  points.push({ x: 0, y: radii.topLeft });
-  appendQuadratic(points,
-    { x: 0, y: radii.topLeft }, { x: 0, y: 0 }, { x: radii.topLeft, y: 0 }, segments);
-  return points;
+  return roundedRectPathPoints(width, height, radii, node.cornerSmoothing || 0);
 }
 
 function containsRoundedRectangle(node, point, document) {
@@ -189,7 +153,7 @@ function containsRoundedRectangle(node, point, document) {
   const radii = typeof rawRadii === 'number'
     ? Object.fromEntries(cornerRadiusKeys.map(key => [key, rawRadii]))
     : rawRadii;
-  return containsPointInRoundedRect(point.x, point.y, node.width, node.height, radii);
+  return containsPointInRoundedRect(point.x, point.y, node.width, node.height, radii, node.cornerSmoothing || 0);
 }
 
 function lineSegmentForNode(node) {
@@ -212,6 +176,8 @@ function pathContainsPoint(node, point) {
 function networkPolygons(node) {
   const edgeByPair = vectorNetworkEdgePairIndex(node);
   return (node.faces || []).map(face => {
+    const rounded = vectorNetworkFacePathPoints(node, face, { x: 0, y: 0 });
+    if (rounded) return rounded;
     const vertices = [];
     for (let index = 0; index < face.vertexIds.length; index += 1) {
       const from = face.vertexIds[index];
@@ -232,15 +198,32 @@ function networkPolygons(node) {
 }
 
 function networkStrokePolylines(node) {
-  return (node.edges || []).map(edge => {
+  const edgeByPair = vectorNetworkEdgePairIndex(node);
+  const roundedEdgeIds = new Set();
+  const polylines = [];
+  for (const face of node.faces || []) {
+    const vertices = vectorNetworkFacePathPoints(node, face, { x: 0, y: 0 });
+    if (!vertices) continue;
+    const ids = face.vertexIds || [];
+    for (let index = 0; index < ids.length; index += 1) {
+      const edge = vectorNetworkEdgeForPair(edgeByPair, ids[index], ids[(index + 1) % ids.length]);
+      if (edge) roundedEdgeIds.add(edge.id);
+    }
+    // Keep the closing segment explicit because stroke hit testing treats
+    // individual network edges as open polylines.
+    polylines.push([...vertices, vertices[0]]);
+  }
+  for (const edge of node.edges || []) {
+    if (roundedEdgeIds.has(edge.id)) continue;
     const points = vectorNetworkEdgePoints(node, edge.id, { x: 0, y: 0 });
-    if (!points) return [];
+    if (!points) continue;
     const vertices = [points[0]];
     const isCurve = [1, 2].some(control => Math.hypot(points[control].x - points[control - 1].x, points[control].y - points[control - 1].y) > 1e-9);
     if (isCurve) flattenCubic(points, vertices);
     else vertices.push(points[3]);
-    return vertices;
-  });
+    polylines.push(vertices);
+  }
+  return polylines;
 }
 
 function inVisibleFill(node, point, document) {
@@ -261,7 +244,7 @@ function inVisibleFill(node, point, document) {
     if (!radiusX || !radiusY) return false;
     return ((point.x - node.width / 2) / radiusX) ** 2 + ((point.y - node.height / 2) / radiusY) ** 2 <= 1;
   }
-  if (node.type === 'star' || node.type === 'polygon') return pointInPolygon(point, polygonForNode(node));
+  if (node.type === 'star' || node.type === 'polygon') return pointInPolygon(point, polygonForNode(node, document));
   if (node.type === 'path') return pathContainsPoint(node, point);
   if (node.type === 'network') {
     const baseFillVisible = resolvedFills(node, document).some(fill => fill.visible !== false && Number(fill.opacity ?? 1) > 0
@@ -288,7 +271,7 @@ function inVisibleStroke(node, point, tolerance, document) {
     const normalized = Math.hypot((point.x - node.width / 2) / rx, (point.y - node.height / 2) / ry);
     return Math.abs(normalized - 1) * Math.min(rx, ry) <= threshold;
   }
-  if (node.type === 'star' || node.type === 'polygon') return distanceToPolyline(point, polygonForNode(node), true) <= threshold;
+  if (node.type === 'star' || node.type === 'polygon') return distanceToPolyline(point, polygonForNode(node, document), true) <= threshold;
   if (node.type === 'path') return vectorPathContours(node).some((contour, index) => (
     distanceToPolyline(point, flattenPathContour(node, index, contour), contour.closed) <= threshold
   ));
@@ -307,7 +290,8 @@ export function hitTestVisibleGeometry(node, localPoint, { tolerance = 4, docume
     if (!inside) return false;
     return Math.min(localPoint.x, localPoint.y, node.width - localPoint.x, node.height - localPoint.y) <= Math.max(0, tolerance);
   }
-  if (['image', 'text'].includes(node.type)) {
+  if (node.type === 'image') return containsRoundedRectangle(node, localPoint, document);
+  if (node.type === 'text') {
     return localPoint.x >= 0 && localPoint.y >= 0 && localPoint.x <= node.width && localPoint.y <= node.height;
   }
   const maximumStroke = visibleStrokeWidth(node, document) / 2 + Math.max(0, tolerance);

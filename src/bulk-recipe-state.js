@@ -3,6 +3,42 @@ export function isImageRecipeBatchActive(batch) {
   return Boolean(batch && (!batch.done || batch.inflight > 0));
 }
 
+const failedTargetIndexes = new WeakMap();
+
+function rememberFailedTarget(batch, targetId) {
+  if (typeof targetId !== 'string' || !targetId || !Array.isArray(batch.failedTargets)) return;
+  let targetIndex = failedTargetIndexes.get(batch);
+  if (!targetIndex || targetIndex.size !== batch.failedTargets.length) {
+    targetIndex = new Set(batch.failedTargets);
+    failedTargetIndexes.set(batch, targetIndex);
+  }
+  if (targetIndex.has(targetId)) return;
+  targetIndex.add(targetId);
+  batch.failedTargets.push(targetId);
+}
+
+/** Fence rollback and preview restoration even when a target failed before its render was queued. */
+export function imageRecipeRenderIsCurrent(batch, targetId, initialVersion, currentVersion) {
+  if (!batch?.renderVersions?.has(targetId)) return Object.is(initialVersion, currentVersion);
+  return Object.is(batch.renderVersions.get(targetId), currentVersion);
+}
+
+/**
+ * Return only currently-owned renders whose version still belongs to this
+ * recipe. Cancellation work stays proportional to in-flight concurrency,
+ * rather than scanning every target already admitted in a large batch.
+ */
+export function activeImageRecipeRenderTargets(batch, currentRenderVersion) {
+  if (typeof currentRenderVersion !== 'function') throw new TypeError('Recipe render cancellation needs a current-version lookup.');
+  if (!(batch?.activeControllers instanceof Map) || !(batch.renderVersions instanceof Map)) return [];
+  const targets = [];
+  for (const targetId of batch.activeControllers.keys()) {
+    const recipeVersion = batch.renderVersions.get(targetId);
+    if (recipeVersion != null && recipeVersion === currentRenderVersion(targetId)) targets.push(targetId);
+  }
+  return targets;
+}
+
 /**
  * Restore a target's original image, then validate that the admitted batch and
  * exact editable layer are still current before allowing any recipe mutation.
@@ -43,6 +79,41 @@ function elapsedActiveMilliseconds(batch, now) {
   return elapsed + Math.max(0, monotonicNow(now) - batch.activeSince);
 }
 
+function lowerBound(values, start, value) {
+  let low = start;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function upperBound(values, start, value) {
+  let low = start;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] <= value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function trimTimingCompletions(batch, cutoff) {
+  const times = batch.timingCompletionTimes;
+  let head = Number.isSafeInteger(batch.timingCompletionHead) ? batch.timingCompletionHead : 0;
+  while (head < times.length && times[head] < cutoff) head += 1;
+  batch.timingCompletionHead = head;
+  // Keep pruning amortized O(1): compact only after a substantial prefix has
+  // become dead, rather than copying the rolling window on every image.
+  if (head >= 1024 && head * 2 >= times.length) {
+    times.splice(0, head);
+    batch.timingCompletionHead = 0;
+  }
+}
+
 /** Start a fresh active-time clock for a new recipe run or targeted retry. */
 export function startImageRecipeBatchClock(batch, now) {
   if (!batch) return false;
@@ -50,6 +121,7 @@ export function startImageRecipeBatchClock(batch, now) {
   batch.activeSince = monotonicNow(now);
   batch.timingCompletions = 0;
   batch.timingCompletionTimes = [];
+  batch.timingCompletionHead = 0;
   return true;
 }
 
@@ -82,10 +154,16 @@ export function imageRecipeBatchTiming(batch, now) {
   const completionTimes = Array.isArray(batch.timingCompletionTimes) ? batch.timingCompletionTimes : [];
   const recentWindowMs = 5000;
   const recentStart = Math.max(0, elapsedMs - recentWindowMs);
-  const recentCompletions = completionTimes.filter(at => at >= recentStart && at <= elapsedMs);
-  const recentImagesPerSecond = recentCompletions.length
-    && elapsedMs - recentCompletions.at(-1) < recentWindowMs
-    ? recentCompletions.length / (Math.max(1000, Math.min(recentWindowMs, elapsedMs - recentStart)) / 1000)
+  const completionHead = Array.isArray(batch.timingCompletionTimes) && Number.isSafeInteger(batch.timingCompletionHead)
+    ? Math.min(batch.timingCompletionHead, completionTimes.length)
+    : 0;
+  const recentFirst = lowerBound(completionTimes, completionHead, recentStart);
+  const recentEnd = upperBound(completionTimes, recentFirst, elapsedMs);
+  const recentCount = recentEnd - recentFirst;
+  const lastCompletion = recentCount ? completionTimes[recentEnd - 1] : -Infinity;
+  const recentImagesPerSecond = recentCount
+    && elapsedMs - lastCompletion < recentWindowMs
+    ? recentCount / (Math.max(1000, Math.min(recentWindowMs, elapsedMs - recentStart)) / 1000)
     : 0;
   const etaSeconds = !batch.cancelled && imagesPerSecond > 0 && remaining > 0 ? remaining / imagesPerSecond : null;
   return { elapsedMs, imagesPerSecond, recentImagesPerSecond, remaining, etaSeconds };
@@ -154,6 +232,14 @@ export function completeImageRecipeBatchIfDrained(batch, now) {
   if (!batch.cancelled && batch.next < batch.targets.length) return false;
   batch.done = true;
   pauseImageRecipeBatchClock(batch, now);
+  // These per-target maps only fence or restore in-flight work. A completed
+  // batch keeps its target IDs and failed IDs for recovery/retry, but retaining
+  // a render-version/status entry for every image needlessly pins O(batch
+  // size) memory while the result bar remains open (especially on mobile).
+  batch.activeControllers?.clear?.();
+  batch.renderVersions?.clear?.();
+  batch.previousStatuses?.clear?.();
+  batch.restorePreviews?.clear?.();
   return true;
 }
 
@@ -163,16 +249,17 @@ export function recordImageRecipeBatchTarget(batch, { failed = false, superseded
   batch.completed += 1;
   if (Number.isFinite(batch.activeSince) && !batch.paused) batch.timingCompletions = (Number(batch.timingCompletions) || 0) + 1;
   if (Number.isFinite(batch.activeSince) && !batch.paused) {
-    const elapsedMs = elapsedActiveMilliseconds(batch, now);
     batch.timingCompletionTimes ||= [];
+    const elapsedMs = Math.max(
+      elapsedActiveMilliseconds(batch, now),
+      batch.timingCompletionTimes.at(-1) || 0,
+    );
     batch.timingCompletionTimes.push(elapsedMs);
-    batch.timingCompletionTimes = batch.timingCompletionTimes.filter(at => elapsedMs - at < 5000);
+    trimTimingCompletions(batch, Math.max(0, elapsedMs - 5000));
   }
   if (failed) {
     batch.failed += 1;
-    if (typeof targetId === 'string' && targetId && Array.isArray(batch.failedTargets) && !batch.failedTargets.includes(targetId)) {
-      batch.failedTargets.push(targetId);
-    }
+    rememberFailedTarget(batch, targetId);
   }
   if (superseded) batch.superseded = (batch.superseded || 0) + 1;
   if (skipped) batch.skipped = (batch.skipped || 0) + 1;

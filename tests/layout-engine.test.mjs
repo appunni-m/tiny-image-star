@@ -192,6 +192,25 @@ test('grid fill tracks honor fixed and content-based minimum bounds before distr
     'after the minimum floors are satisfied, remaining space is distributed by fill weight');
 });
 
+test('grid fill tracks preserve fractional minimum bounds when another track consumes extra space', () => {
+  const frame = createNode('frame', {
+    width: 300, height: 100,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 2, rows: 1, padding: 0, columnGap: 0,
+      columnTracks: [
+        { mode: 'fill', weight: 1, minWeight: 0.5 },
+        { mode: 'fill', weight: 1, minSize: 250 }
+      ] })
+  });
+  const flexibleFloor = createNode('rectangle', { width: 10, height: 10, layoutSizingX: 'fill', gridCell: { row: 1, column: 1 } });
+  const fixedFloor = createNode('rectangle', { width: 10, height: 10, layoutSizingX: 'fill', gridCell: { row: 1, column: 2 } });
+  frame.children.push(flexibleFloor, fixedFloor);
+
+  applyAutoLayout(frame);
+
+  assert.deepEqual([flexibleFloor.x, flexibleFloor.width, fixedFloor.x, fixedFloor.width], [0, 75, 75, 250],
+    'the fractional minimum uses the unconstrained maximum fr unit and may force grid overflow');
+});
+
 test('grid track measurements match the laid out fixed, hug, and fill columns', () => {
   const frame = createNode('frame', {
     width: 400, height: 140,
@@ -393,10 +412,11 @@ test('grid auto layout and cell placement validate and survive document reload',
 test('grid track sizing validates, serializes, and remains optional for older documents', () => {
   const document = createDocument();
   const frame = createNode('frame', { autoLayout: createAutoLayout({ axis: 'grid', columns: 3, rows: 2,
-    columnTracks: [{ mode: 'fixed', value: 96, minSize: 72 }, { mode: 'hug' }, { mode: 'fill', weight: 1.5 }],
+    columnTracks: [{ mode: 'fixed', value: 96, minSize: 72 }, { mode: 'hug' }, { mode: 'fill', weight: 1.5, minWeight: 0.5 }],
     rowTracks: [{ mode: 'hug' }, { mode: 'fill', weight: 2, minContent: true }] }) });
   addNode(document, frame);
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  assert.equal(parseDocument(serializeDocument(document)).pages[0].children[0].autoLayout.columnTracks[2].minWeight, 0.5);
 
   const invalidMode = structuredClone(document);
   invalidMode.pages[0].children[0].autoLayout.columnTracks[0].mode = 'content';
@@ -409,6 +429,14 @@ test('grid track sizing validates, serializes, and remains optional for older do
   const invalidWeight = structuredClone(document);
   invalidWeight.pages[0].children[0].autoLayout.rowTracks[1].weight = 0;
   assert.throws(() => validateDocument(invalidWeight), /Invalid auto layout/);
+
+  const invalidMinimumWeight = structuredClone(document);
+  invalidMinimumWeight.pages[0].children[0].autoLayout.rowTracks[1].minWeight = 3;
+  assert.throws(() => validateDocument(invalidMinimumWeight), /Invalid auto layout/);
+
+  const invalidFlexibleMinimumMode = structuredClone(document);
+  invalidFlexibleMinimumMode.pages[0].children[0].autoLayout.columnTracks[0].minWeight = 0.5;
+  assert.throws(() => validateDocument(invalidFlexibleMinimumMode), /Invalid auto layout/);
 
   const invalidMinimum = structuredClone(document);
   invalidMinimum.pages[0].children[0].autoLayout.columnTracks[0].minSize = -1;

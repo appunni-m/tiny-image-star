@@ -17,6 +17,7 @@ function number(value) {
 }
 
 function borderRadiusCss(document, node) {
+  if (node.type === 'polygon' || node.type === 'star') return null;
   if (node.cornerRadii) {
     const values = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'].map(side => Math.max(0, Number(node.cornerRadii[side]) || 0));
     if (values.some(Boolean)) return values.map(value => `${number(value)}px`).join(' ');
@@ -98,6 +99,11 @@ function generatedRootRotation(document, entry) {
 function autoLayoutDeclarations(layout, children = []) {
   if (!layout || typeof layout !== 'object') return [];
   if (layout.axis === 'grid') {
+    const hasFractionalMinimum = ['columnTracks', 'rowTracks'].some(axis =>
+      Array.isArray(layout[axis]) && layout[axis].some(track => Number.isFinite(track?.minWeight)));
+    const trackBoundWarning = hasFractionalMinimum
+      ? 'Fractional track minimums are preserved in layer JSON and Tiny Image Star local layout; CSS Grid cannot express these lower bounds directly.'
+      : null;
     const trackCss = (track, fallback = 'fill') => {
       const mode = ['fixed', 'hug', 'fill'].includes(track?.mode) ? track.mode : fallback;
       const maximum = mode === 'fixed' ? `${number(track.value)}px`
@@ -124,6 +130,7 @@ function autoLayoutDeclarations(layout, children = []) {
       : null;
     const padding = layout.padding || {};
     return [
+      ...(trackBoundWarning ? [`/* ${trackBoundWarning} */`] : []),
       'display: grid;',
       columns ? `grid-template-columns: ${columns.join(' ')};` : `grid-template-columns: repeat(${columnCount}, minmax(0, 1fr));`,
       ...(rows ? [`grid-template-rows: ${rows.join(' ')};`] : ['grid-auto-rows: max-content;']),
@@ -260,6 +267,12 @@ function cssForEntry(document, entry) {
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
       `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`
     );
+    if (node.textTruncation === 'ending') {
+      declarations.push('overflow: hidden;');
+      if (Number.isSafeInteger(node.maxLines) && node.maxLines > 0) {
+        declarations.push('display: -webkit-box;', '-webkit-box-orient: vertical;', `-webkit-line-clamp: ${node.maxLines};`);
+      }
+    }
     const paragraphClass = `${cssClass(node)}__paragraph`;
     additionalRules.push(
       `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
@@ -281,6 +294,7 @@ function cssForEntry(document, entry) {
     declarations.push(`object-fit: ${node.fit === 'contain' ? 'contain' : 'cover'};`);
     const radius = borderRadiusCss(document, node);
     if (radius) declarations.push(`border-radius: ${radius};`);
+    if (node.cornerSmoothing > 0) declarations.push(`/* Corner smoothing ${number(node.cornerSmoothing * 100)}% is retained in Tiny Image Star layer JSON; CSS border-radius cannot represent the same curve. */`);
   } else {
     const fill = getNodeColor(document, node, 'fill');
     const background = cssColor(fill, node.fillOpacity ?? 1);
@@ -309,6 +323,10 @@ function cssForEntry(document, entry) {
     if (Array.isArray(node.strokes) && strokeLayers.length > 1) declarations.push(`/* ${strokeLayers.length} ordered strokes are preserved in layer JSON; CSS border reflects only the first. */`);
     const radius = borderRadiusCss(document, node);
     if (radius) declarations.push(`border-radius: ${radius};`);
+    if ((node.type === 'polygon' || node.type === 'star') && Number(getNodePropertyValue(document, node, 'radius')) > 0) {
+      declarations.push(`/* Rounded vertices (${number(getNodePropertyValue(document, node, 'radius'))}px) are retained in Tiny Image Star layer JSON. */`);
+    }
+    if (node.cornerSmoothing > 0) declarations.push(`/* Corner smoothing ${number(node.cornerSmoothing * 100)}% is retained in Tiny Image Star layer JSON; CSS border-radius cannot represent the same curve. */`);
   }
 
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');
@@ -517,6 +535,21 @@ function summaryForEntry(document, entry) {
   if (node.imageFill) summary.imageFill = node.imageFill;
   const radius = borderRadiusCss(document, node);
   if (radius) summary.borderRadius = radius;
+  if (node.type === 'polygon' || node.type === 'star') {
+    if (Array.isArray(node.vertexRadii)) summary.vertexRadii = node.vertexRadii.map(value => `${number(value)}px`);
+    else {
+      const vertexRadius = Number(getNodePropertyValue(document, node, 'radius')) || 0;
+      if (vertexRadius) summary.cornerRadius = `${number(vertexRadius)}px`;
+    }
+  }
+  if (node.type === 'network' && Array.isArray(node.vertices)) {
+    const vertexCornerRadii = node.vertices
+      .map((vertex, index) => ({ id: vertex.id, index, radius: Number(vertex.cornerRadius) || 0 }))
+      .filter(vertex => vertex.radius > 0)
+      .map(vertex => ({ id: vertex.id, index: vertex.index, radius: `${number(vertex.radius)}px` }));
+    if (vertexCornerRadii.length) summary.vertexCornerRadii = vertexCornerRadii;
+  }
+  if (node.cornerSmoothing > 0) summary.cornerSmoothing = node.cornerSmoothing;
   if (node.blendMode && node.blendMode !== 'normal') summary.blendMode = node.blendMode;
   const strokes = strokeStackForNode(node).map((stroke, index) => resolvedStroke(document, node, stroke, index));
   if (strokes.length) {
@@ -541,7 +574,9 @@ function summaryForEntry(document, entry) {
       align: node.align,
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
-      textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'
+      textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none',
+      ...(node.textTruncation === 'ending' ? { textTruncation: node.textTruncation } : {}),
+      ...(Number.isSafeInteger(node.maxLines) && node.maxLines > 0 ? { maxLines: node.maxLines } : {})
     };
   }
   if (node.type === 'image') summary.image = { fileName: node.fileName, fit: node.fit, sourceWidth: node.sourceWidth, sourceHeight: node.sourceHeight };

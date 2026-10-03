@@ -1,4 +1,5 @@
-const PROTOCOL_VERSION = 1;
+export const COLLABORATION_PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = COLLABORATION_PROTOCOL_VERSION;
 const MESSAGE_PREFIX = 'tiny-image-star-collaboration';
 const UTF8 = new TextEncoder();
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -7,8 +8,9 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MESSAGE_KINDS = new Set([
-  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION', 'VIEW_STATE', 'FORK_NOTICE',
-  'PING', 'PONG', 'ASSET_BEGIN', 'ASSET_CHUNK', 'ASSET_END'
+  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION', 'VIEW_STATE', 'PRESENCE', 'FORK_NOTICE',
+  'PING', 'PONG', 'ASSET_READY', 'ASSET_BARRIER', 'ASSET_BARRIER_ACK',
+  'ASSET_BEGIN', 'ASSET_CHUNK', 'ASSET_END'
 ]);
 const REJECTION_CODES = new Set([
   'STALE_REVISION', 'INVALID_OPERATION', 'ASSET_MISSING', 'PERMISSION_DENIED',
@@ -36,15 +38,19 @@ const MESSAGE_FIELDS = {
   SNAPSHOT: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'revision', 'headHash', 'snapshot'],
   ROOM_REVISION: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'revision', 'headHash', 'snapshot'],
   VIEW_STATE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'sequence', 'pageId', 'zoom', 'centerX', 'centerY'],
+  PRESENCE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'peerActorId', 'sequence', 'active', 'pageId', 'cursorX', 'cursorY', 'selectedIds'],
   FORK_NOTICE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'baseRevision', 'forkId', 'reason'],
   PING: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'nonce', 'sentAt'],
   PONG: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'nonce', 'sentAt'],
+  ASSET_READY: ['v', 'kind', 'designId', 'sessionId', 'actorId'],
+  ASSET_BARRIER: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'barrierId'],
+  ASSET_BARRIER_ACK: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'barrierId'],
   ASSET_BEGIN: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'flow', 'transferId', 'assetId', 'assetKind', 'mimeType', 'fontMetadata', 'byteLength', 'chunkCount', 'sha256'],
   ASSET_CHUNK: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'flow', 'transferId', 'assetKind', 'index', 'bytes'],
   ASSET_END: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'flow', 'transferId', 'assetId', 'assetKind', 'byteLength', 'sha256']
 };
 
-const GUEST_TO_HOST = new Set(['HELLO', 'OPERATION', 'FORK_NOTICE']);
+const GUEST_TO_HOST = new Set(['HELLO', 'OPERATION', 'FORK_NOTICE', 'ASSET_READY']);
 const HOST_TO_GUEST = new Set(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION', 'VIEW_STATE']);
 
 /** A stable, machine-readable failure from the collaboration wire contract. */
@@ -334,6 +340,28 @@ function validateMessageFields(message) {
         fail('INVALID_MESSAGE', 'View-state center coordinates are out of range.');
       }
       break;
+    case 'PRESENCE': {
+      assertId(message.peerActorId, 'Presence peer ID');
+      assertFiniteInteger(message.sequence, 1, Number.MAX_SAFE_INTEGER, 'Presence sequence');
+      assertId(message.pageId, 'Presence page ID');
+      if (typeof message.active !== 'boolean') fail('INVALID_MESSAGE', 'Presence activity must be a boolean.');
+      const cursorHidden = message.cursorX === null && message.cursorY === null;
+      const cursorVisible = Number.isFinite(message.cursorX) && Math.abs(message.cursorX) <= 10_000_000
+        && Number.isFinite(message.cursorY) && Math.abs(message.cursorY) <= 10_000_000;
+      if (!cursorHidden && !cursorVisible) fail('INVALID_MESSAGE', 'Presence cursor coordinates must both be finite or both be null.');
+      if (!Array.isArray(message.selectedIds) || Object.getPrototypeOf(message.selectedIds) !== Array.prototype
+        || message.selectedIds.length > 128) fail('LIMIT_EXCEEDED', 'Presence selection must contain at most 128 layer IDs.');
+      const uniqueIds = new Set();
+      for (const id of message.selectedIds) {
+        assertId(id, 'Presence selected layer ID');
+        if (uniqueIds.has(id)) fail('INVALID_MESSAGE', 'Presence selection cannot contain duplicate layer IDs.');
+        uniqueIds.add(id);
+      }
+      if (!message.active && (!cursorHidden || message.selectedIds.length)) {
+        fail('INVALID_MESSAGE', 'Inactive presence cannot include a cursor or selection.');
+      }
+      break;
+    }
     case 'FORK_NOTICE':
       assertRevision(message.baseRevision, 'Fork base revision');
       assertId(message.forkId, 'Fork ID');
@@ -343,6 +371,12 @@ function validateMessageFields(message) {
     case 'PONG':
       assertId(message.nonce, 'Ping nonce');
       if (!Number.isSafeInteger(message.sentAt) || message.sentAt < 0) fail('INVALID_MESSAGE', 'Ping timestamp is invalid.');
+      break;
+    case 'ASSET_READY':
+      break;
+    case 'ASSET_BARRIER':
+    case 'ASSET_BARRIER_ACK':
+      assertId(message.barrierId, 'Asset barrier ID');
       break;
     case 'ASSET_BEGIN': {
       assertFlow(message.flow);

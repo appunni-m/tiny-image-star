@@ -59,6 +59,7 @@ const manifest = {
       maxFontBytes: 20 * 1024 * 1024,
       maxRetainedFontBytes: 64 * 1024 * 1024,
       maxCachedFaces: 4,
+      maxFontCoverageCodepoints: 300_000,
       maxTextCodeUnits: 32_768,
       maxGlyphsPerShape: 65_536,
       maxOutlinePathCharacters: 8 * 1024 * 1024,

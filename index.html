@@ -123,7 +123,7 @@
             <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
           </div>
           <div class="bottom-toolbar" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Design tools. Use the arrow keys to move between tools, then Enter or Space to select.">
-            <button class="tool-button is-selected" data-tool="select" aria-pressed="true" tabindex="0" title="Move / Select (V)" aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button is-selected" data-tool="select" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
             <button class="tool-button" data-tool="lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
             <button class="tool-button" data-tool="frame" aria-pressed="false" tabindex="-1" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
             <button class="tool-button" data-tool="slice" aria-pressed="false" tabindex="-1" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
@@ -143,7 +143,7 @@
             <span class="toolbar-separator"></span>
             <button class="tool-button hand-tool" data-tool="hand" aria-pressed="false" tabindex="-1" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button" data-tool="comment" aria-pressed="false" tabindex="-1" title="Comment (C) · click objects to select; Alt/Option-click to comment" aria-label="Comment · click objects to select; Alt/Option-click or use the layer menu to comment"><span data-icon="comment"></span><kbd>C</kbd></button>
+            <button class="tool-button" data-tool="comment" aria-pressed="false" tabindex="-1" title="Comment (C) · click objects to select; click or tap the same spot again to choose a nested frame or component; click empty canvas to comment; drag to pan" aria-label="Comment · click objects to select; click or tap the same spot again to choose a nested frame or component; click empty canvas to comment or drag to pan; Alt/Option-click or use the layer menu to comment"><span data-icon="comment"></span><kbd>C</kbd></button>
           </div>
           <div class="canvas-status"><span id="selection-status" role="status" aria-live="polite" aria-atomic="true">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
         </main>
@@ -183,6 +183,15 @@
           <div class="recipe-recovery-card"><strong id="recipe-recovery-recipe">Image recipe</strong><span id="recipe-recovery-copy"></span></div>
           <p class="recipe-recovery-status" id="recipe-recovery-status" role="status" aria-live="polite"></p>
           <div class="dialog-actions"><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
+        </section>
+      </dialog>
+
+      <dialog class="modal workspace-onboarding-dialog" id="workspace-onboarding-dialog" aria-labelledby="workspace-onboarding-title">
+        <section class="workspace-onboarding-content">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL WORKSPACE</span><h2 id="workspace-onboarding-title">Choose where your designs live</h2></div></div>
+          <p class="modal-copy">Select a folder before editing. Tiny Image Star saves each design and its pages inside that workspace, and verifies existing browser designs before moving them.</p>
+          <p class="workspace-onboarding-status" id="workspace-onboarding-status" role="status" aria-live="polite"></p>
+          <div class="dialog-actions"><button class="secondary-button" id="workspace-onboarding-browser-fallback" type="button" hidden>Use browser storage</button><button class="primary-button" id="workspace-onboarding-choose-folder" type="button">Choose workspace folder</button></div>
         </section>
       </dialog>
 
@@ -240,6 +249,17 @@
           <div class="slot-picker-count" id="component-slot-count" aria-live="polite"></div>
           <div class="slot-picker-list" id="component-slot-candidates" role="group" aria-label="Layers to copy into this component slot"></div>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" value="apply">Apply to slot</button></div>
+        </form>
+      </dialog>
+
+      <dialog class="modal component-exposure-dialog" id="component-exposure-dialog" aria-labelledby="component-exposure-dialog-title">
+        <form method="dialog" id="component-exposure-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">COMPONENT PROPERTIES</span><h2 id="component-exposure-dialog-title">Expose nested properties</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <p class="modal-copy">Select nested instances to show all of their component properties beside the parent instance controls.</p>
+          <div class="slot-picker-count" id="component-exposure-count" aria-live="polite"></div>
+          <div class="component-exposure-status" id="component-exposure-status" aria-live="polite"></div>
+          <div class="component-exposure-options" id="component-exposure-options" role="group" aria-label="Nested component instances"></div>
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="component-exposure-apply" value="apply">Apply</button></div>
         </form>
       </dialog>
 
@@ -324,7 +344,12 @@
       </dialog>
 
       <dialog class="presentation-dialog" id="present-dialog" aria-label="Prototype presentation">
-        <canvas id="present-canvas" aria-label="Prototype preview"></canvas>
+        <div id="present-scene">
+          <canvas id="present-canvas" aria-label="Prototype preview"></canvas>
+        </div>
+        <canvas id="present-backdrop-canvas" aria-hidden="true"></canvas>
+        <canvas id="present-overlay-canvas" aria-hidden="true"></canvas>
+        <canvas id="present-transition-canvas" aria-hidden="true"></canvas>
         <div class="presentation-toolbar">
           <button class="presentation-control" id="present-back" type="button" aria-label="Back to previous frame" title="Back" disabled>←</button>
           <button class="presentation-control" id="present-restart" type="button" aria-label="Restart presentation" title="Restart at the selected flow">↻</button>

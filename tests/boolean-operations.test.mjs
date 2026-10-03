@@ -557,6 +557,22 @@ test('independent rounded-rectangle corners bake as editable cubic curves', () =
   }
 });
 
+test('smoothed rounded rectangles keep their authored curve when Boolean-baked', () => {
+  const document = createDocument();
+  const rounded = createNode('rectangle', {
+    x: 10, y: 20, width: 100, height: 80, radius: 24, cornerSmoothing: 0.6
+  });
+  const distant = createNode('rectangle', { x: 180, y: 20, width: 20, height: 20 });
+  addNode(document, rounded); addNode(document, distant);
+  const group = combineBoolean(document, [rounded.id, distant.id], 'union');
+  const baked = bakeBoolean(document, group.id);
+  const contours = sampledPathContours(baked);
+  assert.equal(containsPointInRoundedRect(16, 1, 100, 80, { topLeft: 24, topRight: 24, bottomRight: 24, bottomLeft: 24 }, 0.6), false);
+  assert.equal(insideSampledContours({ x: 26, y: 21 }, contours), false,
+    'the baked corner keeps the added smoothing instead of reverting to an ordinary rounded rectangle');
+  assert.equal(insideSampledContours({ x: 45, y: 25 }, contours), true);
+});
+
 test('rotated and resized rounded rectangles retain corner curves during Boolean baking', () => {
   const document = createDocument();
   const radii = { topLeft: 18, topRight: 9, bottomRight: 23, bottomLeft: 12 };
@@ -668,6 +684,31 @@ test('closed network faces bake as editable cubic contours through Boolean opera
     }
     assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
   }
+});
+
+test('rounded vector-network vertices survive Boolean baking as editable cubic geometry', () => {
+  const document = createDocument();
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 80 }, { x: 0, y: 80 }
+  ], { closed: true });
+  geometry.vertices[0].cornerRadius = 18;
+  const network = createNode('network', { ...geometry, x: 20, y: 30, fill: '#123456' });
+  const distant = createNode('rectangle', { x: 160, y: 30, width: 12, height: 12 });
+  addNode(document, network); addNode(document, distant);
+  const group = combineBoolean(document, [network.id, distant.id], 'union');
+  const baked = bakeBoolean(document, group.id);
+  const contours = sampledPathContours(baked);
+  const networkContour = contours.find(contour => contour.some(point => point.x >= 20 && point.x <= 120
+    && point.y >= 30 && point.y <= 110));
+
+  assert.ok(networkContour, 'the rounded network face should remain a separate closed Boolean contour');
+  assert.equal(insideSampledContours({ x: 22, y: 32 }, [networkContour]), false,
+    'the original square corner outside the authored radius must stay transparent after baking');
+  assert.equal(insideSampledContours({ x: 35, y: 45 }, [networkContour]), true,
+    'the interior of the rounded network face must remain filled after baking');
+  assert.ok([baked.points, ...(baked.subpaths || []).map(contour => contour.points)].flat().some(point => (
+    Math.hypot(point.in.x, point.in.y) > 1e-6 || Math.hypot(point.out.x, point.out.y) > 1e-6
+  )), 'the baked radius should use editable cubic handles');
 });
 
 test('rotated network face controls follow resized Boolean source geometry', () => {

@@ -4,7 +4,7 @@ import {
   validateDocument
 } from '../model.js';
 import { applyHostTypedOperation } from './host-operation-engine.js';
-import { validateCollaborationMessage } from './protocol.js';
+import { COLLABORATION_PROTOCOL_VERSION, validateCollaborationMessage } from './protocol.js';
 
 // Keep in sync with the host operation engine's explicit SetProperty allowlist.
 // This planner intentionally emits only whole-property replacements.
@@ -21,7 +21,7 @@ const SET_PROPERTY_ROOTS = new Set([
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
   'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
-  'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
+  'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines',
   'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
   'sourceWidth', 'sourceHeight'
 ]);
@@ -91,7 +91,7 @@ function emitOperation(entries, operation, document) {
   };
   const candidate = applyHostTypedOperation(document, withProtocolFields);
   validateCollaborationMessage({
-    v: 1,
+    v: COLLABORATION_PROTOCOL_VERSION,
     kind: 'SNAPSHOT',
     designId: candidate.id,
     sessionId: 'local-reducer',
@@ -151,13 +151,22 @@ function generatePropertyOperations(entries, working, target) {
     const current = findNode(working, id, currentNodes.get(id).pageId)?.node;
     const wanted = findNode(target, id, targetNodes.get(id).pageId)?.node;
     if (!current || !wanted || current.type !== wanted.type) throw new Error('Layer identity changed.');
+    const setEndingBeforeMaxLines = wanted.type === 'text'
+      && wanted.maxLines != null && wanted.textTruncation === 'ending';
     const keys = [...new Set([...Object.keys(current), ...Object.keys(wanted)])]
       .filter(key => !['id', 'type', 'children'].includes(key))
-      .sort((left, right) => Number(right === 'text') - Number(left === 'text') || left.localeCompare(right));
+      .sort((left, right) => {
+        const textPriority = Number(right === 'text') - Number(left === 'text');
+        if (textPriority) return textPriority;
+        const orderKey = key => setEndingBeforeMaxLines && key === 'textTruncation' ? 'maxLines\u0000' : key;
+        return orderKey(left).localeCompare(orderKey(right));
+      });
     for (const property of keys) {
       const hasCurrent = Object.hasOwn(current, property);
       const hasWanted = Object.hasOwn(wanted, property);
-      if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures') {
+      const addsTextTruncationField = !hasCurrent && hasWanted
+        && ['textTruncation', 'maxLines'].includes(property);
+      if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures' && !addsTextTruncationField) {
         throw new Error('A property removal cannot be represented by the host protocol.');
       }
       if (equal(current[property], wanted[property])) continue;

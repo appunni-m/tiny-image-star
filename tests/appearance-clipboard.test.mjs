@@ -64,6 +64,56 @@ test('snapshot captures ordered reusable appearance without layer identity, geom
   assert.equal(source.effects[0].blur, 4);
 });
 
+test('appearance copy preserves independent polygon and star vertex radii', () => {
+  const radii = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  const source = {
+    type: 'star', points: 5, vertexRadii: radii,
+    opacity: 1, blendMode: 'normal', fills: [], strokes: [], effects: []
+  };
+  const snapshot = snapshotAppearance(source);
+  assert.deepEqual(snapshot.vertexRadii, radii);
+  assert.ok(snapshot.families.includes('radii'));
+
+  const target = {
+    type: 'star', points: 5, radius: 24, vertexRadii: Array(10).fill(24),
+    opacity: 1, blendMode: 'normal', fills: [], strokes: [], effects: []
+  };
+  const result = applyAppearance(target, snapshot, { idFactory: ids() });
+  assert.deepEqual(result.node.vertexRadii, radii);
+  assert.equal(Object.hasOwn(result.node, 'cornerRadii'), false);
+  assert.ok(result.changedFamilies.includes('radii'));
+
+  const linked = applyAppearance(target, snapshotAppearance({
+    type: 'star', points: 5, radius: 6, opacity: 1, blendMode: 'normal', fills: [], strokes: [], effects: []
+  }), { idFactory: ids() });
+  assert.equal(linked.node.radius, 6);
+  assert.equal(Object.hasOwn(linked.node, 'vertexRadii'), false,
+    'pasting a uniform radius returns a target to linked-radius mode');
+});
+
+test('appearance copy transfers independent radii by vertex order between vector networks', () => {
+  const source = {
+    id: 'source-network', type: 'network', opacity: 1, blendMode: 'normal',
+    vertices: [{ id: 'a', x: 0, y: 0, cornerRadius: 8 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: .5, y: 1, cornerRadius: 3 }],
+    edges: [], faces: [], strokes: [], effects: []
+  };
+  const target = {
+    id: 'target-network', type: 'network', opacity: 1, blendMode: 'normal',
+    vertices: [{ id: 'x', x: 0, y: 0 }, { id: 'y', x: 1, y: 0, cornerRadius: 9 }, { id: 'z', x: .5, y: 1 }],
+    edges: [], faces: [], strokes: [], effects: []
+  };
+  const snapshot = snapshotAppearance(source);
+  assert.deepEqual(snapshot.networkVertexRadii, [8, 0, 3]);
+  const result = applyAppearance(target, snapshot);
+  assert.deepEqual(result.node.vertices.map(vertex => Number(vertex.cornerRadius) || 0), [8, 0, 3]);
+  assert.ok(result.appliedFamilies.includes('radii'));
+  assert.equal(target.vertices[1].cornerRadius, 9, 'applying appearance does not mutate the source target');
+
+  const incompatible = applyAppearance({ ...target, vertices: target.vertices.slice(0, 2) }, snapshot);
+  assert.ok(incompatible.skipped.some(item => item.startsWith('radii:')),
+    'network radius arrays are skipped when the target has a different vertex count');
+});
+
 test('appearance apply preserves target state and order while regenerating all destination-owned IDs', () => {
   const source = {
     type: 'rectangle', opacity: 0.45, blendMode: 'overlay',

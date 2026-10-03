@@ -153,7 +153,21 @@ try {
   await waitFor(() => app.querySelector('[data-prop="cornerRadii.topLeft"]'), 'independent corner controls');
   const accessibilityAndTouch = assertIndependentFields(app, { topLeft: 0, topRight: 0, bottomLeft: 0, bottomRight: 0 });
   for (const [corner, value] of Object.entries(radiusValues)) setRadius(app, corner, value);
-  await waitForSave(app, 'four independent corner edits');
+  const smoothingSlider = app.querySelector('#inspector-content [data-prop="cornerSmoothing"]');
+  const smoothingField = smoothingSlider?.closest('.corner-smoothing-field');
+  const smoothingBounds = smoothingField?.getBoundingClientRect();
+  assert(smoothingField && smoothingBounds.left >= 0 && smoothingBounds.right <= 391,
+    'Corner smoothing should remain visible in the 390px phone Inspector.');
+  if (app.defaultView.matchMedia('(pointer: coarse)').matches) {
+    assert(smoothingBounds.height >= 44 && smoothingSlider.getBoundingClientRect().height >= 42,
+      'The phone corner-smoothing slider should provide a 44px touch target.');
+  }
+  setInput(app, smoothingSlider, 35);
+  await waitFor(() => smoothingSlider.nextElementSibling?.value === '35%', 'corner-smoothing slider preview');
+  await waitForSave(app, 'corner-smoothing slider edit');
+  tap(app, app.querySelector('[data-action="ios-corner-smoothing"]'));
+  await waitFor(() => app.querySelector('#inspector-content [data-prop="cornerSmoothing"]')?.value === '60', 'iOS corner-smoothing preset');
+  await waitForSave(app, 'iOS corner-smoothing preset');
 
   let records = await readDocuments(app);
   let savedRecord = findDocument(records);
@@ -162,6 +176,7 @@ try {
   let savedFirstRect = savedNodes.find(node => node.id === firstRectId);
   assert(savedFirstRect?.type === 'rectangle' && JSON.stringify(savedFirstRect.cornerRadii) === JSON.stringify(radiusValues),
     'All four distinct corner radii should be saved to the local design.');
+  assert(savedFirstRect.cornerSmoothing === 0.6, 'The iOS 60% corner-smoothing preset should persist in the local design.');
 
   const previousApp = app;
   app.defaultView.location.reload();
@@ -175,6 +190,7 @@ try {
   await openPanel(app, 'right');
   await waitFor(() => app.querySelector('[data-prop="cornerRadii.bottomRight"]'), 'restored independent corner controls');
   assertIndependentFields(app, radiusValues);
+  assert(app.querySelector('[data-prop="cornerSmoothing"]')?.value === '60', 'Corner smoothing should restore after reload.');
   records = await readDocuments(app);
   savedRecord = findDocument(records);
   savedNodes = flatten(savedRecord?.document?.pages.flatMap(page => page.children));
@@ -203,9 +219,8 @@ try {
   const exportedGroup = svgDoc.querySelector(`[data-tiny-image-star-node-id="${firstRectId}"]`);
   const exportedPath = exportedGroup?.querySelector(':scope > path');
   assert(exportedPath, 'Independent rounded corners should export as a vector path.');
-  const expectedPath = 'M 11 0 L 111 0 Q 128 0 128 17 L 128 73 Q 128 96 105 96 L 29 96 Q 0 96 0 67 L 0 11 Q 0 0 11 0 Z';
-  assert(exportedPath.getAttribute('d') === expectedPath,
-    `Exported SVG should carry all four distinct corner curves (received ${exportedPath.getAttribute('d')}).`);
+  assert(/ C .* A .* 0 0 1 /u.test(exportedPath.getAttribute('d')),
+    `Exported SVG should carry cubic smoothing ramps and circular arcs (received ${exportedPath.getAttribute('d')}).`);
 
   closePanel(app, 'left');
   closePanel(app, 'right');
@@ -267,7 +282,7 @@ try {
     === JSON.stringify({ topLeft: 37, topRight: 37, bottomRight: 37, bottomLeft: 37 }),
   'The unlinked shape should persist local radii and no radius-variable binding.');
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', labels: accessibilityAndTouch.labels, touchTargets: accessibilityAndTouch.touchTargets, fourCornerEdits: true, persistedAndReloaded: true, exportedSvgPath: true, variableRadiusDetachedLocally: true, detachedRadiusUnaffectedByTokenEdit: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', labels: accessibilityAndTouch.labels, touchTargets: accessibilityAndTouch.touchTargets, fourCornerEdits: true, cornerSmoothingSlider: true, iosSmoothingPreset: true, persistedAndReloaded: true, exportedSvgPath: true, variableRadiusDetachedLocally: true, detachedRadiusUnaffectedByTokenEdit: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

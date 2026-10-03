@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "model": {
+    "name": "ISNet general-use dichotomous image segmentation · dynamic int8 ONNX",
+    "source": "https://huggingface.co/Ko033/isnet-general-use-onnx/tree/5349b617911fd60c619b52f32e2b593517b78df3",
+    "revision": "5349b617911fd60c619b52f32e2b593517b78df3",
+    "originalSource": "https://github.com/xuebinqin/DIS/tree/b6764e20381f6f42a70f83fa3324181529ed1403",
+    "file": "models/isnet-general-use-q8.onnx",
+    "sha256": "5039225b9a4ac3df55f185d24b7a92d640c86cc4747002d7f23351e394de03a6",
+    "sizeBytes": 45902969,
+    "license": "Apache-2.0",
+    "licenseFile": "models/ISNET-DIS-LICENSE.txt",
+    "noticeFile": "models/ISNET-ONNX-NOTICE.md",
+    "input": {
+      "name": "input_image",
+      "type": "float32",
+      "shape": "[1, 3, height, width]",
+      "color": "RGB",
+      "normalization": "pixel / 255 - 0.5"
+    },
+    "output": {
+      "name": "output_image",
+      "type": "float32",
+      "shape": "[1, 1, height, width]",
+      "meaning": "foreground confidence; min-max normalized before applying alpha"
+    },
+    "modelInputLongEdge": 512
+  },
+  "runtime": {
+    "package": "onnxruntime-web",
+    "version": "1.30.0",
+    "executionProvider": "wasm",
+    "numThreads": 1,
+    "workerBundle": "../src/workers/background-removal-worker.bundle.js",
+    "files": {
+      "ort-wasm-simd-threaded.mjs": "e13f7f94fc51b4ca72b12faeb1ee95f4ace6dfbc8939bc718aabdc0a27c4299b",
+      "ort-wasm-simd-threaded.wasm": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2"
+    }
+  },
+  "limits": {
+    "maxSourcePixels": 4194304,
+    "maxSourceBytes": 67108864,
+    "queuedJobs": "serialized"
+  }
+}

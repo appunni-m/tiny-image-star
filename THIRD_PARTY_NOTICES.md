@@ -7,11 +7,17 @@ The local `.fig` import worker bundles the following MIT-licensed packages. Thei
 - `fzstd` 0.1.1 — copyright (c) Arjun Barrett, 2020.
 - `kiwi-schema` 0.5.0 — copyright (c) Evan Wallace, 2020.
 
+The local, optional QR handoff tools bundle `qrcode` 1.5.4 (copyright (c) Ryan Day and contributors) and `qr-scanner` 1.4.2 (copyright (c) Nimiq and contributors), both under MIT. Their runtime bundle and embedded QR-scanner worker are built from lockfile-pinned npm artifacts; the generated bundle checksum is recorded in `wasm/collaboration-qr-runtime.json`.
+
 The build-only `esbuild` 0.28.2 dependency is also MIT-licensed; copyright (c) Evan Wallace, 2020. Its code is not included in the deployed importer bundle.
 
 The local object-erase worker bundles `onnxruntime-web` 1.30.0, Copyright (c) Microsoft Corporation, under the MIT License. The pinned MI-GAN-512 Places2 ONNX pipeline model was published by Picsart AI Research under MIT; its complete upstream `LICENSE-WEIGHTS` text is shipped at `wasm/models/MI-GAN-LICENSE.txt`.
 
 The local object-isolation worker bundles `@mediapipe/tasks-vision` 1.0.1, Copyright (c) The MediaPipe Authors, under Apache License 2.0. Its SIMD and non-SIMD WebAssembly assets are pinned in `wasm/object-isolation-runtime.json`; the license text is included at `wasm/mediapipe/APACHE-2.0.txt`. The MagicTouch Interactive Segmenter v2 int8 model is Copyright (c) Google LLC, distributed under Apache License 2.0 as stated by the official task archive and model card. The exact model artifact, provenance, generation, hash, and license are recorded in `wasm/object-isolation-runtime.json`; its source is Google's `interactive_segmenter_v2/magic_touch/int8/1/interactive_segmentation.task` artifact.
+
+The local background-removal worker uses a dynamic-int8 ONNX conversion of ISNet general-use from the DIS research project. It is distributed under Apache License 2.0; the complete license, source revisions, artifact hash, and input/output contract are recorded in `wasm/models/ISNET-DIS-LICENSE.txt`, `wasm/models/ISNET-ONNX-NOTICE.md`, and `wasm/background-removal-runtime.json`.
+
+The optional local resolution-boost worker uses the Real-ESRGAN general x4v3 model, Copyright (c) 2021 Xintao Wang, under BSD 3-Clause. The converted ONNX model is loaded only after the user requests resolution boost; pinned source and conversion revisions, artifact hashes, runtime, and limits are recorded in `wasm/models/REAL-ESRGAN-LICENSE.txt`, `wasm/models/REAL-ESRGAN-NOTICE.md`, and `wasm/resolution-boost-runtime.json`.
 
 The local font inspector bundles `woff2-encoder` 2.0.0, Copyright (c) 2023-present Kyedo, under the MIT License. Its browser worker embeds WebAssembly compiled from Google's WOFF2 and Brotli libraries, which are also MIT-licensed. The package license and both upstream license texts, along with the worker checksum, are recorded in `wasm/woff2-runtime.json` and shipped under `wasm/woff2/`.
 

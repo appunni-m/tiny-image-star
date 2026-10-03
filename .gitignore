@@ -6,3 +6,4 @@ _site/
 src/workers/fig-import-worker.bundle.js
 src/workers/inpaint-worker.bundle.js
 src/workers/object-isolation-worker.bundle.js
+src/collaboration/qr-runtime.bundle.js

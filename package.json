@@ -4,16 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:woff2-worker && npm run build:font-shaping-worker",
+    "predev": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr",
     "dev": "node scripts/server.mjs",
-    "pretest": "npm run build:woff2-worker && npm run build:font-shaping-worker",
+    "pretest": "npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker",
     "test": "node --test tests/*.test.mjs",
-    "preverify:static": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:woff2-worker && npm run build:font-shaping-worker",
+    "preverify:static": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr",
     "verify:static": "node scripts/static-smoke.mjs",
     "build:wasm": "node scripts/build-pillow-runtime.mjs",
     "build:fig-import-worker": "node scripts/build-fig-import-worker.mjs",
     "build:inpaint-worker": "node scripts/build-inpaint-worker.mjs",
     "build:object-isolation-worker": "node scripts/build-object-isolation-worker.mjs",
+    "build:background-removal-worker": "node scripts/build-background-removal-worker.mjs",
+    "build:resolution-boost-worker": "node scripts/build-resolution-boost-worker.mjs",
+    "build:collaboration-qr": "node scripts/build-collaboration-qr.mjs",
     "build:woff2-worker": "node scripts/build-woff2-worker.mjs",
     "build:font-shaping-worker": "node scripts/build-font-shaping-worker.mjs"
   },
@@ -24,6 +27,8 @@
     "harfbuzzjs": "1.6.2",
     "onnxruntime-web": "1.30.0",
     "openfig-core": "0.4.1",
+    "qr-scanner": "1.4.2",
+    "qrcode": "1.5.4",
     "woff2-encoder": "2.0.0"
   },
   "devDependencies": {

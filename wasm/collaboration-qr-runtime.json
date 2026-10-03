@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "packages": {
+    "qrcode": {
+      "version": "1.5.4",
+      "integrity": "sha512-1ca71Zgiu6ORjHqFBDpnSMTR2ReToX4l1Au1VFLyVeBTFavzQnv5JxMFr3ukHVKpSrSA2MCk0lNJSykjUfz7Zg==",
+      "license": "MIT"
+    },
+    "qr-scanner": {
+      "version": "1.4.2",
+      "integrity": "sha512-kV1yQUe2FENvn59tMZW6mOVfpq9mGxGf8l6+EGaXUOd4RBOLg7tRC83OrirM5AtDvZRpdjdlXURsHreAOSPOUw==",
+      "license": "MIT"
+    }
+  },
+  "licenses": {
+    "qrcode": "MIT",
+    "qr-scanner": "MIT"
+  },
+  "runtime": {
+    "bundle": "../src/collaboration/qr-runtime.bundle.js",
+    "sizeBytes": 85189,
+    "sha256": "493ff3e2762b1b3105eca21cb1ef444dc73be902f9195cebc24f21ba45b103f9",
+    "scannerWorker": "embedded in the local bundle as a Blob worker; no runtime network request",
+    "cameraPermission": "requested only after the user presses Start camera",
+    "fallback": "scan a saved QR image or use the existing copy/paste controls"
+  }
+}

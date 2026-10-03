@@ -14,8 +14,8 @@ import {
   encodeCollaborationMessage
 } from '../src/collaboration/protocol.js';
 
-const senderContext = { v: 1, designId: 'design-a', sessionId: 'session-a', actorId: 'host-a' };
-const guestContext = { v: 1, designId: 'design-a', sessionId: 'session-a', actorId: 'guest-a' };
+const senderContext = { v: 2, designId: 'design-a', sessionId: 'session-a', actorId: 'host-a' };
+const guestContext = { v: 2, designId: 'design-a', sessionId: 'session-a', actorId: 'guest-a' };
 
 async function hash(bytes) {
   const digest = new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes));

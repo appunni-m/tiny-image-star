@@ -5,8 +5,10 @@ import { createImageFill } from '../src/image-fills.js';
 import { isValidGradientFill, moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { layerBlendModes } from '../src/layer-blend.js';
+import { convertFigDocument } from '../src/fig-import.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
 import { importSvgToLayers } from '../src/svg-import.js';
+import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 
 function findGradientLayer(nodes) {
   for (const node of nodes || []) {
@@ -15,6 +17,34 @@ function findGradientLayer(nodes) {
     if (nested) return nested;
   }
   return null;
+}
+
+function findNestedLayer(nodes, predicate) {
+  for (const node of nodes || []) {
+    if (predicate(node)) return node;
+    const nested = findNestedLayer(node.children, predicate);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function figSourceNode(type, localID, parent, position, properties = {}) {
+  return {
+    guid: { sessionID: 1, localID }, type, name: `Layer ${localID}`,
+    ...(parent ? { parentIndex: { guid: parent, position } } : {}),
+    size: { x: 120, y: 80 },
+    transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 },
+    visible: true, opacity: 1, ...properties
+  };
+}
+
+function pngHeader(width, height) {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  bytes.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+  new DataView(bytes.buffer).setUint32(16, width);
+  new DataView(bytes.buffer).setUint32(20, height);
+  return bytes;
 }
 
 test('page SVG omits slice overlays from artwork bounds and standalone slices require raster export', () => {
@@ -228,6 +258,49 @@ test('SVG export uses the selected variable mode for bound position, size, and r
   assert.equal(compact, collection.modes[0].id);
 });
 
+test('SVG export resolves bound typography and paragraph layout in the active frame mode', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Typography');
+  const editorial = addVariableMode(document, collection.id, 'Editorial');
+  const values = {
+    fontFamily: ['string', 'Base Sans', 'Editorial Sans'],
+    fontSize: ['number', 10, 12],
+    fontWeight: ['number', 400, 700],
+    fontStyle: ['string', 'normal', 'italic'],
+    paragraphSpacing: ['number', 0, 4],
+    firstLineIndent: ['number', 0, 6]
+  };
+  const variables = Object.fromEntries(Object.entries(values).map(([property, [type, initial, alternate]]) => {
+    const variable = createVariable(document, collection.id, property, type, initial);
+    assert.equal(setVariableValue(document, variable.id, alternate, editorial.id), true);
+    return [property, variable];
+  }));
+  const frame = createNode('frame', { width: 140, height: 80, variableModes: { [collection.id]: editorial.id } });
+  const text = createNode('text', {
+    text: 'one\ntwo', width: 100, height: 50, textFit: 'fixed', fontFamily: 'Fallback Sans',
+    fontSize: 10, lineHeight: 1.25, fontWeight: 400, fontStyle: 'normal'
+  });
+  addNode(document, frame);
+  addNode(document, text, { parentId: frame.id });
+  for (const [property, variable] of Object.entries(variables)) assert.equal(bindVariable(document, text.id, variable.id, property), true);
+
+  const measuredFamilies = new Set();
+  const svg = exportPageToSvg(document.pages[0], {
+    document,
+    measureText(value, node) {
+      measuredFamilies.add(node.fontFamily);
+      return [...String(value)].length * Number(node.fontSize) / 2;
+    }
+  });
+  assert.match(svg, /font-family="Editorial Sans" font-size="12" font-weight="700" font-style="italic"/,
+    'the exported text style uses the selected mode values');
+  assert.match(svg, /<tspan x="6" y="0"/,
+    'the first line begins at the variable-bound paragraph indent');
+  assert.match(svg, /<tspan x="6" y="19"/,
+    'the following paragraph includes variable-bound paragraph spacing and indent');
+  assert.deepEqual([...measuredFamilies], ['Editorial Sans'], 'SVG measurement matches the font family that is exported');
+});
+
 test('exports a selected node in its own rotated local bounds and supports vector basics', () => {
   const ellipse = createNode('ellipse', { name: 'Dot', x: 900, y: -500, width: 40, height: 20, rotation: 90, fill: '#ff0088' });
   const svg = exportNodeToSvg(ellipse);
@@ -329,6 +402,27 @@ test('exports graph-backed vector networks as editable face and edge paths', () 
   assert.throws(() => exportNodeToSvg(oversizedNetwork), /network metadata larger than 1048576 characters/);
 });
 
+test('SVG export preserves rounded vector-network corners in paint geometry and round-trip metadata', () => {
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 80 }, { x: 0, y: 80 }
+  ], { closed: true });
+  geometry.vertices[0].cornerRadius = 16;
+  geometry.vertices[2].cornerRadius = 9;
+  const network = createNode('network', {
+    id: 'rounded-network', ...geometry, fill: '#123456', stroke: '#000000', strokeWidth: 2
+  });
+  const svg = exportNodeToSvg(network);
+
+  assert.match(svg, /data-tiny-image-star-face-id="f1" d="M [^"]* A 16 16 0 0 1 15\.999/,
+    'the SVG face fill must use the same rounded path as the live network');
+  assert.match(svg, /data-tiny-image-star-face-id="f1" data-tiny-image-star-edge-ids="e1 e2 e3 e4"[^>]* d="M [^"]* A 16 16/,
+    'the rounded boundary stroke must replace sharp per-edge strokes');
+  assert.doesNotMatch(svg, /data-tiny-image-star-edge-id="e1"[^>]* d="M 0 0 L 100 0"/,
+    'a consumed raw edge must not paint over the rounded boundary');
+  assert.match(svg, /data-tiny-image-star-network-v1="[^"]*&quot;cornerRadius&quot;:16/,
+    'the editable graph metadata must retain each independent radius');
+});
+
 test('SVG network strokes paint each complete layer before advancing to the next', () => {
   const network = createNode('network', {
     width: 20, height: 10,
@@ -392,6 +486,34 @@ test('exports simple vector alpha-mask groups with editable mask geometry and so
   const emptySvg = exportNodeToSvg(emptyGroup);
   assert.match(emptySvg, /<mask id="tis-mask-0" mask-type="alpha"/);
   assert.doesNotMatch(emptySvg, /data-tiny-image-star-node-id="masked-content"/);
+});
+
+test('exports vector masks as opaque white fill and stroke geometry and preserves their mode on SVG round-trip', () => {
+  const source = createNode('ellipse', {
+    id: 'vector-source', name: 'Vector source', x: 8, y: 6, width: 48, height: 36,
+    opacity: 0.2, fillOpacity: 0, strokeOpacity: 0,
+    fills: [{ id: 'clear-fill', type: 'solid', visible: true, opacity: 0, color: 'transparent' }],
+    strokes: [{ id: 'clear-stroke', color: 'transparent', width: 8, opacity: 0, visible: true,
+      cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10 }]
+  });
+  const content = createNode('rectangle', { id: 'vector-content', width: 64, height: 48 });
+  const group = createNode('group', {
+    id: 'vector-group', width: 64, height: 48, mask: true, maskMode: 'vector', maskSourceId: source.id,
+    children: [content, source]
+  });
+  const svg = exportNodeToSvg(group);
+  assert.match(svg, /<mask id="tis-mask-0" mask-type="alpha"[^>]*data-tiny-image-star-mask-mode="vector">/);
+  assert.match(svg, /<ellipse[^>]*fill="#ffffff"[^>]*stroke="#ffffff" stroke-width="8"/,
+    'both visible fill and stroke geometry become opaque white mask coverage');
+  assert.doesNotMatch(svg.match(/<mask[^>]*>([\s\S]*?)<\/mask>/)?.[1] || '', /opacity="0\.2"|fill-opacity="0"|stroke-opacity="0"/,
+    'source, fill, and stroke alpha do not leak into vector coverage');
+  const imported = importSvgToLayers(svg);
+  const restored = findNestedLayer(imported.nodes, node => node.type === 'group' && node.mask);
+  assert.equal(restored?.maskMode, 'vector');
+  const restoredSource = restored?.children.find(node => node.id === restored.maskSourceId);
+  assert.equal(restoredSource?.type, 'path');
+  assert.equal(restoredSource?.stroke, '#ffffff');
+  assert.equal(restoredSource?.strokeWidth, 8);
 });
 
 test('exports editable text glyphs as white alpha-mask content with layer opacity', () => {
@@ -894,6 +1016,57 @@ test('embeds local raster layers and image fills as data URIs with fit, clipping
   assert.throws(() => exportNodeToSvg({ ...fill, fillOpacity: -0.1 }, { assets }), /requires valid fill opacity/);
 });
 
+test('exports imported Figma TILE fills as SVG patterns with the imported scale and rotation', () => {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const imageHash = 'c'.repeat(40);
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      figSourceNode('CANVAS', 1, null, '', { guid: pageGuid, name: 'Tile import' }),
+      figSourceNode('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Tiled photo', fillPaints: [{
+          type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'TILE', scalingFactor: 0.5,
+          rotation: 90, visible: true
+        }]
+      })
+    ],
+    images: new Map([[imageHash, pngHeader(2, 3)]]), message: { blobs: [] }
+  });
+  const shape = imported.document.pages[0].children[0];
+  const importedFill = shape.fills[0].imageFill;
+  assert.equal(importedFill.fit, 'tile');
+  assert.equal(importedFill.scalingFactor, 0.5);
+  assert.equal(importedFill.transforms.rotation, 90);
+
+  const source = {
+    ...imported.assets[0],
+    width: imported.document.imageLibrary[0].width,
+    height: imported.document.imageLibrary[0].height
+  };
+  const svg = exportNodeToSvg(shape, { assets: new Map([[source.id, source]]) });
+  assert.match(svg, /<pattern id="tis-image-tile-0-fill-0" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="0" y="0" width="1\.5" height="1"><image x="0" y="0" width="2" height="3" preserveAspectRatio="none" transform="matrix\(0 0\.5 -0\.5 0 1\.5 0\)" href="data:image\/png;base64,[^"]+"\/><\/pattern>/);
+  assert.match(svg, /<rect x="0" y="0" width="120" height="80" fill="url\(#tis-image-tile-0-fill-0\)" opacity="1" clip-path="url\(#tis-fill-clip-0\)" data-tiny-image-star-fill-id="[^"]+" data-tiny-image-star-fill-type="image"\/>/);
+});
+
+test('exports image layers as tiled SVG patterns while preserving scale, crop-independent rotation, and flips', () => {
+  const image = createNode('image', {
+    id: 'tiled-image-layer', assetId: 'tile-source', width: 120, height: 80,
+    fit: 'tile', scalingFactor: 1.5,
+    transforms: {
+      crop: { left: 0.2, top: 0.1, right: 0.9, bottom: 0.95 },
+      rotation: 90, flipHorizontal: true, flipVertical: true
+    }
+  });
+  const svg = exportNodeToSvg(image, { assets: new Map([['tile-source', {
+    id: 'tile-source', type: 'image/png', width: 40, height: 20,
+    sourceBytes: new Uint8Array([1, 2, 3])
+  }]]) });
+
+  assert.match(svg, /<pattern id="tis-image-tile-0" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="0" y="0" width="30" height="60"><image x="0" y="0" width="40" height="20" preserveAspectRatio="none" transform="matrix\(0 -1\.5 1\.5 0 0 60\)" href="data:image\/png;base64,AQID"\/><\/pattern>/);
+  assert.match(svg, /<rect x="0" y="0" width="120" height="80" fill="url\(#tis-image-tile-0\)" clip-path="url\(#tis-image-clip-0\)"\/>/);
+  assert.match(svg, /<clipPath id="tis-image-clip-0"[^>]*><rect/);
+});
+
 test('embeds edited previews by layer identity while preserving untouched shared-source bytes', () => {
   const assets = new Map([['shared-photo', {
     id: 'shared-photo', type: 'image/jpeg', width: 400, height: 200,
@@ -1332,6 +1505,26 @@ test('text wraps into positioned tspans like the canvas editor and requires reli
   }), { measureText: value => value.length * 16 }), /zero-width box/);
 });
 
+test('SVG ending truncation emits fitting ellipses and clips every paint stack to the text box', () => {
+  const text = createNode('text', {
+    id: 'truncated-label', width: 20, height: 10, fontSize: 10, lineHeight: 1,
+    text: 'abcdef', textFit: 'fixed', textTruncation: 'ending', maxLines: 1,
+    fills: [
+      { id: 'first-fill', type: 'solid', color: '#123456', opacity: 1, visible: true },
+      { id: 'second-fill', type: 'solid', color: '#abcdef', opacity: 1, visible: true }
+    ],
+    textRuns: [{ text: 'abc' }, { text: 'def', fontWeight: 700 }]
+  });
+  const svg = exportNodeToSvg(text, { measureText: value => [...String(value)].length * 10 });
+  assert.match(svg, /<tspan[^>]*>a…<\/tspan>/);
+  assert.match(svg, /clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="20" height="10"\//);
+  assert.match(svg, /clip-path="url\(#tis-text-clip-truncated-label-fill-0\)"/);
+  assert.match(svg, /clip-path="url\(#tis-text-clip-truncated-label-fill-1\)"/);
+  assert.match(svg, /clip-path="url\(#tis-text-clip-truncated-label-outline\)"/);
+  assert.equal(new Set([...svg.matchAll(/id="(tis-text-clip-[^"]+)"/gu)].map(match => match[1])).size, 3,
+    'each stacked fill and outline gets an unambiguous local clip path');
+});
+
 test('SVG preserves justified spacing on soft-wrapped plain and rich text lines', () => {
   const measureText = value => value.length * 5;
   const plain = createNode('text', { width: 35, height: 40, fontSize: 10, lineHeight: 1.25, text: 'aa bb cc', align: 'justify', textFit: 'fixed' });
@@ -1647,6 +1840,10 @@ test('SVG export honors editable polygon side count and star point depth', () =>
   const zeroRadiusStar = exportNodeToSvg(createNode('star', { width: 100, height: 100, points: 3, innerRadius: 0 }));
   assert.equal(zeroRadiusStar.match(/<polygon points="([^"]+)"/)[1].split(' ')[1], '50,50',
     'a zero inner radius should export as an actual center point instead of falling back to the default ratio');
+
+  const maximumStar = exportNodeToSvg(createNode('star', { width: 100, height: 100, points: 60 }));
+  assert.equal(maximumStar.match(/<polygon points="([^"]+)"/)[1].split(' ').length, 120,
+    'SVG keeps all alternating vertices at the 60-point star limit');
 });
 
 test('rejects XML 1.0 forbidden control characters in exported text and names', () => {

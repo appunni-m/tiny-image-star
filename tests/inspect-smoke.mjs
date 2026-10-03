@@ -304,6 +304,8 @@ try {
   const prototypeAction = app.querySelector('#prototype-action');
   prototypeAction.value = 'open-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   assert(![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should keep overlay transitions separate');
+  prototypeAction.value = 'swap-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
+  assert([...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should offer Smart animate when swapping overlays');
   prototypeAction.value = 'navigate'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   click(app.querySelector('[data-inspector-tab="inspect"]'));
   await waitFor(() => app.querySelector('.inspect-panel'), 'Inspect panel');

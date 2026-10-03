@@ -208,6 +208,55 @@ test('typed variables bind to compatible layer properties, follow frame modes, a
   assert.equal(validateDocument(document), true);
 });
 
+test('typography variables bind font and paragraph properties across modes and persist', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Typography');
+  const compact = collection.defaultModeId;
+  const editorial = addVariableMode(document, collection.id, 'Editorial');
+  const specifications = [
+    ['fontFamily', 'string', 'Inter, Arial, sans-serif', 'Tiny Sans, sans-serif'],
+    ['fontWeight', 'number', 400, 650],
+    ['fontStyle', 'string', 'normal', 'italic'],
+    ['paragraphSpacing', 'number', 0, 9],
+    ['firstLineIndent', 'number', 0, 14]
+  ];
+  const variables = Object.fromEntries(specifications.map(([property, type, initial, alternate]) => {
+    const variable = createVariable(document, collection.id, property, type, initial);
+    assert.equal(setVariableValue(document, variable.id, alternate, editorial.id), true, `${property} alternate value`);
+    return [property, variable];
+  }));
+  const frame = createNode('frame', { variableModes: { [collection.id]: editorial.id } });
+  const text = createNode('text', { text: 'A paragraph', fontFamily: 'Base Sans', fontWeight: 400 });
+  addNode(document, frame);
+  addNode(document, text, { parentId: frame.id });
+
+  for (const [property, variable] of Object.entries(variables)) {
+    assert.equal(bindVariable(document, text.id, variable.id, property), true, `${property} binding`);
+    assert.equal(getNodePropertyValue(document, text, property), specifications.find(([name]) => name === property)[3], `${property} resolves in Editorial mode`);
+  }
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, compact), true);
+  for (const [property, , initial] of specifications) assert.equal(getNodePropertyValue(document, text, property), initial, `${property} resolves in Compact mode`);
+
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, editorial.id), true);
+  for (const [property, variable] of Object.entries(variables)) assert.equal(bindVariable(document, text.id, null, property), true, `${property} can be unbound`);
+  assert.deepEqual(
+    Object.fromEntries(specifications.map(([property]) => [property, text[property]])),
+    Object.fromEntries(specifications.map(([property, , , editorialValue]) => [property, editorialValue])),
+    'unbinding materializes the active mode so typography does not jump'
+  );
+
+  const invalidValues = [
+    ['fontFamily', 'string', ''], ['fontWeight', 'number', 1001], ['fontStyle', 'string', 'oblique'],
+    ['paragraphSpacing', 'number', -1], ['firstLineIndent', 'number', 10_001]
+  ];
+  for (const [property, type, value] of invalidValues) {
+    const invalid = createVariable(document, collection.id, `Invalid ${property}`, type, value);
+    assert.equal(bindVariable(document, text.id, invalid.id, property), false, `${property} rejects ${String(value)}`);
+  }
+  assert.equal(validateDocument(document), true);
+});
+
 test('typed variable bindings reject incompatible properties and values that violate property ranges', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Constraints');

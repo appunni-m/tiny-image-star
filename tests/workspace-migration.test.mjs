@@ -175,11 +175,11 @@ function fontAsset(id = 'font-brand', family = 'Brand', weight = 400, style = 'n
 
 test('generic reference walk includes image IDs and font overrides anywhere in the design graph', () => {
   const result = collectReferencedAssets({
-    pages: [{ children: [{ assetId: 'main-image', fontFamily: 'Brand', fontWeight: 400, children: [{ fontWeight: 700 }] }] }],
+    pages: [{ children: [{ type: 'image', assetId: 'main-image', backgroundRemovalSourceAssetId: 'main-original', backgroundRemovalAssetId: 'main-transparent', resolutionBoostSourceAssetId: 'main-resolution-source', resolutionBoostAssetId: 'main-4x', fontFamily: 'Brand', fontWeight: 400, children: [{ fontWeight: 700 }] }] }],
     components: [{ subtree: [{ imageAssetId: 'component-image', textRuns: [{ fontFamily: 'Display', fontStyle: 'italic' }] }] }],
     overrides: { nested: { assetId: 'override-image', fontFamily: '"Brand, Display", Arial', fontWeight: '700' } }
   });
-  assert.deepEqual(result.imageAssetIds, ['component-image', 'main-image', 'override-image']);
+  assert.deepEqual(result.imageAssetIds, ['component-image', 'main-4x', 'main-image', 'main-original', 'main-resolution-source', 'main-transparent', 'override-image']);
   assert.ok(result.fontSpecs.some(spec => spec.family === 'brand' && spec.weight === 700));
   assert.ok(result.fontSpecs.some(spec => spec.family === 'display' && spec.style === 'italic'));
   assert.ok(result.fontSpecs.some(spec => spec.family === 'brand, display' && spec.weight === 700));

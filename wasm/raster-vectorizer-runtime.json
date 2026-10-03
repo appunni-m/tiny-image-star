@@ -1,0 +1,22 @@
+{
+  "name": "Tiny Image Star local raster vectorizer",
+  "version": "0.1.0",
+  "algorithm": "RGBA palette quantization, exact pixel-cell boundary tracing, closed contour simplification",
+  "limits": {
+    "maximumPixels": 1048576,
+    "maximumColors": 16,
+    "maximumContoursPerColor": 10000,
+    "maximumPointsPerColor": 20000
+  },
+  "toolchain": {
+    "rust": "1.96.1",
+    "target": "wasm32-unknown-unknown",
+    "optimization": "release-size-lto"
+  },
+  "sourceSha256": "a90b698ef054eb548885c6dcc28d2d389f1e3af633182bda046435ccfa55fb4b",
+  "wasm": {
+    "file": "raster-vectorizer.wasm",
+    "byteLength": 56756,
+    "sha256": "4c1a24bfa8d8ac3264f12e53978209f5b90655a754ae2ee3c1919e9850341a51"
+  }
+}

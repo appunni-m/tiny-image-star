@@ -45,8 +45,10 @@ export function getClipboardImageFiles(clipboardData) {
 export function routeClipboardPaste(event, {
   canEdit = true,
   isEditingText = false,
+  hasLayoutGuideClipboard = false,
   hasLayerClipboard = false,
   importImages = () => {},
+  pasteLayoutGuide = () => {},
   pasteLayers = () => {},
 } = {}) {
   if (!canEdit || isEditingText) return 'ignored';
@@ -55,6 +57,11 @@ export function routeClipboardPaste(event, {
     event.preventDefault();
     importImages(images);
     return 'images';
+  }
+  if (hasLayoutGuideClipboard) {
+    event.preventDefault();
+    pasteLayoutGuide();
+    return 'layout-guide';
   }
   if (!hasLayerClipboard) return 'unhandled';
   event.preventDefault();

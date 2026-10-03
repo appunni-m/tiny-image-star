@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -47,7 +47,7 @@ test('live preview references include raster and image-fill layers across every 
   assert.notEqual(imagePreviewKey('copy-a', 'fill-1'), imagePreviewKey('copy-b', 'fill-1'), 'duplicated layers do not share per-fill preview resources');
 });
 
-test('preview settings signatures are stable and include every rendered image input', () => {
+test('preview signatures include pixel inputs but ignore export-only format and quality', () => {
   const first = imagePreviewSettingsSignature({
     assetId: 'photo', adjustments: { contrast: 12, brightness: 4 },
     transforms: { rotation: 90, crop: { left: .1, top: 0, right: .9, bottom: 1 } },
@@ -64,9 +64,7 @@ test('preview settings signatures are stable and include every rendered image in
     { assetId: 'other' },
     { adjustments: { brightness: 5 } },
     { transforms: { rotation: 180 } },
-    { inpaintStrokes: [] },
-    { outputFormat: 'png' },
-    { outputQuality: 90 }
+    { inpaintStrokes: [] }
   ]) {
     const changed = imagePreviewSettingsSignature({
       assetId: 'photo', adjustments: { contrast: 12, brightness: 4 },
@@ -74,8 +72,66 @@ test('preview settings signatures are stable and include every rendered image in
       inpaintStrokes: [{ radius: 8, points: [{ x: 2, y: 4 }] }], outputFormat: 'jpeg', outputQuality: 82,
       ...input
     });
-    assert.notEqual(changed, first, 'asset, adjustments, transforms, erase strokes, and encoding changes invalidate a preview');
+    assert.notEqual(changed, first, 'asset, adjustments, transforms, and erase strokes invalidate a preview');
   }
+  assert.equal(imagePreviewSettingsSignature({ assetId: 'photo', adjustments: {}, transforms: {}, inpaintStrokes: [] }),
+    imagePreviewSettingsSignature({ assetId: 'photo', adjustments: {}, transforms: {}, inpaintStrokes: [], outputFormat: 'webp', outputQuality: 22 }),
+  'changing the eventual download codec and quality must leave the lossless canvas preview current');
+  assert.equal(imagePreviewRequiresRenderedPixels({ outputFormat: 'webp', outputQuality: 22 }), false,
+    'export-only settings do not require a new preview render');
+  assert.equal(imagePreviewRequiresRenderedPixels({ adjustments: { brightness: 5 }, outputFormat: 'jpeg', outputQuality: 40 }), true,
+    'pixel-changing adjustments still require a rendered preview');
+});
+
+test('async preview work resolves edit values from the current layer, not a captured stale snapshot', async () => {
+  const node = {
+    id: 'photo', type: 'image', assetId: 'source',
+    adjustments: { brightness: 12 },
+    transforms: { rotation: 90 },
+    outputFormat: 'jpeg', outputQuality: 76,
+    inpaintStrokes: [{ radius: 4, points: [{ x: 8, y: 9 }] }],
+  };
+  // A restore caller can capture these before yielding to storage or decoding.
+  const capturedAdjustments = node.adjustments;
+  const capturedTransforms = node.transforms;
+  node.adjustments = { brightness: -35, contrast: 22 };
+  node.transforms = { rotation: 270, flipHorizontal: true };
+  node.outputFormat = 'webp';
+  node.outputQuality = 63;
+
+  const current = imagePreviewRenderSettingsForNode(node, imagePreviewKey(node.id), 'source');
+  assert.notEqual(current.adjustments, capturedAdjustments);
+  assert.notEqual(current.transforms, capturedTransforms);
+  assert.deepEqual(current, {
+    assetId: 'source', adjustments: { brightness: -35, contrast: 22 },
+    transforms: { rotation: 270, flipHorizontal: true },
+    inpaintStrokes: [{ radius: 4, points: [{ x: 8, y: 9 }] }],
+  });
+  assert.equal(imagePreviewSettingsSignature(current), imagePreviewSettingsSignature({
+    assetId: 'source', adjustments: node.adjustments, transforms: node.transforms,
+    inpaintStrokes: node.inpaintStrokes,
+  }));
+  assert.equal(imagePreviewSettingsSignature(current), imagePreviewSettingsSignature({
+    assetId: 'source', adjustments: node.adjustments, transforms: node.transforms, inpaintStrokes: node.inpaintStrokes,
+  }), 'live output settings remain available for exports without invalidating the preview pixels');
+  assert.equal(node.outputFormat, 'webp');
+  assert.equal(node.outputQuality, 63);
+
+  const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = mainSource.indexOf('async function renderImagePreview(');
+  const renderEnd = mainSource.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  const renderBody = mainSource.slice(renderStart, renderEnd);
+  assert.match(renderBody, /imagePreviewRenderSettingsForNode\(previewLayer, previewKey, assetId\)/);
+  assert.match(renderBody, /format: 'png', quality: 90/,
+    'the canvas preview always uses lossless encoding independently of per-image download settings');
+  const signatureSnapshot = renderBody.indexOf('const previewSignature = imagePreviewSettingsSignature(previewSettings);');
+  const renderDispatch = renderBody.indexOf('await renderImageWithEdits(');
+  assert.ok(signatureSnapshot >= 0 && signatureSnapshot < renderDispatch,
+    'settings identity is snapshotted before an async worker can overlap later edits');
+  assert.match(renderBody, /renderImageWithEdits\(imageNode, \{ assetId, sourceBytes: asset\.sourceBytes \}, previewSettings\.adjustments, previewTransforms/,
+    'Pillow receives the same current edit values that are later written into the preview signature');
+  assert.match(renderBody, /state\.previewSignatures\.set\(previewKey, previewSignature\)/,
+    'a successfully rendered bitmap is only marked current for its actual model settings');
 });
 
 test('preview keys round-trip node and image-fill identity', () => {
@@ -83,6 +139,54 @@ test('preview keys round-trip node and image-fill identity', () => {
   assert.deepEqual(parseImagePreviewKey(imagePreviewKey('shape-node', 'fill-1')), { nodeId: 'shape-node', fillId: 'fill-1' });
   assert.throws(() => parseImagePreviewKey('image-fill:bad-json'), /malformed/);
   assert.throws(() => parseImagePreviewKey(''), /nonempty string/);
+});
+
+test('offscreen selected recipe targets can be evicted while other selected previews stay protected', async () => {
+  const nodes = [
+    { id: 'batch-complete', type: 'image', assetId: 'a' },
+    { id: 'batch-inflight', type: 'image', assetId: 'b' },
+    { id: 'selected-other', type: 'image', assetId: 'c' },
+    { id: 'selected-shape', type: 'rectangle', fills: [
+      { id: 'image-paint', type: 'image', imageFill: { assetId: 'd' } },
+    ] },
+  ];
+  const protectedKeys = selectedImagePreviewKeysForNodes(nodes, {
+    excludedNodeIds: new Set(['batch-complete', 'batch-inflight']),
+  });
+  assert.deepEqual([...protectedKeys].sort(), [
+    'image-fill:["selected-shape","image-paint"]',
+    'selected-other',
+  ]);
+  const candidates = offscreenPreviewEvictionCandidates({
+    previews: new Map(nodes.filter(node => node.type === 'image').map(node => [node.id, {}])),
+    protectedPreviewKeys: protectedKeys,
+  });
+  assert.deepEqual(candidates.sort(), ['batch-complete', 'batch-inflight']);
+
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const selectedStart = source.indexOf('function selectedImagePreviewKeys()');
+  const busyStart = source.indexOf('function busyImagePreviewKeys()', selectedStart);
+  const protectedSourceStart = source.indexOf('function protectedImageSourceAssetIds', busyStart);
+  assert.ok(selectedStart >= 0 && busyStart > selectedStart && protectedSourceStart > busyStart);
+  assert.match(source.slice(selectedStart, busyStart), /isImageRecipeBatchActive\(state\.bulk\)[\s\S]*?selectedImagePreviewKeysForNodes\(selectedNodes\(\), \{ excludedNodeIds: batchTargetIds \}\)/,
+    'selected recipe targets must be excluded from permanent selection pins');
+  assert.match(source.slice(busyStart, protectedSourceStart), /Processing recipe/,
+    'the currently admitted recipe target stays protected while it hydrates or renders');
+});
+
+test('Tile previews ignore crop while retaining rotation and flips for source-sized repeats', () => {
+  const transforms = { crop: { left: 0.2, top: 0.1, right: 0.8, bottom: 0.9 }, rotation: 270, flipHorizontal: true };
+  const image = { id: 'image', type: 'image', assetId: 'photo', fit: 'tile', transforms };
+  const fill = { id: 'paint', type: 'image', imageFill: { assetId: 'photo', fit: 'tile', transforms } };
+  const shape = { id: 'shape', type: 'rectangle', fills: [fill] };
+  assert.deepEqual(imagePreviewSettingsForNode(image, 'image').transforms, {
+    crop: null, rotation: 270, flipHorizontal: true
+  });
+  assert.deepEqual(imagePreviewSettingsForNode(shape, imagePreviewKey('shape', 'paint')).transforms, {
+    crop: null, rotation: 270, flipHorizontal: true
+  });
+  assert.deepEqual(transforms.crop, { left: 0.2, top: 0.1, right: 0.8, bottom: 0.9 },
+    'switching to Tile is non-destructive and keeps the prior crop available when Fill/Fit is restored');
 });
 
 test('cloning schedules only image and image-fill previews whose edited pixels need rendering', async () => {
@@ -140,7 +244,7 @@ test('presentation crossfades only current Pillow preview settings and receives 
   const renderStart = source.indexOf('async function renderImagePreview(');
   const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
   const renderBody = source.slice(renderStart, renderEnd);
-  assert.ok(renderBody.indexOf('state.previewSignatures.set(previewKey, imagePreviewSettingsSignature')
+  assert.ok(renderBody.indexOf('state.previewSignatures.set(previewKey, previewSignature)')
     > renderBody.indexOf('state.previewAssetIds.set(previewKey, assetId)'),
   'a signature is committed with the decoded preview after the matching asset ID');
 
@@ -153,6 +257,8 @@ test('presentation crossfades only current Pillow preview settings and receives 
     'processing and failed previews cannot become transition endpoints');
   assert.match(endpointBody, /if \(!previewIsCurrent && !sourceRenderable\) return null/,
     'edited images require their exact endpoint preview, while unedited images can render from source bytes');
+  assert.doesNotMatch(endpointBody, /outputFormat === 'png' && outputQuality === 90/,
+    'download encoding choices must not make unchanged source pixels unavailable in Smart Animate');
 
   const frameStart = source.indexOf('function renderPresentationFrame(');
   const frameEnd = source.indexOf('\nfunction ', frameStart + 10);
@@ -188,7 +294,7 @@ test('offscreen sources restore on demand and bulk targets hydrate before their 
   const batchStart = source.indexOf('function scheduleBulk()');
   const batchEnd = source.indexOf('\nfunction restoreImageRecipeBatchConcurrency', batchStart);
   const batchBody = source.slice(batchStart, batchEnd);
-  assert.match(batchBody, /hydrateAndAdmitImageRecipeTarget\(\{[\s\S]*?ensureResident: ensureImageAssetResident[\s\S]*?isGenerationCurrent:[\s\S]*?isBatchCurrent:[\s\S]*?resolveTarget:[\s\S]*?expectedNode: node[\s\S]*?onAdmit: currentEntry => \{[\s\S]*?applyImageRecipe\([\s\S]*?queueSave\([\s\S]*?renderImagePreview\(id, assetId/,
+  assert.match(batchBody, /hydrateAndAdmitImageRecipeTarget\(\{[\s\S]*?ensureResident: ensureImageAssetResident[\s\S]*?isGenerationCurrent:[\s\S]*?isBatchCurrent:[\s\S]*?resolveTarget:[\s\S]*?expectedNode: node[\s\S]*?onAdmit: currentEntry => \{[\s\S]*?applyImageRecipe\([\s\S]*?deferBackgroundRemoval: true[\s\S]*?applyBackgroundRemovalRecipeToTarget\(currentNode, bulk\.recipe\.backgroundRemoved[\s\S]*?queueSave\([\s\S]*?renderImagePreview\(id, currentNode\.assetId/,
     'bulk jobs hydrate first, then revalidate generation, batch, node, and asset before applying or saving a recipe');
   assert.match(batchBody, /const recipeRenderVersion = state\.renderVersion\.get\(id\);[\s\S]*?bulk\.renderVersions\.set\(id, recipeRenderVersion\)/,
     'the job records its render fence only after the hydrated target passes admission and dispatches');
@@ -222,7 +328,7 @@ test('editing and export entry points rehydrate cold originals before consuming 
 
 test('asset reachability includes current, undo, and redo snapshots before releasing source resources', () => {
   const current = { pages: [{ children: [
-    { type: 'image', assetId: 'current-image', children: [] },
+    { type: 'image', assetId: 'current-image', backgroundRemoved: true, backgroundRemovalSourceAssetId: 'current-original', backgroundRemovalAssetId: 'current-transparent', resolutionBoosted: true, resolutionBoostSourceAssetId: 'current-resolution-source', resolutionBoostAssetId: 'current-4x', children: [] },
     { type: 'rectangle', imageFill: { assetId: 'shared-asset' }, children: [] },
     { type: 'group', children: [{ type: 'rectangle', fills: [
       { type: 'image', imageFill: { assetId: 'current-fill' } },
@@ -235,7 +341,7 @@ test('asset reachability includes current, undo, and redo snapshots before relea
   ], children: [] }] }] };
   const clipboardNodes = [{ type: 'image', assetId: 'clipboard-only', children: [] }];
   const liveAssetIds = collectLiveImageAssetIds([current, undo, redo], clipboardNodes);
-  assert.deepEqual([...liveAssetIds].sort(), ['clipboard-only', 'current-fill', 'current-image', 'library-only-source', 'redo-only', 'shared-asset', 'undo-only']);
+  assert.deepEqual([...liveAssetIds].sort(), ['clipboard-only', 'current-4x', 'current-fill', 'current-image', 'current-original', 'current-resolution-source', 'current-transparent', 'library-only-source', 'redo-only', 'shared-asset', 'undo-only']);
 
   const closed = [];
   const revoked = [];
@@ -372,7 +478,7 @@ test('preview memory is reserved before worker dispatch and held through decode 
   assert.notEqual(renderStart, -1);
   assert.notEqual(renderEnd, -1);
   const body = source.slice(renderStart, renderEnd);
-  const dimensions = body.indexOf('const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);');
+  const dimensions = body.indexOf('const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, previewTransforms);');
   const cappedDimensions = body.indexOf('const outputDimensions = imagePreviewDimensions(transformedDimensions.width, transformedDimensions.height, previewMaxDimension);');
   const estimate = body.indexOf('estimatePreviewMemoryReservationBytes(outputDimensions)');
   const reserve = body.indexOf('reserveImagePreviewMemory(previewAdmission.retainedBytes, previewKey)');

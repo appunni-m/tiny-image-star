@@ -12,14 +12,14 @@ test('screen-space handle hit testing chooses the nearest candidate inside the t
   assert.equal(nearestScreenHandle({ x: 80, y: 80 }, handles, 22), null);
 });
 
-test('exactly overlapping tiny-selection handles have deterministic resize-first tie behavior', () => {
+test('exactly overlapping tiny-selection handles always prefer resize over rotate', () => {
   const handles = [
     { kind: 'resize', name: 'nw', point: { x: 100, y: 100 } },
     { kind: 'resize', name: 'se', point: { x: 100, y: 100 } },
     { kind: 'rotate', point: { x: 100, y: 100 } }
   ];
   assert.equal(nearestScreenHandle({ x: 100, y: 100 }, handles, 22)?.name, 'nw');
-  assert.equal(nearestScreenHandle({ x: 100, y: 100 }, [...handles].reverse(), 22)?.kind, 'rotate');
+  assert.equal(nearestScreenHandle({ x: 100, y: 100 }, [...handles].reverse(), 22)?.kind, 'resize');
 });
 
 test('handle hit radius is measured in screen pixels independent of canvas zoom', () => {

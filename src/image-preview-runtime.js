@@ -8,12 +8,33 @@ export function imagePreviewKey(nodeId, fillId = null) {
   return fillId ? `image-fill:${JSON.stringify([nodeId, fillId])}` : nodeId;
 }
 
+/**
+ * Select previews that must stay resident for the current selection.
+ * Recipe-batch targets are omitted: an offscreen target's prior preview can
+ * be recreated after the batch, while keeping every selected result pinned
+ * can starve the very renders that are producing those results.
+ */
+export function selectedImagePreviewKeysForNodes(nodes, { excludedNodeIds = [] } = {}) {
+  const excluded = excludedNodeIds instanceof Set ? excludedNodeIds : new Set(excludedNodeIds);
+  const protectedKeys = new Set();
+  for (const node of nodes || []) {
+    if (!node || excluded.has(node.id)) continue;
+    if (node.type === 'image' && node.assetId) protectedKeys.add(imagePreviewKey(node.id));
+    if (!Array.isArray(node.fills) && node.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id));
+    for (const fill of node.fills || []) {
+      if (fill.type === 'image' && fill.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id, fill.id));
+    }
+  }
+  return protectedKeys;
+}
+
 /** Whether a cached source bitmap would visibly differ from this preview. */
 export function imagePreviewRequiresRenderedPixels({
-  adjustments = {}, transforms = {}, inpaintStrokes = [], outputFormat = 'png', outputQuality = 90,
+  adjustments = {}, transforms = {}, inpaintStrokes = [],
 } = {}) {
-  return hasRasterImageEdits(adjustments, transforms, inpaintStrokes)
-    || (outputFormat || 'png') !== 'png' || (Number.isFinite(outputQuality) ? outputQuality : 90) !== 90;
+  // Format and quality only affect an explicitly downloaded file. The canvas
+  // preview stays lossless PNG, so export settings must never hide or stale it.
+  return hasRasterImageEdits(adjustments, transforms, inpaintStrokes);
 }
 
 export function parseImagePreviewKey(previewKey) {
@@ -40,16 +61,12 @@ export function imagePreviewSettingsSignature({
   adjustments = {},
   transforms = {},
   inpaintStrokes = [],
-  outputFormat = 'png',
-  outputQuality = 90,
 } = {}) {
   return JSON.stringify(stableSettingsValue({
     assetId: assetId ?? null,
     adjustments: adjustments ?? {},
     transforms: transforms ?? {},
     inpaintStrokes: inpaintStrokes ?? [],
-    outputFormat: outputFormat || 'png',
-    outputQuality: Number.isFinite(outputQuality) ? outputQuality : 90,
   }));
 }
 
@@ -62,10 +79,10 @@ export function imagePreviewSettingsForNode(node, previewKey, assetId = undefine
     return {
       assetId: assetId ?? node.assetId,
       adjustments: node.adjustments,
-      transforms: node.transforms,
+      transforms: node.fit === 'tile' && node.transforms
+        ? { ...node.transforms, crop: null }
+        : node.transforms,
       inpaintStrokes: node.inpaintStrokes,
-      outputFormat: node.outputFormat ?? 'png',
-      outputQuality: node.outputQuality ?? 90,
     };
   }
   const fills = fillStackForNode(node);
@@ -76,10 +93,25 @@ export function imagePreviewSettingsForNode(node, previewKey, assetId = undefine
   return {
     assetId: assetId ?? imageFill?.assetId,
     adjustments: imageFill?.adjustments,
-    transforms: imageFill?.transforms,
+    transforms: imageFill?.fit === 'tile' && imageFill.transforms
+      ? { ...imageFill.transforms, crop: null }
+      : imageFill?.transforms,
     inpaintStrokes: [],
-    outputFormat: 'png',
-    outputQuality: 90,
+  };
+}
+
+/**
+ * Resolve a complete render recipe from the live layer model. Preview callers
+ * often cross an async boundary after capturing edit values; those snapshots
+ * must never override newer settings already stored on the layer.
+ */
+export function imagePreviewRenderSettingsForNode(node, previewKey, assetId = undefined) {
+  const settings = imagePreviewSettingsForNode(node, previewKey, assetId);
+  return {
+    ...settings,
+    adjustments: settings.adjustments ?? {},
+    transforms: settings.transforms ?? {},
+    inpaintStrokes: settings.inpaintStrokes ?? [],
   };
 }
 
@@ -168,6 +200,11 @@ export function collectLiveImageAssetIds(documents, extraNodes = []) {
   const visit = nodes => {
     for (const node of nodes || []) {
       if (node.type === 'image' && node.assetId) liveAssetIds.add(node.assetId);
+      if (node.type === 'image' && node.backgroundRemovalSourceAssetId) liveAssetIds.add(node.backgroundRemovalSourceAssetId);
+      if (node.type === 'image' && node.backgroundRemovalAssetId) liveAssetIds.add(node.backgroundRemovalAssetId);
+      if (node.type === 'image' && node.resolutionBoostSourceAssetId) liveAssetIds.add(node.resolutionBoostSourceAssetId);
+      if (node.type === 'image' && node.resolutionBoostAssetId) liveAssetIds.add(node.resolutionBoostAssetId);
+      if (node.type === 'image' && node.imageExpansion?.sourceImageAssetId) liveAssetIds.add(node.imageExpansion.sourceImageAssetId);
       if (!Array.isArray(node.fills) && node.imageFill?.assetId) liveAssetIds.add(node.imageFill.assetId);
       for (const fill of node.fills || []) {
         if (fill.type === 'image' && fill.imageFill?.assetId) liveAssetIds.add(fill.imageFill.assetId);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -365,7 +365,7 @@ test('press and drag prototype triggers are validated and resolve independently 
   assert.throws(() => addPrototypeInteraction(document, source.id, dragTarget.id, { trigger: 'on-release' }), /Unsupported prototype trigger/);
 });
 
-test('smart animate is stored for frame navigation and rejected for overlays', () => {
+test('smart animate is stored for frame navigation and swap overlays, but rejected for opening or closing overlays', () => {
   const document = createDocument();
   const source = createNode('rectangle', { name: 'Open details' });
   const firstFrame = createNode('frame', { name: 'Home' });
@@ -378,14 +378,102 @@ test('smart animate is stored for frame navigation and rejected for overlays', (
   assert.equal(interaction.easing, 'ease-out');
   assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].easing, 'ease-out');
   assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { easing: 'bounce' }), /Unsupported prototype easing/);
-  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { action: 'open-overlay', transition: 'smart-animate' }), /only be used for frame navigation/);
+  const swapOverlay = addPrototypeInteraction(document, source.id, destination.id, {
+    action: 'swap-overlay', transition: 'smart-animate', easing: 'ease-out', duration: 500
+  });
+  assert.equal(swapOverlay.transition, 'smart-animate');
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reloaded, source.id).node.interactions.find(item => item.action === 'swap-overlay').transition, 'smart-animate',
+    'swap-overlay Smart Animate should survive local document persistence');
+
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
+    action: 'open-overlay', transition: 'smart-animate'
+  }), /frame navigation or swap-overlay/);
+  assert.throws(() => addPrototypeInteraction(document, source.id, null, {
+    action: 'close-overlay', transition: 'smart-animate'
+  }), /frame navigation or swap-overlay/);
 
   const invalid = structuredClone(document);
   invalid.pages[0].children[0].children[0].interactions[0].action = 'open-overlay';
   assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  const invalidSwap = structuredClone(document);
+  const persistedSwap = findNode(invalidSwap, source.id).node.interactions.find(item => item.action === 'swap-overlay');
+  persistedSwap.action = 'open-overlay';
+  assert.throws(() => validateDocument(invalidSwap), /Invalid prototype interactions/,
+    'persisted open-overlay Smart Animate should be rejected');
+  const invalidClose = structuredClone(document);
+  const persistedClose = findNode(invalidClose, source.id).node.interactions.find(item => item.action === 'swap-overlay');
+  persistedClose.action = 'close-overlay';
+  persistedClose.destinationId = null;
+  persistedClose.destinationPageId = null;
+  assert.throws(() => validateDocument(invalidClose), /Invalid prototype interactions/,
+    'persisted close-overlay Smart Animate should be rejected');
+  assert.equal(validateDocument(reloaded), true, 'persisted swap-overlay Smart Animate should pass model validation');
   const invalidEasing = structuredClone(document);
   invalidEasing.pages[0].children[0].children[0].interactions[0].easing = 'bounce';
   assert.throws(() => validateDocument(invalidEasing), /Invalid prototype interactions/);
+});
+
+test('prototype transition kinds validate, update, and retain their direction after reload', () => {
+  assert.deepEqual(prototypeMoveInOffset('move-left'), { x: 22, y: 0 });
+  assert.deepEqual(prototypeMoveInOffset('move-right'), { x: -22, y: 0 });
+  assert.deepEqual(prototypeMoveInOffset('move-up'), { x: 0, y: 22 });
+  assert.deepEqual(prototypeMoveInOffset('move-down'), { x: 0, y: -22 });
+  assert.equal(prototypeMoveInOffset('dissolve'), null);
+  assert.throws(() => prototypeMoveInOffset('move-up', -1), /finite non-negative/);
+
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Open details' });
+  const home = createNode('frame', { name: 'Home' });
+  home.children.push(source);
+  addNode(document, home);
+  const transitionKinds = [
+    'move-left', 'move-right', 'move-up', 'move-down',
+    'move-out-left', 'move-out-right', 'move-out-up', 'move-out-down',
+    'push-left', 'push-right', 'push-up', 'push-down',
+    'slide-in-left', 'slide-in-right', 'slide-in-up', 'slide-in-down',
+    'slide-out-left', 'slide-out-right', 'slide-out-up', 'slide-out-down'
+  ];
+  const interactions = transitionKinds.map((transition, index) => {
+    const target = createNode('frame', { name: `Transition target ${index + 1}` });
+    addNode(document, target);
+    return addPrototypeInteraction(document, source.id, target.id, { transition });
+  });
+  assert.deepEqual(interactions.map(item => item.transition), transitionKinds);
+  assert.equal(updatePrototypeInteraction(document, source.id, interactions[0].id, interactions[0].destinationId, {
+    transition: 'move-out-left'
+  }).transition, 'move-out-left', 'editing an interaction should replace its saved transition kind');
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.deepEqual(findNode(reloaded, source.id).node.interactions.map(item => item.transition), [
+    'move-out-left', ...transitionKinds.slice(1)
+  ]);
+  validateDocument(reloaded);
+
+  const invalid = structuredClone(reloaded);
+  findNode(invalid, source.id).node.interactions[0].transition = 'slide-left';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+});
+
+test('prototype transitions support and persist the full 10-second duration range', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Timed home' });
+  const source = createNode('rectangle', { name: 'Open destination' });
+  const destination = createNode('frame', { name: 'Long transition' });
+  home.children.push(source);
+  addNode(document, home);
+  addNode(document, destination);
+  const interaction = addPrototypeInteraction(document, source.id, destination.id, {
+    transition: 'push-left', duration: 10_000
+  });
+  assert.equal(interaction.duration, 10_000);
+  assert.equal(updatePrototypeInteraction(document, source.id, interaction.id, destination.id, {
+    transition: 'push-left', duration: 12_000
+  }).duration, 10_000, 'programmatic values are clamped to Figma’s documented maximum');
+  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].duration, 10_000);
+
+  const invalid = structuredClone(document);
+  findNode(invalid, source.id).node.interactions[0].duration = 10_001;
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
 });
 
 test('after-delay prototype routes validate, persist, schedule once, and cancel safely', () => {
@@ -624,7 +712,10 @@ test('prototype overlays open, close, preserve navigation history, and survive l
     outsideClick: false,
     background: true,
     backgroundColor: '#123456',
-    backgroundOpacity: 0.45
+    backgroundOpacity: 0.45,
+    transition: 'instant',
+    easing: 'ease-in-out',
+    duration: 300
   });
   assert.equal(applyPrototypeInteraction(reloaded, session, navigate), 'navigated');
   assert.equal(session.frameId, destination.id);
@@ -647,13 +738,19 @@ test('swap overlay replaces the top overlay in place without adding history', ()
   addNode(document, home); addNode(document, menu); addNode(document, details);
 
   const open = addPrototypeInteraction(document, home.id, menu.id, {
+    transition: 'move-in-left', easing: 'ease-out', duration: 600,
     action: 'open-overlay', overlayPosition: 'bottom-right', overlayOutsideClick: false,
     overlayBackground: true, overlayBackgroundColor: '#abcdef', overlayBackgroundOpacity: 0.6
   });
-  const swap = addPrototypeInteraction(document, swapButton.id, details.id, { action: 'swap-overlay' });
+  const swap = addPrototypeInteraction(document, swapButton.id, details.id, {
+    action: 'swap-overlay', transition: 'smart-animate', easing: 'ease-out', duration: 500
+  });
   const session = createPrototypeSession({ page: document.pages[0], frame: home });
   applyPrototypeInteraction(document, session, open);
   const before = structuredClone(session.overlays[0]);
+  assert.equal(before.transition, 'move-in-left');
+  assert.equal(before.easing, 'ease-out');
+  assert.equal(before.duration, 600);
   assert.equal(applyPrototypeInteraction(document, session, swap), 'overlay-swapped');
   assert.equal(session.overlays.length, 1);
   assert.equal(session.overlays[0].frameId, details.id);

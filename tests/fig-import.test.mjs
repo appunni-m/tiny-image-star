@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { zipSync } from 'fflate';
+import { encodeCommandsBlob, encodeVectorNetwork, encodeVectorNetworkBlob } from 'openfig-core';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
-import { parseDocument, serializeDocument } from '../src/model.js';
+import { componentPropertyExposureGroups } from '../src/component-property-exposure.js';
+import { parseDocument, serializeDocument, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
 import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transformPoint } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
-import { applyAutoLayout } from '../src/layout-engine.js';
+import { applyAutoLayout, gridTrackLayout } from '../src/layout-engine.js';
 import { gradientFillToCSS } from '../src/fills.js';
 
 const fixture = name => new URL(`./fixtures/fig-import/${name}`, import.meta.url);
@@ -88,6 +90,237 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.equal(frame.children[0].type, 'group');
   assert.ok(frame.children[0].children.length >= 2);
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
+});
+
+test('imports a simple Figma vector as an editable network while preserving its cubic geometry and fills', () => {
+  const pageGuid = { sessionID: 91, localID: 1 };
+  const commands = [
+    { type: 'M', x: 10, y: 10 },
+    { type: 'C', c1x: 25, c1y: 0, c2x: 60, c2y: 0, x: 80, y: 10 },
+    { type: 'L', x: 80, y: 80 },
+    { type: 'L', x: 10, y: 80 },
+    { type: 'Z' }
+  ];
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('VECTOR', 2, pageGuid, 'a', {
+        name: 'Editable vector', size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [{ commandsBlob: 1, windingRule: 'NONZERO', styleID: 0 }],
+        fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 }, opacity: 1, visible: true }],
+        strokePaints: []
+      })
+    ],
+    images: new Map(),
+    message: { blobs: [encodeVectorNetworkBlob([commands]), encodeCommandsBlob(commands)] }
+  };
+  const imported = convertFigDocument(parsed);
+  const vector = imported.document.pages[0].children[0];
+  assert.equal(vector.type, 'network');
+  assert.equal(vector.vertices.length, 4);
+  assert.equal(vector.edges.length, 4);
+  assert.equal(vector.faces.length, 1);
+  assert.equal(vector.fills[0].color, '#3366cc');
+  assert.equal(vector.edges[0].control1.x, .25);
+  assert.equal(vector.edges[0].control1.y, 0);
+  assert.equal(vector.edges[0].control2.x, .6);
+  assert.equal(vector.edges[0].control2.y, 0);
+  const restored = parseDocument(serializeDocument(imported.document)).pages[0].children[0];
+  assert.equal(restored.type, 'network');
+  assert.deepEqual(restored.edges, vector.edges);
+});
+
+test('imports multiple one-loop Figma vector regions as editable network faces', () => {
+  const pageGuid = { sessionID: 93, localID: 1 };
+  const first = [
+    { type: 'M', x: 8, y: 8 }, { type: 'L', x: 42, y: 8 },
+    { type: 'L', x: 42, y: 42 }, { type: 'L', x: 8, y: 42 }, { type: 'Z' }
+  ];
+  const second = [
+    { type: 'M', x: 58, y: 58 }, { type: 'L', x: 92, y: 58 },
+    { type: 'L', x: 92, y: 92 }, { type: 'L', x: 58, y: 92 }, { type: 'Z' }
+  ];
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('VECTOR', 2, pageGuid, 'a', {
+        name: 'Disconnected regions', size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [
+          { commandsBlob: 1, windingRule: 'NONZERO', styleID: 0 },
+          { commandsBlob: 2, windingRule: 'NONZERO', styleID: 0 }
+        ],
+        fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 }, opacity: 1, visible: true }],
+        strokePaints: []
+      })
+    ],
+    images: new Map(),
+    message: { blobs: [encodeVectorNetworkBlob([first, second]), encodeCommandsBlob(first), encodeCommandsBlob(second)] }
+  };
+  const imported = convertFigDocument(parsed);
+  const vector = imported.document.pages[0].children[0];
+  assert.equal(vector.type, 'network');
+  assert.equal(vector.vertices.length, 8);
+  assert.equal(vector.edges.length, 8);
+  assert.equal(vector.faces.length, 2);
+  assert.deepEqual(vector.faces.map(face => face.vertexIds.length), [4, 4]);
+  const restored = parseDocument(serializeDocument(imported.document)).pages[0].children[0];
+  assert.equal(restored.type, 'network');
+  assert.deepEqual(restored.faces, vector.faces);
+});
+
+test('keeps multi-loop Figma vector regions as compound editable paths instead of flattening holes into faces', () => {
+  const pageGuid = { sessionID: 94, localID: 1 };
+  const compound = [
+    { type: 'M', x: 5, y: 5 }, { type: 'L', x: 95, y: 5 },
+    { type: 'L', x: 95, y: 95 }, { type: 'L', x: 5, y: 95 }, { type: 'Z' },
+    { type: 'M', x: 30, y: 30 }, { type: 'L', x: 30, y: 70 },
+    { type: 'L', x: 70, y: 70 }, { type: 'L', x: 70, y: 30 }, { type: 'Z' }
+  ];
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('VECTOR', 2, pageGuid, 'a', {
+        name: 'Compound region', size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [{ commandsBlob: 1, windingRule: 'ODD', styleID: 0 }],
+        fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 }, opacity: 1, visible: true }],
+        strokePaints: []
+      })
+    ],
+    images: new Map(),
+    message: { blobs: [encodeVectorNetworkBlob([compound]), encodeCommandsBlob(compound)] }
+  };
+  const imported = convertFigDocument(parsed);
+  const vectorGroup = imported.document.pages[0].children[0];
+  assert.equal(vectorGroup.type, 'group');
+  assert.equal(vectorGroup.children.length, 1);
+  assert.equal(vectorGroup.children[0].type, 'path');
+  assert.equal(vectorGroup.children[0].subpaths.length, 1,
+    'the second loop remains a compound subpath so its hole semantics are retained');
+});
+
+test('falls back to editable paths when Figma network faces use parallel edges the local graph cannot disambiguate', () => {
+  const pageGuid = { sessionID: 95, localID: 1 };
+  const first = [
+    { type: 'M', x: 10, y: 10 }, { type: 'L', x: 60, y: 10 },
+    { type: 'L', x: 35, y: 55 }, { type: 'Z' }
+  ];
+  const second = [
+    { type: 'M', x: 10, y: 10 }, { type: 'C', c1x: 15, c1y: -10, c2x: 45, c2y: -10, x: 60, y: 10 },
+    { type: 'L', x: 85, y: 55 }, { type: 'Z' }
+  ];
+  const network = encodeVectorNetwork({
+    vertices: [
+      { x: 10, y: 10, styleID: 0 }, { x: 60, y: 10, styleID: 0 },
+      { x: 35, y: 55, styleID: 0 }, { x: 85, y: 55, styleID: 0 }
+    ],
+    segments: [
+      { start: { vertex: 0, dx: 0, dy: 0 }, end: { vertex: 1, dx: 0, dy: 0 }, isStraight: true },
+      { start: { vertex: 1, dx: 0, dy: 0 }, end: { vertex: 2, dx: 0, dy: 0 }, isStraight: true },
+      { start: { vertex: 2, dx: 0, dy: 0 }, end: { vertex: 0, dx: 0, dy: 0 }, isStraight: true },
+      { start: { vertex: 0, dx: 5, dy: -20 }, end: { vertex: 1, dx: -15, dy: -20 }, isStraight: false },
+      { start: { vertex: 1, dx: 0, dy: 0 }, end: { vertex: 3, dx: 0, dy: 0 }, isStraight: true },
+      { start: { vertex: 3, dx: 0, dy: 0 }, end: { vertex: 0, dx: 0, dy: 0 }, isStraight: true }
+    ],
+    regions: [
+      { windingRule: 'NONZERO', styleID: 0, loops: [[0, 1, 2]] },
+      { windingRule: 'NONZERO', styleID: 0, loops: [[3, 4, 5]] }
+    ]
+  });
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('VECTOR', 2, pageGuid, 'a', {
+        name: 'Parallel network edges', size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [
+          { commandsBlob: 1, windingRule: 'NONZERO', styleID: 0 },
+          { commandsBlob: 2, windingRule: 'NONZERO', styleID: 0 }
+        ],
+        fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 }, opacity: 1, visible: true }],
+        strokePaints: []
+      })
+    ],
+    images: new Map(),
+    message: { blobs: [network, encodeCommandsBlob(first), encodeCommandsBlob(second)] }
+  };
+  const imported = convertFigDocument(parsed);
+  const vectorGroup = imported.document.pages[0].children[0];
+  assert.equal(vectorGroup.type, 'group');
+  assert.equal(vectorGroup.children.length, 2);
+  assert.ok(vectorGroup.children.every(child => child.type === 'path'));
+});
+
+test('preflights Figma VECTOR command blobs stored on the node before resolving paths', () => {
+  const pageGuid = { sessionID: 92, localID: 1 };
+  const commands = [
+    { type: 'M', x: 0, y: 0 }, { type: 'L', x: 100, y: 0 },
+    { type: 'L', x: 100, y: 100 }, { type: 'Z' }
+  ];
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('VECTOR', 2, pageGuid, 'a', {
+        name: 'Oversized vector', size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [{ commandsBlob: 1, windingRule: 'NONZERO', styleID: 0 }]
+      })
+    ],
+    images: new Map(),
+    message: { blobs: [encodeVectorNetworkBlob([commands]), new Uint8Array(512 * 1024 + 1)] }
+  };
+  const imported = convertFigDocument(parsed);
+  assert.deepEqual(imported.document.pages[0].children, []);
+  assert.equal(imported.report.unsupportedTypes.VECTOR, 1,
+    'the oversized node-level fillGeometry blob must be rejected before geometry decoding');
+});
+
+test('imports Figma corner smoothing on editable rectangles and frames', () => {
+  const page = { sessionID: 1, localID: 1 };
+  const frame = { sessionID: 1, localID: 2 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('FRAME', 2, page, 'a', { guid: frame, name: 'Squircle frame', cornerRadius: 20, cornerSmoothing: 0.6 }),
+      node('RECTANGLE', 3, frame, 'a', { name: 'Independent squircle', rectangleCornerRadii: [4, 8, 12, 16], cornerSmoothing: 0.35 })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const [board] = imported.document.pages[0].children;
+  assert.equal(board.cornerSmoothing, 0.6);
+  assert.equal(board.radius, 20);
+  assert.deepEqual(board.children[0].cornerRadii, { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 });
+  assert.equal(board.children[0].cornerSmoothing, 0.35);
+});
+
+test('imports Figma corner radius and smoothing on editable stars and polygons', () => {
+  const page = { sessionID: 1, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('STAR', 2, page, 'a', { name: 'Rounded star', pointCount: 7, starInnerRadius: .4, cornerRadius: 8, cornerSmoothing: .3 }),
+      node('POLYGON', 3, page, 'a', { name: 'Rounded polygon', pointCount: 8, cornerRadius: 6, cornerSmoothing: .5 }),
+      node('STAR', 4, page, 'a', { name: 'Fine star', pointCount: 60 })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const [star, polygon, fineStar] = imported.document.pages[0].children;
+  assert.equal(star.type, 'star');
+  assert.equal(star.radius, 8);
+  assert.equal(star.cornerSmoothing, .3);
+  assert.equal(star.points, 7);
+  assert.equal(polygon.type, 'polygon');
+  assert.equal(polygon.radius, 6);
+  assert.equal(polygon.cornerSmoothing, .5);
+  assert.equal(polygon.points, 8);
+  assert.equal(fineStar.points, 60, 'the current Figma star point-count limit survives import');
 });
 
 test('imports ordered linear, radial, and angular Figma gradient paints with editable geometry and alpha', () => {
@@ -309,6 +542,37 @@ test('imports consecutive Figma alpha-mask stacks as editable, scoped mask group
   assert.equal(restoredCard.maskSourceId, restoredCard.children[0].id);
 });
 
+test('imports supported Figma VECTOR masks as editable local vector-mask groups', () => {
+  const pageGuid = { sessionID: 111, localID: 1 };
+  const frameGuid = { sessionID: 111, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, name: 'Board' }),
+      node('RECTANGLE', 3, frameGuid, 'a', { name: 'Shape mask', isMask: true, maskType: 'VECTOR', opacity: 0.2,
+        fillPaints: [{ type: 'SOLID', opacity: 0, color: { r: 1, g: 0, b: 0, a: 0 }, visible: true }],
+        strokePaints: [{ type: 'SOLID', opacity: 0, color: { r: 0, g: 0, b: 1, a: 0 }, visible: true, weight: 6 }] }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'Masked content' }),
+      node('LINE', 5, frameGuid, 'c', { name: 'Stroke-only mask', isMask: true, maskType: 'VECTOR', opacity: 0,
+        strokeWeight: 8, strokePaints: [{ type: 'SOLID', opacity: 0, color: { r: 0, g: 0, b: 0, a: 0 }, visible: true }] }),
+      node('RECTANGLE', 6, frameGuid, 'd', { name: 'Line-masked content' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'vector-masks.fig' });
+  const [shapeMask, lineMask] = imported.document.pages[0].children[0].children;
+  assert.equal(shapeMask.maskMode, 'vector');
+  assert.equal(shapeMask.children.find(child => child.id === shapeMask.maskSourceId).opacity, 0.2,
+    'the imported source properties remain editable even though vector rendering ignores their opacity');
+  assert.equal(lineMask.maskMode, 'vector');
+  assert.equal(lineMask.children.find(child => child.id === lineMask.maskSourceId).type, 'line',
+    'a visible stroke-only line remains an editable vector mask source');
+  assert.equal(imported.report.unsupportedTypes.MASK, undefined);
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].children.map(group => group.maskMode), ['vector', 'vector']);
+});
+
 test('mask-stack wrapping preserves rotated and affine child placement', () => {
   const pageGuid = { sessionID: 12, localID: 1 };
   const frameGuid = { sessionID: 12, localID: 2 };
@@ -362,7 +626,7 @@ test('only active local alpha masks are grouped; unsupported modes and auto-layo
     message: { blobs: [] }, images: new Map()
   });
 
-  for (const maskType of ['VECTOR', 'LUMINANCE']) {
+  for (const maskType of ['LUMINANCE']) {
     const imported = convertFigDocument(parsedForMask({ isMask: true, maskType }));
     const children = imported.document.pages[0].children[0].children;
     assert.deepEqual(children.map(child => child.name), ['Mask', 'Content']);
@@ -375,8 +639,9 @@ test('only active local alpha masks are grouped; unsupported modes and auto-layo
   assert.deepEqual(dormantMode.document.pages[0].children[0].children.map(child => child.name), ['Mask', 'Content']);
 
   const outline = convertFigDocument(parsedForMask({ isMask: true, isMaskOutline: true }));
-  assert.ok(outline.report.warnings.some(warning => warning.type === 'MASK' && warning.detail.includes('VECTOR')),
-    'the deprecated outline flag must not be mistaken for an alpha mask');
+  assert.equal(outline.document.pages[0].children[0].children[0].maskMode, 'vector',
+    'the deprecated outline flag maps to vector mode when its source is supported');
+  assert.equal(outline.report.unsupportedTypes.MASK, undefined);
 
   const autoLayout = convertFigDocument(parsedForMask({ isMask: true }, { stackMode: 'HORIZONTAL' }));
   assert.deepEqual(autoLayout.document.pages[0].children[0].children.map(child => child.name), ['Mask', 'Content']);
@@ -525,13 +790,20 @@ test('preserves resolvable local component instances, property overrides, and na
     header: { version: 106 },
     nodes: [
       node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
-      node('COMPONENT_SET', 2, page, 'a', { guid: set, name: 'Button' }),
-      node('COMPONENT', 3, set, 'a', { guid: small, name: 'Button/size=small' }),
+      node('COMPONENT_SET', 2, page, 'a', { guid: set, name: 'Button', componentPropertyDefinitions: {
+        Size: { type: 'VARIANT', defaultValue: 'Small', variantOptions: ['Small', 'Large'] }
+      } }),
+      node('COMPONENT', 3, set, 'a', { guid: small, name: 'Button/size=small', variantProperties: { Size: 'Small' } }),
       node('RECTANGLE', 4, small, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
-      node('COMPONENT', 5, set, 'b', { guid: large, name: 'Button/size=large' }),
+      node('TEXT', 9, small, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED' }),
+      node('COMPONENT', 5, set, 'b', { guid: large, name: 'Button/size=large', variantProperties: { Size: 'Large' } }),
       node('RECTANGLE', 6, large, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
-      node('INSTANCE', 7, page, 'b', { guid: instance, name: 'Primary button', componentId: small }),
-      node('RECTANGLE', 8, instance, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 1, a: 1 } }] })
+      node('TEXT', 10, large, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED' }),
+      node('INSTANCE', 7, page, 'b', { guid: instance, name: 'Primary button', componentId: small, componentProperties: {
+        Size: { type: 'VARIANT', value: 'Large' }
+      } }),
+      node('RECTANGLE', 8, instance, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 1, a: 1 } }] }),
+      node('TEXT', 11, instance, 'b', { name: 'Caption', textData: { characters: 'Short caption' }, textAutoResize: 'NONE', textTruncation: 'ENDING', maxLines: 2 })
     ],
     images: new Map(), message: { blobs: [] }
   };
@@ -539,25 +811,322 @@ test('preserves resolvable local component instances, property overrides, and na
   const componentsByName = new Map(document.components.map(component => [component.name, component]));
   const variantSet = document.componentSets[0];
   const importedInstance = document.pages[0].children.find(child => child.name === 'Primary button');
-  const master = document.pages[0].children[0].children[0];
+  const master = document.pages[0].children[0].children.find(candidate => candidate.componentId === importedInstance.componentId);
   const masterChild = master.children[0];
   const instanceChild = importedInstance.children[0];
+  const masterText = master.children.find(child => child.type === 'text');
+  const instanceText = importedInstance.children.find(child => child.type === 'text');
 
   assert.equal(componentsByName.size, 2);
   assert.equal(variantSet.name, 'Button');
-  assert.deepEqual(variantSet.properties, [{ name: 'size', values: ['small', 'large'] }]);
+  assert.deepEqual(variantSet.properties, [{ name: 'Size', values: ['Small', 'Large'] }]);
   assert.equal(importedInstance.isInstance, true);
-  assert.equal(importedInstance.componentId, componentsByName.get('Button/size=small').id);
+  assert.equal(importedInstance.componentId, componentsByName.get('Button/size=large').id,
+    'the instance variant selection uses the explicit component-property value');
   assert.equal(importedInstance.componentSourceId, master.id);
   assert.equal(instanceChild.componentSourceId, masterChild.id);
   assert.deepEqual(importedInstance.componentOverrides[masterChild.id].fills, instanceChild.fills,
     'the imported effective fill remains a local editable instance override');
+  assert.deepEqual(importedInstance.componentOverrides[masterText.id], {
+    text: 'Short caption', textTruncation: 'ending', maxLines: 2
+  }, 'Figma text truncation properties survive as editable component overrides');
+  assert.equal(instanceText.maxLines, 2);
   assert.equal(report.flattenedTypes.INSTANCE, undefined);
   assert.equal(report.flattenedTypes.COMPONENT_SET, undefined);
 
   const restored = parseDocument(serializeDocument(document));
   assert.equal(restored.pages[0].children.find(child => child.name === 'Primary button').isInstance, true);
-  assert.equal(restored.componentSets[0].properties[0].name, 'size');
+  assert.equal(restored.componentSets[0].properties[0].name, 'Size');
+});
+
+test('imports exposed Boolean, text, and instance-swap component properties and instance values', () => {
+  const sessionID = 77;
+  const page = { sessionID, localID: 1 };
+  const iconPrimary = { sessionID, localID: 10 };
+  const iconAlternate = { sessionID, localID: 12 };
+  const card = { sessionID, localID: 20 };
+  const cardIcon = { sessionID, localID: 23 };
+  const placedCard = { sessionID, localID: 30 };
+  const placedIcon = { sessionID, localID: 33 };
+  const definitions = {
+    'Show icon#0:0': { type: 'BOOLEAN', defaultValue: false },
+    'Button label#0:1': { type: 'TEXT', defaultValue: 'Continue' },
+    'Icon#0:2': {
+      type: 'INSTANCE_SWAP', defaultValue: `${sessionID}:${iconPrimary.localID}`,
+      preferredValues: [{ type: 'COMPONENT', key: 'icon-alternate-key' }]
+    }
+  };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 10, page, 'a', { guid: iconPrimary, name: 'Icon/Primary' }),
+      node('ELLIPSE', 11, iconPrimary, 'a', { name: 'Artwork' }),
+      node('COMPONENT', 12, page, 'b', { guid: iconAlternate, name: 'Icon/Alternate', key: 'icon-alternate-key' }),
+      node('ELLIPSE', 13, iconAlternate, 'a', { name: 'Artwork' }),
+      node('COMPONENT', 20, page, 'c', { guid: card, name: 'Card', componentPropertyDefinitions: definitions }),
+      node('RECTANGLE', 21, card, 'a', { name: 'Icon visibility', visible: false, componentPropertyReferences: { visible: 'Show icon#0:0' } }),
+      node('TEXT', 22, card, 'b', { name: 'Button label', textData: { characters: 'Continue' }, componentPropertyReferences: { characters: 'Button label#0:1' } }),
+      node('INSTANCE', 23, card, 'c', { guid: cardIcon, name: 'Icon', componentId: iconPrimary, componentPropertyReferences: { mainComponent: 'Icon#0:2' } }),
+      node('ELLIPSE', 24, cardIcon, 'a', { name: 'Artwork' }),
+      node('INSTANCE', 30, page, 'd', {
+        guid: placedCard, name: 'Card use', componentId: card,
+        componentProperties: {
+          'Show icon#0:0': { type: 'BOOLEAN', value: true },
+          'Button label#0:1': { type: 'TEXT', value: 'Go now' },
+          'Icon#0:2': { type: 'INSTANCE_SWAP', value: `${sessionID}:${iconAlternate.localID}` }
+        }
+      }),
+      node('RECTANGLE', 31, placedCard, 'a', { name: 'Icon visibility', visible: true, componentPropertyReferences: { visible: 'Show icon#0:0' } }),
+      node('TEXT', 32, placedCard, 'b', { name: 'Button label', textData: { characters: 'Go now' }, componentPropertyReferences: { characters: 'Button label#0:1' } }),
+      node('INSTANCE', 33, placedCard, 'c', { guid: placedIcon, name: 'Icon', componentId: iconAlternate }),
+      node('ELLIPSE', 34, placedIcon, 'a', { name: 'Artwork' })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const cardComponent = imported.document.components.find(item => item.id === imported.document.pages[0].children
+    .find(candidate => candidate.name === 'Card')?.componentId);
+  const cardUse = imported.document.pages[0].children.find(candidate => candidate.name === 'Card use');
+  const propertiesByName = new Map(cardComponent.componentProperties.map(property => [property.name, property]));
+  assert.deepEqual([...propertiesByName.keys()].sort(), ['Button label', 'Icon', 'Show icon']);
+  assert.equal(propertiesByName.get('Show icon').type, 'BOOLEAN');
+  assert.equal(propertiesByName.get('Show icon').defaultValue, false);
+  assert.equal(propertiesByName.get('Button label').type, 'TEXT');
+  assert.equal(propertiesByName.get('Button label').defaultValue, 'Continue');
+  assert.equal(propertiesByName.get('Icon').type, 'INSTANCE_SWAP');
+  const alternate = imported.document.components.find(item => item.name === 'Icon/Alternate');
+  assert.deepEqual(propertiesByName.get('Icon').preferredComponentIds, [alternate.id]);
+  assert.equal(cardUse.componentPropertyValues[propertiesByName.get('Show icon').id], true);
+  assert.equal(cardUse.componentPropertyValues[propertiesByName.get('Button label').id], 'Go now');
+  assert.equal(cardUse.children.find(child => child.isInstance).componentId, alternate.id);
+  assert.equal(cardUse.children.find(child => child.name === 'Icon visibility').visible, true);
+  assert.equal(cardUse.children.find(child => child.type === 'text').text, 'Go now');
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY, undefined);
+  const restored = parseDocument(serializeDocument(imported.document));
+  const restoredCard = restored.components.find(item => item.id === cardComponent.id);
+  assert.equal(restoredCard.componentProperties.length, 3);
+  assert.equal(restored.pages[0].children.find(candidate => candidate.id === cardUse.id).componentPropertyValues[propertiesByName.get('Button label').id], 'Go now');
+});
+
+test('imports component slots as editable frames and preserves instance-authored slot content', () => {
+  const sessionID = 78;
+  const page = { sessionID, localID: 1 };
+  const component = { sessionID, localID: 2 };
+  const masterSlot = { sessionID, localID: 3 };
+  const instance = { sessionID, localID: 5 };
+  const instanceSlot = { sessionID, localID: 6 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropertyDefinitions: {
+        'Content#0:0': { type: 'SLOT', description: 'Card content', slotSettings: { minChildren: 1 } }
+      } }),
+      node('FRAME', 3, component, 'a', { guid: masterSlot, name: 'Content', componentPropertyReferences: { slotContentId: 'Content#0:0' } }),
+      node('TEXT', 4, masterSlot, 'a', { name: 'Placeholder', textData: { characters: 'Default content' } }),
+      node('INSTANCE', 5, page, 'b', { guid: instance, name: 'Card use', componentId: component }),
+      node('FRAME', 6, instance, 'a', { guid: instanceSlot, name: 'Content' }),
+      node('RECTANGLE', 7, instanceSlot, 'a', { name: 'Custom card body' }),
+      node('TEXT', 8, instanceSlot, 'b', { name: 'Body label', textData: { characters: 'Custom content' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const property = localComponent.componentProperties[0];
+  const instanceNode = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  const localSlot = instanceNode.children[0];
+  assert.equal(property.type, 'SLOT');
+  assert.deepEqual(property.defaultValue, []);
+  assert.deepEqual(localSlot.children.map(child => child.name), ['Custom card body', 'Body label']);
+  assert.deepEqual(instanceNode.componentPropertyValues[property.id], localSlot.children.map(child => child.id));
+  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_SLOT_SETTINGS').detail, /constraints/u);
+  const restored = parseDocument(serializeDocument(imported.document));
+  syncAllComponentInstances(restored);
+  assert.deepEqual(restored.pages[0].children.find(item => item.isInstance).children[0].children.map(child => child.name), ['Custom card body', 'Body label']);
+});
+
+test('reports component properties whose one source value controls several local layers', () => {
+  const page = { sessionID: 79, localID: 1 };
+  const component = { sessionID: 79, localID: 2 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Icon', componentPropertyDefinitions: {
+        'Visible#0:0': { type: 'BOOLEAN', defaultValue: true }
+      } }),
+      node('ELLIPSE', 3, component, 'a', { name: 'Outer', componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('ELLIPSE', 4, component, 'b', { name: 'Inner', componentPropertyReferences: { visible: 'Visible#0:0' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Icon');
+  assert.equal(localComponent.componentProperties, undefined);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /multiple layers/u);
+});
+
+test('imports exposed nested component instances and reveals their controls on the outer instance', () => {
+  const sessionID = 81;
+  const page = { sessionID, localID: 1 };
+  const icon = { sessionID, localID: 10 };
+  const owner = { sessionID, localID: 20 };
+  const nestedInMaster = { sessionID, localID: 21 };
+  const ownerUse = { sessionID, localID: 30 };
+  const nestedInUse = { sessionID, localID: 31 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 10, page, 'a', { guid: icon, name: 'Icon', componentPropertyDefinitions: {
+        'Visible#0:0': { type: 'BOOLEAN', defaultValue: true }
+      } }),
+      node('ELLIPSE', 11, icon, 'a', { name: 'Mark', componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('COMPONENT', 20, page, 'b', { guid: owner, name: 'Owner' }),
+      node('INSTANCE', 21, owner, 'a', { guid: nestedInMaster, name: 'Nested icon', componentId: icon, isExposedInstance: true }),
+      node('ELLIPSE', 22, nestedInMaster, 'a', { name: 'Mark' }),
+      node('INSTANCE', 30, page, 'c', { guid: ownerUse, name: 'Owner use', componentId: owner }),
+      node('INSTANCE', 31, ownerUse, 'a', { guid: nestedInUse, name: 'Nested icon', componentId: icon }),
+      node('ELLIPSE', 32, nestedInUse, 'a', { name: 'Mark' })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localOwner = imported.document.components.find(item => item.name === 'Owner');
+  const localIcon = imported.document.components.find(item => item.name === 'Icon');
+  const ownerMaster = imported.document.pages[0].children.find(item => item.name === 'Owner');
+  const ownerInstance = imported.document.pages[0].children.find(item => item.name === 'Owner use');
+  assert.deepEqual(localOwner.exposedNestedInstances, [ownerMaster.children[0].id]);
+  const groups = componentPropertyExposureGroups(imported.document, localOwner, ownerInstance);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].component.id, localIcon.id);
+  assert.equal(groups[0].properties[0].name, 'Visible');
+  const restored = parseDocument(serializeDocument(imported.document));
+  const restoredOwner = restored.components.find(item => item.id === localOwner.id);
+  const restoredInstance = restored.pages[0].children.find(item => item.id === ownerInstance.id);
+  assert.equal(componentPropertyExposureGroups(restored, restoredOwner, restoredInstance).length, 1);
+});
+
+test('imports an exposed nested variant axis into the owning component instance controls', () => {
+  const sessionID = 82;
+  const page = { sessionID, localID: 1 };
+  const badgeSet = { sessionID, localID: 10 };
+  const badgeSmall = { sessionID, localID: 11 };
+  const badgeLarge = { sessionID, localID: 13 };
+  const owner = { sessionID, localID: 20 };
+  const nestedInOwner = { sessionID, localID: 21 };
+  const ownerUse = { sessionID, localID: 30 };
+  const nestedInUse = { sessionID, localID: 31 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT_SET', 10, page, 'a', { guid: badgeSet, name: 'Badge', componentPropertyDefinitions: {
+        Size: { type: 'VARIANT', defaultValue: 'Small', variantOptions: ['Small', 'Large'] }
+      } }),
+      node('COMPONENT', 11, badgeSet, 'a', { guid: badgeSmall, name: 'Badge/size=small', variantProperties: { Size: 'Small' } }),
+      node('ELLIPSE', 12, badgeSmall, 'a', { name: 'Small artwork' }),
+      node('COMPONENT', 13, badgeSet, 'b', { guid: badgeLarge, name: 'Badge/size=large', variantProperties: { Size: 'Large' } }),
+      node('ELLIPSE', 14, badgeLarge, 'a', { name: 'Large artwork' }),
+      node('COMPONENT', 20, page, 'b', { guid: owner, name: 'Card' }),
+      node('INSTANCE', 21, owner, 'a', { guid: nestedInOwner, name: 'Badge', componentId: badgeSmall, isExposedInstance: true }),
+      node('ELLIPSE', 22, nestedInOwner, 'a', { name: 'Small artwork' }),
+      node('INSTANCE', 30, page, 'c', { guid: ownerUse, name: 'Card use', componentId: owner }),
+      node('INSTANCE', 31, ownerUse, 'a', { guid: nestedInUse, name: 'Badge', componentId: badgeSmall }),
+      node('ELLIPSE', 32, nestedInUse, 'a', { name: 'Small artwork' })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localOwner = imported.document.components.find(component => component.name === 'Card');
+  const localSmall = imported.document.components.find(component => component.name === 'Badge/size=small');
+  const localLarge = imported.document.components.find(component => component.name === 'Badge/size=large');
+  const ownerUseNode = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  const actualNestedInstance = ownerUseNode.children.find(item => item.isInstance);
+  assert.equal(actualNestedInstance?.componentId, localSmall.id);
+  const groups = componentPropertyExposureGroups(imported.document, localOwner, ownerUseNode);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].properties, []);
+  assert.deepEqual(groups[0].variantProperties.map(property => ({ name: property.name, values: property.values })), [
+    { name: 'Size', values: ['Small', 'Large'] }
+  ]);
+  assert.equal(switchComponentInstanceVariant(imported.document, actualNestedInstance.id, localLarge.id), true);
+  assert.equal(componentPropertyExposureGroups(imported.document, localOwner, ownerUseNode)[0].component.id, localLarge.id);
+  const restored = parseDocument(serializeDocument(imported.document));
+  const restoredOwner = restored.components.find(component => component.id === localOwner.id);
+  const restoredUse = restored.pages[0].children.find(item => item.id === ownerUseNode.id);
+  assert.deepEqual(componentPropertyExposureGroups(restored, restoredOwner, restoredUse)[0].variantProperties[0].values, ['Small', 'Large']);
+});
+
+test('preserves nested local component ownership and overrides through import, save, and synchronization', () => {
+  const page = { sessionID: 80, localID: 1 };
+  const inner = { sessionID: 80, localID: 10 };
+  const innerLeaf = { sessionID: 80, localID: 11 };
+  const outer = { sessionID: 80, localID: 20 };
+  const innerInMaster = { sessionID: 80, localID: 21 };
+  const masterLeaf = { sessionID: 80, localID: 22 };
+  const outerInstance = { sessionID: 80, localID: 30 };
+  const innerInInstance = { sessionID: 80, localID: 31 };
+  const instanceLeaf = { sessionID: 80, localID: 32 };
+  const paint = color => [{ type: 'SOLID', color: { ...color, a: 1 } }];
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 10, page, 'a', { guid: inner, name: 'Inner icon' }),
+      node('RECTANGLE', 11, inner, 'a', { guid: innerLeaf, name: 'Artwork', fillPaints: paint({ r: 1, g: 0, b: 0 }) }),
+      node('COMPONENT', 20, page, 'b', { guid: outer, name: 'Outer card' }),
+      node('INSTANCE', 21, outer, 'a', { guid: innerInMaster, name: 'Nested icon', componentId: inner }),
+      node('RECTANGLE', 22, innerInMaster, 'a', { guid: masterLeaf, name: 'Artwork', fillPaints: paint({ r: 0, g: 0, b: 1 }) }),
+      node('INSTANCE', 30, page, 'c', { guid: outerInstance, name: 'Outer card use', componentId: outer }),
+      node('INSTANCE', 31, outerInstance, 'a', { guid: innerInInstance, name: 'Nested icon', componentId: inner }),
+      node('RECTANGLE', 32, innerInInstance, 'a', { guid: instanceLeaf, name: 'Artwork', fillPaints: paint({ r: 0, g: 1, b: 0 }) })
+    ],
+    images: new Map(), message: { blobs: [] }
+  }, { fileName: 'nested-components.fig' });
+
+  const { document, report } = imported;
+  const pageNodes = document.pages[0].children;
+  const innerMaster = pageNodes.find(candidate => candidate.name === 'Inner icon');
+  const outerMaster = pageNodes.find(candidate => candidate.name === 'Outer card');
+  const outerUse = pageNodes.find(candidate => candidate.name === 'Outer card use');
+  const masterNested = outerMaster.children[0];
+  const placedNested = outerUse.children[0];
+  const masterNestedLeaf = masterNested.children[0];
+  const placedNestedLeaf = placedNested.children[0];
+
+  assert.equal(outerUse.isInstance, true);
+  assert.equal(outerUse.componentId, document.components.find(component => component.name === 'Outer card').id);
+  assert.equal(masterNested.isInstance, true);
+  assert.equal(masterNested.componentId, document.components.find(component => component.name === 'Inner icon').id);
+  assert.equal(placedNested.isInstance, true);
+  assert.equal(placedNested.componentId, masterNested.componentId, 'the nested component target survives import');
+  assert.equal(placedNested.componentSourceId, masterNested.id, 'the outer owner maps the nested root into its own source tree');
+  assert.equal(placedNested.nestedComponentSourceId, innerMaster.id, 'the nested root retains its inner component identity');
+  assert.equal(placedNestedLeaf.componentSourceId, masterNestedLeaf.id, 'the outer owner maps nested descendants into its source tree');
+  assert.equal(placedNestedLeaf.nestedComponentSourceId, innerMaster.children[0].id, 'nested descendants retain their inner source identity');
+  assert.deepEqual(masterNested.componentOverrides[innerMaster.children[0].id].fills, masterNestedLeaf.fills,
+    'the nested master override remains owned by the inner instance');
+  assert.deepEqual(placedNested.componentOverrides[innerMaster.children[0].id].fills, placedNestedLeaf.fills,
+    'the placed nested instance override remains owned by the inner instance');
+  assert.deepEqual(outerUse.componentOverrides[masterNestedLeaf.id].fills, placedNestedLeaf.fills,
+    'the containing instance also records the effective nested leaf override');
+  assert.equal(placedNestedLeaf.fills[0].color, '#00ff00');
+  assert.equal(report.flattenedTypes.INSTANCE, undefined, 'local nested instances are not detached during import');
+
+  const outerUseId = outerUse.id;
+  const restored = parseDocument(serializeDocument(document));
+  const restoredInnerMaster = restored.pages[0].children.find(candidate => candidate.id === innerMaster.id);
+  restoredInnerMaster.children[0].fills[0].color = '#ffff00';
+  assert.equal(syncAllComponentInstances(restored), 3, 'both nested instances and the outer instance synchronize');
+  const restoredOuterMaster = restored.pages[0].children.find(candidate => candidate.id === outerMaster.id);
+  const restoredOuter = restored.pages[0].children.find(candidate => candidate.id === outerUseId);
+  const restoredNested = restoredOuter.children[0];
+  assert.equal(restoredNested.componentId, masterNested.componentId);
+  assert.equal(restoredNested.componentSourceId, masterNested.id);
+  assert.equal(restoredNested.nestedComponentSourceId, innerMaster.id);
+  assert.equal(restoredNested.children[0].componentSourceId, masterNestedLeaf.id);
+  assert.equal(restoredNested.children[0].nestedComponentSourceId, innerMaster.children[0].id);
+  assert.equal(restoredOuterMaster.children[0].children[0].fills[0].color, '#0000ff',
+    'the nested-instance override keeps the outer component artwork independent of later inner-master edits');
+  assert.equal(restoredNested.children[0].fills[0].color, '#00ff00', 'both ownership levels preserve the visible override after reload/sync');
 });
 
 test('unresolvable external component references are kept visually editable and reported as detached', () => {
@@ -648,6 +1217,88 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(imported.report.unsupportedTypes.MYSTERY_LEAF, 1);
   assert.equal(imported.report.unsupportedTypes.__proto__, 1);
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
+});
+
+test('preserves Figma image-fill filters as editable local adjustments and reviews invalid filter values', () => {
+  const pageGuid = { sessionID: 90, localID: 1 };
+  const imageHash = 'c'.repeat(40);
+  const png = pngHeader(2, 3);
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Image filters' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Edited photo', fillPaints: [{
+          type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'FIT', filters: {
+            exposure: -1, contrast: 0.25, saturation: 0, temperature: 0.5,
+            tint: -0.25, highlights: 0.75, shadows: 1
+          }
+        }]
+      }),
+      node('RECTANGLE', 3, pageGuid, 'b', {
+        name: 'Partially valid photo', fillPaints: [{
+          type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'FIT',
+          filters: { exposure: 1.1, contrast: -0.4, futureFilter: 0.5 }
+        }]
+      })
+    ],
+    images: new Map([[imageHash, png]]), message: { blobs: [] }
+  }, { fileName: 'image-filters.fig' });
+  const [edited, partial] = imported.document.pages[0].children;
+  const adjustments = edited.fills[0].imageFill.adjustments;
+
+  assert.deepEqual({
+    exposure: adjustments.exposure, contrast: adjustments.contrast, saturation: adjustments.saturation,
+    temperature: adjustments.temperature, tint: adjustments.tint, highlights: adjustments.highlights, shadows: adjustments.shadows
+  }, {
+    exposure: -100, contrast: 25, saturation: 0,
+    temperature: 50, tint: -25, highlights: 75, shadows: 100
+  }, 'Figma filter slider values map from [-1, 1] to the local percentage scale');
+  assert.equal(partial.fills[0].imageFill.adjustments.exposure, 0, 'out-of-range filters use the local default');
+  assert.equal(partial.fills[0].imageFill.adjustments.contrast, -40, 'valid filters survive alongside invalid ones');
+  assert.equal(imported.report.flattenedTypes.IMAGE_FILTER, 1, 'invalid and unknown settings are disclosed once per paint');
+  assert.equal(imported.report.flattenedTypes.IMAGE_TRANSFORM, undefined, 'supported filters no longer trigger crop-transform warnings');
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].fills, edited.fills, 'adjustments survive local document serialization');
+});
+
+test('imports explicit Figma text truncation and max lines, including legacy TRUNCATE', () => {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { name: 'Truncation page' }),
+      node('TEXT', 2, pageGuid, '!', {
+        name: 'Ending text', textData: { characters: 'One\nTwo\nThree' },
+        textAutoResize: 'NONE', textTruncation: 'ENDING', maxLines: 2
+      }),
+      node('TEXT', 3, pageGuid, 'a', {
+        name: 'Disabled text', textData: { characters: 'No truncation' },
+        textAutoResize: 'HEIGHT', textTruncation: 'DISABLED', maxLines: null
+      }),
+      node('TEXT', 4, pageGuid, 'b', {
+        name: 'Legacy truncate', textData: { characters: 'Old export' },
+        textAutoResize: 'TRUNCATE'
+      })
+    ],
+    message: { blobs: [] },
+    images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'truncation.fig', formatVersion: 106 });
+  const [ending, disabled, legacy] = imported.document.pages[0].children;
+  assert.deepEqual(
+    [ending.textFit, ending.textTruncation, ending.maxLines],
+    ['fixed', 'ending', 2]
+  );
+  assert.deepEqual(
+    [disabled.textFit, disabled.textTruncation, disabled.maxLines],
+    ['auto-height', 'disabled', null]
+  );
+  assert.deepEqual(
+    [legacy.textFit, legacy.textTruncation, Object.hasOwn(legacy, 'maxLines')],
+    ['fixed', 'ending', false],
+    'deprecated textAutoResize=TRUNCATE stays fixed-size and gains ending truncation'
+  );
 });
 
 test('imports text-node solid, gradient, image fills and solid/gradient strokes as editable paint stacks', () => {
@@ -1075,6 +1726,54 @@ test('imports fixed and hug grid track minimum bounds and applies them during re
   applyAutoLayout(frame);
   assert.deepEqual(frame.children.map(child => [child.x, child.width]), [[0, 20], [250, 350]],
     'the minimum-constrained track freezes at its content floor and the other fill track receives the remainder');
+});
+
+test('imports flexible grid track minimum bounds and rejects contradictory fractional bounds', () => {
+  const pageGuid = { sessionID: 18, localID: 1 };
+  const frameGuid = { sessionID: 18, localID: 2 };
+  const column1 = { sessionID: 18, localID: 10 };
+  const column2 = { sessionID: 18, localID: 11 };
+  const row1 = { sessionID: 18, localID: 12 };
+  const parsed = {
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, name: 'Flexible bounds', size: { x: 300, y: 100 }, stackMode: 'GRID',
+        gridRowGap: 0, gridColumnGap: 0, gridAutoTracks: 0, gridReflowEnabled: false,
+        gridColumns: { entries: [{ id: column1, position: 'a' }, { id: column2, position: 'b' }] },
+        gridRows: { entries: [{ id: row1, position: 'a' }] },
+        gridColumnsSizing: { entries: [
+          { id: column1, trackSize: { minSizing: { type: 'FLEX', value: 0.5 }, maxSizing: { type: 'FLEX', value: 1 } } },
+          { id: column2, trackSize: { minSizing: { type: 'FIXED', value: 250 }, maxSizing: { type: 'FLEX', value: 1 } } }
+        ] }
+      }),
+      node('RECTANGLE', 3, frameGuid, 'a', {
+        name: 'Fraction floor', size: { x: 10, y: 10 }, layoutSizingHorizontal: 'FILL',
+        gridRowAnchor: row1, gridColumnAnchor: column1
+      }),
+      node('RECTANGLE', 4, frameGuid, 'b', {
+        name: 'Pixel floor', size: { x: 10, y: 10 }, layoutSizingHorizontal: 'FILL',
+        gridRowAnchor: row1, gridColumnAnchor: column2
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'flexible-bounds.fig' });
+  const frame = imported.document.pages[0].children[0];
+
+  assert.deepEqual(frame.autoLayout.columnTracks, [
+    { mode: 'fill', weight: 1, minWeight: 0.5 },
+    { mode: 'fill', weight: 1, minSize: 250 }
+  ]);
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_GRID_TRACK_BOUNDS, undefined);
+  applyAutoLayout(frame);
+  assert.deepEqual(gridTrackLayout(frame).columns.map(track => track.size), [75, 250]);
+
+  const contradictory = structuredClone(parsed);
+  contradictory.nodes[1].gridColumnsSizing.entries[0].trackSize.minSizing.value = 2;
+  const invalid = convertFigDocument(contradictory, { fileName: 'contradictory-bounds.fig' });
+  assert.deepEqual(invalid.document.pages[0].children[0].autoLayout.columnTracks[0], { mode: 'fill', weight: 1 });
+  assert.ok(invalid.report.warnings.some(warning => warning.type === 'AUTO_LAYOUT_GRID_TRACK_BOUNDS'));
 });
 
 test('imports row-major grid flow and automatic hug rows', () => {

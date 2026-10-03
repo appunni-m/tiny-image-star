@@ -1,4 +1,5 @@
 import { validateDocument } from './model.js';
+import { isValidVariableScopes } from './variable-scopes.js';
 
 /**
  * Local-only adapter between Tiny Image Star variables and DTCG token JSON.
@@ -250,6 +251,9 @@ function validateLocalDocument(document) {
     pathsByCollection.set(collection.id, collectionPaths);
 
     if (!isRecord(variable.valuesByMode)) fail(`Variable "${variable.name}" must have values for every mode.`, 'INVALID_LOCAL_VALUE');
+    if (Object.hasOwn(variable, 'scopes') && !isValidVariableScopes(variable.type, variable.scopes)) {
+      fail(`Variable "${variable.name}" has invalid property scopes.`, 'INVALID_LOCAL_SCOPES');
+    }
     const expectedModes = new Set(collection.modes.map(mode => mode.id));
     if (Object.keys(variable.valuesByMode).length !== expectedModes.size
       || Object.keys(variable.valuesByMode).some(modeId => !expectedModes.has(modeId))) {
@@ -509,6 +513,7 @@ function parseExternalDocument(document, options, warnings) {
     const variable = {
       id: newId('variable'), collectionId: collection.id, name, type: token.type,
       valuesByMode: { [mode.id]: structuredClone(token.value) },
+      ...(token.type === 'boolean' ? {} : { scopes: ['ALL_SCOPES'] }),
       ...(token.node.$description !== undefined ? { description: token.node.$description } : {}),
       ...(token.node.$deprecated !== undefined ? { deprecated: token.node.$deprecated } : {}),
       ...(localMeasurementTypes.has(token.dtcgType) ? { dtcgType: token.dtcgType } : {})

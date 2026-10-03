@@ -12,11 +12,11 @@ function operation(opId = 'op-1', baseRevision = 4, text = 'pending') {
 }
 
 function ack(opId, revision) {
-  return { v: 1, kind: 'ACK', designId, sessionId, actorId: 'host', opId, revision, headHash: 'b'.repeat(64) };
+  return { v: 2, kind: 'ACK', designId, sessionId, actorId: 'host', opId, revision, headHash: 'b'.repeat(64) };
 }
 
 function reject(opId = 'op-1', code = 'STALE_REVISION', revision = 5) {
-  return { v: 1, kind: 'REJECT', designId, sessionId, actorId: 'host', opId, revision, code, headHash: 'c'.repeat(64) };
+  return { v: 2, kind: 'REJECT', designId, sessionId, actorId: 'host', opId, revision, code, headHash: 'c'.repeat(64) };
 }
 
 function createHarness({ persistFork = async payload => ({ persisted: true, id: payload.forkId }), closeSession = async () => {} } = {}) {
@@ -58,7 +58,7 @@ test('room revisions advance an idle replica and refuse to overwrite any pending
   const recovery = createHarness();
   const nextSnapshot = { pages: [{ id: 'page-1', nodes: [{ id: 'node-1', text: 'from another guest' }] }] };
   const update = {
-    v: 1, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
+    v: 2, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
     revision: 5, headHash: 'b'.repeat(64), snapshot: nextSnapshot
   };
   const adopted = recovery.adoptRoomRevision(update);
@@ -83,7 +83,7 @@ test('room revisions advance an idle replica and refuse to overwrite any pending
 test('room revisions refuse dirty local edits and ACKs clear only the edit generation they cover', () => {
   const recovery = createHarness();
   const update = {
-    v: 1, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
+    v: 2, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
     revision: 5, headHash: 'b'.repeat(64), snapshot: initialSnapshot
   };
   assert.equal(recovery.markLocalEditsPending(), true);

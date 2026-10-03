@@ -53,6 +53,20 @@ async function reloadEditorAtViewport(width, height, label) {
     return currentUrl.searchParams.get('smoke-viewport') === viewportToken
       && currentDocument.documentElement.dataset.appReady === 'true';
   }, label, 30000);
+  const app = frame.contentDocument;
+  const onboarding = app.querySelector('#workspace-onboarding-dialog');
+  if (onboarding?.open) {
+    // Each fresh workflow frame is isolated from the host browser's directory
+    // picker. Use the supported browser-storage workspace before importing a
+    // fixture so every focused workflow exercises the editor instead of
+    // timing out behind first-run onboarding.
+    Object.defineProperty(app.defaultView, 'showDirectoryPicker', { configurable: true, value: undefined });
+    const browserFallback = app.querySelector('#workspace-onboarding-browser-fallback');
+    assert(browserFallback, 'the isolated editor did not expose its browser-storage test fallback');
+    browserFallback.hidden = false;
+    browserFallback.dispatchEvent(new app.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await waitFor(() => !onboarding.open, `${label} browser-storage workspace`, 30000);
+  }
 }
 async function waitForSaveCycle(app, label) {
   // Saving is debounced and the browser/folder workspace status can complete
@@ -225,6 +239,19 @@ function buildPackage(documentData, assets) {
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'isolated editor event handlers');
   const app = frame.contentDocument;
+  // The clean browser profile used by CI may expose a native directory picker
+  // that the isolated smoke iframe cannot complete. Use the app's supported
+  // browser-storage fallback on this disposable test origin before exercising
+  // editor workflows; this keeps production folder onboarding unchanged.
+  const workspaceOnboarding = app.querySelector('#workspace-onboarding-dialog');
+  if (workspaceOnboarding?.open) {
+    Object.defineProperty(app.defaultView, 'showDirectoryPicker', { configurable: true, value: undefined });
+    const browserFallback = app.querySelector('#workspace-onboarding-browser-fallback');
+    assert(browserFallback, 'the isolated editor did not expose its browser-storage test fallback');
+    browserFallback.hidden = false;
+    browserFallback.dispatchEvent(new app.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await waitFor(() => !workspaceOnboarding.open, 'isolated browser-storage workspace');
+  }
   assert(app.title === 'Tiny Image Star' && app.querySelector('.brand-mark')?.textContent.trim() === '✦', 'the editor branding does not use the Tiny Image Star identity');
   const selectToolButton = app.querySelector('.tool-button[data-tool="select"]');
   const rectangleToolButton = app.querySelector('.tool-button[data-tool="rectangle"]');
@@ -683,7 +710,7 @@ try {
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', targetX, targetY, 83);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', targetX, targetY, 83);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes(destinationFrame.name), 'frame interaction connection');
-  assert(app.querySelector('.prototype-interaction-row')?.textContent.includes('ease-out'), 'the saved interaction did not display its chosen easing');
+  assert(app.querySelector('.prototype-interaction-row')?.textContent.includes('Ease out'), 'the saved interaction did not display its chosen easing label');
   await waitForSaveCycle(app, 'prototype easing');
   const easingRecords = await readStore('documents'); easingRecords.sort((a, b) => b.savedAt - a.savedAt);
   const persistedSourceFrame = easingRecords[0]?.document?.pages[0]?.children.find(node => node.id === sourceFrame.id);
@@ -705,7 +732,12 @@ try {
   dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
   let actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'open-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
-  assert(app.querySelector('#prototype-transition').value === 'dissolve' && ![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'overlay interactions should use their own transition and exclude Smart animate');
+  assert(app.querySelector('#prototype-transition').value === 'dissolve'
+    && [...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'move-in-left')
+    && ![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'),
+  'open-overlay should offer directional transitions and exclude Smart animate');
+  app.querySelector('#prototype-transition').value = 'move-in-left';
+  app.querySelector('#prototype-transition').dispatchEvent(new Event('change', { bubbles: true }));
   const overlayPosition = app.querySelector('#prototype-overlay-position');
   overlayPosition.value = 'center'; overlayPosition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
@@ -716,6 +748,9 @@ try {
   dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
   actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'swap-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  const swapTransition = app.querySelector('#prototype-transition');
+  assert([...swapTransition.options].some(option => option.value === 'smart-animate'), 'swap-overlay should offer Smart animate for matching layers');
+  swapTransition.value = 'smart-animate'; swapTransition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 86);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 86);
@@ -1243,13 +1278,30 @@ try {
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 86);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'prototype overlay presentation');
   assert(app.querySelector('#present-dialog').dataset.frameId === destinationFrame.id, 'opening an overlay replaced the underlying frame');
+  await waitFor(() => {
+    const dialog = app.querySelector('#present-dialog');
+    const progress = Number(dialog?.dataset.overlayProgress);
+    return dialog?.dataset.overlayAnimating === 'true' && progress > 0 && progress < 1;
+  }, 'directional overlay entrance intermediate frame');
+  const overlayEntrance = app.querySelector('#present-dialog').dataset;
+  assert(overlayEntrance.overlayTransition === 'move-in-left'
+    && overlayEntrance.overlayProgress > 0
+    && overlayEntrance.overlayProgress < 1,
+  `the overlay entrance should animate its own surface without navigating the underlay (${JSON.stringify({ transition: overlayEntrance.overlayTransition, progress: overlayEntrance.overlayProgress, frameId: overlayEntrance.frameId, overlayDepth: overlayEntrance.overlayDepth })})`);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'directional overlay entrance completion');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 87);
   assert(!app.querySelector('#present-back').disabled, 'opening an overlay disabled presentation history');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '0', 'close overlay interaction');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'close overlay transition completion');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 89);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'overlay reopen for outside dismissal');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'overlay entrance before outside dismissal');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + 2, presentCanvas.getBoundingClientRect().top + 2, 90);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '0', 'outside click overlay dismissal');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating === 'true', 'outside dismissal reverses the saved overlay transition');
+  assert(app.querySelector('#present-dialog').dataset.overlayTransition === 'move-out-right',
+    'outside dismissal should reverse both the saved transition type and direction');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'outside dismissal animation completion');
   dispatchClick(app.querySelector('#present-back'));
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
   assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id, 'prototype back did not restore the start frame');
@@ -1461,7 +1513,8 @@ try {
   regionMaskContext.translate(regionOffset.x, regionOffset.y);
   regionRenderer.drawNode(regionMaskContext, savedNetwork, 0, 0, new Map(), false, true);
   const regionMaskPixel = [...regionMaskContext.getImageData(Math.round(faceSample.x + regionOffset.x), Math.round(faceSample.y + regionOffset.y), 1, 1).data];
-  assert(regionMaskPixel[0] === 255 && regionMaskPixel[1] === 255 && regionMaskPixel[2] === 255 && regionMaskPixel[3] >= 150 && regionMaskPixel[3] <= 165,
+  // Canvas alpha masks consume the source alpha; source RGB is immaterial.
+  assert(regionMaskPixel[3] >= 150 && regionMaskPixel[3] <= 165,
     `vector region opacity was lost when used as an alpha mask (${regionMaskPixel.join(',')})`);
 
   const positionedVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
@@ -1493,8 +1546,11 @@ try {
   await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('7 points'), 'vector network point inspector deletion');
   dispatchClick(app.querySelector('[data-action="insert-vector-point"]'));
   await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('8 points'), 'touch-friendly vector network point insertion');
-  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Backspace' }));
-  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('7 points'), 'Backspace vector network point deletion');
+  const touchDeleteVectorPoint = app.querySelector('[data-action="delete-vector-point"]');
+  assert(touchDeleteVectorPoint && !touchDeleteVectorPoint.disabled,
+    'the newly inserted touch-friendly vector point should expose its explicit Delete point action');
+  dispatchClick(touchDeleteVectorPoint);
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('7 points'), 'touch-friendly vector network point deletion');
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'vector network edits autosave');
   vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   vectorDocument = vectorRecords[0]?.document;
@@ -1649,9 +1705,10 @@ try {
   const remainingAnchor = compoundAnchorScreen(0, 0, savedCompoundPath, savedCompound);
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', remainingAnchor.x, remainingAnchor.y, 508);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', remainingAnchor.x, remainingAnchor.y, 508);
-  const rejectedBackspace = new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Backspace' });
-  app.body.dispatchEvent(rejectedBackspace);
-  assert(rejectedBackspace.defaultPrevented, 'Backspace should be consumed when deleting an anchor is rejected');
+  const rejectedPointDelete = app.querySelector('#inspector-content [data-action="delete-vector-point"]');
+  assert(rejectedPointDelete && !rejectedPointDelete.disabled,
+    'the selected minimum-anchor point should expose the explicit Delete point action');
+  dispatchClick(rejectedPointDelete);
   assert(app.querySelector(`[data-layer-id="${compoundPath.id}"]`), 'rejecting a minimum-anchor delete should not remove the layer');
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('at least two points')),
     'minimum-anchor deletion refusal');
@@ -2672,6 +2729,7 @@ try {
   const booleanTextRun = await runWorkflowModuleSafely('./boolean-text-smoke.mjs', 'live text Boolean mask and context menu', 1280, 720, 'fresh text Boolean editor boot');
   const featureBatchRun = await runWorkflowModuleSafely('./editor-feature-batch-smoke.mjs', 'mobile auto layout, exact variants, and curve baking', 390, 844, 'fresh mobile feature-batch editor boot');
   const bulkRetryRun = await runWorkflowModuleSafely('./bulk-retry-smoke.mjs', 'bulk failed-image retry workflow', 1280, 720, 'fresh recipe retry editor boot');
+  const componentExposureRun = await runWorkflowModuleSafely('./component-exposure-smoke.mjs', 'mobile nested component exposure and property target highlights', 390, 844, 'fresh nested component exposure editor boot');
   const mobileRecipeWorkflow = mobileRecipeRun.report || {};
   const contextRecipeWorkflow = contextRecipeRun.report || {};
   const rulerGuideWorkflow = rulerGuideRun.report || {};
@@ -2688,10 +2746,11 @@ try {
   const booleanTextWorkflow = booleanTextRun.report || {};
   const featureBatchWorkflow = featureBatchRun.report || {};
   const bulkRetryWorkflow = bulkRetryRun.report || {};
-  const workflowRuns = [layerTreeRun, pageLifecycleRun, mobileRecipeRun, mobilePrototypeRun, touchCanvasRun, imageFillCropRun, objectIsolationMobileRun, objectIsolationRun, shapeAuthoringRun, keyboardShortcutRun, selectionInspectorRun, commentRun, canvasEditingRun, contextRecipeRun, rulerGuideRun, appearanceClipboardRun, exportRun, localFontRun, localShareRun, cornerRadiusRun, richTextRun, versionHistoryRun, vectorContourRun, vectorOffsetRun, booleanBakeRun, shapeBuilderPhoneRun, shapeBuilderDesktopRun, booleanTextRun, featureBatchRun, bulkRetryRun];
+  const componentExposureWorkflow = componentExposureRun.report || {};
+  const workflowRuns = [layerTreeRun, pageLifecycleRun, mobileRecipeRun, mobilePrototypeRun, touchCanvasRun, imageFillCropRun, objectIsolationMobileRun, objectIsolationRun, shapeAuthoringRun, keyboardShortcutRun, selectionInspectorRun, commentRun, canvasEditingRun, contextRecipeRun, rulerGuideRun, appearanceClipboardRun, exportRun, localFontRun, localShareRun, cornerRadiusRun, richTextRun, versionHistoryRun, vectorContourRun, vectorOffsetRun, booleanBakeRun, shapeBuilderPhoneRun, shapeBuilderDesktopRun, booleanTextRun, featureBatchRun, bulkRetryRun, componentExposureRun];
   const workflowFailures = workflowRuns.filter(run => !run.passed).map(({ label, error }) => ({ label, error }));
 
-  result.textContent = `${workflowFailures.length ? 'FAIL' : 'PASS'}\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, multiFillSolidOverlay: true, multiFillGradientComposite: true, multiFillImageComposite: true, multiFillVisibilityOpacityOrder: true, inspectorFillAddReorderOpacity: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, objectIsolationMobileWorkflow: objectIsolationMobileRun.report || null, objectIsolationWorkflow: objectIsolationRun.report || null, shapeAuthoringWorkflow: shapeAuthoringRun.report || null, layerTreeWorkflow: layerTreeRun.report || null, pageLifecycleWorkflow: pageLifecycleRun.report || null, rulerGuideWorkflow, phoneRecipeWorkflow: { recipeSaved: mobileRecipeWorkflow.recipeSaved, inPlaceLayers: mobileRecipeWorkflow.inPlaceLayers, fingerSizedControls: mobileRecipeWorkflow.fingerSizedControls }, touchCanvasWorkflow: touchCanvasRun.report || null, keyboardShortcuts: keyboardShortcutRun.report || null, selectionInspectorWorkflow: selectionInspectorRun.report || null, commentsWorkflow, canvasEditingWorkflow: canvasEditingRun.report || null, contextMenuRecipeWorkflow: { savedRecipe: contextRecipeWorkflow.savedRecipe, canvasMenuKeptMultiSelection: contextRecipeWorkflow.canvasMenuKeptMultiSelection, progressBar: contextRecipeWorkflow.progressBar, updatedInPlace: contextRecipeWorkflow.updatedInPlace }, imageExportWorkflow: { individualImageZip: exportWorkflow.individualImageZip, perImageOutputFormatAndQuality: exportWorkflow.perImageOutputFormatAndQuality, batchExportCancellation: exportWorkflow.batchExportCancellation, fullResolutionImageExport: exportWorkflow.fullResolutionImageExport, fullResolutionQualityApplied: exportWorkflow.fullResolutionQualityApplied }, localFontWorkflow: { fontDialog: localFontWorkflow.fontDialog, indexedDbBytesRoundTrip: localFontWorkflow.indexedDbBytesRoundTrip, textFamilyApplied: localFontWorkflow.textFamilyApplied, flocalFontBytes: localFontWorkflow.flocalFontBytes, flocalCollisionRemapping: localFontWorkflow.flocalCollisionRemapping }, localShareWorkflow, cornerRadiusWorkflow: { fourCornerEdits: cornerRadiusWorkflow.fourCornerEdits, persistedAndReloaded: cornerRadiusWorkflow.persistedAndReloaded, exportedSvgPath: cornerRadiusWorkflow.exportedSvgPath, labels: cornerRadiusWorkflow.labels, touchTargets: cornerRadiusWorkflow.touchTargets, variableRadiusDetachedLocally: cornerRadiusWorkflow.variableRadiusDetachedLocally }, richTextWorkflow, versionHistoryWorkflow, vectorContourWorkflow, booleanBakeWorkflow, shapeBuilderWorkflow, booleanTextWorkflow, featureBatchWorkflow, bulkRetryWorkflow, workflowFailures, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, namedPrototypeFlows: true, scrollablePrototypeFrames: true, prototypeScrollTo: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, compoundPathContourCreateCloseAndRemove: true, compoundPathFillRule: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `${workflowFailures.length ? 'FAIL' : 'PASS'}\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, multiFillSolidOverlay: true, multiFillGradientComposite: true, multiFillImageComposite: true, multiFillVisibilityOpacityOrder: true, inspectorFillAddReorderOpacity: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, objectIsolationMobileWorkflow: objectIsolationMobileRun.report || null, objectIsolationWorkflow: objectIsolationRun.report || null, shapeAuthoringWorkflow: shapeAuthoringRun.report || null, layerTreeWorkflow: layerTreeRun.report || null, pageLifecycleWorkflow: pageLifecycleRun.report || null, rulerGuideWorkflow, phoneRecipeWorkflow: { recipeSaved: mobileRecipeWorkflow.recipeSaved, inPlaceLayers: mobileRecipeWorkflow.inPlaceLayers, fingerSizedControls: mobileRecipeWorkflow.fingerSizedControls }, touchCanvasWorkflow: touchCanvasRun.report || null, keyboardShortcuts: keyboardShortcutRun.report || null, selectionInspectorWorkflow: selectionInspectorRun.report || null, commentsWorkflow, canvasEditingWorkflow: canvasEditingRun.report || null, contextMenuRecipeWorkflow: { savedRecipe: contextRecipeWorkflow.savedRecipe, canvasMenuKeptMultiSelection: contextRecipeWorkflow.canvasMenuKeptMultiSelection, progressBar: contextRecipeWorkflow.progressBar, updatedInPlace: contextRecipeWorkflow.updatedInPlace }, imageExportWorkflow: { individualImageZip: exportWorkflow.individualImageZip, perImageOutputFormatAndQuality: exportWorkflow.perImageOutputFormatAndQuality, batchExportCancellation: exportWorkflow.batchExportCancellation, fullResolutionImageExport: exportWorkflow.fullResolutionImageExport, fullResolutionQualityApplied: exportWorkflow.fullResolutionQualityApplied }, localFontWorkflow: { fontDialog: localFontWorkflow.fontDialog, indexedDbBytesRoundTrip: localFontWorkflow.indexedDbBytesRoundTrip, textFamilyApplied: localFontWorkflow.textFamilyApplied, flocalFontBytes: localFontWorkflow.flocalFontBytes, flocalCollisionRemapping: localFontWorkflow.flocalCollisionRemapping }, localShareWorkflow, cornerRadiusWorkflow: { fourCornerEdits: cornerRadiusWorkflow.fourCornerEdits, persistedAndReloaded: cornerRadiusWorkflow.persistedAndReloaded, exportedSvgPath: cornerRadiusWorkflow.exportedSvgPath, labels: cornerRadiusWorkflow.labels, touchTargets: cornerRadiusWorkflow.touchTargets, variableRadiusDetachedLocally: cornerRadiusWorkflow.variableRadiusDetachedLocally }, richTextWorkflow, versionHistoryWorkflow, vectorContourWorkflow, booleanBakeWorkflow, shapeBuilderWorkflow, booleanTextWorkflow, featureBatchWorkflow, bulkRetryWorkflow, componentExposureWorkflow, workflowFailures, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, namedPrototypeFlows: true, scrollablePrototypeFrames: true, prototypeScrollTo: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, compoundPathContourCreateCloseAndRemove: true, compoundPathFillRule: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

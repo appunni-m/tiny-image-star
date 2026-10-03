@@ -19,8 +19,10 @@ function copySourceBytes(sourceBytes) {
 /** One lazy, local MediaPipe worker. Inference is serialized and never runs on the UI thread. */
 export class LocalObjectIsolationEngine {
   constructor({
+    // MediaPipe loads its pinned WASM factory with importScripts. Keep this a
+    // classic worker so the upstream loader exposes ModuleFactory globally.
     workerFactory = () => new Worker(new URL('./workers/object-isolation-worker.bundle.js', import.meta.url), {
-      type: 'module', name: 'Tiny Image Star local object isolation',
+      name: 'Tiny Image Star local object isolation',
     }),
     readinessTimeoutMs = 120_000,
     jobTimeoutMs = 180_000,

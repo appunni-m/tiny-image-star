@@ -5,6 +5,7 @@ import { clipboardImageFilename, getClipboardImageFiles, routeClipboardPaste } f
 
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const paritySmoke = await readFile(new URL('./editor-parity-smoke.mjs', import.meta.url), 'utf8');
+const guideSmoke = await readFile(new URL('./guides-smoke.mjs', import.meta.url), 'utf8');
 
 function makeFile(type, name = 'source-image.png') {
   return { type, name, size: 4 };
@@ -86,6 +87,32 @@ test('internal layer paste remains available and disabled editor states are unto
   assert.equal(clipboardImageFilename('image/unknown', 0), 'pasted-image-1.png');
 });
 
+test('internal layout-guide paste takes precedence over layer paste but preserves external images and text entry', () => {
+  const event = makePasteEvent({ items: [] });
+  const calls = [];
+  assert.equal(routeClipboardPaste(event, {
+    hasLayoutGuideClipboard: true,
+    hasLayerClipboard: true,
+    pasteLayoutGuide: () => calls.push('guide'),
+    pasteLayers: () => calls.push('layers'),
+  }), 'layout-guide');
+  assert.equal(event.prevented, true);
+  assert.deepEqual(calls, ['guide']);
+
+  const image = makeFile('image/png');
+  const imageEvent = makePasteEvent({ items: [{ kind: 'file', getAsFile: () => image }] });
+  let imported = false;
+  assert.equal(routeClipboardPaste(imageEvent, {
+    hasLayoutGuideClipboard: true,
+    importImages: () => { imported = true; },
+  }), 'images');
+  assert.equal(imported, true);
+
+  const textEvent = makePasteEvent({ items: [] });
+  assert.equal(routeClipboardPaste(textEvent, { isEditingText: true, hasLayoutGuideClipboard: true }), 'ignored');
+  assert.equal(textEvent.prevented, false);
+});
+
 test('editor routes the native paste event through local image placement and defers shortcut routing', () => {
   assert.match(mainSource, /document\.addEventListener\('paste', onDocumentPaste\)/);
   assert.match(mainSource, /routeClipboardPaste\(event,\s*\{[\s\S]*?hasLayerClipboard: hasClipboardLayers\(\)[\s\S]*?importImages: files => \{ void importImageFiles\(files\); \}/);
@@ -93,4 +120,10 @@ test('editor routes the native paste event through local image placement and def
     'Ctrl/Cmd+V must reach the browser paste event so external image bytes are available');
   assert.match(paritySmoke, /clipboard image bytes should be retained in local image storage/,
     'the eventual browser parity batch should verify real clipboard event storage and source bytes');
+  assert.match(mainSource, /hasLayoutGuideClipboard: Boolean\(state\.layoutGuideClipboard\)/);
+  assert.match(mainSource, /if \(mod && key === 'c'\) \{ event\.preventDefault\(\); if \(!copySelectedLayoutGuide\(\)\) copySelected\(\); return; \}/);
+  assert.match(mainSource, /if \(mod && key === 'd'\) \{ event\.preventDefault\(\); if \(!duplicateSelectedLayoutGuide\(\)\) duplicateSelected\(\); return; \}/);
+  assert.match(mainSource, /data-action="select-layout-guide"/);
+  assert.match(guideSmoke, /single-guide paste to another frame/);
+  assert.match(guideSmoke, /layout-guide duplicate shortcut/);
 });

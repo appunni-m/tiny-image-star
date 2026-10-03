@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import {
   addNode, canCreateMaskGroup, canGroupLayers, canUngroupLayers, combineBoolean, createComponent, createComponentInstance, createComponentSet, createDocument, createMaskGroup, createNode, detachComponentInstance,
   canSwapComponentTo, createComponentProperty, duplicateNode, findNode, moveNode, removeNode, reorderNode, releaseMaskGroup, separateBoolean, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant, ungroupLayers, groupLayers, updateNode,
-  resetComponentSlotContent, setComponentSlotContent, syncAllComponentInstances, syncComponentInstances, validateDocument
+  resetComponentSlotContent, setComponentNestedInstanceExposure, setComponentNestedInstanceExposures, setComponentSlotContent, syncAllComponentInstances, syncComponentInstances, validateDocument
 } from '../src/model.js';
 import { addPrototypeInteraction } from '../src/prototype.js';
 import { createAutoLayout } from '../src/layout-engine.js';
+import { componentPropertyExposureGroups, componentPropertyTargetInstanceId } from '../src/component-property-exposure.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
   const document = createDocument();
@@ -233,7 +234,9 @@ test('component shape geometry overrides persist and validate against the source
   const reopened = parseDocument(serializeDocument(document));
   assert.deepEqual(reopened.pages[0].children[1].componentOverrides[master.id], { points: 8, innerRadius: 0 });
 
-  instance.componentOverrides[master.id].points = 33;
+  instance.componentOverrides[master.id].points = 60;
+  assert.equal(validateDocument(document), true, 'star component overrides retain the full 60-point range');
+  instance.componentOverrides[master.id].points = 61;
   assert.throws(() => validateDocument(document), /Invalid component shape point-count override/);
   instance.componentOverrides[master.id] = { points: 8, innerRadius: 1.01 };
   assert.throws(() => validateDocument(document), /Invalid component star inner-radius override/);
@@ -612,6 +615,445 @@ test('typed component properties project defaults and instance values through sy
   const reloaded = parseDocument(serializeDocument(document));
   assert.equal(validateDocument(reloaded), true);
   assert.deepEqual(reloaded.components[0].componentProperties, [visibleProperty, textProperty]);
+});
+
+test('nested component instances expose all properties on an owner and remain source-scoped', () => {
+  const document = createDocument();
+  const innerMain = createNode('frame', { name: 'Label and icon' });
+  const innerText = createNode('text', { name: 'Label', text: 'Default label' });
+  const innerBadge = createNode('ellipse', { name: 'Badge', visible: true });
+  addNode(document, innerMain);
+  addNode(document, innerText, { parentId: innerMain.id });
+  addNode(document, innerBadge, { parentId: innerMain.id });
+  const innerComponent = createComponent(document, innerMain.id, 'Label and icon');
+  const textProperty = createComponentProperty(document, innerComponent.id, {
+    name: 'Label', type: 'TEXT', targetNodeId: innerText.id
+  });
+  const badgeProperty = createComponentProperty(document, innerComponent.id, {
+    name: 'Show badge', type: 'BOOLEAN', targetNodeId: innerBadge.id
+  });
+
+  const outerMain = createNode('frame', { name: 'Navigation item' });
+  addNode(document, outerMain);
+  const firstNested = createComponentInstance(document, innerComponent.id, { parentId: outerMain.id });
+  firstNested.name = 'Primary label';
+  const secondNested = createComponentInstance(document, innerComponent.id, { parentId: outerMain.id });
+  secondNested.name = 'Secondary label';
+  const outerComponent = createComponent(document, outerMain.id, 'Navigation item');
+  assert.equal(setComponentNestedInstanceExposure(document, outerComponent.id, firstNested.id), true);
+  assert.equal(setComponentNestedInstanceExposure(document, outerComponent.id, firstNested.id), false,
+    'a repeated request for the same nested instance should be idempotent');
+  assert.deepEqual(outerComponent.exposedNestedInstances, [firstNested.id]);
+  assert.equal(validateDocument(document), true);
+
+  const outerInstance = createComponentInstance(document, outerComponent.id);
+  const nestedA = outerInstance.children.find(node => node.componentSourceId === firstNested.id);
+  const nestedB = outerInstance.children.find(node => node.componentSourceId === secondNested.id);
+  assert.equal(componentPropertyTargetInstanceId(outerInstance, firstNested.id), nestedA.id,
+    'a parent property can highlight the selected nested instance itself');
+  assert.equal(componentPropertyTargetInstanceId(nestedA, innerText.id), nestedA.children[0].id,
+    'an exposed nested property maps to its source layer inside that instance');
+  assert.equal(componentPropertyTargetInstanceId(nestedB, innerText.id), nestedB.children[0].id,
+    'the same source property maps to the corresponding layer in each separate instance');
+  assert.equal(componentPropertyTargetInstanceId(outerInstance, innerText.id), null,
+    'a parent property lookup does not cross a nested component boundary');
+  assert.equal(nestedA.isInstance, true);
+  assert.equal(nestedB.isInstance, true);
+  assert.deepEqual(componentPropertyExposureGroups(document, outerComponent, outerInstance).map(group => ({
+    instanceId: group.instance.id,
+    properties: group.properties.map(property => property.id)
+  })), [{ instanceId: nestedA.id, properties: [textProperty.id, badgeProperty.id] }],
+  'exposing one nested instance reveals all of its properties and leaves its sibling out');
+  assert.equal(setComponentPropertyValue(document, nestedA.id, textProperty.id, 'Primary override'), true,
+    'the exposed nested instance retains its own property editing behavior');
+  assert.equal(nestedA.children.find(node => node.nestedComponentSourceId === innerText.id).text, 'Primary override');
+  assert.equal(nestedB.children.find(node => node.nestedComponentSourceId === innerText.id).text, 'Default label',
+    'exposing one nested instance must not expose or edit its sibling');
+  assert.equal(setComponentPropertyValue(document, nestedA.id, badgeProperty.id, false), true,
+    'all properties on the exposed nested instance remain independently editable');
+
+  innerText.text = 'Updated master label';
+  textProperty.defaultValue = innerText.text;
+  innerBadge.visible = false;
+  badgeProperty.defaultValue = false;
+  syncAllComponentInstances(document);
+  assert.equal(nestedA.children.find(node => node.nestedComponentSourceId === innerText.id).text, 'Primary override',
+    'nested property overrides survive owner and nested component synchronization');
+  assert.equal(nestedB.children.find(node => node.nestedComponentSourceId === innerText.id).text, 'Updated master label');
+  assert.equal(nestedA.children.find(node => node.nestedComponentSourceId === innerBadge.id).visible, false);
+
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reloaded), true);
+  syncAllComponentInstances(reloaded);
+  const restoredOuter = findNode(reloaded, outerInstance.id).node;
+  const restoredNestedA = restoredOuter.children.find(node => node.componentSourceId === firstNested.id);
+  assert.equal(restoredNestedA.children.find(node => node.nestedComponentSourceId === innerText.id).text, 'Primary override');
+  assert.deepEqual(reloaded.components.find(component => component.id === outerComponent.id).exposedNestedInstances,
+    outerComponent.exposedNestedInstances,
+    'owner definitions preserve nested instance exposure through serialize and parse');
+
+  assert.equal(setComponentNestedInstanceExposure(reloaded, outerComponent.id, firstNested.id, false), true);
+  assert.deepEqual(restoredNestedA.componentPropertyValues[textProperty.id], 'Primary override',
+    'hiding the nested controls does not erase the actual nested instance override');
+  assert.equal(validateDocument(reloaded), true);
+
+  const danglingTarget = parseDocument(serializeDocument(document));
+  danglingTarget.components.find(component => component.id === outerComponent.id).exposedNestedInstances[0] = 'missing-nested-layer';
+  assert.throws(() => validateDocument(danglingTarget), /Invalid exposed nested instance/);
+
+  const legacy = structuredClone(document);
+  const legacyOwner = legacy.components.find(component => component.id === outerComponent.id);
+  delete legacyOwner.exposedNestedInstances;
+  legacyOwner.exposedNestedComponentProperties = [
+    { nestedInstanceSourceId: firstNested.id, nestedComponentId: innerComponent.id, propertyId: textProperty.id },
+    { nestedInstanceSourceId: firstNested.id, nestedComponentId: innerComponent.id, propertyId: badgeProperty.id }
+  ];
+  const migrated = parseDocument(JSON.stringify(legacy));
+  const migratedOwner = migrated.components.find(component => component.id === outerComponent.id);
+  assert.deepEqual(migratedOwner.exposedNestedInstances, [firstNested.id]);
+  assert.equal(migratedOwner.exposedNestedComponentProperties, undefined,
+    'older per-property records migrate to one instance-level exposure');
+
+  const removedNestedInstance = parseDocument(serializeDocument(document));
+  removeNode(removedNestedInstance, firstNested.id);
+  const cleanedOwner = removedNestedInstance.components.find(component => component.id === outerComponent.id);
+  assert.equal(cleanedOwner.exposedNestedInstances, undefined,
+    'removing a nested component source also removes its exposure');
+  assert.equal(validateDocument(removedNestedInstance), true);
+
+  const removedPropertyTarget = parseDocument(serializeDocument(document));
+  removeNode(removedPropertyTarget, innerText.id);
+  const cleanedExposureList = removedPropertyTarget.components.find(component => component.id === outerComponent.id).exposedNestedInstances;
+  assert.deepEqual(cleanedExposureList, [firstNested.id],
+    'the exposed instance remains selected when one of its properties is deleted');
+  assert.deepEqual(removedPropertyTarget.components.find(component => component.id === innerComponent.id).componentProperties,
+    [badgeProperty], 'the remaining properties on the nested instance remain available');
+  assert.equal(validateDocument(removedPropertyTarget), true);
+});
+
+test('nested instance exposure follows swap choices and automatically reveals new component properties', () => {
+  const document = createDocument();
+  const makeTextComponent = (name, text) => {
+    const root = createNode('frame', { name });
+    const label = createNode('text', { name: `${name} label`, text });
+    addNode(document, root);
+    addNode(document, label, { parentId: root.id });
+    const component = createComponent(document, root.id, name);
+    const property = createComponentProperty(document, component.id, {
+      name: `${name} text`, type: 'TEXT', targetNodeId: label.id
+    });
+    return { root, label, component, property };
+  };
+  const base = makeTextComponent('Base label', 'Base');
+  const swapOption = makeTextComponent('Badge label', 'Badge');
+  const unrelated = makeTextComponent('Unrelated label', 'Other');
+  const outerRoot = createNode('frame', { name: 'Card' });
+  addNode(document, outerRoot);
+  const nestedSource = createComponentInstance(document, base.component.id, { parentId: outerRoot.id });
+  const owner = createComponent(document, outerRoot.id, 'Card');
+  const swapProperty = createComponentProperty(document, owner.id, {
+    name: 'Label style', type: 'INSTANCE_SWAP', targetNodeId: nestedSource.id,
+    preferredComponentIds: [swapOption.component.id]
+  });
+
+  assert.throws(() => setComponentNestedInstanceExposure(
+    document, owner.id, nestedSource.id, 0
+  ), /must be enabled or disabled/,
+  'a non-boolean exposure value is rejected');
+  assert.throws(() => setComponentNestedInstanceExposure(
+    document, owner.id, unrelated.root.id
+  ), /nested component instance/,
+  'an unrelated component cannot be exposed through this owner');
+  assert.equal(setComponentNestedInstanceExposure(document, owner.id, nestedSource.id), true);
+  assert.equal(validateDocument(document), true);
+
+  const ownerInstance = createComponentInstance(document, owner.id);
+  const nestedInstance = ownerInstance.children.find(node => node.componentSourceId === nestedSource.id);
+  assert.deepEqual(componentPropertyExposureGroups(document, owner, ownerInstance).map(group => ({
+    componentId: group.component.id,
+    propertyIds: group.properties.map(property => property.id)
+  })), [{ componentId: base.component.id, propertyIds: [base.property.id] }]);
+  assert.equal(setComponentPropertyValue(document, ownerInstance.id, swapProperty.id, swapOption.component.id), true);
+  assert.equal(nestedInstance.componentId, swapOption.component.id);
+  assert.deepEqual(componentPropertyExposureGroups(document, owner, ownerInstance).map(group => ({
+    componentId: group.component.id,
+    propertyIds: group.properties.map(property => property.id)
+  })), [{ componentId: swapOption.component.id, propertyIds: [swapOption.property.id] }],
+  'the exposed controls follow the active nested instance swap');
+  assert.equal(setComponentPropertyValue(document, nestedInstance.id, swapOption.property.id, 'Styled override'), true);
+  assert.equal(nestedInstance.children.find(node => node.componentSourceId === swapOption.label.id).text, 'Styled override');
+
+  const laterBadge = createNode('ellipse', { name: 'Badge', visible: true });
+  addNode(document, laterBadge, { parentId: swapOption.root.id });
+  const laterProperty = createComponentProperty(document, swapOption.component.id, {
+    name: 'Show badge', type: 'BOOLEAN', targetNodeId: laterBadge.id
+  });
+  syncAllComponentInstances(document);
+  assert.equal(setComponentPropertyValue(document, nestedInstance.id, laterProperty.id, false), true,
+    'an exposed nested instance automatically reveals properties added later');
+  assert.deepEqual(componentPropertyExposureGroups(document, owner, ownerInstance)[0].properties.map(property => property.id),
+    [swapOption.property.id, laterProperty.id]);
+  nestedInstance.visible = false;
+  assert.deepEqual(componentPropertyExposureGroups(document, owner, ownerInstance), [],
+    'a hidden nested instance hides its exposed component controls');
+  assert.equal(validateDocument(document), true);
+});
+
+test('nested exposure surfaces variant-only controls and follows nested variant swaps', () => {
+  const document = createDocument();
+  const makeVariant = (name, axis, value) => {
+    const root = createNode('frame', { name: `${name}/${axis}=${value}` });
+    addNode(document, root);
+    return { root, component: createComponent(document, root.id, root.name) };
+  };
+  const small = makeVariant('Badge', 'Size', 'Small');
+  const large = makeVariant('Badge', 'Size', 'Large');
+  const badgeSet = createComponentSet(document, [small.component.id, large.component.id], 'Badge');
+  const ownerRoot = createNode('frame', { name: 'Card' });
+  addNode(document, ownerRoot);
+  const nestedSource = createComponentInstance(document, small.component.id, { parentId: ownerRoot.id });
+  const owner = createComponent(document, ownerRoot.id, 'Card');
+  setComponentNestedInstanceExposure(document, owner.id, nestedSource.id);
+  const instance = createComponentInstance(document, owner.id);
+  const nested = instance.children.find(node => node.componentSourceId === nestedSource.id);
+
+  const readGroup = () => componentPropertyExposureGroups(document, owner, instance)[0];
+  assert.deepEqual(readGroup().properties, [], 'this nested component has no non-variant properties');
+  assert.deepEqual(readGroup().variantProperties, badgeSet.properties,
+    'variant axes are exposed even when the nested component has no regular property definitions');
+  assert.equal(switchComponentInstanceVariant(document, nested.id, large.component.id), true);
+  assert.equal(readGroup().component.id, large.component.id,
+    'the exposed control group follows the nested instance when its current component changes');
+  assert.equal(readGroup().variantProperties[0].name, 'Size');
+  assert.equal(readGroup().component.variantProperties.Size, 'Large');
+
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reloaded), true);
+  const restoredOwner = reloaded.components.find(item => item.id === owner.id);
+  const restoredInstance = findNode(reloaded, instance.id).node;
+  const restoredGroup = componentPropertyExposureGroups(reloaded, restoredOwner, restoredInstance)[0];
+  assert.equal(restoredGroup.component.id, large.component.id);
+  assert.equal(restoredGroup.variantProperties[0].name, 'Size',
+    'variant-only exposure survives serialization and reload');
+});
+
+test('nested variant exposure maps by stable source key across owner component variants', () => {
+  const document = createDocument();
+  const childA = createNode('frame', { name: 'Badge/Size=Small' });
+  const childB = createNode('frame', { name: 'Badge/Size=Large' });
+  addNode(document, childA); addNode(document, childB);
+  const childComponentA = createComponent(document, childA.id, childA.name);
+  const childComponentB = createComponent(document, childB.id, childB.name);
+  createComponentSet(document, [childComponentA.id, childComponentB.id], 'Badge');
+
+  const makeOwner = value => {
+    const root = createNode('frame', { name: `Card/State=${value}` });
+    addNode(document, root);
+    const nested = createComponentInstance(document, childComponentA.id, { parentId: root.id });
+    return { root, nested, component: createComponent(document, root.id, root.name) };
+  };
+  const first = makeOwner('Default');
+  const second = makeOwner('Active');
+  const ownerSet = createComponentSet(document, [first.component.id, second.component.id], 'Card');
+  assert.equal(setComponentNestedInstanceExposure(document, first.component.id, first.nested.id), true);
+  assert.deepEqual(second.component.exposedNestedInstances, [second.nested.id],
+    'an exposure is mapped onto equivalent source layers in other owner variants');
+
+  const ownerInstance = createComponentInstance(document, first.component.id);
+  const firstGroup = componentPropertyExposureGroups(document, first.component, ownerInstance)[0];
+  assert.equal(firstGroup.instance.componentSourceId, first.nested.id);
+  assert.equal(firstGroup.variantProperties[0].name, 'Size');
+  switchComponentInstanceVariant(document, ownerInstance.id, second.component.id);
+  const activeComponent = document.components.find(item => item.id === ownerSet.componentIds[1]);
+  const activeGroup = componentPropertyExposureGroups(document, activeComponent, ownerInstance)[0];
+  assert.equal(activeGroup.instance.componentSourceId, second.nested.id,
+    'the active controls bind to the matching nested instance in the selected owner variant');
+  assert.equal(activeGroup.variantProperties[0].name, 'Size');
+  assert.equal(validateDocument(document), true);
+});
+
+test('variant-only nested controls follow allowed instance-swap components and count toward the 100-property cap', () => {
+  const document = createDocument();
+  const makeVariantSet = (name, axis, values) => {
+    const variants = values.map(value => {
+      const root = createNode('frame', { name: `${name}/${axis}=${value}` });
+      addNode(document, root);
+      const component = createComponent(document, root.id, root.name);
+      return { root, component };
+    });
+    createComponentSet(document, variants.map(item => item.component.id), name);
+    return variants;
+  };
+  const sizeVariants = makeVariantSet('Badge', 'Size', ['Small', 'Large']);
+  const toneVariants = makeVariantSet('Icon', 'Tone', ['Light', 'Dark']);
+  const ownerRoot = createNode('frame', { name: 'Owner' });
+  addNode(document, ownerRoot);
+  const nested = createComponentInstance(document, sizeVariants[0].component.id, { parentId: ownerRoot.id });
+  const owner = createComponent(document, ownerRoot.id, 'Owner');
+  const swap = createComponentProperty(document, owner.id, {
+    name: 'Nested component', type: 'INSTANCE_SWAP', targetNodeId: nested.id,
+    preferredComponentIds: [toneVariants[0].component.id]
+  });
+  setComponentNestedInstanceExposure(document, owner.id, nested.id);
+  const instance = createComponentInstance(document, owner.id);
+  const nestedInstance = instance.children.find(node => node.componentSourceId === nested.id);
+  assert.equal(componentPropertyExposureGroups(document, owner, instance)[0].variantProperties[0].name, 'Size');
+  setComponentPropertyValue(document, instance.id, swap.id, toneVariants[0].component.id);
+  const swappedGroup = componentPropertyExposureGroups(document, owner, instance)[0];
+  assert.equal(swappedGroup.component.id, toneVariants[0].component.id);
+  assert.equal(swappedGroup.variantProperties[0].name, 'Tone',
+    'variant controls refresh for the nested component selected by its parent swap property');
+  switchComponentInstanceVariant(document, nestedInstance.id, toneVariants[1].component.id);
+  assert.equal(componentPropertyExposureGroups(document, owner, instance)[0].component.id, toneVariants[1].component.id);
+  assert.equal(validateDocument(document), true);
+
+  const limited = createDocument();
+  const limitedVariants = [];
+  for (const value of ['Small', 'Large']) {
+    const root = createNode('frame', { name: `Nested/Size=${value}` });
+    addNode(limited, root);
+    limitedVariants.push(createComponent(limited, root.id, root.name));
+  }
+  createComponentSet(limited, limitedVariants.map(component => component.id), 'Nested');
+  const limitRoot = createNode('frame', { name: 'Limit owner' });
+  addNode(limited, limitRoot);
+  const limitNested = createComponentInstance(limited, limitedVariants[0].id, { parentId: limitRoot.id });
+  const targets = [];
+  for (let index = 0; index < 100; index += 1) {
+    const target = createNode('ellipse', { name: `Property ${index}`, visible: true });
+    addNode(limited, target, { parentId: limitRoot.id });
+    targets.push(target);
+  }
+  const limitOwner = createComponent(limited, limitRoot.id, 'Limit owner');
+  targets.forEach((target, index) => createComponentProperty(limited, limitOwner.id, {
+    name: `Property ${index}`, type: 'BOOLEAN', targetNodeId: target.id
+  }));
+  assert.throws(() => setComponentNestedInstanceExposure(limited, limitOwner.id, limitNested.id), /at most 100 properties/,
+    'nested variant axes consume property slots even without regular properties on the nested component');
+  assert.equal(limitOwner.exposedNestedInstances, undefined,
+    'rejecting an over-limit variant exposure leaves the owner unchanged');
+});
+
+test('nested instance exposure counts the largest swap candidate against the property limit', () => {
+  const document = createDocument();
+  const nestedRoot = createNode('frame', { name: 'Nested controls' });
+  addNode(document, nestedRoot);
+  const nestedTargets = [];
+  for (let index = 0; index < 2; index += 1) {
+    const target = createNode('ellipse', { name: `Nested flag ${index}`, visible: true });
+    addNode(document, target, { parentId: nestedRoot.id });
+    nestedTargets.push(target);
+  }
+  const nestedComponent = createComponent(document, nestedRoot.id, 'Nested controls');
+  nestedTargets.forEach((target, index) => createComponentProperty(document, nestedComponent.id, {
+    name: `Nested flag ${index}`, type: 'BOOLEAN', targetNodeId: target.id
+  }));
+  const swapRoot = createNode('frame', { name: 'Nested controls with more options' });
+  addNode(document, swapRoot);
+  const swapTargets = [];
+  for (let index = 0; index < 3; index += 1) {
+    const target = createNode('ellipse', { name: `Swap flag ${index}`, visible: true });
+    addNode(document, target, { parentId: swapRoot.id });
+    swapTargets.push(target);
+  }
+  const swapComponent = createComponent(document, swapRoot.id, 'Nested controls with more options');
+  swapTargets.forEach((target, index) => createComponentProperty(document, swapComponent.id, {
+    name: `Swap flag ${index}`, type: 'BOOLEAN', targetNodeId: target.id
+  }));
+
+  const ownerRoot = createNode('frame', { name: 'Owner controls' });
+  addNode(document, ownerRoot);
+  const nestedSource = createComponentInstance(document, nestedComponent.id, { parentId: ownerRoot.id });
+  const ownerTargets = [];
+  for (let index = 0; index < 97; index += 1) {
+    const target = createNode('ellipse', { name: `Owner flag ${index}`, visible: true });
+    addNode(document, target, { parentId: ownerRoot.id });
+    ownerTargets.push(target);
+  }
+  const owner = createComponent(document, ownerRoot.id, 'Owner controls');
+  const swapProperty = createComponentProperty(document, owner.id, {
+    name: 'Nested choice', type: 'INSTANCE_SWAP', targetNodeId: nestedSource.id,
+    preferredComponentIds: [swapComponent.id]
+  });
+  for (let index = 0; index < ownerTargets.length; index += 1) {
+    createComponentProperty(document, owner.id, {
+      name: `Owner flag ${index}`, type: 'BOOLEAN', targetNodeId: ownerTargets[index].id
+    });
+  }
+  assert.throws(() => setComponentNestedInstanceExposure(document, owner.id, nestedSource.id), /at most 100 properties/,
+    'revealing the three-property swap candidate beside 98 owner properties would exceed the limit');
+  assert.equal(owner.exposedNestedInstances, undefined, 'a rejected exposure must not partially mutate the component');
+
+  removeNode(document, ownerTargets[0].id);
+  assert.equal(setComponentNestedInstanceExposure(document, owner.id, nestedSource.id), true,
+    'the exposure fits when one owner property is removed');
+  assert.equal(owner.componentProperties.length + 3, 100);
+  assert.equal(validateDocument(document), true);
+
+  const duplicate = parseDocument(serializeDocument(document));
+  const duplicateOwner = duplicate.components.find(component => component.id === owner.id);
+  duplicateOwner.componentProperties = duplicateOwner.componentProperties.slice(0, 1);
+  duplicateOwner.exposedNestedInstances.push(nestedSource.id);
+  assert.throws(() => validateDocument(duplicate), /Invalid exposed nested instance/,
+    'an instance cannot be exposed twice');
+});
+
+test('nested property exposure dialog applies selections atomically', () => {
+  const document = createDocument();
+  const innerRoot = createNode('frame', { name: 'Inner' });
+  addNode(document, innerRoot);
+  const innerText = createNode('text', { name: 'Label', text: 'Default' });
+  addNode(document, innerText, { parentId: innerRoot.id });
+  const inner = createComponent(document, innerRoot.id, 'Inner');
+  createComponentProperty(document, inner.id, { name: 'Label', type: 'TEXT', targetNodeId: innerText.id });
+
+  const outerRoot = createNode('frame', { name: 'Outer' });
+  addNode(document, outerRoot);
+  const nestedA = createComponentInstance(document, inner.id, { parentId: outerRoot.id });
+  const nestedB = createComponentInstance(document, inner.id, { parentId: outerRoot.id });
+  const owner = createComponent(document, outerRoot.id, 'Outer');
+
+  assert.equal(setComponentNestedInstanceExposures(document, owner.id, [nestedA.id, nestedB.id]), true);
+  assert.deepEqual(owner.exposedNestedInstances, [nestedA.id, nestedB.id]);
+  assert.equal(setComponentNestedInstanceExposures(document, owner.id, [nestedA.id, nestedB.id]), false,
+    'reapplying the same selection creates no document change');
+  assert.throws(() => setComponentNestedInstanceExposures(document, owner.id, [nestedB.id, 'missing-instance']), /nested component instance/);
+  assert.deepEqual(owner.exposedNestedInstances, [nestedA.id, nestedB.id],
+    'an invalid item rejects the entire staged selection without partial changes');
+  assert.equal(setComponentNestedInstanceExposures(document, owner.id, []), true);
+  assert.equal(owner.exposedNestedInstances, undefined);
+  assert.equal(validateDocument(document), true);
+});
+
+test('batch nested exposure checks the combined property cap before mutation', () => {
+  const document = createDocument();
+  const nestedComponents = [];
+  for (let componentIndex = 0; componentIndex < 2; componentIndex += 1) {
+    const root = createNode('frame', { name: `Nested ${componentIndex}` });
+    addNode(document, root);
+    const component = createComponent(document, root.id, root.name);
+    for (let propertyIndex = 0; propertyIndex < 51; propertyIndex += 1) {
+      const target = createNode('rectangle', { name: `Nested ${componentIndex} flag ${propertyIndex}`, visible: true });
+      addNode(document, target, { parentId: root.id });
+      createComponentProperty(document, component.id, {
+        name: `Flag ${propertyIndex}`, type: 'BOOLEAN', targetNodeId: target.id
+      });
+    }
+    nestedComponents.push(component);
+  }
+  const ownerRoot = createNode('frame', { name: 'Owner' });
+  addNode(document, ownerRoot);
+  const nestedSources = nestedComponents.map(component => createComponentInstance(document, component.id, { parentId: ownerRoot.id }));
+  const owner = createComponent(document, ownerRoot.id, 'Owner');
+
+  assert.throws(() => setComponentNestedInstanceExposures(document, owner.id, nestedSources.map(instance => instance.id)), /at most 100 properties/);
+  assert.equal(owner.exposedNestedInstances, undefined, 'over-limit batch selection leaves the component unchanged');
+  assert.equal(setComponentNestedInstanceExposure(document, owner.id, nestedSources[0].id), true,
+    'one 51-property nested instance fits by itself');
+  assert.throws(() => setComponentNestedInstanceExposures(document, owner.id, nestedSources.map(instance => instance.id)), /at most 100 properties/);
+  assert.deepEqual(owner.exposedNestedInstances, [nestedSources[0].id],
+    'a later over-limit batch retains the previously saved exposure without partially adding another');
+  assert.equal(validateDocument(document), true);
 });
 
 test('instance-swap properties accept compatible components outside variant sets and keep ordinary overrides', () => {

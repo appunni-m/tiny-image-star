@@ -44,7 +44,7 @@ async function assertPlanMatchesHost(before, after, expectedTypes) {
   for (let index = 0; index < plan.length; index += 1) {
     const { operation, snapshot } = plan[index];
     const message = {
-      v: 1, kind: 'OPERATION', designId: canonicalBefore.id,
+      v: 2, kind: 'OPERATION', designId: canonicalBefore.id,
       sessionId: 'session-a', actorId: 'guest-a',
       operation: { ...operation, opId: `guest-op-${index + 1}`, baseRevision: index }
     };
@@ -133,6 +133,23 @@ test('plans supported text replacement and property changes in deterministic ord
 
   const plan = await assertPlanMatchesHost(document, after, ['SetProperty', 'ReplaceText', 'SetProperty']);
   assert.deepEqual(plan.map(entry => entry.operation.property), ['opacity', undefined, 'fontSize']);
+});
+
+test('plans text truncation properties in host-valid order and supports clearing the line limit', async () => {
+  const { document, pageId } = fixture();
+  const ending = structuredClone(document);
+  updateNode(ending, 'text-a', { textTruncation: 'ending', maxLines: 2 }, pageId);
+  validateDocument(ending);
+  const activate = await assertPlanMatchesHost(document, ending, ['SetProperty', 'SetProperty']);
+  assert.deepEqual(activate.map(entry => entry.operation.property), ['textTruncation', 'maxLines'],
+    'ending mode must become durable before the positive maxLines value is sent');
+
+  const disabled = structuredClone(ending);
+  updateNode(disabled, 'text-a', { maxLines: null, textTruncation: 'disabled' }, pageId);
+  validateDocument(disabled);
+  const clear = await assertPlanMatchesHost(ending, disabled, ['SetProperty', 'SetProperty']);
+  assert.deepEqual(clear.map(entry => entry.operation.property), ['maxLines', 'textTruncation'],
+    'the line limit must be cleared before disabling ending truncation');
 });
 
 test('plans multiple independent deletions in a stable order and records each intermediate snapshot', async () => {

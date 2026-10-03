@@ -1,0 +1,19 @@
+.live-qr-dialog { width: min(620px, calc(100vw - 24px)); max-height: calc(100dvh - 24px - env(safe-area-inset-top)); overflow: auto; }
+.live-qr-content { padding: 22px; }
+.live-qr-content .modal-copy { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.live-qr-content canvas { display: block; width: min(100%, 460px); height: auto; margin: 12px auto; border: 1px solid var(--border); border-radius: 12px; background: #fff; image-rendering: pixelated; }
+.live-qr-controls { display: flex; justify-content: center; align-items: center; gap: 18px; margin: 8px 0 16px; }
+.live-qr-controls button { width: 44px; min-height: 44px; font-size: 22px; }
+.live-qr-controls span { min-width: 130px; color: var(--muted); font-size: 12px; text-align: center; }
+.live-qr-video { display: block; width: 100%; max-height: min(56dvh, 480px); margin: 12px auto; aspect-ratio: 4 / 3; border-radius: 12px; background: #111; object-fit: cover; }
+.live-qr-progress { min-height: 1.4em; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.live-qr-scan-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.live-qr-scan-actions button, .live-qr-scan-actions .live-qr-image-label { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); color: var(--ink); font-size: 12px; cursor: pointer; }
+.live-qr-action { display: inline-flex; min-height: 44px; align-items: center; margin: 0 0 14px; }
+.live-qr-content .dialog-actions { justify-content: flex-start; }
+@media (max-width: 600px) {
+  .live-qr-content { padding: 16px; }
+  .live-qr-content button, .live-qr-image-label { min-height: 44px; }
+  .live-qr-controls { gap: 10px; }
+  .live-qr-controls span { min-width: 112px; }
+}

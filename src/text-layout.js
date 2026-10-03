@@ -5,6 +5,7 @@ const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined,
 const thaiWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
 
 const markPattern = /\p{M}/u;
+const complexShapingText = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Thai}\p{Script=Lao}\p{Script=Tibetan}\p{Script=Myanmar}\p{Script=Khmer}\p{Extended_Pictographic}]/u;
 // Unicode GL/WJ characters prohibit a line break on either side. In particular,
 // treating NBSP as ordinary JavaScript whitespace splits values such as "10 MB"
 // and can even drop the space when a soft wrap happens at that point.
@@ -321,8 +322,26 @@ export function transformTextCase(text, mode = 'none') {
 
 export function measureTrackedText(ctx, text, letterSpacing = 0) {
   const value = String(text ?? '');
+  const spacing = Number(letterSpacing) || 0;
+  if (spacing && complexShapingText.test(value)) {
+    if (typeof ctx.letterSpacing === 'string') {
+      const previous = ctx.letterSpacing;
+      try {
+        ctx.letterSpacing = `${spacing}px`;
+        return ctx.measureText(value).width;
+      } finally { ctx.letterSpacing = previous; }
+    }
+    // Drawing each grapheme independently would destroy joining and bidi
+    // order. Keep browser-shaped runs whole when native canvas tracking is not
+    // available, and measure the same untracked fallback width.
+    return ctx.measureText(value).width;
+  }
   const count = textGraphemes(value).length;
-  return ctx.measureText(value).width + Math.max(0, count - 1) * (Number(letterSpacing) || 0);
+  return ctx.measureText(value).width + Math.max(0, count - 1) * spacing;
+}
+
+export function requiresComplexTextShaping(text) {
+  return complexShapingText.test(String(text ?? ''));
 }
 
 export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
@@ -514,6 +533,88 @@ function justificationGapCount(text) {
   return gaps;
 }
 
+function textOverflowLimit(lines, { maxLines, maxHeight, boxHeight }) {
+  const lineLimit = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : Infinity;
+  const heights = [maxHeight, boxHeight].filter(value => value != null).map(Number).filter(value => Number.isFinite(value) && value >= 0);
+  const heightLimit = heights.length ? Math.min(...heights) : Infinity;
+  let count = 0;
+  for (const line of lines) {
+    const lineTop = Number(line.y) || 0;
+    const lineBottom = lineTop + (Number(line.lineHeight) || 0);
+    if (count >= lineLimit || lineTop >= heightLimit || lineBottom > heightLimit) break;
+    count += 1;
+  }
+  return count;
+}
+
+function truncatePlainLine(line, width, measure, graphemes) {
+  const clusters = textGraphemes(line.displayText, graphemes);
+  while (clusters.length && /^\s+$/u.test(clusters.at(-1))) clusters.pop();
+  while (clusters.length && Number(measure(`${clusters.join('')}…`)) > width) clusters.pop();
+  const displayText = `${clusters.join('')}…`;
+  const naturalWidth = Math.max(0, Number(measure(displayText)) || 0);
+  line.displayText = displayText;
+  line.naturalWidth = naturalWidth;
+  line.width = Number.isFinite(width) ? Math.min(width, naturalWidth) : naturalWidth;
+  line.justify = false;
+  line.justificationExtraSpace = 0;
+}
+
+function groupRichClusters(clusters) {
+  const parts = [];
+  for (const cluster of clusters) appendRichPart(parts, cluster.text, cluster.style);
+  return parts;
+}
+
+function truncateRichLine(line, width, measure, graphemes, fallbackStyle) {
+  const clusters = line.parts.flatMap(part => textGraphemes(part.text, graphemes).map(text => ({ text, style: part.style })));
+  while (clusters.length && /^\s+$/u.test(clusters.at(-1).text)) clusters.pop();
+  const candidateWidth = values => measuredPartsWidth(groupRichClusters(values), measure);
+  const styleForEllipsis = () => [...clusters].reverse().find(cluster => !/^\s+$/u.test(cluster.text))?.style
+    || clusters.at(-1)?.style || fallbackStyle;
+  while (clusters.length) {
+    const ellipsisStyle = styleForEllipsis();
+    if (candidateWidth([...clusters, { text: '…', style: ellipsisStyle }]) <= width) break;
+    clusters.pop();
+  }
+  const ellipsisStyle = styleForEllipsis();
+  const parts = groupRichClusters([...clusters, { text: '…', style: ellipsisStyle }]);
+  let offsetX = 0;
+  line.parts = parts.map(part => {
+    const partWidth = Math.max(0, Number(measure(part.text, part.style)) || 0);
+    const positioned = { ...part, offsetX, width: partWidth };
+    offsetX += partWidth;
+    return positioned;
+  });
+  line.displayText = parts.map(part => part.text).join('');
+  line.naturalWidth = offsetX;
+  line.width = Number.isFinite(width) ? Math.min(width, offsetX) : offsetX;
+  line.justify = false;
+  line.justificationExtraSpace = 0;
+}
+
+function applyTextTruncation(layout, {
+  textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null,
+  width = Infinity, measure, rich = false, graphemes = graphemeSegmenter, fallbackStyle = null
+} = {}) {
+  if (textTruncation !== 'ending') return layout;
+  const visibleCount = textOverflowLimit(layout.lines, { maxLines, maxHeight, boxHeight });
+  if (visibleCount >= layout.lines.length) return layout;
+  const lines = layout.lines.slice(0, visibleCount);
+  const lastLine = lines.at(-1);
+  if (lastLine && typeof measure === 'function') {
+    const availableWidth = Number.isFinite(width) ? Math.max(1, width - (Number(lastLine.indent) || 0)) : Infinity;
+    if (rich) truncateRichLine(lastLine, availableWidth, measure, graphemes, fallbackStyle);
+    else truncatePlainLine(lastLine, availableWidth, measure, graphemes);
+  }
+  const nextWidth = Math.max(0, ...lines.flatMap(line => [
+    (Number(line.indent) || 0) + (Number(line.naturalWidth) || 0),
+    line.marker ? (Number(line.marker.x) || 0) + (Number(line.marker.width) || 0) : 0
+  ]));
+  const last = lines.at(-1);
+  return { lines, width: nextWidth, height: last ? Number(last.y || 0) + Number(last.lineHeight || 0) : 0 };
+}
+
 /** Lay out unstyled text while treating explicit newlines as paragraph breaks. */
 export function layoutPlainText(text, maxWidth, measure, {
   lineHeight = 0,
@@ -523,6 +624,10 @@ export function layoutPlainText(text, maxWidth, measure, {
   listSpacing = 0,
   paragraphStyles = [],
   markerStyle = null,
+  textTruncation = 'disabled',
+  maxLines = null,
+  maxHeight = null,
+  boxHeight = null,
   wordSegmenter = thaiWordSegmenter,
   graphemeSegmenter: graphemes = graphemeSegmenter
 } = {}) {
@@ -585,7 +690,9 @@ export function layoutPlainText(text, maxWidth, measure, {
       y += lineHeightPx;
     }
   }
-  return { lines, width, height: y };
+  return applyTextTruncation({ lines, width, height: y }, {
+    textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, graphemes
+  });
 }
 
 export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
@@ -823,7 +930,8 @@ function splitRichWordByWidth(word, maxWidth, measure, segmenter) {
  */
 export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
   wordSegmenter: thaiWords = thaiWordSegmenter,
-  graphemeSegmenter: graphemes = graphemeSegmenter
+  graphemeSegmenter: graphemes = graphemeSegmenter,
+  textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null
 } = {}) {
   if (!Array.isArray(runs) || typeof measure !== 'function') throw new TypeError('Rich text layout requires runs and a measurement function.');
   const limit = Number(maxWidth);
@@ -968,15 +1076,22 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     y += resolvedHeight;
     return current;
   });
-  return {
+  const layout = {
     lines,
     width: Math.max(0, ...lines.flatMap(line => [line.indent + line.naturalWidth, line.marker ? line.marker.x + line.marker.width : 0])),
     height: y
   };
+  return applyTextTruncation(layout, {
+    textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, rich: true, graphemes,
+    fallbackStyle: fallback
+  });
 }
 
 export function calculateTextBox(ctx, node, {
+  fontFamily = node.fontFamily,
   fontSize = node.fontSize,
+  fontWeight = node.fontWeight,
+  fontStyle = node.fontStyle,
   lineHeight = node.lineHeight,
   lineHeightUnit = node.lineHeightUnit || 'ratio',
   letterSpacing = node.letterSpacing,
@@ -996,9 +1111,13 @@ export function calculateTextBox(ctx, node, {
   const lineHeightPx = resolvedLineHeight(lineHeight, size, lineHeightUnit);
   const spacing = Number(letterSpacing) || 0;
   const textValue = transformTextCase(text, node.textCase || 'none');
-  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
-  const measure = (value, style = node) => {
-    const shaped = shapeText?.(value, style);
+  const family = fontFamily || 'Arial, sans-serif';
+  const weight = Number(fontWeight) || 400;
+  const style = fontStyle || 'normal';
+  const resolvedNode = { ...node, fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: size, letterSpacing: spacing };
+  ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
+  const measure = (value, textStyle = resolvedNode) => {
+    const shaped = shapeText?.(value, textStyle);
     if (shaped && !shaped.missingGlyph && Array.isArray(shaped.glyphs) && shaped.upem > 0) {
       let advance = 0;
       let boundaries = 0;
@@ -1006,16 +1125,16 @@ export function calculateTextBox(ctx, node, {
         advance += Number(shaped.glyphs[index].xAdvance) || 0;
         if (index > 0 && shaped.glyphs[index].cluster !== shaped.glyphs[index - 1].cluster) boundaries += 1;
       }
-      return Math.max(0, advance * (Number(style.fontSize) || size) / shaped.upem + boundaries * (Number(style.letterSpacing) || 0));
+        return Math.max(0, advance * (Number(textStyle.fontSize) || size) / shaped.upem + boundaries * (Number(textStyle.letterSpacing) || 0));
     }
-    return measureTrackedText(ctx, value, style.letterSpacing ?? spacing);
+    return measureTrackedText(ctx, value, textStyle.letterSpacing ?? spacing);
   };
 
   const richRuns = node.textRuns;
   if (Array.isArray(richRuns) && richRuns.every(run => run && typeof run.text === 'string') && richRuns.map(run => run.text).join('') === String(text ?? '')) {
     const baseStyle = {
-      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size,
-      fontWeight: Number(node.fontWeight) || 400, fontStyle: node.fontStyle || 'normal', fontAxes: node.fontAxes, fontFeatures: node.fontFeatures,
+      fontFamily: family, fontSize: size,
+      fontWeight: weight, fontStyle: style, fontAxes: node.fontAxes, fontFeatures: node.fontFeatures,
       lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
       lineHeightUnit,
       paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
@@ -1031,39 +1150,53 @@ export function calculateTextBox(ctx, node, {
       layout = layoutTextRuns(richRuns, mode === 'auto-width' ? Infinity : Math.max(1, width), baseStyle, (value, style) => {
         ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight, style.fontAxes)} ${style.fontSize}px ${style.fontFamily}`;
         return measure(value, style);
+      }, {
+        textTruncation: node.textTruncation,
+        maxLines: node.maxLines,
+        maxHeight: node.maxHeight
       });
     } finally {
-      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(node.fontWeight, node.fontAxes)} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
+      ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
     }
     if (mode === 'auto-width') {
+      const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
       return {
         width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
-        height: Math.max(36, Math.ceil(layout.height + 4))
+        height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
+          ? Math.min(measuredHeight, node.maxHeight) : measuredHeight
       };
     }
-    return { width, height: Math.max(36, Math.ceil(layout.height + 4)) };
+    const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+    return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
+      ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
   }
 
   if (mode === 'auto-width') {
     const layout = layoutPlainText(textValue, Infinity,
-      line => measure(line, { ...node, fontSize: size, letterSpacing: spacing }),
-      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
-        fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
-        fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
+      line => measure(line, { ...resolvedNode }),
+      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
+        textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
+        fontFamily: family, fontSize: size, fontWeight: weight,
+        fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
       } });
+    const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
     return {
       width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
-      height: Math.max(36, Math.ceil(layout.height + 4))
+      height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
+        ? Math.min(measuredHeight, node.maxHeight) : measuredHeight
     };
   }
 
   const layout = layoutPlainText(textValue, Math.max(1, width),
-    line => measure(line, { ...node, fontSize: size, letterSpacing: spacing }),
-    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
-      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
-      fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
+    line => measure(line, { ...resolvedNode }),
+    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
+      textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
+      fontFamily: family, fontSize: size, fontWeight: weight,
+      fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
     } });
-  return { width, height: Math.max(36, Math.ceil(layout.height + 4)) };
+  const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+  return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
+    ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
 }
 
 /** Keep an auto-width text layer's aligned top anchor fixed as its measured box changes. */

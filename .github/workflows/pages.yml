@@ -35,7 +35,7 @@ jobs:
         run: npm ci
 
       - name: Build local image workers
-        run: npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:woff2-worker && npm run build:font-shaping-worker
+        run: npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr
 
       - name: Run model, storage, and WASM tests
         run: node scripts/ci-test.mjs
@@ -67,7 +67,7 @@ jobs:
         run: npm ci
 
       - name: Build local image workers
-        run: npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:woff2-worker && npm run build:font-shaping-worker
+        run: npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

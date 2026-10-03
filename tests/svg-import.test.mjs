@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createDocument, createNode, parseDocument, serializeDocument } from '../src/model.js';
 import { importSvgToLayers, SvgImportError } from '../src/svg-import.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
+import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 
 function allNodes(nodes, output = []) {
   for (const node of nodes) {
@@ -272,6 +273,26 @@ test('network payload failures reject the complete SVG import', () => {
 
   const oversized = valid.replace(/data-tiny-image-star-network-v1="[^"]*"/, `data-tiny-image-star-network-v1="${'x'.repeat(1024 * 1024 + 1)}"`);
   assert.throws(() => importSvgToLayers(oversized), error => error instanceof SvgImportError && error.code === 'resource-limit');
+});
+
+test('rounded network radii survive uniform SVG transforms and reject anisotropic scaling', () => {
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 30 }, { x: 0, y: 30 }
+  ], { closed: true });
+  geometry.vertices[0].cornerRadius = 7;
+  const source = createNode('network', { ...geometry, fill: '#123456', stroke: null, strokeWidth: 0 });
+  const svg = exportNodeToSvg(source);
+  const svgOpenEnd = svg.indexOf('>', svg.indexOf('<svg')) + 1;
+  const svgCloseStart = svg.lastIndexOf('</svg>');
+  const wrapTransform = transform => `${svg.slice(0, svgOpenEnd)}<g transform="${transform}">${svg.slice(svgOpenEnd, svgCloseStart)}</g>${svg.slice(svgCloseStart)}`;
+
+  const uniformlyScaled = importSvgToLayers(wrapTransform('scale(2)'));
+  const imported = allNodes(uniformlyScaled.nodes).find(node => node.type === 'network');
+  assert.ok(imported);
+  assert.equal(imported.vertices.find(vertex => vertex.id === 'v1').cornerRadius, 14,
+    'a uniform SVG transform scales stored corner radii with the graph geometry');
+
+  importFailure(wrapTransform('scale(2,1)'), 'non-uniform-corner-radius-transform');
 });
 
 function createNetworkForSvgRoundTrip() {

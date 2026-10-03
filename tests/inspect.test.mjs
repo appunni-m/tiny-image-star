@@ -6,6 +6,20 @@ import { createImageFill } from '../src/image-fills.js';
 import { buildInspectOutput } from '../src/inspect.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
+test('Inspect reports independent vector-network vertex corner radii', () => {
+  const document = createDocument();
+  const network = createNode('network', {
+    name: 'Rounded graph', width: 100, height: 80,
+    vertices: [{ id: 'a', x: 0, y: 0, cornerRadius: 7.5 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 0, y: 1, cornerRadius: 2 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'abc', vertexIds: ['a', 'b', 'c'] }]
+  });
+  addNode(document, network);
+  assert.deepEqual(buildInspectOutput(document, [findNode(document, network.id)]).layers[0].vertexCornerRadii, [
+    { id: 'a', index: 0, radius: '7.5px' }, { id: 'c', index: 2, radius: '2px' }
+  ]);
+});
+
 test('Inspect output reports page-space geometry, resolved styles, text metrics and exact layer JSON', () => {
   const document = createDocument();
   const frame = createNode('frame', { name: 'Outer frame', x: 25, y: 35, width: 300, height: 220 });
@@ -38,6 +52,22 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   assert.match(output.css, /text-decoration: underline;/);
   assert.match(output.css, /transform: rotate\(-4deg\);/);
   assert.equal(JSON.parse(output.json).id, label.id);
+});
+
+test('Inspect output preserves text truncation settings in JSON and generated CSS', () => {
+  const document = createDocument();
+  const label = createNode('text', {
+    name: 'Clamped title', text: 'A title that has a maximum line count', width: 100, height: 30,
+    textTruncation: 'ending', maxLines: 2
+  });
+  addNode(document, label);
+  const output = buildInspectOutput(document, [findNode(document, label.id)]);
+  assert.equal(output.layers[0].typography.textTruncation, 'ending');
+  assert.equal(output.layers[0].typography.maxLines, 2);
+  assert.match(output.css, /overflow: hidden;/);
+  assert.match(output.css, /-webkit-box-orient: vertical;/);
+  assert.match(output.css, /-webkit-line-clamp: 2;/);
+  assert.equal(JSON.parse(output.json).maxLines, 2);
 });
 
 test('Inspect page position follows nested rotated transforms and matches generated CSS', () => {
@@ -311,6 +341,21 @@ test('Inspect output preserves fixed and content-based grid track minimum bounds
   const output = buildInspectOutput(document, [findNode(document, grid.id)]);
 
   assert.match(output.css, /grid-template-columns: minmax\(120px, 1fr\) minmax\(max-content, 2fr\) minmax\(80px, 200px\);/);
+});
+
+test('Inspect output discloses fractional grid minimums that CSS Grid cannot express directly', () => {
+  const document = createDocument();
+  const grid = createNode('frame', {
+    name: 'Fraction-bounded grid', width: 300, height: 100,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 2, rows: 1, padding: 0,
+      columnTracks: [{ mode: 'fill', weight: 2, minWeight: 0.5 }, { mode: 'fill', weight: 1 }] })
+  });
+  addNode(document, grid);
+
+  const output = buildInspectOutput(document, [findNode(document, grid.id)]);
+
+  assert.match(output.css, /grid-template-columns: minmax/);
+  assert.match(output.css, /Fractional track minimums are preserved in layer JSON and Tiny Image Star local layout/);
 });
 
 test('Inspect auto rows ignore hidden and absolute children when choosing explicit CSS tracks', () => {

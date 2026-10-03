@@ -39,7 +39,7 @@ function request(engine, operation, context = {}) {
   const pageId = snapshot.pages[0].id;
   const operationHasPage = ['SetProperty', 'InsertNode', 'DeleteNode', 'MoveNode', 'ReplaceText'].includes(operation.type);
   return engine.apply({
-    v: 1,
+    v: 2,
     kind: 'OPERATION',
     designId: snapshot.id,
     sessionId: 'session-a',
@@ -91,6 +91,18 @@ test('applies all typed node operations on a validated candidate', async () => {
   assert.equal(result.kind, 'ACK');
   assert.equal(engine.getSnapshot().pages[0].children[0].children[0].text, 'After\nparagraph');
 
+  result = await request(engine, { type: 'SetProperty', opId: 'op-text-truncation', targetId: 'text-a', property: 'textTruncation', value: 'ending' });
+  assert.equal(result.kind, 'ACK');
+  result = await request(engine, { type: 'SetProperty', opId: 'op-text-max-lines', targetId: 'text-a', property: 'maxLines', value: 2 });
+  assert.equal(result.kind, 'ACK');
+  const invalidTextTransition = await request(engine, { type: 'SetProperty', opId: 'op-text-disabled-too-soon', targetId: 'text-a', property: 'textTruncation', value: 'disabled' });
+  assert.equal(invalidTextTransition.kind, 'REJECT', 'the host must not commit a line limit without ending truncation');
+  assert.equal(engine.getRevision(), 5, 'a rejected schema-invalid text mutation does not advance the revision');
+  result = await request(engine, { type: 'SetProperty', opId: 'op-text-clear-max-lines', targetId: 'text-a', property: 'maxLines', value: null });
+  assert.equal(result.kind, 'ACK');
+  result = await request(engine, { type: 'SetProperty', opId: 'op-text-disable-truncation', targetId: 'text-a', property: 'textTruncation', value: 'disabled' });
+  assert.equal(result.kind, 'ACK');
+
   result = await request(engine, { type: 'MoveNode', opId: 'op-move', nodeId: 'ellipse-a', parentId: null, index: 2 });
   assert.equal(result.kind, 'ACK');
   assert.deepEqual(engine.getSnapshot().pages[0].children.map(node => node.id), ['frame-a', 'rectangle-a', 'ellipse-a']);
@@ -98,7 +110,7 @@ test('applies all typed node operations on a validated candidate', async () => {
   result = await request(engine, { type: 'DeleteNode', opId: 'op-delete', nodeId: 'ellipse-a' });
   assert.equal(result.kind, 'ACK');
   assert.equal(engine.getSnapshot().pages[0].children.some(node => node.id === 'ellipse-a'), false);
-  assert.equal(engine.getRevision(), 5);
+  assert.equal(engine.getRevision(), 9);
 });
 
 test('ReplaceSnapshot carries any schema-valid editor mutation while preserving design identity', async () => {
@@ -188,7 +200,7 @@ test('checks context, optimistic base revision, targeting, and field allowlist',
   assert.equal(contextReject.code, 'PERMISSION_DENIED');
 
   const stale = await engine.apply({
-    v: 1, kind: 'OPERATION', designId: engine.getSnapshot().id, sessionId: 'session-a', actorId: 'guest-a',
+    v: 2, kind: 'OPERATION', designId: engine.getSnapshot().id, sessionId: 'session-a', actorId: 'guest-a',
     operation: { type: 'DeleteNode', opId: 'stale-op', baseRevision: 4, pageId: engine.getSnapshot().pages[0].id, nodeId: 'rectangle-a' }
   });
   assert.equal(stale.code, 'STALE_REVISION');
@@ -223,7 +235,7 @@ test('one sequencer admits independent guest sessions and rejects stale same-bas
   assert.equal(engine.getGuestSessionCount(), 2);
 
   const operation = (actorId, sessionId, opId, baseRevision, name) => engine.apply({
-    v: 1, kind: 'OPERATION', designId: document.id, sessionId, actorId,
+    v: 2, kind: 'OPERATION', designId: document.id, sessionId, actorId,
     operation: { type: 'SetProperty', opId, baseRevision, pageId, targetId: 'rectangle-a', property: 'name', value: name }
   });
   const simultaneous = await Promise.all([
@@ -257,7 +269,7 @@ test('rejects prototype paths and leaves the document unchanged', async () => {
     type: 'SetProperty', opId: 'proto-op', baseRevision: 0, pageId: before.pages[0].id,
     targetId: 'rectangle-a', property: '__proto__.polluted', value: true
   };
-  const result = await engine.apply({ v: 1, kind: 'OPERATION', designId: before.id, sessionId: 'session-a', actorId: 'guest-a', operation });
+  const result = await engine.apply({ v: 2, kind: 'OPERATION', designId: before.id, sessionId: 'session-a', actorId: 'guest-a', operation });
   assert.equal(result.kind, 'REJECT');
   assert.equal(Object.hasOwn({}, 'polluted'), false);
   assert.deepEqual(engine.getSnapshot(), before);
@@ -270,7 +282,7 @@ test('deduplicates exact operation IDs and rejects op ID reuse with another payl
   const op = { type: 'SetProperty', opId: 'same-op', targetId: 'rectangle-a', property: 'x', value: 8 };
   const before = engine.getSnapshot();
   const exactMessage = {
-    v: 1, kind: 'OPERATION', designId: before.id, sessionId: 'session-a', actorId: 'guest-a',
+    v: 2, kind: 'OPERATION', designId: before.id, sessionId: 'session-a', actorId: 'guest-a',
     operation: { ...op, baseRevision: 0, pageId: before.pages[0].id }
   };
   const first = await engine.apply(exactMessage);
@@ -297,7 +309,7 @@ test('bounds replay memory for large accepted snapshots and preserves retries un
   const firstSnapshot = JSON.parse(JSON.stringify(document));
   firstSnapshot.name = 'large snapshot 0';
   const firstMessage = {
-    v: 1,
+    v: 2,
     kind: 'OPERATION',
     designId: document.id,
     sessionId: 'session-a',
@@ -355,7 +367,7 @@ test('serializes concurrent operations against one revision and accepts only one
   const engine = setup({ commit: async () => { commits += 1; await waiting; } });
   const base = engine.getSnapshot();
   const makeMessage = (opId, x) => ({
-    v: 1, kind: 'OPERATION', designId: base.id, sessionId: 'session-a', actorId: 'guest-a',
+    v: 2, kind: 'OPERATION', designId: base.id, sessionId: 'session-a', actorId: 'guest-a',
     operation: { type: 'SetProperty', opId, baseRevision: 0, pageId: base.pages[0].id, targetId: 'rectangle-a', property: 'x', value: x }
   });
   const first = engine.apply(makeMessage('parallel-a', 1));

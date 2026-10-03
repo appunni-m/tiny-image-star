@@ -1,5 +1,6 @@
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { vectorPathContours } from './vector-path.js';
+import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
 
 export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text']);
 export const imageFillAdjustmentRanges = Object.freeze({
@@ -51,10 +52,12 @@ export function isImageFillSupported(node) {
 
 export function createImageFill(assetId, overrides = {}) {
   if (typeof assetId !== 'string' || !assetId.trim() || assetId.length > 256) throw new TypeError('Choose an image already placed in this design.');
+  const fit = overrides.fit ?? 'cover';
   return {
     assetId,
     fit: 'cover',
     ...overrides,
+    ...(fit === 'tile' && overrides.scalingFactor == null ? { scalingFactor: DEFAULT_IMAGE_TILE_SCALE } : {}),
     transforms: createImageTransforms(overrides.transforms || {}),
     adjustments: normalizeImageAdjustments(overrides.adjustments || {})
   };
@@ -63,7 +66,8 @@ export function createImageFill(assetId, overrides = {}) {
 export function isValidImageFill(fill) {
   if (!fill || typeof fill !== 'object' || Array.isArray(fill)
     || typeof fill.assetId !== 'string' || !fill.assetId.trim() || fill.assetId.length > 256
-    || !['cover', 'contain'].includes(fill.fit)
+    || !['cover', 'contain', 'tile'].includes(fill.fit)
+    || (fill.scalingFactor != null && !isValidImageTileScale(fill.scalingFactor))
     || (fill.transforms != null && !isValidImageTransforms(fill.transforms))
     || !isValidImageAdjustments(fill.adjustments)) return false;
   return Object.entries(imageFillAdjustmentRanges).every(([field, [minimum, maximum]]) => {

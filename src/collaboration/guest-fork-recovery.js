@@ -1,4 +1,4 @@
-import { validateCollaborationMessage } from './protocol.js';
+import { COLLABORATION_PROTOCOL_VERSION, validateCollaborationMessage } from './protocol.js';
 
 const DEFAULT_MAX_PENDING_OPERATIONS = 256;
 const DEFAULT_MAX_PENDING_BYTES = 2 * 1024 * 1024;
@@ -70,14 +70,14 @@ function assertRevision(value, label) {
 
 function copySnapshot(snapshot, revision, headHash, designId, sessionId) {
   const validated = validateCollaborationMessage({
-    v: 1, kind: 'SNAPSHOT', designId, sessionId, actorId: 'host', revision, headHash, snapshot
+    v: COLLABORATION_PROTOCOL_VERSION, kind: 'SNAPSHOT', designId, sessionId, actorId: 'host', revision, headHash, snapshot
   }, { direction: 'host-to-guest' });
   return validated.snapshot;
 }
 
 function validateOperation(operation, designId, sessionId) {
   const validated = validateCollaborationMessage({
-    v: 1, kind: 'OPERATION', designId, sessionId, actorId: 'guest', operation
+    v: COLLABORATION_PROTOCOL_VERSION, kind: 'OPERATION', designId, sessionId, actorId: 'guest', operation
   }, { direction: 'guest-to-host' });
   return validated.operation;
 }

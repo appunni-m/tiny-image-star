@@ -1,10 +1,11 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteVariable, deleteVariableCollection, detachComponentInstance, detachNodeTextPath, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  addComponentVariantFromMaster, applyLayoutGuideStyle, copyLayoutGuide, pasteLayoutGuide, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayoutGuideStyle, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteLayoutGuideStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, detachLayoutGuideStyle, detachNodeTextPath, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
-  removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
+  removeComponentVariantFromSet, resetComponentSlotContent, setComponentNestedInstanceExposures, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
+import { colorVariableScope, normalizeVariableScopes, variablePropertyScope, variableScopeAllows, variableScopeGroups, variableScopesFor } from './variable-scopes.js';
 import { evaluatePrototypeExpression } from './prototype-expressions.js';
 import { DEFAULT_PROTOTYPE_BEZIER } from './prototype-easing.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
@@ -20,6 +21,10 @@ import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNo
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
+import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
+import { beginCanvasDragAfterSlop } from './canvas-drag-slop.js';
+import { createPageNodeIndex } from './page-node-index.js';
+import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount, componentPropertyExposureGroups, componentPropertyTargetInstanceId } from './component-property-exposure.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
@@ -31,13 +36,22 @@ import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-p
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
+import { planImageExpansion } from './image-expansion-plan.js';
+import { expandedImageLayerGeometry, imageExpansionPaddingFromRatio, normalizeImageExpansionRatio, remapImageEraseStrokesForExpansion } from './image-expansion-geometry.js';
+import { planImageExpansionRecipeTransition } from './image-expansion-recipe.js';
 import { LocalObjectIsolationEngine } from './object-isolation-engine.js';
 import { OBJECT_ISOLATION_BRUSH_MODE, validateObjectIsolationDimensions } from './object-isolation-mask.js';
 import { insertObjectIsolationLayer, prepareObjectIsolationLayer } from './object-isolation-layer.js';
+import { LocalBackgroundRemovalEngine } from './background-removal-engine.js';
+import { validateBackgroundRemovalDimensions } from './background-removal-mask.js';
+import { imageRecipeRenderWorkerBudget, imageRecipeUsesLocalModel, planBackgroundRemovalRecipe } from './background-removal-recipe.js';
+import { LocalResolutionBoostEngine } from './resolution-boost-engine.js';
+import { planResolutionBoostRecipe } from './resolution-boost-recipe.js';
+import { MAX_RESOLUTION_BOOST_OUTPUT_BYTES, validateResolutionBoostDimensions } from './resolution-boost.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { ImageSourceResidencyManager } from './image-source-residency.js';
-import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
@@ -45,11 +59,13 @@ import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceD
 import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
 import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
+import { workspaceEditingAccess } from './workspace/editing-access.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { canvasFontWeight, fontVariationInspectionStatus, fontVariationSettings, inspectFontVariationAxes, isValidFontVariationValues, setFontVariationValue } from './font-variation.js';
 import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings, setFontFeatureValue } from './font-features.js';
 import { LocalWoff2Decoder } from './woff2-decoder.js';
 import { LocalFontShapingClient } from './font-shaping.js';
+import { fontFamilyStack, itemizeLocalFontRuns } from './font-fallback.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { strokeDecorationTypes } from './stroke-decorations.js';
@@ -71,6 +87,8 @@ import { importSvgToLayers } from './svg-import.js';
 import { parseLocalFigFile } from './fig-import-worker-client.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { prototypeTransitionMotion } from './prototype-transition.js';
+import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
 import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
@@ -82,9 +100,12 @@ import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirect
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
 import { isValidSliceDimensionInput, MAX_SLICE_EXPORT_PIXELS, planSliceRasterExport, planSliceRenderSurface, sliceExportContentSignature, sliceRasterBoundsIntersect, sliceRenderBleedPixels } from './slice-export-plan.js';
-import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
+import { activeImageRecipeRenderTargets, canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, imageRecipeRenderIsCurrent, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, parentLocalToPageTransform, resizeOrientedRect, shortestAngleDelta, transformPoint } from './transform-geometry.js';
 import { shapeCreationGeometry } from './shape-creation-geometry.js';
+import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS, regularShapeVertexCount } from './polygon-corners.js';
+import { starControlHandles, starCornerRadiusFromDrag, starInnerRadiusFromPointer, starPointCountFromDrag } from './star-controls.js';
+import { vectorNetworkVertexCornerRadiusEligibility } from './vector-network-corners.js';
 import { appendLassoPoint, clipMarqueePolygonThroughAncestors, createLassoSelectionTest, isMarqueeLayerVisible, marqueeSelectsPolygon } from './marquee-selection.js';
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
 import { createTextPathGeometry } from './text-on-path.js';
@@ -97,9 +118,10 @@ import {
   reverseVectorPathContour, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
+import { preserveCanvasWorldCenterOnResize } from './canvas-viewport.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { commentCanvasAction, commentPinCanvasAction, commentSelectionTarget, commentPanelCanvasIsInteractive } from './comment-selection.js';
+import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionTarget, commentPanelCanvasIsInteractive, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentSelectionOverridesCanvasTool } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
@@ -111,6 +133,7 @@ import { createThemePreferenceController } from './theme-preference.js';
 import { contextMenuActionByLabel, contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
 import { toolbarNavigationTarget } from './toolbar-keyboard.js';
 import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
+import { defaultImageRecipeConcurrency } from './bulk-recipe-concurrency.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
 import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES, migrateImageLibraryEntry, removeImageLibraryEntry } from './image-asset-library.js';
 import { scopeImageAssetReferences } from './image-asset-restoration.js';
@@ -118,12 +141,19 @@ import { mountImageLibraryView } from './image-library-view.js';
 import { createImageLibraryThumbnailBlob } from './image-library-thumbnail.js';
 import { createHostSessionController, createGuestSessionController } from './collaboration/session-controller.js';
 import { decodeStableDesignInvite } from './collaboration/session-capsules.js';
+import { initializeCollaborationQrHandoff } from './collaboration/qr-handoff-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const themePreferences = createThemePreferenceController();
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
+const DEFAULT_IMAGE_RECIPE_CONCURRENCY = defaultImageRecipeConcurrency({
+  cpuBudget: CPU_LIMIT,
+  deviceMemory: navigator.deviceMemory,
+  mobile: innerWidth <= 820
+});
+const imageEngineIdleWaiters = new Set();
 const MIB = 1024 * 1024;
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
@@ -139,21 +169,21 @@ const state = {
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
-  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
+  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic',
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
-  workspace: null, workspaceHandle: null, workspaceHead: null, workspacePermissionNeeded: false,
+  workspace: null, workspaceHandle: null, workspaceHead: null, workspacePermissionNeeded: false, workspaceOnboardingRequired: false,
   workspaceVerifiedImageIds: new Map(), workspaceVerifiedFontIds: new Map(),
-  liveCollaboration: null, liveReplicaHead: null, liveReplicaDesignId: null,
+  liveCollaboration: null, liveReplicaHead: null, liveReplicaDesignId: null, remotePresence: new Map(),
   documentSaveConflict: null, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
   localPackageBuilding: false,
   pendingLocalShare: null,
   pendingLocalShareTimer: 0,
-  pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null, commentPlacementArmed: false,
+  pendingVariableDialog: null, pendingCommentAnchor: null, pendingCommentText: '', activeCommentId: null, commentPlacementArmed: false, commentSelectionCycle: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
   prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
@@ -166,9 +196,13 @@ const state = {
   objectIsolationMode: false, objectIsolationBrushMode: OBJECT_ISOLATION_BRUSH_MODE.LASSO,
   objectIsolationStrokes: [], objectIsolationDraft: null, objectIsolationProgress: '',
   objectIsolationController: null, objectIsolationSourceId: null, objectIsolationSourceSignature: null,
-  componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
+  backgroundRemovalController: null, backgroundRemovalSourceId: null, backgroundRemovalProgress: '',
+  imageExpansionController: null, imageExpansionSourceId: null, imageExpansionProgress: '',
+  resolutionBoostController: null, resolutionBoostSourceId: null, resolutionBoostProgress: '',
+  componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN', componentPropertyHighlightNodeId: null,
   componentLibraries: [], componentLibraryTargetId: null,
   componentSlotDialog: null,
+  componentExposureDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
   presenting: null,
@@ -176,15 +210,20 @@ const state = {
 };
 let liveViewOnlyInertState = null;
 let liveViewSyncTimer = 0;
+let livePresenceSyncTimer = 0;
 const history = new History(120);
 const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRetainedImageMemoryBudget() });
 const imageSourceResidency = new ImageSourceResidencyManager();
+const canvasContextPress = createCanvasContextPressController();
 const localWoff2Decoder = new LocalWoff2Decoder();
 const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
+let previousCanvasViewportSize = null;
+let canvasViewportObserver = null;
 let pendingRecipeAction = null;
 let selectedEffectStyleId = '';
+let selectedLayoutGuideStyleId = '';
 let bulkBarTicker = null;
 let bulkConcurrencyTimer = 0;
 const RECIPE_BATCH_LEASE_RENEW_MS = 30_000;
@@ -196,9 +235,13 @@ let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
 const presentationTransitionFrames = new Set();
 let presentationDelayCancel = null;
+let presentationTransitionToken = 0;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const inpaintEngine = new LocalInpaintEngine();
 const objectIsolationEngine = new LocalObjectIsolationEngine();
+const backgroundRemovalEngine = new LocalBackgroundRemovalEngine();
+const resolutionBoostThreadCount = globalThis.crossOriginIsolated === true ? Math.min(4, CPU_LIMIT) : 1;
+const resolutionBoostEngine = new LocalResolutionBoostEngine({ numThreads: resolutionBoostThreadCount });
 const preparedInpaintCache = new PreparedInpaintCache({
   memoryBudget: imageMemoryBudget,
   onDispose: assetId => imageEngine.dispose(assetId)
@@ -211,7 +254,12 @@ const previewsEvictedForCapacity = new Set();
 let nextImageRenderVersion = 0;
 let nextInpaintSourceId = 0;
 let presentRenderer = null;
+let presentBackdropRenderer = null;
 let presentRenderState = null;
+let presentOverlayRenderer = null;
+let presentUnderlayRenderState = null;
+let presentBackdropRenderState = null;
+let presentOverlayRenderState = null;
 let presentRuntimeDocument = null;
 let presentationPointerGesture = null;
 const presentationDragThreshold = 7;
@@ -523,20 +571,25 @@ function familyStackUses(fontFamily, family) {
   return tokens.some(value => normalize(value).toLocaleLowerCase() === family.toLocaleLowerCase());
 }
 
-function localFontForTextStyle(style) {
+function localFontsForTextStyle(style) {
   const requestedWeight = Number(style?.fontWeight) || 400;
-  return [...state.fontAssets.values()]
-    .filter(font => familyStackUses(style?.fontFamily, font.family))
-    .sort((left, right) => {
-      const score = font => {
-        const weightAxis = font.axes?.find(axis => axis.tag === 'wght');
-        const weightDistance = weightAxis && requestedWeight >= weightAxis.min && requestedWeight <= weightAxis.max
-          ? 0 : Math.abs(Number(font.weight) - requestedWeight);
-        const styleDistance = font.style === (style?.fontStyle || 'normal') ? 0 : 10_000;
-        return styleDistance + weightDistance;
-      };
-      return score(left) - score(right) || left.id.localeCompare(right.id);
-    })[0] || null;
+  const score = font => {
+    const weightAxis = font.axes?.find(axis => axis.tag === 'wght');
+    const weightDistance = weightAxis && requestedWeight >= weightAxis.min && requestedWeight <= weightAxis.max
+      ? 0 : Math.abs(Number(font.weight) - requestedWeight);
+    const styleDistance = font.style === (style?.fontStyle || 'normal') ? 0 : 10_000;
+    return styleDistance + weightDistance;
+  };
+  const available = [...state.fontAssets.values()];
+  const ordered = [];
+  const seen = new Set();
+  for (const family of fontFamilyStack(style?.fontFamily)) {
+    const matches = available.filter(font => font.family.toLocaleLowerCase() === family.toLocaleLowerCase())
+      .sort((left, right) => score(left) - score(right) || left.id.localeCompare(right.id));
+    const font = matches[0];
+    if (font && !seen.has(font.id)) { seen.add(font.id); ordered.push(font); }
+  }
+  return ordered.slice(0, 4);
 }
 
 function localFontVariations(font, style) {
@@ -590,16 +643,60 @@ function requestLocalFontShape(font, request) {
   return null;
 }
 
+function requestLocalFontCoverage(font) {
+  const info = state.fontShaper.fontInfo(font.id);
+  if (info?.coverage) return info;
+  if (state.fontShapeFailures.has(font.id)) return null;
+  let loading = state.fontShapeLoadPromises.get(font.id);
+  if (!loading) {
+    const epoch = state.fontAssetEpoch;
+    loading = ensureLocalFontShapingLoaded(font, epoch).then(() => {
+      if (epoch === state.fontAssetEpoch) renderer?.invalidate();
+    }).catch(error => {
+      if (epoch === state.fontAssetEpoch && state.fontAssets.has(font.id)) state.fontShapeFailures.add(font.id);
+      return null;
+    }).finally(() => {
+      if (state.fontShapeLoadPromises.get(font.id) === loading) state.fontShapeLoadPromises.delete(font.id);
+    });
+    state.fontShapeLoadPromises.set(font.id, loading);
+  }
+  return null;
+}
+
 function shapeLocalTextRun(text, style) {
   if (typeof text !== 'string' || text.length > 32_768 || typeof globalThis.Path2D !== 'function') return null;
-  const font = localFontForTextStyle(style);
-  if (!font) return null;
-  const request = {
-    text,
-    variations: localFontVariations(font, style),
-    features: style?.fontFeatures || undefined
-  };
-  return requestLocalFontShape(font, request);
+  const candidates = localFontsForTextStyle(style);
+  if (!candidates.length) return null;
+  const fontInfo = candidates.map(font => ({ font, info: requestLocalFontCoverage(font) }));
+  if (fontInfo.some(item => !item.info && !state.fontShapeFailures.has(item.font.id))) return null;
+  const fonts = fontInfo.filter(item => item.info?.coverage)
+    .map(item => ({ id: item.font.id, coverage: item.info.coverage }));
+  if (!fonts.length) return null;
+  const fallbackRuns = itemizeLocalFontRuns(text, fonts);
+  const fontsById = new Map(fontInfo.map(item => [item.font.id, item.font]));
+  const mixedRuns = [];
+  let hasLocalShape = false;
+  for (const run of fallbackRuns) {
+    if (!run.fontId) {
+      mixedRuns.push({ text: run.text, shaped: null });
+      continue;
+    }
+    const font = fontsById.get(run.fontId);
+    const shaped = requestLocalFontShape(font, {
+      text: run.text,
+      variations: localFontVariations(font, style),
+      features: style?.fontFeatures || undefined,
+      script: run.script
+    });
+    if (!shaped) return null;
+    if (shaped.missingGlyph) mixedRuns.push({ text: run.text, shaped: null });
+    else {
+      mixedRuns.push({ text: run.text, shaped });
+      hasLocalShape = true;
+    }
+  }
+  if (!hasLocalShape) return null;
+  return mixedRuns.length === 1 && mixedRuns[0].shaped ? mixedRuns[0].shaped : { mixedRuns };
 }
 
 function documentUsesFontFamily(design, family) {
@@ -703,8 +800,8 @@ function hasValidLocalComponentSnapshot(node) {
   try { return validateLinkedInstanceSnapshot(node.linkedComponent); }
   catch { return false; }
 }
-function componentInstanceRoot(nodeId) {
-  const entry = findNode(state.document, nodeId);
+function componentInstanceRoot(nodeId, entryOverride = undefined) {
+  const entry = entryOverride === undefined ? findNode(state.document, nodeId) : entryOverride;
   if (!entry) return null;
   return [...entry.parents, entry.node].reverse().find(node => node.isInstance || isLocalLinkedComponent(node)) || null;
 }
@@ -728,8 +825,8 @@ function recordComponentOverride(instanceRoot, node, property) {
   instanceRoot.componentOverrides[node.componentSourceId] ||= {};
   instanceRoot.componentOverrides[node.componentSourceId][key] = node[key] === undefined ? null : structuredClone(node[key]);
 }
-function recordNodeComponentOverrides(node, properties) {
-  const instanceRoot = componentInstanceRoot(node.id);
+function recordNodeComponentOverrides(node, properties, entryOverride = undefined) {
+  const instanceRoot = componentInstanceRoot(node.id, entryOverride);
   for (const property of properties) recordComponentOverride(instanceRoot, node, property);
 }
 function setNodePropertyValue(node, property, value) {
@@ -1067,7 +1164,12 @@ async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
   if (migrate) {
     const result = await migrateIndexedDbToWorkspace(workspace, {
       onProgress: progress => {
-        if (progress?.status === 'running') setSaveState('saving', `Migrating · ${progress.designIndex + 1}/${progress.designCount}`);
+        if (progress?.status === 'running') {
+          const status = `Migrating design ${progress.designIndex + 1} of ${progress.designCount} into the selected folder…`;
+          setSaveState('saving', `Migrating · ${progress.designIndex + 1}/${progress.designCount}`);
+          const onboardingStatus = $('#workspace-onboarding-status');
+          if (state.workspaceOnboardingRequired && onboardingStatus) onboardingStatus.textContent = status;
+        }
       }
     });
     if (result.status !== 'complete') {
@@ -1078,7 +1180,9 @@ async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
     }
   }
   const designIds = await listWorkspaceDesignIds(workspace);
-  const designId = designIds.includes(state.document.id) ? state.document.id : designIds[0];
+  if (!designIds.length && migrate) await createWorkspaceDesign(workspace, state.document);
+  const updatedDesignIds = designIds.length ? designIds : await listWorkspaceDesignIds(workspace);
+  const designId = updatedDesignIds.includes(state.document.id) ? state.document.id : updatedDesignIds[0];
   if (!designId) throw new Error('The selected folder has no completed designs. Save a design before reconnecting this workspace.');
   const opened = await openWorkspaceDesign(workspace, designId);
   await saveWorkspaceDirectoryHandle(handle);
@@ -1088,7 +1192,7 @@ async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
 async function activateWorkspace(handle, { migrate = true, reconnect = false } = {}) {
   if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before changing storage.');
   if (state.pendingImageImports || isImageRecipeBatchActive(state.bulk)) throw new Error('Finish the current image import or recipe batch before changing storage.');
-  if (migrate && !state.workspacePermissionNeeded && !(await persistCurrentDocumentNow())) {
+  if (migrate && !state.workspacePermissionNeeded && !state.workspaceOnboardingRequired && !(await persistCurrentDocumentNow())) {
     throw new Error('The current design could not be saved before folder migration.');
   }
   state.documentTransitioning = true;
@@ -1103,6 +1207,7 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     state.workspaceHandle = handle;
     state.workspaceHead = opened.head;
     state.workspacePermissionNeeded = false;
+    state.workspaceOnboardingRequired = false;
     $('#document-name').readOnly = false;
     state.document = opened.document;
     state.pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
@@ -1126,13 +1231,16 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     if (previousDocument !== state.document) history.undoStack.length = history.redoStack.length = 0;
     setSaveState('saved', savedStatusText());
     showToast(reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
+    $('#workspace-onboarding-dialog').close?.();
+    renderRecipeRecoveryPrompt();
+    if (!state.pendingRecipeRecovery && location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
     return true;
   } catch (error) {
     setSaveState('error', failedStatusText());
     throw error;
   } finally {
     state.documentTransitioning = false;
-    $('.workspace').inert = Boolean(state.workspacePermissionNeeded || state.pendingRecipeRecovery);
+    setDocumentEditingBlocked(Boolean(state.workspacePermissionNeeded || state.workspaceOnboardingRequired || state.pendingRecipeRecovery));
   }
 }
 
@@ -1154,15 +1262,55 @@ async function chooseWorkspaceFolder() {
       await saveWorkspaceDirectoryHandle(handle);
       syncStorageModeLabel();
       showToast('This folder workspace is already active.');
-      return;
+      return true;
     }
     if (sameAsSaved && state.workspacePermissionNeeded) {
-      await activateWorkspace(handle, { migrate: false, reconnect: true });
-      return;
+      return await activateWorkspace(handle, { migrate: false, reconnect: true });
     }
-    await activateWorkspace(handle, { migrate: true });
+    return await activateWorkspace(handle, { migrate: true });
   } catch (error) {
     if (error?.name !== 'AbortError') showToast(error.message || 'Could not open the selected folder workspace.');
+    return false;
+  }
+}
+
+function syncWorkspaceOnboardingDialog() {
+  const dialog = $('#workspace-onboarding-dialog');
+  if (!state.workspaceOnboardingRequired || state.workspace || state.workspacePermissionNeeded) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  const pickerAvailable = typeof window.showDirectoryPicker === 'function';
+  $('#workspace-onboarding-browser-fallback').hidden = pickerAvailable;
+  $('#workspace-onboarding-choose-folder').disabled = !pickerAvailable;
+  $('#workspace-onboarding-status').textContent = pickerAvailable
+    ? 'Choose a folder to create or reconnect your workspace. Existing browser designs will be copied and verified before the editor opens.'
+    : 'This browser cannot choose a writable folder. You can continue with browser-profile storage, but that storage will not live in a folder.';
+  if (!dialog.open) {
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+  }
+}
+
+async function continueWithBrowserStorage() {
+  if (typeof window.showDirectoryPicker === 'function' || !state.workspaceOnboardingRequired) return false;
+  state.workspaceOnboardingRequired = false;
+  setDocumentEditingBlocked(true);
+  try {
+    await ensureImageLibraryCompatibility(state.document);
+    const saved = await persistCurrentDocumentNow();
+    if (!saved) throw new Error('The design could not be saved to browser storage. Choose a writable folder or retry browser storage before editing.');
+    $('#workspace-onboarding-dialog').close?.();
+    setDocumentEditingBlocked(Boolean(state.pendingRecipeRecovery));
+    showToast('Browser storage selected. Designs stay in this browser profile; choose a folder later from File.');
+    if (state.pendingRecipeRecovery) renderRecipeRecoveryPrompt();
+    else if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    return true;
+  } catch (error) {
+    state.workspaceOnboardingRequired = true;
+    setDocumentEditingBlocked(true);
+    showToast(error.message || 'Browser storage could not be prepared. Your existing local designs were preserved.');
+    return false;
   }
 }
 
@@ -1234,11 +1382,16 @@ async function preserveDocumentSaveConflict(snapshot, error) {
   return recovery;
 }
 function setDocumentEditingBlocked(blocked) {
-  $('.topbar').inert = blocked;
-  $('.workspace').inert = blocked || state.workspacePermissionNeeded;
+  const access = workspaceEditingAccess({
+    blocked,
+    onboarding: state.workspaceOnboardingRequired,
+    permissionNeeded: state.workspacePermissionNeeded
+  });
+  $('.topbar').inert = access.topbarInert;
+  $('.workspace').inert = access.workspaceInert;
 }
 function queueSave({ refreshLayerTree = true, syncComponents = true } = {}) {
-  if (!state.ready) return;
+  if (!state.ready || state.workspaceOnboardingRequired) return;
   state.saveRevision += 1;
   const liveGuest = state.liveCollaboration;
   if (liveGuest?.role === 'guest' && liveGuest.replicaReady && liveGuest.controller
@@ -1349,7 +1502,7 @@ function commitCanvasHistoryTransaction(interaction) {
   state.versionSaveLabel = transaction.label;
   return true;
 }
-function setSelection(ids, { keepInspector = false, refreshLayers = true } = {}) {
+function setSelection(ids, { keepInspector = false, refreshLayers = true, source = 'programmatic' } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
   const nextSelectedIds = [...new Set(valid)];
@@ -1372,7 +1525,19 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
     state.imageFillCropTarget = null;
     state.imageCropDraftSelection = null;
   }
+  if (state.selectedLayoutGuideFrameId
+    && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== state.selectedLayoutGuideFrameId)) {
+    state.selectedLayoutGuideId = null;
+    state.selectedLayoutGuideFrameId = null;
+  }
   state.selectedIds = nextSelectedIds;
+  state.selectionSource = source;
+  if (state.imageExpansionController && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== state.imageExpansionSourceId)) {
+    cancelImageExpansionProcessing();
+  }
+  if (state.resolutionBoostController && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== state.resolutionBoostSourceId)) {
+    cancelResolutionBoostProcessing();
+  }
   for (const previewKey of selectedImagePreviewKeys()) {
     if (state.previewDeferredKeys.has(previewKey)) requestDeferredImagePreview(previewKey);
   }
@@ -1394,6 +1559,8 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   if (!keepInspector) renderInspector();
   updateSelectionStatus();
   renderer?.invalidate();
+  if (previousSelectedIds.length !== nextSelectedIds.length
+    || previousSelectedIds.some((id, index) => id !== nextSelectedIds[index])) queueLivePresenceSync();
 }
 function selectedImageAssetId() {
   const selected = selectedNodes();
@@ -1410,7 +1577,7 @@ function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click to select a containing component or frame; Shift-click to select the nearest frame; click empty canvas to comment' : `Tool · ${state.tool}`
+    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click objects to select; Shift-click or click/tap the same spot again to choose a nested frame or component; click/tap empty canvas to comment, drag to pan' : `Tool · ${state.tool}`
       : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
@@ -1450,23 +1617,41 @@ function installDesignToolToolbarKeyboard() {
     target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   });
 }
-function setTool(tool) {
+function releaseCanvasCapturesForComment() {
   if (state.shapeBuilder) exitShapeBuilderMode();
-  if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) resetObjectIsolationSession();
-  if (tool === 'comment') {
-    // Image crop and erase capture canvas taps ahead of the ordinary tool
-    // handler. Leaving either active made the Comment button look selected
-    // while preventing component/frame selection and comment placement.
-    if (state.interaction && ['image-crop', 'image-fill-crop', 'image-erase'].includes(state.interaction.kind)) {
-      cancelCanvasInteraction();
-    }
+
+  const capturedKinds = ['image-crop', 'image-fill-crop', 'image-erase', 'object-isolation', 'shape-builder'];
+  if (state.interaction && capturedKinds.includes(state.interaction.kind)) {
+    cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+  }
+
+  if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) {
+    resetObjectIsolationSession();
+  }
+
+  if (state.imageCropMode || state.imageFillCropTarget || state.imageCropDraftSelection) {
     state.imageCropMode = false;
     state.imageFillCropTarget = null;
     state.imageCropDraftSelection = null;
     syncImageCropOverlay();
+  }
+
+  if (state.imageEraseMode || state.imageEraseDraft) {
     state.imageEraseMode = false;
     state.imageEraseDraft = null;
     canvas.classList.remove('tool-image-erase');
+  }
+}
+function setTool(tool) {
+  // The stored review hit is bound to page, pointer type, position, and a
+  // short time window. Keep it across toolbar changes so selecting a child
+  // frame remains possible after switching tools or inspector tabs.
+  if (state.shapeBuilder) exitShapeBuilderMode();
+  if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) resetObjectIsolationSession();
+  if (tool === 'comment') {
+    // Inspector actions can activate a canvas-capturing mode without changing
+    // the toolbar tool, so Comment must clear those captures too.
+    releaseCanvasCapturesForComment();
   }
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
@@ -1478,7 +1663,7 @@ function setTool(tool) {
   // Mobile panels make the canvas inert while open. Entering Comment mode
   // requires canvas taps to select objects or place a pin, so dismiss the
   // panel here; beginCommentAt() will reopen it when the user needs to type.
-  if (tool === 'comment' && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+  if (tool === 'comment') closeMobilePanels({ restoreFocus: false });
   if (tool === 'comment' && state.inspectorTab !== 'comments') setInspectorTab('comments');
   $$('.tool-button').forEach(button => {
     const selected = button.dataset.tool === tool;
@@ -1588,7 +1773,7 @@ function syncLayerSelectionModeControl() {
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
-      ? 'Design canvas. Click to select a component or frame; Shift-click to select the nearest frame. Click empty canvas to add a comment; Alt/Option-click or use the layer menu to comment on an object.'
+      ? 'Design canvas. Click or tap to select a component or frame; click or tap the same spot again to switch between nested frames and components. Shift-click selects the nearest frame. Click empty canvas to add a comment; drag empty canvas to pan. Alt/Option-click or use the layer menu to comment on an object.'
       : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
@@ -1643,10 +1828,11 @@ function renderLayers() {
       const chevron = node.children?.length
         ? `<button type="button" class="layer-chevron" data-action="layer-toggle" tabindex="-1" aria-label="${effectivelyCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(node.name)}" aria-expanded="${!effectivelyCollapsed}">${effectivelyCollapsed ? '›' : '⌄'}</button>`
         : '<span class="layer-chevron-placeholder" aria-hidden="true"></span>';
+      const depthMarker = `<span class="layer-depth-marker" aria-hidden="true">${depth + 1}</span>`;
       const reorderHandle = `<button type="button" class="layer-reorder-handle" data-layer-drag-handle tabindex="-1" aria-label="Reorder ${escapeHtml(node.name)}. Drag with touch or pen; use Alt+ArrowUp or Alt+ArrowDown with a keyboard." title="Drag to reorder"><span aria-hidden="true">⠿</span></button>`;
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
-      row.innerHTML = `${chevron}<span class="layer-icon" aria-hidden="true">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span>${reorderHandle}<button type="button" class="layer-order-control" data-action="layer-move-up" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" tabindex="-1" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
+      row.innerHTML = `${depthMarker}${chevron}<span class="layer-icon" aria-hidden="true">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span>${reorderHandle}<button type="button" class="layer-order-control" data-action="layer-move-up" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" tabindex="-1" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
       container.append(row);
       layerRowsById.set(node.id, row);
       if (node.children?.length) {
@@ -1679,8 +1865,8 @@ function selectionNumberField(label, property, value, { step = EDITOR_NUMBER_STE
   const shownValue = !mixed && Number.isFinite(value) ? ` value="${formatInspectorNumber(value)}"` : '';
   return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
 }
-function optionalNumberField(label, prop, value) {
-  return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="0.01" value="${Number.isFinite(value) ? formatInspectorNumber(value) : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
+function optionalNumberField(label, prop, value, { min = 0, max = null, step = '0.01', disabled = false } = {}) {
+  return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="${min}"${max == null ? '' : ` max="${max}"`} step="${step}" value="${Number.isFinite(value) ? formatInspectorNumber(value) : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"${disabled ? ' disabled' : ''}/></label>`;
 }
 function sliderField(label, prop, value, min, max, step = 1, disabled = false) {
   return `<div class="slider-row"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${escapeHtml(label)}"${disabled ? ' disabled' : ''}/><output>${Number(value).toFixed(step < 1 ? 2 : 0)}${prop === 'opacity' ? '%' : ''}</output></div>`;
@@ -1702,16 +1888,32 @@ function variableBindingControl(node, kind) {
   const property = { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind];
   const variables = state.document.variables || [];
   const selected = node[property] || '';
-  const options = variables.filter(variable => variable.type === 'color').map(variable => {
+  const scope = colorVariableScope(kind, node);
+  const options = variables.filter(variable => variable.type === 'color'
+    && (variable.id === selected || variableScopeAllows(variable, scope))).map(variable => {
     const collection = state.document.variableCollections?.find(item => item.id === variable.collectionId);
     return `<option value="${escapeHtml(variable.id)}"${selected === variable.id ? ' selected' : ''}>${escapeHtml(variable.name)} · ${escapeHtml(collection?.name || 'Collection')}</option>`;
   }).join('');
   return `<label class="variable-binding-row"><span>Variable</span><select class="select-field" data-variable-binding="${kind}" aria-label="${kind} color variable"><option value="">No variable</option>${options}</select></label>`;
 }
+function colorVariableApplyScope(node) {
+  if (!node || node.type === 'slice') return null;
+  const kind = node.type === 'text' ? 'text'
+    : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke'
+      : 'fill';
+  const compatible = kind === 'text' ? node.type === 'text'
+    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
+      : !['text', 'image', 'group', 'boolean'].includes(node.type);
+  return compatible ? colorVariableScope(kind, node) : null;
+}
+function selectedColorVariableScopes() {
+  return selectedNodes().map(colorVariableApplyScope).filter(Boolean);
+}
 function variablePropertyBindingControl(node, property, label) {
   const type = {
     x: 'number', y: 'number', width: 'number', height: 'number', rotation: 'number', visible: 'boolean', opacity: 'number', radius: 'number',
-    text: 'string', fontSize: 'number', lineHeight: 'number', lineHeightUnit: 'string', letterSpacing: 'number',
+    text: 'string', fontFamily: 'string', fontSize: 'number', fontWeight: 'number', fontStyle: 'string',
+    lineHeight: 'number', letterSpacing: 'number', paragraphSpacing: 'number', firstLineIndent: 'number',
     'autoLayout.axis': 'string', 'autoLayout.align': 'string', 'autoLayout.justify': 'string', 'autoLayout.wrapDistribution': 'string',
     'autoLayout.mainSizing': 'string', 'autoLayout.crossSizing': 'string', 'autoLayout.wrap': 'boolean',
     'autoLayout.autoPositioning': 'boolean', 'autoLayout.columns': 'number', 'autoLayout.rows': 'number', 'autoLayout.rowGap': 'number',
@@ -1719,13 +1921,23 @@ function variablePropertyBindingControl(node, property, label) {
     'autoLayout.padding.bottom': 'number', 'autoLayout.padding.left': 'number'
   }[property];
   const selected = node.variableBindings?.[property] || '';
-  const matchingVariables = (state.document.variables || []).filter(variable => variable.type === type);
+  const scope = variablePropertyScope(property);
+  const matchingVariables = (state.document.variables || []).filter(variable => variable.type === type
+    && (variable.id === selected || variableScopeAllows(variable, scope)));
   if (!matchingVariables.length && !selected) return '';
   const options = matchingVariables.map(variable => {
     const collection = state.document.variableCollections?.find(item => item.id === variable.collectionId);
     return `<option value="${escapeHtml(variable.id)}"${selected === variable.id ? ' selected' : ''}>${escapeHtml(variable.name)} · ${escapeHtml(collection?.name || 'Collection')}</option>`;
   }).join('');
   return `<label class="variable-binding-row"><span>${escapeHtml(label)}</span><select class="select-field" data-variable-property-binding="${property}" aria-label="${escapeHtml(label)} variable"><option value="">No variable</option>${options}</select></label>`;
+}
+function variableScopesEditorMarkup(variable, { open = false } = {}) {
+  const groups = variableScopeGroups[variable.type];
+  if (!groups) return '';
+  const scopes = variableScopesFor(variable) || [];
+  const summary = scopes.includes('ALL_SCOPES') ? 'All properties' : scopes.length ? `${scopes.length} selected` : 'None';
+  const options = groups.map(group => `<div class="variable-scope-group"><span>${escapeHtml(group.label)}</span>${group.scopes.map(([scope, label]) => `<label><input type="checkbox" data-variable-scope="${scope}" data-variable-id="${escapeHtml(variable.id)}"${scopes.includes(scope) ? ' checked' : ''}/>${escapeHtml(label)}</label>`).join('')}</div>`).join('');
+  return `<details class="variable-scopes-editor" data-variable-scopes-editor="${escapeHtml(variable.id)}"${open ? ' open' : ''}><summary>Scopes <span>${summary}</span></summary><div class="variable-scopes-options">${options}</div></details>`;
 }
 function gradientGeometryTargetFor(node, { fillId = '', strokeId = '' } = {}) {
   return {
@@ -1796,6 +2008,8 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   const fillCropActive = state.imageCropMode && state.imageFillCropTarget?.nodeId === node.id && state.imageFillCropTarget?.fillId === fillId;
   const fillCropAvailable = Number.isSafeInteger(asset?.sourceWidth) && Number.isSafeInteger(asset?.sourceHeight);
   const fillCropButton = `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" data-transform-target="fill" data-fill-id="${escapeHtml(fillId)}" aria-pressed="${fillCropActive}"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}>${fillCropActive ? 'Done adjusting image' : 'Adjust image on canvas'}</button>${fillCropActive ? '<div class="image-properties-note image-crop-mode-hint">Drag to reposition. Pinch with two fingers to zoom and move; Escape finishes. The image stays clipped to this shape.</div>' : imageFill.fit !== 'cover' ? '<div class="image-properties-note">Choose Fill to reposition or zoom this image on the canvas.</div>' : ''}`;
+  const tileScale = Math.round((imageFill.scalingFactor ?? 1) * 100);
+  const tileScaleControl = `<label class="slider-row image-fill-tile-scale"${imageFill.fit === 'tile' ? '' : ' hidden'}><span>Tile size</span><input type="range" min="1" max="1600" step="1" value="${tileScale}" data-image-fill-field="scalingFactor"${fillData} aria-label="Image fill tile size"${node.locked ? ' disabled' : ''}/><output>${tileScale}%</output></label>`;
   let zoomPercent = 100;
   if (fillCropAvailable && imageFill.fit === 'cover') {
     const currentTransforms = createImageTransforms(imageFill.transforms || {});
@@ -1805,7 +2019,7 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   }
   const zoomControl = `<div class="slider-row image-fill-zoom-control"><label>Zoom</label><input type="range" min="100" max="800" step="1" value="${zoomPercent}" data-image-fill-zoom data-fill-id="${escapeHtml(fillId)}" aria-label="Image fill zoom"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}/><output>${zoomPercent}%</output></div>`;
   const tone = imageToneControls(adjustments, { fillId, disabled: node.locked });
-  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${tone}${zoomControl}${fillCropButton}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM.</div></div>`;
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option><option value="tile"${imageFill.fit === 'tile' ? ' selected' : ''}>Tile</option></select></label>${tileScaleControl}${fields}${tone}${zoomControl}${fillCropButton}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM. Tile size is a percentage of the original image dimensions.</div></div>`;
 }
 function imageToneControls(adjustments, { fillId = '', disabled = false } = {}) {
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
@@ -1865,16 +2079,116 @@ function objectIsolationControls(node) {
     validateObjectIsolationDimensions(width, height);
     if (isImageRecipeBatchActive(state.bulk)) throw new Error('Pause the image batch before isolating an object.');
   } catch (error) { unavailableReason = error.message; }
-  const disabled = Boolean(unavailableReason || processing || state.documentTransitioning);
+  const disabled = Boolean(unavailableReason || processing || state.imageExpansionController || state.documentTransitioning);
   const modeOptions = [
     [OBJECT_ISOLATION_BRUSH_MODE.POSITIVE, 'Include'],
     [OBJECT_ISOLATION_BRUSH_MODE.NEGATIVE, 'Exclude'],
     [OBJECT_ISOLATION_BRUSH_MODE.LASSO, 'Lasso']
-  ].map(([mode, label]) => `<button class="add-fill object-isolation-mode-choice" type="button" data-action="set-object-isolation-mode" data-mode="${mode}" aria-pressed="${state.objectIsolationBrushMode === mode}"${processing || unavailableReason ? ' disabled' : ''}>${label}</button>`).join('');
+  ].map(([mode, label]) => `<button class="add-fill object-isolation-mode-choice" type="button" data-action="set-object-isolation-mode" data-mode="${mode}" aria-pressed="${state.objectIsolationBrushMode === mode}"${processing || unavailableReason || state.imageExpansionController ? ' disabled' : ''}>${label}</button>`).join('');
   const strokeCount = state.objectIsolationStrokes.length;
   const status = processing ? state.objectIsolationProgress || 'Starting local model…'
     : state.objectIsolationProgress || unavailableReason || (strokeCount ? `${strokeCount} area mark${strokeCount === 1 ? '' : 's'} ready · source image stays unchanged` : 'Draw a lasso around the area. Add Include or Exclude marks to refine it.');
   return section('Select area · local AI', `<div class="object-isolation-modes" role="group" aria-label="Area selection mark type">${modeOptions}</div><div class="object-isolation-actions"><button class="add-fill object-isolation-draw-button" type="button" data-action="toggle-object-isolation-mode" aria-pressed="${active}"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Object isolation is processing.') }"` : ''}>${active ? 'Finish selection' : strokeCount ? 'Continue selection' : 'Select area'}</button><button class="add-fill" type="button" data-action="undo-object-isolation-stroke"${disabled || !strokeCount ? ' disabled' : ''}>Undo</button><button class="add-fill" type="button" data-action="clear-object-isolation-strokes"${disabled || !strokeCount ? ' disabled' : ''}>Clear</button></div><div class="object-isolation-actions"><button class="primary-button" type="button" data-action="create-object-isolation-layer" aria-label="Isolate selected area as a new image layer"${disabled || !strokeCount ? ' disabled' : ''}>${processing ? 'Isolating…' : 'Isolate'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-object-isolation">Cancel</button>' : ''}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div>${active ? '<div class="image-properties-note object-isolation-hint">Draw a closed lasso around the area, then choose Isolate. Include and Exclude marks refine the selection. The result is a separate transparent image layer above the unchanged source.</div>' : ''}<div class="image-properties-note">Runs offline in a bounded worker with the bundled MagicTouch model. The original image bytes and layer remain untouched.</div>`);
+}
+function backgroundRemovalControls(node) {
+  const entry = findNode(state.document, node.id);
+  const sourceAssetId = node.backgroundRemoved
+    ? node.backgroundRemovalSourceAssetId || ''
+    : node.assetId;
+  const asset = sourceAssetId ? state.assets.get(sourceAssetId) : null;
+  const width = asset?.sourceWidth || node.sourceWidth;
+  const height = asset?.sourceHeight || node.sourceHeight;
+  const processing = Boolean(state.backgroundRemovalController && state.backgroundRemovalSourceId === node.id);
+  const sourceStoredLocally = (state.document.imageLibrary || []).some(item => item.assetId === sourceAssetId)
+    || Number.isSafeInteger(node.sourceWidth);
+  let unavailableReason = '';
+  try {
+    if (!entry || (!asset?.sourceBytes && !sourceStoredLocally)) throw new Error('The original image must be available on this device.');
+    if (node.backgroundRemoved && !node.backgroundRemovalSourceAssetId) throw new Error('This transparent edit has no recoverable original source.');
+    if (node.resolutionBoosted === true) throw new Error('Restore the original resolution before changing background removal.');
+    if (node.imageExpansion) throw new Error('Restore the expanded source before changing background removal.');
+    if (node.locked || entry.parents.some(parent => parent.locked)) throw new Error('Unlock the image and its parent layers before editing it.');
+    validateBackgroundRemovalDimensions(width, height);
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('Pause the image batch before changing background removal.');
+    if (state.objectIsolationController) throw new Error('Wait for object isolation to finish before changing background removal.');
+  } catch (error) { unavailableReason = error.message; }
+  const busy = Boolean(unavailableReason || state.backgroundRemovalController || state.documentTransitioning);
+  const status = processing ? state.backgroundRemovalProgress || 'Starting local model…'
+    : unavailableReason || (node.backgroundRemoved
+      ? 'Transparent PNG active · original source retained for Undo and recipe replay.'
+      : node.backgroundRemovalAssetId
+        ? 'Transparent result cached locally · the original image is active.'
+        : 'Runs locally on this image. Undo restores its original source; recipes can repeat the operation on other images.');
+  return section('Remove background · local AI', `<div class="object-isolation-actions"><button class="primary-button" type="button" data-action="toggle-image-background-removal" aria-label="${node.backgroundRemoved ? 'Restore original image background' : 'Remove image background'}"${busy ? ` disabled title="${escapeHtml(unavailableReason || 'Background removal is processing.') }"` : ''}>${processing ? 'Removing background…' : node.backgroundRemoved ? 'Restore original background' : 'Remove background'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-image-background-removal">Cancel</button>' : ''}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div><div class="image-properties-note">Uses the bundled ISNet ONNX model through local WebAssembly. It updates this image layer in place and keeps the original asset available for undo, reset, and saved recipes.</div>`);
+}
+function resolutionBoostControls(node) {
+  const entry = findNode(state.document, node.id);
+  const sourceAssetId = node.resolutionBoosted === true
+    ? node.resolutionBoostSourceAssetId || ''
+    : node.assetId;
+  const asset = sourceAssetId ? state.assets.get(sourceAssetId) : null;
+  const width = asset?.sourceWidth || (node.resolutionBoosted ? node.sourceWidth / 4 : node.sourceWidth);
+  const height = asset?.sourceHeight || (node.resolutionBoosted ? node.sourceHeight / 4 : node.sourceHeight);
+  const processing = Boolean(state.resolutionBoostController && state.resolutionBoostSourceId === node.id);
+  const sourceStoredLocally = (state.document.imageLibrary || []).some(item => item.assetId === sourceAssetId)
+    || Number.isSafeInteger(width) && Number.isSafeInteger(height);
+  let unavailableReason = '';
+  try {
+    if (!entry || (!asset?.sourceBytes && !sourceStoredLocally)) throw new Error('The original image must be available on this device.');
+    if (node.resolutionBoosted && !node.resolutionBoostSourceAssetId) throw new Error('This enlarged image has no recoverable original source.');
+    if (node.locked || entry.parents.some(parent => parent.locked)) throw new Error('Unlock the image and its parent layers before editing it.');
+    if (node.resolutionBoosted !== true) validateResolutionBoostDimensions(width, height);
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('Pause the image batch before changing resolution.');
+    if (state.backgroundRemovalController || state.imageExpansionController || state.objectIsolationController) {
+      throw new Error('Wait for the other local image operation to finish.');
+    }
+  } catch (error) { unavailableReason = error.message; }
+  const busy = Boolean(unavailableReason || state.resolutionBoostController || state.documentTransitioning);
+  const boosted = node.resolutionBoosted === true;
+  const status = processing ? state.resolutionBoostProgress || 'Starting local model…'
+    : unavailableReason || (boosted
+      ? `4× resolution active · ${node.sourceWidth} × ${node.sourceHeight} pixels · original retained for Undo and recipes.`
+      : asset?.sourceWidth && asset?.sourceHeight
+        ? `Local 4× output · ${asset.sourceWidth * 4} × ${asset.sourceHeight * 4} pixels · maximum 8.4 megapixels.`
+        : 'Upscales this image in place with a bundled local model. The original stays available for Undo and saved recipes.');
+  return section('Boost resolution · local AI', `<div class="object-isolation-actions"><button class="primary-button" type="button" data-action="toggle-image-resolution-boost" aria-label="${boosted ? 'Restore original image resolution' : 'Boost image resolution 4 times'}"${busy ? ` disabled title="${escapeHtml(unavailableReason || 'Resolution boost is processing.') }"` : ''}>${processing ? 'Boosting resolution…' : boosted ? 'Restore original resolution' : 'Boost resolution 4×'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-image-resolution-boost">Cancel</button>' : ''}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div><div class="image-properties-note">Uses the bundled Real-ESRGAN ONNX model through local WebAssembly. Alpha is preserved; the layer stays in place and the original pixels remain available for Undo and recipe replay.</div>`);
+}
+function imageExpansionControls(node) {
+  const entry = findNode(state.document, node.id);
+  const expansion = node.imageExpansion;
+  const sourceAssetId = expansion?.sourceImageAssetId || node.assetId;
+  const asset = state.assets.get(sourceAssetId);
+  const width = expansion?.sourceWidth || asset?.sourceWidth || node.sourceWidth;
+  const height = expansion?.sourceHeight || asset?.sourceHeight || node.sourceHeight;
+  const processing = Boolean(state.imageExpansionController && state.imageExpansionSourceId === node.id);
+  const sourceStoredLocally = (state.document.imageLibrary || []).some(item => item.assetId === sourceAssetId)
+    || Number.isSafeInteger(width) && Number.isSafeInteger(height);
+  const sourceRestorePending = imageAssetRestoreTasks.has(JSON.stringify([state.documentGeneration, sourceAssetId]));
+  let unavailableReason = '';
+  try {
+    if (!entry || (!asset?.sourceBytes && !sourceStoredLocally)) throw new Error('The original image is not available on this device.');
+    if (node.resolutionBoosted === true) throw new Error('Restore the original resolution before changing expansion.');
+    if (sourceRestorePending) throw new Error('Restoring the local image…');
+    validateInpaintDimensions(width, height);
+    if (node.locked || entry.parents.some(parent => parent.locked)) throw new Error('Unlock the image and its parent layers before expanding it.');
+    if (entry.parent?.autoLayout) throw new Error('Move this image outside Auto layout before expanding so its original pixels keep their exact canvas size.');
+    if (['x', 'y', 'width', 'height'].some(property => node.variableBindings?.[property])) {
+      throw new Error('Unbind the image position and size variables before expanding it.');
+    }
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('Pause the image batch before expanding an image.');
+    if (state.backgroundRemovalController || state.objectIsolationController) throw new Error('Wait for the other local image operation to finish.');
+  } catch (error) { unavailableReason = error.message; }
+  const disabled = Boolean(unavailableReason || processing || state.imageExpansionController || state.documentTransitioning);
+  const status = processing ? state.imageExpansionProgress || 'Starting local model…'
+    : unavailableReason || (expansion
+      ? `Expanded ${Math.round(expansion.paddingRatio.top * 100)}% top · ${Math.round(expansion.paddingRatio.right * 100)}% right · ${Math.round(expansion.paddingRatio.bottom * 100)}% bottom · ${Math.round(expansion.paddingRatio.left * 100)}% left. Original pixels remain available to restore.`
+      : 'Extend the image edges locally. Original pixels stay fixed on the canvas.');
+  const controls = expansion
+    ? `<button class="secondary-button" type="button" data-action="restore-image-expansion"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Image expansion is processing.') }"` : ''}>Restore pre-expansion image</button>`
+    : `<div class="property-grid image-expansion-padding-grid">${[
+      ['top', 'Top', 'height'], ['right', 'Right', 'width'], ['bottom', 'Bottom', 'height'], ['left', 'Left', 'width']
+    ].map(([side, label, dimension]) => `<label class="property-field"><span class="field-caption">${label} · %</span><input type="number" inputmode="decimal" min="0" max="100" step="1" value="10" data-image-expansion-side="${side}" aria-label="Expand ${label.toLowerCase()} by percent of source ${dimension}"${disabled ? ' disabled' : ''}/></label>`).join('')}</div><button class="primary-button" type="button" data-action="expand-image"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Image expansion is processing.') }"` : ''}>${processing ? 'Expanding image…' : 'Expand image'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-image-expansion">Cancel</button>' : ''}`;
+  return section('Expand image · local AI', `<div class="image-expansion-controls">${controls}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div><div class="image-properties-note">Runs the bundled MI-GAN model through local WebAssembly. The existing layer stays selected; undo or Restore returns to the exact source and size.</div>`);
 }
 function imageTransformControls(transforms, target, disabled = false, fillId = '', nodeId = null) {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
@@ -1967,16 +2281,34 @@ function strokeStackControls(node) {
   return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, opacity, cap, join, and pattern.${supportsEndpointDecorations ? ' Open line ends can use no decoration, an arrow, or a filled triangle.' : ''}</div></div>`;
 }
 function cornerRadiusControls(node) {
-  if (!['rectangle', 'frame', 'section', 'image'].includes(node.type)) return '';
+  if (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(node.type)) return '';
+  const smoothingValue = Math.round(Math.max(0, Math.min(1, Number(node.cornerSmoothing) || 0)) * 100);
+  const smoothingControl = `<div class="property-grid"><label class="image-output-field corner-smoothing-field"><span>Corner smoothing</span><input class="prop-input" data-prop="cornerSmoothing" type="range" min="0" max="100" step="1" value="${smoothingValue}" aria-label="Corner smoothing"${node.locked ? ' disabled' : ''}/><output>${smoothingValue}%</output></label></div><button class="add-fill" type="button" data-action="ios-corner-smoothing"${node.locked ? ' disabled' : ''}>Use iOS smoothing · 60%</button><div class="image-properties-note">Smoothing softens the transition from each rounded corner into the straight edge. The value applies to all corners and decreases automatically when the shape is too tight.</div>`;
+  if (['star', 'polygon'].includes(node.type)) {
+    const radii = node.vertexRadii;
+    const individual = radii
+      ? `<details class="vertex-radius-details"><summary>Individual vertex radii · ${radii.length}</summary><div class="property-grid">${radii.map((radius, index) => {
+        const label = node.type === 'star'
+          ? index % 2 === 0 ? `Outer ${index / 2 + 1}` : `Inner ${(index + 1) / 2}`
+          : `Corner ${index + 1}`;
+        return numberField(label, `vertexRadii.${index}`, radius, 0.01, 0, 100_000, node.locked, `${label} radius`);
+      }).join('')}</div><div class="image-properties-note">Each vertex keeps its own local radius. Tight edges automatically clamp neighbouring corners to fit.</div><button class="add-fill" type="button" data-action="link-vertices"${node.locked ? ' disabled' : ''}>Link vertices · use average</button></details>`
+      : `<button class="add-fill" type="button" data-action="unlink-vertices"${node.locked ? ' disabled' : ''}>Set individual vertex radii</button>`;
+    if (radii) return `<div class="corner-radius-controls"><div class="property-heading">Independent vertices</div>${individual}${smoothingControl}</div>`;
+    const radiusValue = getNodePropertyValue(state.document, node, 'radius');
+    return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 0.01, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}${smoothingControl}${individual}<div class="image-properties-note">The radius and smoothing apply uniformly to every vertex; individual radii are available when you need different corner shapes.</div></div>`;
+  }
   if (node.cornerRadii) {
     const fields = [
       ['topLeft', 'Top left'], ['topRight', 'Top right'],
       ['bottomLeft', 'Bottom left'], ['bottomRight', 'Bottom right']
     ].map(([side, label]) => numberField(label, `cornerRadii.${side}`, node.cornerRadii[side], 0.01, 0, 100_000, node.locked, `${label} corner radius`)).join('');
-    return `<div class="corner-radius-controls"><div class="property-heading">Independent corners</div><div class="property-grid">${fields}</div><div class="image-properties-note">Independent corners use local values and detach this layer from a shared radius variable.</div><button class="add-fill" type="button" data-action="link-corners"${node.locked ? ' disabled' : ''}>Link corners · use average</button></div>`;
+    return `<div class="corner-radius-controls"><div class="property-heading">Independent corners</div><div class="property-grid">${fields}</div><div class="image-properties-note">Independent corners use local values and detach this layer from a shared radius variable.</div>${smoothingControl}<button class="add-fill" type="button" data-action="link-corners"${node.locked ? ' disabled' : ''}>Link corners · use average</button></div>`;
   }
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
-  return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 0.01, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button></div>`;
+  const independentCorners = ['rectangle', 'frame', 'section', 'image'].includes(node.type)
+    ? `<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button>` : '';
+  return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 0.01, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}${smoothingControl}${independentCorners}</div>`;
 }
 function ensureInspectorFillStack(node) {
   const hadExplicitStack = Array.isArray(node?.fills);
@@ -2174,7 +2506,7 @@ function exportSettingsSection(node) {
     ? '<button class="add-fill" type="button" data-action="export-raster-pdf">Download 1× raster PDF</button><div class="image-properties-note">This local PDF is a flattened 1× export. Use vector PDF for supported shapes or editable SVG for full vector artwork.</div>'
     : '';
   const vectorPdf = node.type === 'frame'
-    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes and paths editable, embeds untouched PNG/JPEG images as image objects, and renders edited images to local PNG previews. Text, unsupported image formats, filters, masks, blend modes, and unsupported effects need raster PDF.</div>'
+    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes, paths, and alpha/vector masks editable, embeds untouched PNG/JPEG images as image objects, and renders edited images to local PNG previews. Tile image patterns, text, unsupported image formats, filters, luminance/object-bounding-box masks, blend modes, and unsupported effects need raster PDF.</div>'
     : '';
   const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes supported linear/radial gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Angular gradients are canvas-editable but require raster export because SVG/PDF vector export cannot preserve them. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${rasterPdf}${vectorPdf}${svgExport}`);
@@ -2206,18 +2538,20 @@ function gridTrackEditor(node, axis, count, tracks, fallbackMode, locked = node.
   const rows = Array.from({ length: Math.max(1, Math.min(64, count)) }, (_, index) => {
     const track = tracks[index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: fallbackMode });
     const mode = ['fixed', 'hug', 'fill'].includes(track.mode) ? track.mode : fallbackMode;
-    const minimum = track.minContent ? 'hug' : Number.isFinite(track.minSize) ? 'fixed' : 'none';
+    const minimum = track.minContent ? 'hug' : Number.isFinite(track.minSize) ? 'fixed' : Number.isFinite(track.minWeight) ? 'fill' : 'none';
     const modeOptions = [['fixed', 'Fixed'], ['hug', 'Hug content'], ['fill', 'Fill available']]
       .map(([value, label]) => `<option value="${value}"${mode === value ? ' selected' : ''}>${label}</option>`).join('');
     const valueControl = mode === 'hug'
       ? '<span class="grid-track-content">Content size</span>'
       : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${locked ? ' disabled' : ''}/></label>`;
-    const minimumOptions = [['none', 'None'], ['fixed', 'Pixels'], ['hug', 'Hug content']]
+    const minimumOptions = [['none', 'None'], ['fixed', 'Pixels'], ['hug', 'Hug content'], ...(mode === 'fill' ? [['fill', 'Fractional']] : [])]
       .map(([value, label]) => `<option value="${value}"${minimum === value ? ' selected' : ''}>${label}</option>`).join('');
     const minimumValue = minimum === 'fixed'
       ? `<label class="grid-track-bound-value"><span>Minimum px</span><input type="number" min="0" max="100000" step="0.01" value="${formatInspectorNumber(track.minSize)}" data-prop="autoLayout.${axis}.${index}.minimumValue" aria-label="${shortTitle} ${index + 1} minimum size in pixels"${locked ? ' disabled' : ''}/></label>`
-      : '';
-    const minimumControl = `<details class="grid-track-minimum"><summary>${minimum === 'fixed' ? `Minimum · ${formatInspectorNumber(track.minSize)} px` : minimum === 'hug' ? 'Minimum · Hug content' : 'Add minimum size'}</summary><div class="grid-track-minimum-controls"><label><span>Minimum</span><select class="select-field" data-prop="autoLayout.${axis}.${index}.minimum" aria-label="${shortTitle} ${index + 1} minimum sizing"${locked ? ' disabled' : ''}>${minimumOptions}</select></label>${minimumValue}</div></details>`;
+      : minimum === 'fill'
+        ? `<label class="grid-track-bound-value"><span>Minimum fr</span><input type="number" min="0.01" max="${formatInspectorNumber(track.weight ?? 1)}" step="0.01" value="${formatInspectorNumber(track.minWeight)}" data-prop="autoLayout.${axis}.${index}.minimumWeight" aria-label="${shortTitle} ${index + 1} minimum fractional weight"${locked ? ' disabled' : ''}/></label>`
+        : '';
+    const minimumControl = `<details class="grid-track-minimum"><summary>${minimum === 'fixed' ? `Minimum · ${formatInspectorNumber(track.minSize)} px` : minimum === 'fill' ? `Minimum · ${formatInspectorNumber(track.minWeight)} fr` : minimum === 'hug' ? 'Minimum · Hug content' : 'Add minimum size'}</summary><div class="grid-track-minimum-controls"><label><span>Minimum</span><select class="select-field" data-prop="autoLayout.${axis}.${index}.minimum" aria-label="${shortTitle} ${index + 1} minimum sizing"${locked ? ' disabled' : ''}>${minimumOptions}</select></label>${minimumValue}</div></details>`;
     const deleteButton = `<button class="tiny-icon-button grid-track-delete" type="button" data-action="delete-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Delete ${shortTitle.toLowerCase()} ${index + 1} and its contents" title="Delete ${shortTitle.toLowerCase()} and its contents"${locked || count <= 1 ? ' disabled' : ''}>×</button>`;
     const moveRange = gridTrackMoveRange(node, axis, index);
     const moveButton = `<button class="tiny-icon-button grid-track-move-menu-button" type="button" data-action="grid-track-move-menu" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Reorder ${shortTitle.toLowerCase()} ${index + 1}${moveRange?.end > moveRange?.start ? ' with its spanning tracks' : ''}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="Reorder track"${locked ? ' disabled' : ''}>↕</button>`;
@@ -2232,7 +2566,7 @@ function visibleGridRowCount(node, layout) {
     .reduce((max, child) => Math.max(max, (child.gridCell?.row || 1) + (child.gridCell?.rowSpan || 1) - 1), 1);
 }
 function updateAutoLayoutGridTrack(node, key, value) {
-  const match = /^(columnTracks|rowTracks)\.(\d+)\.(mode|value|weight|minimum|minimumValue)$/.exec(key);
+  const match = /^(columnTracks|rowTracks)\.(\d+)\.(mode|value|weight|minimum|minimumValue|minimumWeight)$/.exec(key);
   if (!match) return false;
   const [, axis, rawIndex, field] = match;
   const index = Number(rawIndex);
@@ -2241,8 +2575,10 @@ function updateAutoLayoutGridTrack(node, key, value) {
   node.autoLayout[axis] ||= [];
   let track = node.autoLayout[axis][index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: 'hug' });
   if (field === 'mode') {
-    const minimum = track.minContent ? { minContent: true }
-      : Number.isFinite(track.minSize) ? { minSize: track.minSize } : {};
+    const minimum = {
+      ...(track.minContent ? { minContent: true } : Number.isFinite(track.minSize) ? { minSize: track.minSize } : {}),
+      ...(value === 'fill' && track.mode === 'fill' && Number.isFinite(track.minWeight) ? { minWeight: track.minWeight } : {})
+    };
     track = value === 'fixed'
       ? { mode: 'fixed', value: track.mode === 'fixed' ? track.value : 120, ...minimum }
       : value === 'fill'
@@ -2252,14 +2588,22 @@ function updateAutoLayoutGridTrack(node, key, value) {
     track.value = Math.max(0, Math.min(100_000, Number.isFinite(Number(value)) ? Number(value) : 120));
   } else if (field === 'weight' && track.mode === 'fill') {
     track.weight = Math.max(0.01, Math.min(100_000, Number.isFinite(Number(value)) ? Number(value) : 1));
+    if (Number.isFinite(track.minWeight)) track.minWeight = Math.min(track.minWeight, track.weight);
   } else if (field === 'minimum') {
     delete track.minContent;
     delete track.minSize;
+    delete track.minWeight;
     if (value === 'hug') track.minContent = true;
     else if (value === 'fixed') track.minSize = 0;
+    else if (value === 'fill' && track.mode === 'fill') track.minWeight = Math.min(track.weight || 1, 1);
   } else if (field === 'minimumValue' && Number.isFinite(Number(value))) {
     delete track.minContent;
+    delete track.minWeight;
     track.minSize = Math.max(0, Math.min(100_000, Number(value)));
+  } else if (field === 'minimumWeight' && track.mode === 'fill' && Number.isFinite(Number(value))) {
+    delete track.minContent;
+    delete track.minSize;
+    track.minWeight = Math.max(0.01, Math.min(track.weight || 1, Number(value)));
   }
   node.autoLayout[axis][index] = track;
   return true;
@@ -2327,6 +2671,28 @@ function autoLayoutSection(node) {
 function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 0.01) {
   return `<label class="layout-guide-field"><span>${label}</span><input type="number" min="${min}" max="${max}" step="${step}" value="${formatInspectorNumber(value)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="${property}" aria-label="${label}"/></label>`;
 }
+function layoutGuideStylesSection(frameNodes, { singleFrame = false } = {}) {
+  const frames = frameNodes.filter(node => node?.type === 'frame');
+  if (!frames.length) return '';
+  const styles = state.document.layoutGuideStyles || [];
+  const selectedFrameStyleId = singleFrame ? frames[0]?.layoutGuideStyleId : null;
+  if (selectedFrameStyleId && styles.some(style => style.id === selectedFrameStyleId)) selectedLayoutGuideStyleId = selectedFrameStyleId;
+  else if (!styles.some(style => style.id === selectedLayoutGuideStyleId)) selectedLayoutGuideStyleId = '';
+  const selectedStyle = styles.find(style => style.id === selectedLayoutGuideStyleId);
+  const frameIds = new Set(frames.map(node => node.id));
+  const entries = selectedEntries().filter(entry => frameIds.has(entry.node.id));
+  const canEditFrames = entries.length > 0 && entries.every(({ node, parents }) => !node.locked && !parents.some(parent => parent.locked));
+  const canSave = singleFrame && (frames[0].layoutGuides || []).length > 0 && canEditFrames;
+  const linked = singleFrame && Boolean(frames[0].layoutGuideStyleId);
+  const picker = styles.length
+    ? `<label class="field-label" for="layout-guide-style-select">Saved layout guide style</label><select id="layout-guide-style-select" class="select-field" aria-label="Choose saved layout guide style"><option value="">Choose a style…</option>${styles.map(style => `<option value="${escapeHtml(style.id)}"${style.id === selectedLayoutGuideStyleId ? ' selected' : ''}>${escapeHtml(style.name)} · ${style.guides.length} guide${style.guides.length === 1 ? '' : 's'}</option>`).join('')}</select>`
+    : '<div class="image-properties-note">Save this frame’s guide stack to reuse it on other frames.</div>';
+  const actions = `<div class="layout-guide-style-actions">${singleFrame ? `<button class="add-fill" type="button" data-layout-guide-style-action="save"${canSave ? '' : ' disabled'}>＋ Save as style</button>` : ''}${styles.length ? `<button class="add-fill" type="button" data-layout-guide-style-action="apply"${selectedStyle && canEditFrames ? '' : ' disabled'}>Apply to ${frames.length === 1 ? 'frame' : `${frames.length} frames`}</button>${singleFrame ? `<button class="add-fill" type="button" data-layout-guide-style-action="update"${selectedStyle && canEditFrames ? '' : ' disabled'}>Update style from frame</button>${linked ? '<button class="add-fill" type="button" data-layout-guide-style-action="detach">Detach style</button>' : ''}` : ''}<button class="add-fill" type="button" data-layout-guide-style-action="rename"${selectedStyle ? '' : ' disabled'}>Rename style</button><button class="add-fill" type="button" data-layout-guide-style-action="delete"${selectedStyle ? '' : ' disabled'}>Delete style</button>` : ''}</div>`;
+  const note = styles.length
+    ? `<div class="image-properties-note">Styles stay linked across frames. Editing a guide detaches that frame; updating a style refreshes every linked frame.${frames.length > 1 ? ' Only selected frames receive the style.' : ''}</div>`
+    : '';
+  return section('Layout guide styles', `${picker}${actions}${note}`);
+}
 function layoutGuidesSection(node) {
   const guides = node.layoutGuides || [];
   const types = [['grid','Grid'],['columns','Columns'],['rows','Rows']];
@@ -2339,14 +2705,16 @@ function layoutGuidesSection(node) {
     const geometry = guide.type === 'grid'
       ? guideNumberField(guide, 'Size', 'size', guide.size, 1, 500, 0.01)
       : `<div class="layout-guide-fields">${guideNumberField(guide, 'Count', 'count', guide.count, 1, 64, 1)}${alignment}${guide.alignment === 'stretch' ? `${guideNumberField(guide, 'Margin', 'margin', guide.margin)}${guideNumberField(guide, 'Gutter', 'gutter', guide.gutter)}` : `${guideNumberField(guide, guide.type === 'columns' ? 'Width' : 'Height', 'bandSize', guide.bandSize, 1)}${['left','right','top','bottom'].includes(guide.alignment) ? guideNumberField(guide, 'Offset', 'offset', guide.offset) : ''}`}</div>`;
-    return `<div class="layout-guide-card" data-layout-guide="${escapeHtml(guide.id)}"><div class="layout-guide-heading"><button class="tiny-icon-button layout-guide-visibility" type="button" data-action="toggle-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="${guide.visible ? 'Hide' : 'Show'} this guide" aria-pressed="${guide.visible}">${guide.visible ? '◉' : '○'}</button><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="type" aria-label="Layout guide type">${typeOptions}</select><button class="tiny-icon-button layout-guide-remove" type="button" data-action="remove-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="Remove layout guide">×</button></div>${geometry}<div class="layout-guide-appearance"><label><span>Color</span><input type="color" value="${escapeHtml(guide.color)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="color" aria-label="Guide color"/></label><label class="layout-guide-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(guide.opacity * 100)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="opacity" aria-label="Guide opacity"/><output>${Math.round(guide.opacity * 100)}%</output></label></div></div>`;
+    const selected = state.selectedLayoutGuideFrameId === node.id && state.selectedLayoutGuideId === guide.id;
+    return `<div class="layout-guide-card${selected ? ' is-selected' : ''}" data-layout-guide="${escapeHtml(guide.id)}"><div class="layout-guide-heading"><button class="tiny-icon-button layout-guide-select" type="button" data-action="select-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="Select this guide for copy and paste" aria-pressed="${selected}" title="Select guide · ⌘C / Ctrl+C">${selected ? '✓' : '◇'}</button><button class="tiny-icon-button layout-guide-visibility" type="button" data-action="toggle-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="${guide.visible ? 'Hide' : 'Show'} this guide" aria-pressed="${guide.visible}">${guide.visible ? '◉' : '○'}</button><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="type" aria-label="Layout guide type">${typeOptions}</select><button class="tiny-icon-button layout-guide-remove" type="button" data-action="remove-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="Remove layout guide">×</button></div>${geometry}<div class="layout-guide-appearance"><label><span>Color</span><input type="color" value="${escapeHtml(guide.color)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="color" aria-label="Guide color"/></label><label class="layout-guide-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(guide.opacity * 100)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="opacity" aria-label="Guide opacity"/><output>${Math.round(guide.opacity * 100)}%</output></label></div></div>`;
   }).join('');
   const add = guides.length >= 32
     ? '<div class="image-properties-note">This frame has reached the 32-guide limit.</div>'
     : `<div class="layout-guide-adds">${types.map(([type, label]) => `<button type="button" data-action="add-layout-guide" data-guide-type="${type}">＋ ${label}</button>`).join('')}</div>`;
   const empty = guides.length ? '' : '<div class="image-properties-note">Add grid, row, or column guides. Combine them to build a precise frame layout.</div>';
   const rotationHint = guides.length ? '<div class="image-properties-note">Guides are shown while this frame is unrotated.</div>' : '';
-  return section('Layout guides', `${rows}${empty}${rotationHint}${add}`);
+  const copyHint = guides.length ? '<div class="image-properties-note">Select ◇ on a guide, then use ⌘C/Ctrl+C and select another frame to paste it.</div>' : '';
+  return layoutGuideStylesSection([node], { singleFrame: true }) + section('Layout guides', `${rows}${empty}${rotationHint}${copyHint}${add}`);
 }
 function gridPlacementSection(node, parent) {
   const cell = { row: 1, column: 1, rowSpan: 1, columnSpan: 1, alignX: 'start', alignY: 'start', ...(node.gridCell || {}) };
@@ -2371,7 +2739,8 @@ function constraintsSection(node) {
 }
 function sizeLimitsSection(node, parent) {
   if (!node.autoLayout && !parent?.autoLayout) return '';
-  const fields = `<div class="property-grid size-limits-grid">${optionalNumberField('Min width', 'minWidth', node.minWidth)}${optionalNumberField('Max width', 'maxWidth', node.maxWidth)}${optionalNumberField('Min height', 'minHeight', node.minHeight)}${optionalNumberField('Max height', 'maxHeight', node.maxHeight)}</div><div class="image-properties-note">Leave a value blank for no limit. Limits are in pixels and apply as this layer resizes.</div>`;
+  const maxHeight = node.type === 'text' ? '' : optionalNumberField('Max height', 'maxHeight', node.maxHeight);
+  const fields = `<div class="property-grid size-limits-grid">${optionalNumberField('Min width', 'minWidth', node.minWidth)}${optionalNumberField('Max width', 'maxWidth', node.maxWidth)}${optionalNumberField('Min height', 'minHeight', node.minHeight)}${maxHeight}</div><div class="image-properties-note">Leave a value blank for no limit. Limits are in pixels and apply as this layer resizes.</div>`;
   return section('Size limits', fields);
 }
 function componentPropertyTargets(root) {
@@ -2387,34 +2756,84 @@ function componentPropertyTargets(root) {
 function defaultVariableMode(collection) {
   return collection?.modes?.find(mode => mode.id === collection.defaultModeId) || collection?.modes?.[0] || null;
 }
+function componentPropertyHighlightAttributes(instance, property) {
+  return `data-component-property-highlight data-component-property-instance-id="${escapeHtml(instance.id)}" data-component-property-target-source-id="${escapeHtml(property.targetSourceId)}"`;
+}
+function componentPropertyControl(component, instance, property) {
+  const current = Object.hasOwn(instance.componentPropertyValues || {}, property.id)
+    ? instance.componentPropertyValues[property.id] : property.defaultValue;
+  const label = `<span>${escapeHtml(property.name)}</span>`;
+  const highlight = componentPropertyHighlightAttributes(instance, property);
+  if (property.type === 'BOOLEAN') return `<label class="component-property-value" ${highlight}>${label}<input type="checkbox" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}"${current ? ' checked' : ''} aria-label="${escapeHtml(property.name)}"/></label>`;
+  if (property.type === 'TEXT') return `<label class="component-property-value" ${highlight}>${label}<input type="text" maxlength="1000000" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" value="${escapeHtml(current)}" aria-label="${escapeHtml(property.name)}"/></label>`;
+  if (property.type === 'SLOT') {
+    const count = Array.isArray(current) ? current.length : 0;
+    const hasOverride = Object.hasOwn(instance.componentPropertyValues || {}, property.id);
+    return `<div class="component-slot-value" ${highlight}><div class="component-slot-copy"><strong>${escapeHtml(property.name)}</strong><small>${hasOverride ? `${count} custom layer${count === 1 ? '' : 's'}` : 'Using default content'}</small></div><button class="secondary-button" type="button" data-action="choose-component-slot-content" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}">${hasOverride ? 'Replace…' : 'Choose content…'}</button>${hasOverride ? `<button class="tiny-icon-button component-slot-reset" type="button" data-action="reset-component-slot" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}" aria-label="Reset ${escapeHtml(property.name)} to component default" title="Reset to component default">↺</button>` : ''}</div>`;
+  }
+  const validCandidates = (state.document.components || []).filter(candidate => canSwapComponentTo(state.document, component.id, candidate.id));
+  const preferredCandidates = property.preferredComponentIds?.length
+    ? validCandidates.filter(candidate => property.preferredComponentIds.includes(candidate.id))
+    : validCandidates;
+  const currentCandidate = state.document.components?.find(item => item.id === current);
+  const candidates = currentCandidate && canSwapComponentTo(state.document, component.id, currentCandidate.id)
+    && !preferredCandidates.some(item => item.id === currentCandidate.id)
+    ? [...preferredCandidates, currentCandidate]
+    : preferredCandidates;
+  const choices = candidates.map(candidate => `<option value="${escapeHtml(candidate.id)}"${candidate.id === current ? ' selected' : ''}>${escapeHtml(candidate.name)}</option>`).join('');
+  return `<label class="component-property-value" ${highlight}>${label}<select class="select-field" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" aria-label="${escapeHtml(property.name)} component">${choices}</select></label>`;
+}
+function showComponentPropertyTarget(control) {
+  if (!control) return;
+  const instance = findNode(state.document, control.dataset.componentPropertyInstanceId)?.node;
+  const nodeId = componentPropertyTargetInstanceId(instance, control.dataset.componentPropertyTargetSourceId);
+  if (!nodeId || state.componentPropertyHighlightNodeId === nodeId) return;
+  state.componentPropertyHighlightNodeId = nodeId;
+  renderer.invalidate();
+}
+function clearComponentPropertyTarget() {
+  if (!state.componentPropertyHighlightNodeId) return;
+  state.componentPropertyHighlightNodeId = null;
+  renderer.invalidate();
+}
 function componentInstancePropertyControls(component, instance) {
-  const rows = (component?.componentProperties || []).map(property => {
-    const current = Object.hasOwn(instance.componentPropertyValues || {}, property.id)
-      ? instance.componentPropertyValues[property.id] : property.defaultValue;
-    const label = `<span>${escapeHtml(property.name)}</span>`;
-    if (property.type === 'BOOLEAN') return `<label class="component-property-value">${label}<input type="checkbox" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}"${current ? ' checked' : ''} aria-label="${escapeHtml(property.name)}"/></label>`;
-    if (property.type === 'TEXT') return `<label class="component-property-value">${label}<input type="text" maxlength="1000000" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" value="${escapeHtml(current)}" aria-label="${escapeHtml(property.name)}"/></label>`;
-    if (property.type === 'SLOT') {
-      const count = Array.isArray(current) ? current.length : 0;
-      const hasOverride = Object.hasOwn(instance.componentPropertyValues || {}, property.id);
-      return `<div class="component-slot-value"><div class="component-slot-copy"><strong>${escapeHtml(property.name)}</strong><small>${hasOverride ? `${count} custom layer${count === 1 ? '' : 's'}` : 'Using default content'}</small></div><button class="secondary-button" type="button" data-action="choose-component-slot-content" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}">${hasOverride ? 'Replace…' : 'Choose content…'}</button>${hasOverride ? `<button class="tiny-icon-button component-slot-reset" type="button" data-action="reset-component-slot" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}" aria-label="Reset ${escapeHtml(property.name)} to component default" title="Reset to component default">↺</button>` : ''}</div>`;
-    }
-    const validCandidates = (state.document.components || []).filter(candidate => canSwapComponentTo(state.document, component.id, candidate.id));
-    const preferredCandidates = property.preferredComponentIds?.length
-      ? validCandidates.filter(candidate => property.preferredComponentIds.includes(candidate.id))
-      : validCandidates;
-    const currentCandidate = state.document.components?.find(item => item.id === current);
-    const candidates = currentCandidate && canSwapComponentTo(state.document, component.id, currentCandidate.id)
-      && !preferredCandidates.some(item => item.id === currentCandidate.id)
-      ? [...preferredCandidates, currentCandidate]
-      : preferredCandidates;
-    const choices = candidates.map(candidate => `<option value="${escapeHtml(candidate.id)}"${candidate.id === current ? ' selected' : ''}>${escapeHtml(candidate.name)}</option>`).join('');
-    return `<label class="component-property-value">${label}<select class="select-field" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" aria-label="${escapeHtml(property.name)} component">${choices}</select></label>`;
-  }).join('');
-  return rows ? `<div class="component-property-values">${rows}</div>` : '';
+  const rows = (component?.componentProperties || []).map(property =>
+    componentPropertyControl(component, instance, property)).join('');
+  const exposedControls = componentPropertyExposureGroups(state.document, component, instance).map(group =>
+    `<div class="component-property-nested-group"><strong>${escapeHtml(group.instance.name || 'Nested instance')}</strong><small>${escapeHtml(group.component.name)} properties</small><div class="component-property-values">${group.variantProperties.map(property => {
+      const selected = group.component.variantProperties?.[property.name] || '';
+      const options = property.values.map(value => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(value)}</option>`).join('');
+      return `<label class="variant-control"><span>${escapeHtml(property.name)}</span><select class="prop-input select-field" data-variant-property="${escapeHtml(property.name)}" data-instance-id="${escapeHtml(group.instance.id)}" aria-label="${escapeHtml(property.name)} variant">${options}</select></label>`;
+    }).join('')}${group.properties.map(property => componentPropertyControl(group.component, group.instance, property)).join('')}</div></div>`
+  ).join('');
+  const ownControls = rows ? `<div class="component-property-values">${rows}</div>` : '';
+  return `${ownControls}${exposedControls}`;
+}
+function nestedInstanceExposureCandidates(component, nestedTarget) {
+  const nestedComponentIds = new Set([nestedTarget.componentId]);
+  for (const property of component.componentProperties || []) {
+    if (property.type !== 'INSTANCE_SWAP' || property.targetSourceId !== nestedTarget.id) continue;
+    if (typeof property.defaultValue === 'string') nestedComponentIds.add(property.defaultValue);
+    for (const candidateId of property.preferredComponentIds || []) nestedComponentIds.add(candidateId);
+  }
+  return [...nestedComponentIds]
+    .map(id => state.document.components?.find(item => item.id === id))
+    .filter(Boolean);
+}
+function nestedInstanceExposurePropertyCount(component, nestedTarget) {
+  return Math.max(0, ...nestedInstanceExposureCandidates(component, nestedTarget)
+    .map(candidate => componentPropertyDefinitionCount(state.document, candidate)));
 }
 function componentPropertyDefinitions(component, root) {
   const targets = componentPropertyTargets(root);
+  const exposedNestedInstances = componentExposedNestedInstanceSourceIds(state.document, component);
+  const nestedTargets = targets.filter(target => target !== root && target.isInstance);
+  const exposureCandidates = nestedTargets.filter(target => nestedInstanceExposureCandidates(component, target)
+    .some(candidate => componentPropertyDefinitionCount(state.document, candidate) > 0));
+  const exposedNestedPropertyCount = nestedTargets
+    .filter(target => exposedNestedInstances.includes(target.id))
+    .reduce((sum, target) => sum + nestedInstanceExposurePropertyCount(component, target), 0);
+  const propertyCount = componentPropertyDefinitionCount(state.document, component) + exposedNestedPropertyCount;
   const selectedTarget = targets.find(target => target.id === state.componentPropertyTargetId) || targets[0];
   const supportedTypes = [['BOOLEAN', 'Visibility']];
   if (selectedTarget?.type === 'text') supportedTypes.push(['TEXT', 'Text']);
@@ -2428,10 +2847,13 @@ function componentPropertyDefinitions(component, root) {
   }).join('');
   const targetOptions = targets.map(target => `<option value="${escapeHtml(target.id)}"${target.id === selectedTarget?.id ? ' selected' : ''}>${escapeHtml(target.name)}</option>`).join('');
   const typeOptions = supportedTypes.map(([type, label]) => `<option value="${type}"${type === selectedType ? ' selected' : ''}>${label}</option>`).join('');
-  const editor = targets.length && (component.componentProperties || []).length < 100
+  const nestedExposureEditor = exposureCandidates.length
+    ? `<div class="component-nested-exposure"><button class="secondary-button" type="button" data-action="edit-component-exposures" data-component-id="${escapeHtml(component.id)}">${exposedNestedInstances.length ? 'Manage exposed properties…' : 'Expose nested properties…'}</button><small>Show properties from nested components alongside this component’s controls.</small></div>`
+    : '';
+  const editor = targets.length && propertyCount < 100
     ? `<div class="component-property-editor"><input class="text-field" id="component-property-name" maxlength="80" value="" placeholder="Property name" aria-label="New component property name"/><select class="select-field" id="component-property-target" aria-label="Component property target">${targetOptions}</select><select class="select-field" id="component-property-type" aria-label="Component property type">${typeOptions}</select><button class="add-fill" data-action="create-component-property" data-component-id="${escapeHtml(component.id)}" data-target-id="${escapeHtml(selectedTarget.id)}" data-property-type="${selectedType}">＋ Add property</button></div>`
     : '';
-  return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${(component.componentProperties || []).length}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, a nested instance, or a content slot as a reusable control.</div>'}${component.componentProperties?.length >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}</div>`;
+  return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${propertyCount}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, a nested instance, or a content slot as a reusable control.</div>'}${propertyCount >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}${nestedExposureEditor}</div>`;
 }
 function componentLibraryOptions(selectedId = state.componentLibraryTargetId) {
   const libraries = state.componentLibraries || [];
@@ -2485,7 +2907,8 @@ function componentSection(node) {
 }
 const fontAxisLabels = new Map([['wght', 'Weight'], ['wdth', 'Width'], ['ital', 'Italic'], ['slnt', 'Slant'], ['opsz', 'Optical size']]);
 function fontVariationAxisControls(node) {
-  const matchingFonts = [...state.fontAssets.values()].filter(font => familyStackUses(node.fontFamily, font.family));
+  const fontFamily = getNodePropertyValue(state.document, node, 'fontFamily');
+  const matchingFonts = [...state.fontAssets.values()].filter(font => familyStackUses(fontFamily, font.family));
   const variableFont = matchingFonts.find(font => font.axes?.length);
   if (variableFont) {
     const axes = variableFont.axes.filter(axis => axis.max > axis.min);
@@ -2496,7 +2919,7 @@ function fontVariationAxisControls(node) {
       const label = fontAxisLabels.get(axis.tag) || axis.tag;
       return `<div class="slider-row font-axis-row"><label>${escapeHtml(label)} <code>${escapeHtml(axis.tag)}</code></label><input class="prop-input" data-prop="fontAxes.${escapeHtml(axis.tag)}" type="range" min="${axis.min}" max="${axis.max}" step="${step}" value="${current}" aria-label="${escapeHtml(label)} axis ${escapeHtml(axis.tag)}"${node.locked ? ' disabled' : ''}/><output>${formatInspectorNumber(current)}</output></div>`;
     }).join('');
-    const canvasLimits = '<div class="image-properties-note">Local WOFF, WOFF2, TTF, and OTF fonts use the on-device shaper for canvas preview. Runs with missing glyphs use browser text fallback; SVG export keeps the saved axis coordinates.</div>';
+    const canvasLimits = '<div class="image-properties-note">Local WOFF, WOFF2, TTF, and OTF fonts use the on-device shaper by script and font coverage. Unavailable glyphs use the browser font stack; SVG export keeps the saved axis coordinates.</div>';
     return `<div class="font-axis-section"><strong>Variable font axes</strong>${sliders}${canvasLimits}</div>`;
   }
   return '';
@@ -2521,17 +2944,22 @@ function fontFeatureControls(node) {
   return `<details class="font-axis-section font-feature-details"><summary>OpenType features</summary><div class="font-feature-grid">${rows}</div><div class="font-feature-custom"><input id="font-feature-tag-input" class="prop-input" type="text" maxlength="4" placeholder="ss01" aria-label="Custom four-character OpenType feature tag"/><input id="font-feature-value-input" class="prop-input" type="number" min="0" max="65535" step="1" value="1" aria-label="Custom OpenType feature value; clear to restore Auto"/><button class="add-fill" type="button" data-action="set-custom-font-feature">Set feature</button></div><div class="image-properties-note">Set any four-character OpenType tag to a numeric value. Clear the value to restore Auto. Local HarfBuzz applies feature overrides in the canvas.</div></details>`;
 }
 function textSection(node) {
+  const fontFamily = getNodePropertyValue(state.document, node, 'fontFamily') || '';
   const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
+  const fontWeight = getNodePropertyValue(state.document, node, 'fontWeight') || 400;
+  const fontStyle = getNodePropertyValue(state.document, node, 'fontStyle') || 'normal';
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
-  const paragraphSpacing = node.paragraphSpacing || 0;
+  const paragraphSpacing = getNodePropertyValue(state.document, node, 'paragraphSpacing') || 0;
   const listSpacing = node.listSpacing || 0;
-  const firstLineIndent = node.firstLineIndent || 0;
+  const firstLineIndent = getNodePropertyValue(state.document, node, 'firstLineIndent') || 0;
   const textFit = node.textFit || 'auto-height';
+  const textTruncation = ['disabled', 'ending'].includes(node.textTruncation) ? node.textTruncation : 'disabled';
+  const maxLines = Number.isSafeInteger(node.maxLines) && node.maxLines >= 1 ? node.maxLines : '';
   const weightOptions = [[100, 'Thin'], [200, 'Extra light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi bold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']]
-    .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
+    .map(([weight, label]) => `<option value="${weight}"${Number(fontWeight) === weight ? ' selected' : ''}>${label}</option>`).join('');
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
-    .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
+    .map(([value, label]) => `<option value="${value}"${fontStyle === value ? ' selected' : ''}>${label}</option>`).join('');
   const linkedStyle = state.document.typographyStyles?.find(style => style.id === node.typographyStyleId);
   const styleStatus = linkedStyle
     ? `<div class="image-properties-note">Text style · ${escapeHtml(linkedStyle.name)} · typography changes update this layer.</div><button class="add-fill" data-action="detach-typography-style">Detach text style</button>`
@@ -2548,11 +2976,11 @@ function textSection(node) {
     ? `<div class="image-properties-note">Linked to ${escapeHtml(pathSource?.name || 'source path')}. Geometry edits update this text path.</div><button class="add-fill" type="button" data-action="detach-text-path">Detach from source path</button>`
     : '<div class="image-properties-note">This text keeps its own path snapshot.</div>';
   const pathControls = currentTextPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(currentTextPath.width) * 4 + Number(currentTextPath.height) * 4)}" step="1" value="${Number(currentTextPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${currentTextPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>${pathLinkStatus}` : '';
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(fontFamily)}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontFamily', 'Font family')}${variablePropertyBindingControl(node, 'fontWeight', 'Font weight')}${variablePropertyBindingControl(node, 'fontStyle', 'Font style')}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}${variablePropertyBindingControl(node, 'paragraphSpacing', 'Paragraph spacing')}${variablePropertyBindingControl(node, 'firstLineIndent', 'First-line indent')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
-  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select></div>`;
+  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select><label class="property-label">Text overflow<select class="prop-input select-field" data-prop="textTruncation" aria-label="Text overflow"${node.locked ? ' disabled' : ''}><option value="disabled"${textTruncation === 'disabled' ? ' selected' : ''}>No ellipsis</option><option value="ending"${textTruncation === 'ending' ? ' selected' : ''}>Ending ellipsis</option></select></label><label class="property-label">Max lines<input class="prop-input" data-prop="maxLines" data-optional-number type="number" min="1" max="100000" step="1" value="${maxLines}" placeholder="Unlimited" aria-label="Maximum text lines"${node.locked || textTruncation !== 'ending' ? ' disabled' : ''}/></label>${optionalNumberField('Max height', 'maxHeight', node.maxHeight, { disabled: node.locked })}</div><div class="image-properties-note">Ending ellipsis clips text to its box. Set a maximum line count or a maximum height; the two limits are mutually exclusive.</div>`;
   return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}<div class="image-properties-note">`));
 }
 function frameVariableModesSection(frame) {
@@ -2757,11 +3185,42 @@ function prototypeInspector() {
   const needsScrollTarget = state.prototypeAction === 'scroll-to' && !selectedScrollTarget;
   const connectState = !editingInteraction && state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : state.prototypeAction === 'swap-overlay' ? 'Click the frame to swap into the overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
   const overlayControls = state.prototypeAction === 'open-overlay' ? `<label>Position<select id="prototype-overlay-position" class="select-field">${[['center','Center'],['top-left','Top left'],['top-center','Top center'],['top-right','Top right'],['left-center','Left center'],['right-center','Right center'],['bottom-left','Bottom left'],['bottom-center','Bottom center'],['bottom-right','Bottom right']].map(([value, label]) => `<option value="${value}"${state.prototypeOverlayPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label><span>Dismiss on outside click</span><input id="prototype-overlay-outside" type="checkbox"${state.prototypeOverlayOutsideClick ? ' checked' : ''}/></label><label><span>Show background</span><input id="prototype-overlay-background" type="checkbox"${state.prototypeOverlayBackground ? ' checked' : ''}/></label>${state.prototypeOverlayBackground ? `<label>Background<input id="prototype-overlay-color" type="color" value="${state.prototypeOverlayBackgroundColor}"/><input id="prototype-overlay-opacity" type="range" min="0" max="100" value="${Math.round(state.prototypeOverlayBackgroundOpacity * 100)}" aria-label="Overlay background opacity"/></label>` : ''}` : '';
-  const transitionChoices = state.prototypeAction === 'scroll-to'
-    ? [['instant', 'Instant'], ['scroll', 'Animated scroll']]
-    : [['instant', 'Instant'], ['dissolve', 'Dissolve'], ['move-left', 'Move in · left'], ['move-right', 'Move in · right'], ...(state.prototypeAction === 'navigate' ? [['smart-animate', 'Smart animate']] : [])];
-  const transitionOptions = transitionChoices
-    .map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
+  const isOverlayAction = ['open-overlay', 'swap-overlay'].includes(state.prototypeAction);
+  const transitionDirections = ['left', 'right', 'up', 'down'];
+  const overlayTransitionGroups = [
+    ['', [['instant', 'Instant'], ['dissolve', 'Dissolve']]],
+    ['Move In', transitionDirections.map(direction => [`move-in-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+    ['Move Out', transitionDirections.map(direction => [`move-out-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+    ['Push', transitionDirections.map(direction => [`push-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+    ['Slide In', transitionDirections.map(direction => [`slide-in-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+    ['Slide Out', transitionDirections.map(direction => [`slide-out-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+    ...(state.prototypeAction === 'swap-overlay' ? [['', [['smart-animate', 'Smart animate']]]] : [])
+  ];
+  const overlayTransitionOptions = overlayTransitionGroups.flatMap(([, choices]) => choices);
+  const unsupportedOverlayTransition = isOverlayAction
+    && !overlayTransitionOptions.some(([value]) => value === state.prototypeTransition);
+  const transitionGroups = state.prototypeAction === 'scroll-to'
+    ? [['', [['instant', 'Instant'], ['scroll', 'Animated scroll']]]]
+    : isOverlayAction
+      ? [
+        ...overlayTransitionGroups,
+        ...(unsupportedOverlayTransition ? [['', [[state.prototypeTransition, `Unavailable · ${state.prototypeTransition}`]]]] : [])
+      ]
+      : [
+      ['', [['instant', 'Instant'], ['dissolve', 'Dissolve']]],
+      ['Move In', ['left', 'right', 'up', 'down'].map(direction => [`move-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+      ['Move Out', ['left', 'right', 'up', 'down'].map(direction => [`move-out-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+      ['Push', ['left', 'right', 'up', 'down'].map(direction => [`push-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+      ['Slide In', ['left', 'right', 'up', 'down'].map(direction => [`slide-in-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+      ['Slide Out', ['left', 'right', 'up', 'down'].map(direction => [`slide-out-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
+      ...(state.prototypeAction === 'navigate' ? [['', [['smart-animate', 'Smart animate']]]] : [])
+    ];
+  const transitionOptions = transitionGroups.map(([group, choices]) => {
+    const options = choices.map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
+    return group ? `<optgroup label="${group}">${options}</optgroup>` : options;
+  }).join('');
+  const durationControl = state.prototypeTransition === 'instant' ? ''
+    : `<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="10000" step="1" value="${state.prototypeDuration}" aria-label="Transition duration in milliseconds" /></label>`;
   const easingOptions = [
     ['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'],
     ['ease-in-back', 'Ease in · back'], ['ease-out-back', 'Ease out · back'], ['ease-in-out-back', 'Ease in and out · back'],
@@ -2851,7 +3310,7 @@ function prototypeInspector() {
     ? `<label>Destination<select id="prototype-destination" class="select-field" aria-label="Prototype destination"><option value="" disabled${state.prototypeDestinationId ? '' : ' selected'}>Choose a frame</option>${destinationFrames.map(({ page, frame }) => `<option value="${escapeHtml(frame.id)}"${frame.id === state.prototypeDestinationId ? ' selected' : ''}>${escapeHtml(page.name)} · ${escapeHtml(frame.name)}</option>`).join('')}</select></label>`
     : '';
   const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" aria-label="Transition duration" /></label>${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -2870,7 +3329,7 @@ function commentPanel() {
   const active = comments.find(comment => comment.id === state.activeCommentId);
   const ordered = [...comments].sort((a, b) => a.createdAt - b.createdAt);
   const numberById = new Map(ordered.map((comment, index) => [comment.id, index + 1]));
-  const composer = (replyTo = null) => `<form class="comment-compose" data-comment-form="${replyTo ? 'reply' : 'new'}"${replyTo ? ` data-thread-id="${escapeHtml(replyTo)}"` : ''}><label for="comment-draft">${replyTo ? 'Write a reply' : 'Add a comment'}</label><textarea id="comment-draft" maxlength="4000" rows="3" placeholder="Share a clear note…" required></textarea><div class="comment-compose-actions"><span>Saved with this design</span><div>${replyTo ? '' : '<button class="secondary-button" type="button" data-comment-action="cancel">Cancel</button>'}<button class="primary-button" type="submit">${replyTo ? 'Reply' : 'Post comment'}</button></div></div></form>`;
+  const composer = (replyTo = null) => `<form class="comment-compose" data-comment-form="${replyTo ? 'reply' : 'new'}"${replyTo ? ` data-thread-id="${escapeHtml(replyTo)}"` : ''}><label for="comment-draft">${replyTo ? 'Write a reply' : 'Add a comment'}</label><textarea id="comment-draft" maxlength="4000" rows="3" placeholder="Share a clear note…" required>${replyTo ? '' : escapeHtml(state.pendingCommentText)}</textarea><div class="comment-compose-actions"><span>Saved with this design</span><div>${replyTo ? '' : '<button class="secondary-button" type="button" data-comment-action="cancel">Cancel</button>'}<button class="primary-button" type="submit">${replyTo ? 'Reply' : 'Post comment'}</button></div></div></form>`;
   const newDraft = state.pendingCommentAnchor ? `<div class="comment-anchor-hint">New comment at ${Math.round(state.pendingCommentAnchor.x)}, ${Math.round(state.pendingCommentAnchor.y)} px</div>${composer()}` : '';
   if (active) {
     const messages = active.messages.map(message => `<article class="comment-message"><header><strong>${escapeHtml(message.author)}</strong><time>${escapeHtml(commentTimestamp(message.createdAt))}</time></header><p>${escapeHtml(message.text)}</p></article>`).join('');
@@ -3181,6 +3640,7 @@ function syncSidebarTabAccessibility(selectedTab = state.sidebarTab) {
 function beginCommentAt(point) {
   const page = activePage();
   if (!page) return;
+  if (!state.pendingCommentAnchor) state.pendingCommentText = '';
   state.pendingCommentAnchor = { pageId: page.id, x: point.x, y: point.y };
   state.commentPlacementArmed = false;
   state.activeCommentId = null;
@@ -3190,10 +3650,15 @@ function beginCommentAt(point) {
 }
 
 function openCommentThread(threadId) {
+  if (state.pendingCommentAnchor) {
+    showToast('Post or cancel the new comment before opening another thread.');
+    return;
+  }
   const comment = pageComments().find(item => item.id === threadId);
   if (!comment) return;
   state.pendingCommentAnchor = null;
   state.commentPlacementArmed = false;
+  state.commentSelectionCycle = null;
   state.activeCommentId = threadId;
   state.panX = canvas.clientWidth / 2 - comment.x * state.zoom;
   state.panY = canvas.clientHeight / 2 - comment.y * state.zoom;
@@ -3206,14 +3671,15 @@ function handleCommentAction(button) {
   const threadId = button.dataset.threadId;
   if (action === 'new') {
     state.pendingCommentAnchor = null;
+    state.pendingCommentText = '';
     state.activeCommentId = null;
     state.commentPlacementArmed = true;
     setTool('comment');
     setInspectorTab('comments');
     showToast('Tap empty canvas to place a comment. Tap an object to select it, or Alt/Option-click to comment on it.');
   } else if (action === 'open') openCommentThread(threadId);
-  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
-  else if (action === 'cancel') { state.pendingCommentAnchor = null; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
+  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.pendingCommentText = ''; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
+  else if (action === 'cancel') { state.pendingCommentAnchor = null; state.pendingCommentText = ''; state.commentPlacementArmed = false; syncMobilePanelAccessibility(); renderInspector(); }
   else if (action === 'resolve') {
     const comment = pageComments().find(item => item.id === threadId);
     if (!comment) return;
@@ -3232,6 +3698,7 @@ function submitCommentForm(form) {
   const textarea = form.querySelector('textarea');
   const text = textarea?.value.trim();
   if (!text) { textarea?.focus(); return; }
+  let postedNewThread = false;
   try {
     if (form.dataset.commentForm === 'new') {
       if ((state.document.comments || []).length >= 10_000) { showToast('This design has reached the 10,000 comment thread limit.'); return; }
@@ -3239,13 +3706,18 @@ function submitCommentForm(form) {
       if (!anchor || !state.document.pages.some(page => page.id === anchor.pageId)) { showToast('Choose a point on the canvas before posting.'); return; }
       checkpoint('Add comment');
       const thread = createCommentThread(state.document, { ...anchor, text });
-      state.pendingCommentAnchor = null; state.activeCommentId = thread.id;
+      state.pendingCommentAnchor = null; state.pendingCommentText = ''; state.activeCommentId = thread.id;
+      // A draft may have been kept open while the user selected its component
+      // and nested frame. The newly posted pin starts a fresh hit cycle.
+      state.commentSelectionCycle = null;
+      postedNewThread = true;
     } else {
       const threadId = form.dataset.threadId;
       checkpoint('Reply to comment');
       addCommentReply(state.document, threadId, text);
     }
-    syncMobilePanelAccessibility();
+    if (postedNewThread && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    else syncMobilePanelAccessibility();
     renderInspector(); queueSave(); renderer.invalidate();
   } catch (error) { showToast(error.message || 'Could not save this comment.'); }
 }
@@ -3269,6 +3741,7 @@ function renderInspector() {
   if (entries.length > 1) {
     const containsSlice = entries.some(entry => entry.node.type === 'slice');
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
+    const guideFrameNodes = entries.map(entry => entry.node).filter(node => node.type === 'frame');
     const activeImageBatchSelected = entries.some(entry => entry.node.type === 'image' && isActiveImageRecipeTarget(entry.node.id));
     const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
     const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
@@ -3301,7 +3774,7 @@ function renderInspector() {
     const shapeBuilderControl = canStartShapeBuilder(shapeBuilderEntries(state.selectedIds))
       ? section('Vector tools', `<button class="add-fill" type="button" data-action="shape-builder-start">Shape Builder</button><div class="image-properties-note">Tap a filled region to extract it, drag across regions to merge, or choose Subtract in the canvas bar. Source layers stay editable.</div>`)
       : '';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${shapeBuilderControl}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${guideFrameNodes.length ? layoutGuideStylesSection(guideFrameNodes) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${shapeBuilderControl}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
     if (activeImageBatchSelected) {
       const note = document.createElement('div');
       note.className = 'image-properties-note image-batch-edit-lock';
@@ -3330,14 +3803,15 @@ function renderInspector() {
   }
   if (node.type === 'group' && node.mask) {
     const maskSource = node.children.find(child => child.id === node.maskSourceId);
-    body += section('Mask', `<div class="image-properties-note">${escapeHtml(maskSource?.name || 'Vector shape')} masks the editable layers inside this group.</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
+    const vectorAvailable = isMaskSource(maskSource, 'vector');
+    body += section('Mask', `<label class="property-label">Mask mode<select class="prop-input select-field" data-prop="maskMode" aria-label="Mask mode"${node.locked ? ' disabled' : ''}><option value="alpha"${(node.maskMode || 'alpha') === 'alpha' ? ' selected' : ''}>Alpha</option><option value="vector"${node.maskMode === 'vector' ? ' selected' : ''}${!vectorAvailable ? ' disabled' : ''}>Vector${vectorAvailable ? '' : ' · unsupported source'}</option></select></label><div class="image-properties-note">${escapeHtml(maskSource?.name || 'Vector shape')} masks the editable layers inside this group. Vector mode uses visible fill and stroke geometry at full opacity.</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
   }
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node) + singleImageRecipesSection(node);
   if (node.type === 'polygon') {
-    body += section('Polygon', `${numberField('Sides', 'points', node.points ?? 6, 1, 3, 32, node.locked, 'Polygon sides')}<div class="image-properties-note">Choose between 3 and 32 sides. The shape updates live on the canvas.</div>`);
+    body += section('Polygon', `${numberField('Sides', 'points', node.points ?? 6, 1, MIN_STAR_POINTS, MAX_POLYGON_POINTS, node.locked, 'Polygon sides')}<div class="image-properties-note">Choose between 3 and 32 sides. The shape updates live on the canvas.</div>`);
   } else if (node.type === 'star') {
-    body += section('Star', `<div class="property-grid">${numberField('Points', 'points', node.points ?? 5, 1, 3, 32, node.locked, 'Star point count')}${numberField('Inner radius', 'innerRadius', node.innerRadius ?? 0.48, .01, 0, 1, node.locked, 'Star inner radius ratio')}</div><div class="image-properties-note">Set 3–32 outer points and an inner radius ratio from 0 to 1.</div>`);
+    body += section('Star', `<div class="property-grid">${numberField('Points', 'points', node.points ?? 5, 1, MIN_STAR_POINTS, MAX_STAR_POINTS, node.locked, 'Star point count')}${numberField('Inner radius', 'innerRadius', node.innerRadius ?? 0.48, .01, 0, 1, node.locked, 'Star inner radius ratio')}</div><div class="image-properties-note">Set 3–60 outer points and an inner radius ratio from 0 to 1. Drag the canvas handles to adjust points, ratio, and corner radius.</div>`);
   }
   if (node.type === 'path') {
     const contours = vectorPathContours(node);
@@ -3367,7 +3841,21 @@ function renderInspector() {
     const selectedVertexId = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.vertexId : null;
     const selectedVertex = selectedVertexId ? node.vertices.find(vertex => vertex.id === selectedVertexId) : null;
     const anchorMode = selectedVertex ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${node.locked || entries[0].parents.some(parent => parent.locked) ? ' disabled' : ''}><option value="corner"${getVectorNetworkVertexMode(node, selectedVertexId) === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${getVectorNetworkVertexMode(node, selectedVertexId) === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${getVectorNetworkVertexMode(node, selectedVertexId) === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
-    body += section('Vector network', `${anchorMode}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; hold Shift while dragging a handle at a two-edge junction to move both controls together. Branch handles remain independent.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
+    const networkRadiusEligibility = selectedVertex ? vectorNetworkVertexCornerRadiusEligibility(node, selectedVertexId) : null;
+    const radiusDisabled = node.locked || entries[0].parents.some(parent => parent.locked) || !networkRadiusEligibility?.eligible;
+    const vertexRadius = selectedVertex ? Math.max(0, Number(selectedVertex.cornerRadius) || 0) : 0;
+    const radiusReason = ({
+      'not-a-network': 'Select a point on a vector network.',
+      'invalid-face': 'This region does not have a valid closed boundary.',
+      'invalid-geometry': 'The vector-network geometry is invalid.',
+      'missing-vertex': 'This point is no longer in the vector network.',
+      'shared-face': 'A point shared by multiple regions cannot have an independent radius.',
+      'ambiguous-edge': 'Parallel or ambiguous boundary edges cannot be rounded safely.',
+      'boundary-branch': 'Only unbranched points on closed regions can have a corner radius.',
+      'not-face-boundary': 'Select a point on a closed region to edit its radius.'
+    })[networkRadiusEligibility?.reason] || 'Select a point on one closed region to edit its radius.';
+    const networkCornerRadius = selectedVertex ? `<div class="property-grid"><div class="property-field"><label>Corner radius</label><input class="prop-input" type="number" min="0" max="100000" step="0.01" value="${formatInspectorNumber(vertexRadius)}" data-network-vertex-radius="${escapeHtml(selectedVertexId)}" aria-label="Selected vertex corner radius"${radiusDisabled ? ' disabled' : ''}/></div></div><div class="image-properties-note">${networkRadiusEligibility?.eligible ? 'Rounds this point along its connected edges.' : escapeHtml(radiusReason)}</div>` : '';
+    body += section('Vector network', `${anchorMode}${networkCornerRadius}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; hold Shift while dragging a handle at a two-edge junction to move both controls together. Branch handles remain independent.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
     const primaryFill = fillStackForNode(node)[0];
     const faceColorsEditable = Array.isArray(node.fills) ? primaryFill?.type === 'solid' : !node.imageFill;
     if (node.faces.length && faceColorsEditable) body += section('Region fills', networkFaceControls(node));
@@ -3392,9 +3880,12 @@ function renderInspector() {
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   body += sizeLimitsSection(node, parent);
   if (node.type === 'image') {
-    body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, adjustments, and object erase at the original image resolution. Output format and quality are also saved in recipes for batch export.</div>`);
+    body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option><option value="tile">Tile</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field image-tile-scale"${node.fit === 'tile' ? '' : ' hidden'}><span>Tile size</span><input class="prop-input" data-prop="scalingFactor" type="range" min="1" max="1600" step="1" value="${Math.round((node.scalingFactor ?? 1) * 100)}" aria-label="Image tile size"/><output>${Math.round((node.scalingFactor ?? 1) * 100)}%</output></label><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, adjustments, and object erase at the original image resolution. Tile size and output settings are also saved in recipes for batch export.</div>`);
     body += imageEraseControls(node);
     body += objectIsolationControls(node);
+    body += backgroundRemovalControls(node);
+    body += resolutionBoostControls(node);
+    body += imageExpansionControls(node);
   }
   body += exportSettingsSection(node);
   content.innerHTML = body;
@@ -3529,8 +4020,11 @@ function renderAssetsTab() {
   const components = $('#components-list');
   const expandedComponentSets = new Set([...components.querySelectorAll('[data-component-set-editor][open]')].map(item => item.dataset.componentSetEditor));
   components.replaceChildren();
-  const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
+  const variableCollections = $('#variable-collections-list');
+  const expandedVariableScopes = new Set([...variableCollections.querySelectorAll('[data-variable-scopes-editor][open]')].map(item => item.dataset.variableScopesEditor));
+  variableCollections.replaceChildren();
   const collections = state.document.variableCollections || [];
+  const selectedColorScopes = state.selectedIds.length ? selectedColorVariableScopes() : null;
   const exportTokens = $('#export-design-tokens');
   if (exportTokens) exportTokens.disabled = !(state.document.variables || []).length;
   if (!collections.length) {
@@ -3554,6 +4048,10 @@ function renderAssetsTab() {
       const heading = document.createElement('div'); heading.className = 'variable-item-heading';
       if (variable.type === 'color') {
         const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'variable-apply'; apply.dataset.variableApply = variable.id; apply.title = `Apply ${variable.name} to selected layers`;
+        const scopeAllowed = selectedColorScopes == null
+          || (selectedColorScopes.length > 0 && selectedColorScopes.every(scope => variableScopeAllows(variable, scope)));
+        apply.disabled = !scopeAllowed;
+        if (!scopeAllowed) apply.title = `${variable.name} is not scoped to every selected color property`;
         const swatch = document.createElement('span'); swatch.className = 'variable-swatch'; swatch.style.backgroundColor = resolveVariableValue(state.document, variable.id) || '#ffffff';
         const name = document.createElement('span'); name.className = 'variable-name'; name.textContent = variable.name;
         apply.append(swatch, name); heading.append(apply);
@@ -3586,7 +4084,14 @@ function renderAssetsTab() {
         input.title = `${variable.name} · ${item.name}`; input.setAttribute('aria-label', `${variable.name} ${item.name} value`);
         modeRow.append(modeName, alias, input); values.append(modeRow);
       }
-      row.append(heading, values); rows.append(row);
+      row.append(heading, values);
+      const scopeEditor = variableScopesEditorMarkup(variable, { open: expandedVariableScopes.has(variable.id) });
+      if (scopeEditor) {
+        const scopeHost = document.createElement('div');
+        scopeHost.innerHTML = scopeEditor;
+        row.append(scopeHost.firstElementChild);
+      }
+      rows.append(row);
     }
     const addVariable = document.createElement('button'); addVariable.type = 'button'; addVariable.className = 'add-fill'; addVariable.dataset.action = 'add-variable'; addVariable.dataset.collectionId = collection.id; addVariable.textContent = '＋ New variable';
     card.append(header, controls, rows, addVariable); variableCollections.append(card);
@@ -4393,21 +4898,88 @@ function commentPinAt(world) {
   }
   return null;
 }
-function commentTargetAt(world, options) {
+function commentSelectionEntryAt(world) {
+  const page = activePage();
+  if (!page) return null;
   const hit = hitTestPage(activePage(), world,
     (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
     state.document, null, state.zoom, { allowAnyClippedNodes: true });
-  if (!hit) return null;
-  const entry = findNode(state.document, hit.id, activePage()?.id);
+  const hitEntry = hit ? findNode(state.document, hit.id, page.id) : null;
+  if (hitEntry?.node) return hitEntry;
+
+  // Comment review must still be able to select a frame when its interior has
+  // no painted child or visible fill. Ordinary hit testing is paint-oriented;
+  // use the frame's geometric bounds as the fallback, honoring visibility and
+  // ancestor clipping through deepestContainerAtPagePoint.
+  const container = deepestContainerAtPagePoint(page.children, world, state.document);
+  return container?.node ? findNode(state.document, container.node.id, page.id) : null;
+}
+function commentTargetAt(world, options) {
+  const entry = commentSelectionEntryAt(world);
+  if (!entry?.node) return null;
   return commentSelectionTarget(entry, {
     ...options,
     preferHitContainer: state.tool === 'comment' && options?.preferComponent !== false
   });
 }
+function cycleCommentSelectionAt(world, event, { preservePinThreadAction = false, layerSelectedTargetId = null } = {}) {
+  const entry = commentSelectionEntryAt(world);
+  const commentReviewPrefersComponent = Boolean(state.pendingCommentAnchor
+    || (state.activeCommentId && state.tool !== 'comment'));
+  const selection = advanceCommentSelection(entry, state.commentSelectionCycle, {
+    pageId: activePage()?.id,
+    pointerType: event.pointerType,
+    // Track the point in document space: opening or closing the mobile
+    // Comments panel changes the canvas viewport and screen coordinates.
+    x: world.x,
+    y: world.y,
+    time: performance.now(),
+    tolerance: 24 / Math.max(.08, state.zoom),
+    selectedTargetId: !preservePinThreadAction ? layerSelectedTargetId : null
+  }, {
+    // An open thread or draft should let users leave review by selecting the
+    // containing component, even when another tool is active. Comment mode
+    // itself keeps directly hit frames selectable, including beneath a newly
+    // posted pin. With only the Comments list open, Frame-tool hits keep
+    // selecting the directly hit frame.
+    preferHitContainer: !commentReviewPrefersComponent,
+    preferComponent: commentReviewPrefersComponent
+      || !(state.inspectorTab === 'comments' && state.tool === 'frame')
+  });
+  state.commentSelectionCycle = selection.cycle;
+  return selection;
+}
 function selectCommentTargetAt(world, options) {
   const target = commentTargetAt(world, options);
   if (target) setSelection([target.id]);
   return target;
+}
+function commentCanvasSelectionMessage(target, { cycled = false } = {}) {
+  const cycle = state.commentSelectionCycle;
+  const canChooseAnotherContainer = cycle?.targetId === target?.id
+    && Array.isArray(cycle.targetPath) && cycle.targetPath.length > 1;
+  if (cycled) {
+    return `Selected “${target.name}”. Click or tap the same spot again to switch between its containing frame and component.`;
+  }
+  if (canChooseAnotherContainer) {
+    return `Selected “${target.name}”. Click or tap the same spot again to choose its containing frame or component.`;
+  }
+  return `Selected “${target.name}”.`;
+}
+function finishCommentCanvasSelection(target, { cycled = false } = {}) {
+  if (!target) return false;
+  const commentTool = state.tool === 'comment';
+  const leavesCommentContext = commentTool || state.inspectorTab === 'comments'
+    || Boolean(state.activeCommentId || state.pendingCommentAnchor);
+  state.activeCommentId = null;
+  if (!state.pendingCommentAnchor) state.pendingCommentText = '';
+  state.commentPlacementArmed = false;
+  if (leavesCommentContext) closeMobilePanels({ restoreFocus: false });
+  setSelection([target.id], { source: 'canvas' });
+  if (state.inspectorTab === 'comments') setInspectorTab('design');
+  const selectionMessage = commentCanvasSelectionMessage(target, { cycled });
+  showToast(state.pendingCommentAnchor ? `${selectionMessage} Your draft is kept in Comments.` : selectionMessage);
+  return true;
 }
 function resizeHandleAt(event) {
   const entries = transformEntriesForSelection();
@@ -4455,6 +5027,29 @@ function resizeHandleAt(event) {
   if (hit.kind === 'rotate') return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
   return { kind: 'resize', name: hit.name, node, entry, geometry, ancestors };
 }
+function starControlHandleAt(event) {
+  if (state.tool !== 'select' || state.selectedIds.length !== 1 || state.imageCropMode
+    || state.layerSelectionMode || state.documentTransitioning || state.presenting || isLiveHostViewOnly()
+    || (state.inspectorTab === 'motion' && state.motionPreview) || isImageRecipeBatchActive(state.bulk)) return null;
+  const entry = findNode(state.document, state.selectedIds[0]);
+  if (!entry || entry.node.type !== 'star' || entry.node.locked || entry.parents.some(parent => parent.locked)) return null;
+  const geometry = {
+    ...entry.node,
+    ...resolvedGeometry(entry.node),
+    points: getNodePropertyValue(state.document, entry.node, 'points') ?? entry.node.points ?? 5,
+    innerRadius: getNodePropertyValue(state.document, entry.node, 'innerRadius') ?? entry.node.innerRadius ?? 0.48,
+    radius: getNodePropertyValue(state.document, entry.node, 'radius') ?? entry.node.radius ?? 0
+  };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const handles = starControlHandles(geometry, state.zoom).map(handle => ({
+    ...handle,
+    localPoint: handle.point,
+    point: worldToScreen(nodeLocalToPage(geometry, handle.point, ancestors), canvas, state)
+  }));
+  const hit = nearestScreenHandle({ x: event.clientX, y: event.clientY }, handles,
+    event.pointerType === 'touch' ? 22 : event.pointerType === 'pen' ? 14 : 9);
+  return hit ? { ...hit, node: entry.node, entry, geometry, ancestors } : null;
+}
 function gridTrackResizeHandleAt(world, pointerType = 'mouse') {
   if (state.selectedIds.length !== 1 || state.imageCropMode || state.layerSelectionMode || state.tool !== 'select'
     || state.documentTransitioning || state.presenting || isLiveHostViewOnly()
@@ -4491,7 +5086,14 @@ function alignmentTargetBounds(movingEntries) {
     && [node, ...parents].every(layer => getNodePropertyValue(state.document, layer, 'visible'))
   ).map(pageBoundsForEntry);
 }
-function selectedNodeDragStart(node, world, shiftKey, altKey = false) {
+function selectedNodeDragStart(node, world, event) {
+  const { shiftKey, altKey } = event;
+  const pointerStart = {
+    pointerId: event.pointerId,
+    pointerType: event.pointerType,
+    startClient: { x: event.clientX, y: event.clientY },
+    dragStarted: event.pointerType !== 'touch'
+  };
   if (!shiftKey && !state.selectedIds.includes(node.id)) setSelection([node.id]);
   const entry = findNode(state.document, node.id);
   const entries = orderedRootSelectedEntries();
@@ -4502,7 +5104,8 @@ function selectedNodeDragStart(node, world, shiftKey, altKey = false) {
   }
   if (state.selectedIds.length === 1 && entry?.parent?.autoLayout && node.layoutPositioning !== 'absolute') {
     state.interaction = {
-      kind: 'reorder', node, parent: entry.parent, start: world, duplicateOnDrag: Boolean(altKey), duplicated: false,
+      kind: 'reorder', node, parent: entry.parent, start: world, ...pointerStart,
+      duplicateOnDrag: Boolean(altKey), duplicated: false,
       originalSelectedIds: [...state.selectedIds],
       historyTransaction: beginCanvasHistoryTransaction(altKey ? 'Duplicate and reorder layers' : 'Reorder auto layout items')
     };
@@ -4526,7 +5129,7 @@ function selectedNodeDragStart(node, world, shiftKey, altKey = false) {
   const targetBounds = alignmentTargetBounds(entries);
   state.smartGuides = [];
   state.interaction = {
-    kind: 'move', start: world, originals, movingBounds, targetBounds, shiftKey,
+    kind: 'move', start: world, ...pointerStart, originals, movingBounds, targetBounds, shiftKey,
     duplicateOnDrag: Boolean(altKey), duplicated: false, originalSelectedIds: [...state.selectedIds], historyTransaction
   };
 }
@@ -4734,11 +5337,32 @@ function finishImageFillCropInteraction(interaction) {
 function onCanvasPointerDown(event) {
   if (state.documentTransitioning) return;
   if (event.button !== 0 && event.button !== 1) return;
+  const commentSelectionOverridesTool = commentSelectionOverridesCanvasTool({
+    inspectorTab: state.inspectorTab,
+    tool: state.tool,
+    activeCommentId: state.activeCommentId,
+    pendingCommentAnchor: state.pendingCommentAnchor
+  });
+  const commentPanelNeedsCaptureRelease = commentPanelNeedsCanvasCaptureRelease({
+    inspectorTab: state.inspectorTab,
+    tool: state.tool,
+    activeCommentId: state.activeCommentId,
+    pendingCommentAnchor: state.pendingCommentAnchor
+  });
+  const selectedFromLayerList = state.selectionSource === 'layers';
+  state.selectionSource = 'canvas';
+  // A canvas panel can change its layout without a window resize. Reconcile
+  // the viewport center before converting this pointer into document space.
+  if (updateCanvasViewportCamera()) renderer?.invalidate();
+  // A later inspector action may have enabled a canvas-capturing mode while
+  // Comment stayed selected. Reclaim this pointer before those modes run.
+  if ((state.tool === 'comment' || commentPanelNeedsCaptureRelease) && !isLiveHostViewOnly()) releaseCanvasCapturesForComment();
   // Canvas selection may replace a layer-tree selection while the tree row
   // still owns DOM focus. Move focus with the pointer interaction so Delete
   // acts on the latest canvas selection rather than that stale focused row.
   canvas.focus({ preventScroll: true });
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
+  if (state.pointerMap.size > 1) canvasContextPress.cancel();
   canvas.setPointerCapture?.(event.pointerId);
   if (isLiveHostViewOnly()) {
     event.stopImmediatePropagation();
@@ -4792,6 +5416,15 @@ function onCanvasPointerDown(event) {
       // Hold a touch selection until pointer-up so a second finger can take
       // over for pinch navigation without toggling an unintended layer.
       state.interaction = null;
+    } else if (interruptedInteraction?.kind === 'comment-selection-tap') {
+      // A second finger takes over from a pending Hand-tool click without
+      // accidentally selecting the first finger's target.
+      state.interaction = null;
+      state.commentSelectionCycle = null;
+    } else if (interruptedInteraction?.kind === 'comment-place') {
+      // A second touch turns an unfinished empty-canvas comment tap into
+      // navigation instead of unexpectedly opening the comment composer.
+      state.interaction = null;
     } else if (shouldCancelShapeBuilderOnPinch(interruptedInteraction)) {
       // A second finger navigates the canvas; it must never commit the
       // in-progress region selection as an accidental Shape Builder edit.
@@ -4813,10 +5446,82 @@ function onCanvasPointerDown(event) {
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
   }
+  // Keep the component/frame hit cycle alive for one repeated click after a
+  // user switches tools or leaves the Comments inspector. Without this, the
+  // first click selects the component, then a second click on its nested frame
+  // is consumed by the newly selected drawing tool.
+  if (!commentSelectionOverridesTool && state.commentSelectionCycle) {
+    if (event.altKey || event.metaKey || event.ctrlKey) state.commentSelectionCycle = null;
+    else {
+      const world = screenToWorld(event, canvas, state);
+      const selection = cycleCommentSelectionAt(world, event, {
+        layerSelectedTargetId: selectedFromLayerList ? state.selectedIds[0] : null
+      });
+      state.commentSelectionCycle = null;
+      if (selection.cycled && selection.target) {
+        finishCommentCanvasSelection(selection.target, { cycled: true });
+        event.preventDefault();
+        return;
+      }
+    }
+  }
+  if (state.tool === 'hand' && commentSelectionOverridesTool
+    && event.button === 0 && !state.spaceDown) {
+    const world = screenToWorld(event, canvas, state);
+    if (event.shiftKey) state.commentSelectionCycle = null;
+    const selection = event.shiftKey
+      ? { target: commentTargetAt(world, { preferComponent: false }), cycled: false }
+      : cycleCommentSelectionAt(world, event, {
+        layerSelectedTargetId: selectedFromLayerList ? state.selectedIds[0] : null
+      });
+    if (selection.target) {
+      state.interaction = {
+        kind: 'comment-selection-tap', pointerId: event.pointerId,
+        targetId: selection.target.id, selectionCycled: selection.cycled,
+        startClient: { x: event.clientX, y: event.clientY },
+        startPanX: state.panX, startPanY: state.panY
+      };
+      event.preventDefault();
+      return;
+    }
+    state.commentSelectionCycle = null;
+  }
   if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode && !state.imageEraseMode && !state.objectIsolationMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
     pauseGuestViewFollowing();
     canvas.classList.add('is-panning'); event.preventDefault(); return;
+  }
+  const world = screenToWorld(event, canvas, state);
+  // Review selection is not a canvas edit. Resolve it before edit-only modes
+  // (motion preview and recipe processing) can reject the pointer.
+  if (commentSelectionOverridesTool) {
+    const commentTool = state.tool === 'comment';
+    const commentPin = commentTool && !state.commentPlacementArmed && !state.pendingCommentAnchor ? commentPinAt(world) : null;
+    // Keep explicit comment actions in the Comment handler below. Ordinary
+    // object hits share this early route so they beat any stale tool capture.
+    const commentAction = commentTool && commentPinOverridesCanvasSelection({
+      activeCommentId: state.activeCommentId,
+      commentPin,
+      addCommentShortcut: event.altKey
+    });
+    if (!commentAction) {
+      if (event.shiftKey) state.commentSelectionCycle = null;
+      const selection = event.shiftKey
+        ? { target: commentTargetAt(world, { preferComponent: false }), cycled: false }
+        : cycleCommentSelectionAt(world, event, {
+          layerSelectedTargetId: selectedFromLayerList ? state.selectedIds[0] : null
+        });
+      const target = selection.target;
+      if (target) {
+        // A canvas hit from the Comments inspector is an object-selection
+        // action, even when another tool is selected. Return to Design so the
+        // selected layer and its properties are visible; keep the active tool
+        // so the user can continue with it after inspecting the selection.
+        finishCommentCanvasSelection(target, { cycled: selection.cycled });
+        event.preventDefault();
+        return;
+      }
+    }
   }
   if (state.inspectorTab === 'motion' && state.motionPreview && event.button === 0) {
     showToast('Motion preview is read-only. Select a layer from the Layers panel or switch to Design to edit it.');
@@ -4828,24 +5533,6 @@ function onCanvasPointerDown(event) {
     showToast('Canvas edits are paused while the image recipe batch is running. You can still pan and use the Layers panel.');
     state.pointerMap.delete(event.pointerId);
     return;
-  }
-  const world = screenToWorld(event, canvas, state);
-  // The Comments inspector is a review context, even when another canvas
-  // tool remains selected. Resolve an object hit before drawing tools consume
-  // the click; keep pins available for opening their threads.
-  if (event.button === 0 && state.inspectorTab === 'comments' && !state.pendingCommentAnchor) {
-    const commentPin = commentPinAt(world);
-    const target = commentPin ? null : commentTargetAt(world, { preferComponent: !event.shiftKey });
-    if (target) {
-      state.activeCommentId = null;
-      state.commentPlacementArmed = false;
-      setSelection([target.id]);
-      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
-      setInspectorTab('design');
-      showToast(`Selected “${target.name}”.`);
-      event.preventDefault();
-      return;
-    }
   }
   if (state.shapeBuilder && event.button === 0) {
     const interaction = {
@@ -4875,10 +5562,12 @@ function onCanvasPointerDown(event) {
     return;
   }
   if (state.tool === 'comment' && event.shiftKey) {
+    state.commentSelectionCycle = null;
     const target = selectCommentTargetAt(world, { preferComponent: false });
     state.commentPlacementArmed = false;
+    state.pendingCommentAnchor = null;
     if (target) state.activeCommentId = null;
-    if (target && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    if (target) closeMobilePanels({ restoreFocus: false });
     if (target && state.inspectorTab === 'comments') setInspectorTab('design');
     showToast(target
       ? `Selected “${target.name}”.`
@@ -4886,27 +5575,62 @@ function onCanvasPointerDown(event) {
     event.preventDefault();
     return;
   }
-  const commentPin = state.commentPlacementArmed ? null : commentPinAt(world);
+  const commentPin = state.commentPlacementArmed || state.pendingCommentAnchor ? null : commentPinAt(world);
   if (commentPin) {
     const canSelectFromPin = state.tool === 'comment' || state.tool === 'select';
-    const target = canSelectFromPin ? commentTargetAt(world) : null;
+    const forceCommentPinSelection = state.tool === 'comment' && event.shiftKey;
+    const activeCommentPin = commentPin.id === state.activeCommentId;
+    const continuesPinCycle = commentPinSelectionCycleMatches(state.commentSelectionCycle, commentPin.id);
+    if (forceCommentPinSelection) state.commentSelectionCycle = null;
+    else if (state.tool === 'comment' && !activeCommentPin && !continuesPinCycle) {
+      // Switching back to Comment and clicking an inactive pin is an explicit
+      // request to open that thread. Do not let a cycle saved while selecting
+      // the same artwork in Select/Frame mode divert the click to another layer.
+      state.commentSelectionCycle = null;
+    }
+    const pinSelection = canSelectFromPin
+      ? state.tool === 'comment'
+          ? forceCommentPinSelection
+            ? { target: commentTargetAt(world, { preferComponent: false }), cycled: false }
+          : cycleCommentSelectionAt(world, event, {
+            preservePinThreadAction: !state.activeCommentId && !activeCommentPin,
+            layerSelectedTargetId: selectedFromLayerList ? state.selectedIds[0] : null
+          })
+        : { target: commentTargetAt(world), cycled: false }
+      : { target: null, cycled: false };
+    const target = pinSelection.target;
     const action = commentPinCanvasAction(commentPin, target, {
       tool: state.tool,
       activeCommentId: state.activeCommentId,
-      targetSelected: target ? state.selectedIds.includes(target.id) : false
+      targetSelected: target ? state.selectedIds.includes(target.id) : false,
+      selectionCycled: pinSelection.cycled,
+      forceSelect: forceCommentPinSelection
     });
     if (action === 'select') {
+      if (state.tool === 'comment' && !forceCommentPinSelection) {
+        // Bind the hit cycle on the very first selection through an inactive
+        // pin too. Otherwise the next click treats the pin as a fresh thread
+        // open and the nested frame underneath can never be selected.
+        state.commentSelectionCycle = commentPinSelectionCycle(state.commentSelectionCycle, commentPin.id);
+      }
       state.activeCommentId = null;
       state.commentPlacementArmed = false;
-      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
-      setSelection([target.id]);
+      state.pendingCommentAnchor = null;
+      closeMobilePanels({ restoreFocus: false });
+      setSelection([target.id], { source: 'canvas' });
       if (state.inspectorTab === 'comments') setInspectorTab('design');
-      showToast(`Selected “${target.name}”.`);
+      showToast(commentCanvasSelectionMessage(target, { cycled: pinSelection.cycled }));
     } else openCommentThread(commentPin.id);
     event.preventDefault(); return;
   }
   if (state.tool === 'comment') {
-    const target = commentTargetAt(world);
+    if (event.altKey) state.commentSelectionCycle = null;
+    const selection = event.altKey
+      ? { target: commentTargetAt(world), cycled: false }
+      : cycleCommentSelectionAt(world, event, {
+        layerSelectedTargetId: selectedFromLayerList ? state.selectedIds[0] : null
+      });
+    const target = selection.target;
     const action = commentCanvasAction(target, {
       addCommentShortcut: event.altKey
     });
@@ -4914,11 +5638,21 @@ function onCanvasPointerDown(event) {
       const wasSelected = state.selectedIds.length === 1 && state.selectedIds[0] === target.id;
       state.activeCommentId = null;
       state.commentPlacementArmed = false;
-      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
-      setSelection([target.id]);
+      state.pendingCommentAnchor = null;
+      closeMobilePanels({ restoreFocus: false });
+      setSelection([target.id], { source: 'canvas' });
       if (state.inspectorTab === 'comments') setInspectorTab('design');
-      if (!wasSelected) showToast(`Selected “${target.name}”.`);
-    } else beginCommentAt(world);
+      if (selection.cycled || !wasSelected) showToast(commentCanvasSelectionMessage(target, { cycled: selection.cycled }));
+    } else if (event.altKey) beginCommentAt(world);
+    else {
+      // Defer placing a note until pointer-up. This preserves a normal tap on
+      // empty canvas while allowing a one-finger drag to pan in Comment mode.
+      state.interaction = {
+        kind: 'comment-place', pointerId: event.pointerId,
+        startClient: { x: event.clientX, y: event.clientY }, anchor: world,
+        startPanX: state.panX, startPanY: state.panY
+      };
+    }
     event.preventDefault(); return;
   }
   if (clearPrototypeConnectPromptIfSourceMissing()) {
@@ -4963,7 +5697,9 @@ function onCanvasPointerDown(event) {
     // layer's design controls, whether or not a saved thread is open.
     if (state.activeCommentId || state.inspectorTab === 'comments') {
       state.activeCommentId = null;
-      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+      state.pendingCommentAnchor = null;
+      state.commentPlacementArmed = false;
+      closeMobilePanels({ restoreFocus: false });
       if (state.inspectorTab === 'comments') setInspectorTab('design');
       else renderer.invalidate();
     }
@@ -5062,6 +5798,25 @@ function onCanvasPointerDown(event) {
       }
       event.preventDefault(); return;
     }
+    const starHandle = starControlHandleAt(event);
+    if (starHandle) {
+      const local = pageToNodeLocal(starHandle.geometry, world, starHandle.ancestors);
+      const property = starHandle.property;
+      const initialValue = Number(getNodePropertyValue(state.document, starHandle.node, property)
+        ?? starHandle.node[property]
+        ?? (property === 'points' ? 5 : property === 'innerRadius' ? 0.48 : 0));
+      state.interaction = {
+        kind: 'star-control', pointerId: event.pointerId, node: starHandle.node, entry: starHandle.entry,
+        geometry: starHandle.geometry, ancestors: starHandle.ancestors,
+        handle: {
+          kind: starHandle.kind, property, axis: starHandle.axis,
+          tangentFactor: starHandle.tangentFactor, smoothing: starHandle.smoothing, maxRadius: starHandle.maxRadius
+        },
+        initialValue, startLocal: local, startClient: { x: event.clientX, y: event.clientY }, changed: false,
+        historyTransaction: beginCanvasHistoryTransaction(`Adjust star ${starHandle.label.toLowerCase()}`)
+      };
+      event.preventDefault(); return;
+    }
     const gridHandle = gridTrackResizeHandleAt(world, event.pointerType);
     if (gridHandle) {
       const measured = gridTrackLayout(gridHandle.node);
@@ -5123,7 +5878,24 @@ function onCanvasPointerDown(event) {
         setSelection(ids);
         if (!ids.includes(hit.id)) return;
       } else if (!state.selectedIds.includes(hit.id)) setSelection([hit.id]);
-      if (!hit.locked) selectedNodeDragStart(hit, world, event.shiftKey, event.altKey);
+      if (!hit.locked) selectedNodeDragStart(hit, world, event);
+      if (shouldArmCanvasContextPress({
+        pointerType: event.pointerType, tool: state.tool, button: event.button, isLayerHit: true
+      })) {
+        const pointerId = event.pointerId;
+        const clientPoint = { x: event.clientX, y: event.clientY };
+        const layerId = hit.id;
+        const anchor = { ...world };
+        canvasContextPress.arm({
+          pointerId, pointerType: event.pointerType, ...clientPoint,
+          payload: { pointerId, layerId, clientPoint, anchor }
+        }, payload => {
+          if (!state.pointerMap.has(payload.pointerId) || state.tool !== 'select' || isLiveHostViewOnly()) return;
+          cancelCanvasInteraction({ pointerId: payload.pointerId, preserveUI: true });
+          canvas.releasePointerCapture?.(payload.pointerId);
+          openNodeMenu(payload.layerId, payload.clientPoint.x, payload.clientPoint.y, payload.anchor, canvas);
+        });
+      }
       return;
     }
     const previousSelection = [...state.selectedIds];
@@ -5167,6 +5939,8 @@ function updateDraftShapeGeometry(interaction, world, event) {
 }
 
 function onCanvasPointerMove(event) {
+  if (state.liveCollaboration) queueLivePresenceSync(screenToWorld(event, canvas, state));
+  canvasContextPress.move({ pointerId: event.pointerId, x: event.clientX, y: event.clientY });
   if (state.pointerMap.has(event.pointerId)) state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   const interaction = state.interaction;
   if (!interaction) {
@@ -5189,6 +5963,22 @@ function onCanvasPointerMove(event) {
     }
     return;
   }
+  if (interaction.kind === 'comment-selection-tap') {
+    if (interaction.pointerId !== event.pointerId
+      || !commentPlacementGesturePans(interaction.startClient, { x: event.clientX, y: event.clientY })) return;
+    state.commentSelectionCycle = null;
+    interaction.kind = 'pan';
+    interaction.clientX = interaction.startClient.x;
+    interaction.clientY = interaction.startClient.y;
+    interaction.panX = interaction.startPanX;
+    interaction.panY = interaction.startPanY;
+    canvas.classList.add('is-panning');
+    state.panX = interaction.panX + event.clientX - interaction.clientX;
+    state.panY = interaction.panY + event.clientY - interaction.clientY;
+    renderer.invalidate();
+    event.preventDefault();
+    return;
+  }
   if (interaction.kind === 'ruler-guide-move') { updateRulerGuideGesture(event); return; }
   if (interaction.kind === 'pinch' && state.pointerMap.size >= 2) {
     const points = [...state.pointerMap.values()];
@@ -5202,6 +5992,21 @@ function onCanvasPointerMove(event) {
     state.zoom = nextZoom; state.panX = centerX - worldX * nextZoom; state.panY = centerY - worldY * nextZoom;
     updateZoomUI(); renderer.invalidate();
     if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
+  }
+  if (interaction.kind === 'comment-place') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (!commentPlacementGesturePans(interaction.startClient, { x: event.clientX, y: event.clientY })) return;
+    interaction.kind = 'pan';
+    interaction.clientX = interaction.startClient.x;
+    interaction.clientY = interaction.startClient.y;
+    interaction.panX = interaction.startPanX;
+    interaction.panY = interaction.startPanY;
+    canvas.classList.add('is-panning');
+    state.panX = interaction.panX + event.clientX - interaction.clientX;
+    state.panY = interaction.panY + event.clientY - interaction.clientY;
+    renderer.invalidate();
+    event.preventDefault();
     return;
   }
   if (interaction.kind === 'pan') {
@@ -5219,6 +6024,24 @@ function onCanvasPointerMove(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'star-control') {
+    if (interaction.pointerId !== event.pointerId) return;
+    const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+    const { kind, property } = interaction.handle;
+    const nextValue = kind === 'points'
+      ? starPointCountFromDrag(interaction.initialValue, interaction.startClient.y, event.clientY)
+      : kind === 'ratio'
+        ? starInnerRadiusFromPointer(interaction.geometry, local)
+        : starCornerRadiusFromDrag(interaction.initialValue, interaction.startLocal, local, interaction.handle);
+    const value = kind === 'ratio' ? Math.round(nextValue * 1000) / 1000 : nextValue;
+    if (!Object.is(value, getNodePropertyValue(state.document, interaction.node, property))) {
+      if (setNodePropertyValue(interaction.node, property, value)) {
+        interaction.changed = !Object.is(value, interaction.initialValue);
+        renderer.invalidate();
+      }
+    }
+    return;
+  }
   if (interaction.kind === 'shape-builder') {
     if (interaction.pointerId !== event.pointerId) return;
     interaction.moved ||= Math.hypot(event.clientX - interaction.startClient.x, event.clientY - interaction.startClient.y) > 4;
@@ -5361,6 +6184,7 @@ function onCanvasPointerMove(event) {
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'move') {
+    if (!beginCanvasDragAfterSlop(interaction, event)) return;
     if (interaction.duplicateOnDrag && !interaction.duplicated) {
       const distance = checkPointDistance(interaction.start, world);
       const threshold = 4 / Math.max(.08, state.zoom);
@@ -5441,6 +6265,7 @@ function onCanvasPointerMove(event) {
     $('#position-status').textContent = `${formatInspectorNumber(resolvedGeometry(interaction.node).rotation)}° rotation`;
     renderer.invalidate(); return;
   }
+  if (interaction.kind === 'reorder' && !beginCanvasDragAfterSlop(interaction, event)) return;
   if (interaction.kind === 'reorder' && interaction.duplicateOnDrag && !interaction.duplicated) {
     if (checkPointDistance(interaction.start || world, world) <= 4 / Math.max(.08, state.zoom)) return;
     try {
@@ -5496,9 +6321,28 @@ function onCanvasPointerMove(event) {
 }
 
 function onCanvasPointerUp(event) {
+  canvasContextPress.finish(event.pointerId);
   state.pointerMap.delete(event.pointerId);
+  if (event.pointerType === 'touch') queueLivePresenceSync(undefined, { clearCursor: true });
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'star-control') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    if (!interaction.changed) {
+      history.cancelTransaction(interaction.historyTransaction);
+      renderer.invalidate();
+      return;
+    }
+    if (!commitCanvasHistoryTransaction(interaction)) { renderInspector(); renderer.invalidate(); return; }
+    recordNodeComponentOverrides(interaction.node,
+      interaction.node.variableBindings?.[interaction.handle.property] ? ['variableBindings'] : [interaction.handle.property],
+      interaction.entry);
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'shape-builder') {
     if (interaction.pointerId !== event.pointerId) return;
     state.interaction = null;
@@ -5553,6 +6397,21 @@ function onCanvasPointerUp(event) {
       clearVectorAnchorSelection();
       setSelection(toggleLayerSelection(state.selectedIds, interaction.nodeId));
     }
+    return;
+  }
+  if (interaction.kind === 'comment-selection-tap') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    if (!commentPlacementGesturePans(interaction.startClient, { x: event.clientX, y: event.clientY })) {
+      const target = findNode(state.document, interaction.targetId)?.node;
+      if (target) finishCommentCanvasSelection(target, { cycled: interaction.selectionCycled });
+    }
+    return;
+  }
+  if (interaction.kind === 'comment-place') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    beginCommentAt(interaction.anchor);
     return;
   }
   if (interaction.kind === 'ruler-guide-move') { finishRulerGuideGesture(event); return; }
@@ -5808,6 +6667,8 @@ function onCanvasPointerUp(event) {
 }
 
 function cancelCanvasInteraction(event) {
+  canvasContextPress.finish(event?.pointerId);
+  if (event?.pointerType === 'touch') queueLivePresenceSync(undefined, { clearCursor: true });
   const interaction = state.interaction;
   if (event?.pointerId != null) state.pointerMap.delete(event.pointerId);
   if (!interaction) return;
@@ -5902,11 +6763,14 @@ function resizeTextNode(node) {
   const before = resolvedGeometry(node);
   const layoutNode = { ...node, ...before };
   const size = calculateTextBox(textMeasureContext, layoutNode, {
+    fontFamily: getNodePropertyValue(state.document, node, 'fontFamily'),
     fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
+    fontWeight: getNodePropertyValue(state.document, node, 'fontWeight'),
+    fontStyle: getNodePropertyValue(state.document, node, 'fontStyle'),
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight'),
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
-    paragraphSpacing: node.paragraphSpacing,
-    firstLineIndent: node.firstLineIndent,
+    paragraphSpacing: getNodePropertyValue(state.document, node, 'paragraphSpacing'),
+    firstLineIndent: getNodePropertyValue(state.document, node, 'firstLineIndent'),
     listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles,
     text: getNodePropertyValue(state.document, node, 'text'),
@@ -5924,7 +6788,7 @@ function resizeTextLayers(roots, variableId = null) {
   walkNodes(roots, ({ node, parent }) => {
     if (node.type !== 'text') return;
     const bindings = node.variableBindings || {};
-    const sizeProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing', 'width', 'height'];
+    const sizeProperties = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'width', 'height'];
     if (variableId && !sizeProperties.some(property => bindings[property] === variableId)) return;
     if (!variableId && !sizeProperties.some(property => bindings[property])) return;
     if (resizeTextNode(node) && parent?.autoLayout) layoutParents.add(parent);
@@ -6233,10 +7097,10 @@ function setTextEditorSelection(editor, start, end = start) {
 }
 function textBaseStyle(node) {
   return {
-    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontFamily: getNodePropertyValue(state.document, node, 'fontFamily') || 'Arial, sans-serif',
     fontSize: getNodePropertyValue(state.document, node, 'fontSize') || 24,
-    fontWeight: Number(node.fontWeight || 400),
-    fontStyle: node.fontStyle || 'normal',
+    fontWeight: Number(getNodePropertyValue(state.document, node, 'fontWeight') || 400),
+    fontStyle: getNodePropertyValue(state.document, node, 'fontStyle') || 'normal',
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
@@ -6505,16 +7369,16 @@ function editTextNode(nodeId) {
   editor.style.textAlign = ['left', 'center', 'right', 'justify'].includes(entry.node.align) ? entry.node.align : 'left';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
   editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
-  editor.style.fontFamily = entry.node.fontFamily;
-  editor.style.fontWeight = String(entry.node.fontWeight || 400);
-  editor.style.fontStyle = entry.node.fontStyle === 'italic' ? 'italic' : 'normal';
+  editor.style.fontFamily = getNodePropertyValue(state.document, entry.node, 'fontFamily') || 'Arial, sans-serif';
+  editor.style.fontWeight = String(getNodePropertyValue(state.document, entry.node, 'fontWeight') || 400);
+  editor.style.fontStyle = getNodePropertyValue(state.document, entry.node, 'fontStyle') === 'italic' ? 'italic' : 'normal';
   editor.style.fontVariationSettings = fontVariationSettings(entry.node.fontAxes) || 'normal';
   editor.style.fontFeatureSettings = fontFeatureSettings(entry.node.fontFeatures) || 'normal';
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
   editor.style.lineHeight = `${resolvedLineHeight(getNodePropertyValue(state.document, entry.node, 'lineHeight') || 1.25, getNodePropertyValue(state.document, entry.node, 'fontSize') || 24, entry.node.lineHeightUnit || 'ratio') * state.zoom}px`;
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
-  editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(entry.node.firstLineIndent) || 0) * state.zoom}px`);
-  editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(entry.node.paragraphSpacing) || 0) * state.zoom}px`);
+  editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'firstLineIndent')) || 0) * state.zoom}px`);
+  editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'paragraphSpacing')) || 0) * state.zoom}px`);
   editor.style.setProperty('--text-list-spacing', `${Math.max(0, Number(entry.node.listSpacing) || 0) * state.zoom}px`);
   editor.style.color = getNodeColor(state.document, entry.node, 'text');
   const text = getNodePropertyValue(state.document, entry.node, 'text');
@@ -7201,7 +8065,20 @@ function updateImageFillInput(input) {
   if (field === 'assetId') {
     if (!imageFillSources().some(source => source.assetId === input.value)) return;
     imageFill.assetId = input.value;
-  } else if (field === 'fit') imageFill.fit = input.value;
+  } else if (field === 'fit') {
+    imageFill.fit = input.value;
+    if (imageFill.fit === 'tile' && imageFill.scalingFactor == null) imageFill.scalingFactor = 1;
+    if (fill) recordNodeComponentOverrides(node, ['fills', ...(fill === ensureInspectorFillStack(node)[0] ? ['imageFill'] : [])]);
+    else recordNodeComponentOverrides(node, ['imageFill']);
+    schedulePreview(node, false, fill?.id || null);
+    renderer.invalidate();
+    return;
+  } else if (field === 'scalingFactor') {
+    const scalePercent = Number(input.value);
+    if (!Number.isFinite(scalePercent)) return;
+    imageFill.scalingFactor = Math.max(1, Math.min(1600, scalePercent)) / 100;
+    if (input.nextElementSibling) input.nextElementSibling.value = `${Math.round(scalePercent)}%`;
+  }
   else if (field.startsWith('adjustments.')) {
     const key = field.slice('adjustments.'.length);
     imageFill.adjustments = { ...defaultImageAdjustments, ...imageFill.adjustments };
@@ -7635,6 +8512,1409 @@ async function deleteObjectIsolationAsset(target, assetId) {
   return deleteImageAsset(assetId);
 }
 
+function backgroundRemovalStageLabel(stage) {
+  return ({
+    'loading-model': 'Loading local model…',
+    'decoding-image': 'Reading the original image…',
+    segmenting: 'Finding the foreground…',
+    'applying-alpha-matte': 'Creating the transparent edge…',
+    'encoding-png': 'Encoding transparent PNG…',
+  })[stage] || 'Processing locally…';
+}
+
+let localModelWorkerTail = Promise.resolve();
+let localModelWorkerActive = false;
+
+function localAiCpuReservationDescription(bulk) {
+  if (!bulk?.localAiRequired) return '';
+  const slots = Math.max(1, Math.min(CPU_LIMIT, Math.trunc(bulk.localAiCpuSlots || 1)));
+  return `one serialized local AI worker reserves up to ${slots} CPU ${slots === 1 ? 'slot' : 'slots'}`;
+}
+
+async function withLocalModelWorkerSlot(task, signal, { onActive = null, onIdle = null, cpuSlots = 1 } = {}) {
+  if (!Number.isSafeInteger(cpuSlots) || cpuSlots < 1) throw new RangeError('Local model CPU reservations must be positive integers.');
+  const previous = localModelWorkerTail;
+  let release;
+  localModelWorkerTail = new Promise(resolve => { release = resolve; });
+  let abortListener = null;
+  let active = false;
+  let cpuReserved = false;
+  try {
+    if (signal?.aborted) throw new DOMException('Local image processing was cancelled.', 'AbortError');
+    if (signal) {
+      const aborted = new Promise((_, reject) => {
+        abortListener = () => reject(new DOMException('Local image processing was cancelled.', 'AbortError'));
+        signal.addEventListener('abort', abortListener, { once: true });
+      });
+      await Promise.race([previous, aborted]);
+    } else await previous;
+    if (signal?.aborted) throw new DOMException('Local image processing was cancelled.', 'AbortError');
+    // Reserve the full configured CPU share for each model. Existing Pillow
+    // jobs drain to the new cap; queued renders wait until inference releases
+    // its slots without rebuilding the Pillow worker pool.
+    imageEngine.setExternalCpuReservations(Math.min(CPU_LIMIT, cpuSlots));
+    cpuReserved = true;
+    await waitForImageEngineCapacity(signal);
+    if (signal?.aborted) throw new DOMException('Local image processing was cancelled.', 'AbortError');
+    localModelWorkerActive = true;
+    active = true;
+    onActive?.();
+    if (state.bulk?.localAiRequired) renderBulkBar();
+    return await task();
+  } finally {
+    if (active) {
+      localModelWorkerActive = false;
+      onIdle?.();
+      if (state.bulk?.localAiRequired) renderBulkBar();
+    }
+    if (cpuReserved) imageEngine.setExternalCpuReservations(0);
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+    // Even a canceled waiter must retain its FIFO place until its predecessor
+    // drains, otherwise later jobs could enter the single model worker early.
+    await previous.catch(() => {});
+    release();
+  }
+}
+
+function waitForImageEngineCapacity(signal) {
+  if (imageEngine.metrics().active <= imageEngine.activeWorkerLimit) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve: null, reject: null, abortListener: null };
+    waiter.resolve = () => {
+      imageEngineIdleWaiters.delete(waiter);
+      if (signal && waiter.abortListener) signal.removeEventListener('abort', waiter.abortListener);
+      resolve();
+    };
+    waiter.reject = error => {
+      imageEngineIdleWaiters.delete(waiter);
+      if (signal && waiter.abortListener) signal.removeEventListener('abort', waiter.abortListener);
+      reject(error);
+    };
+    if (signal) {
+      waiter.abortListener = () => waiter.reject(new DOMException('Local image processing was cancelled.', 'AbortError'));
+      signal.addEventListener('abort', waiter.abortListener, { once: true });
+    }
+    imageEngineIdleWaiters.add(waiter);
+    if (signal?.aborted) waiter.reject(new DOMException('Local image processing was cancelled.', 'AbortError'));
+  });
+}
+
+function backgroundRemovalRecipeFenceMatches({ bulk, generation, documentId, pageId, node, sourceAssetId, sourceAsset, sourceBytes, signal }) {
+  if (signal?.aborted || state.bulk !== bulk || bulk.cancelled || bulk.ownershipLost || state.documentGeneration !== generation
+    || state.document.id !== documentId || state.documentTransitioning) return false;
+  const entry = findBulkRecipeTarget(bulk, node.id, pageId);
+  if (!entry || entry.node !== node || !isEditableImageRecipeTarget(entry)) return false;
+  const source = state.assets.get(sourceAssetId);
+  if (source !== sourceAsset || source?.sourceBytes !== sourceBytes) return false;
+  return node.backgroundRemoved === true
+    ? node.backgroundRemovalSourceAssetId === sourceAssetId
+    : node.assetId === sourceAssetId;
+}
+
+async function applyBackgroundRemovalRecipeToTarget(node, enabled, bulk, generation, signal = null) {
+  const pageId = bulk.pageId;
+  const documentId = state.document.id;
+  const plan = planBackgroundRemovalRecipe(node, enabled);
+  if (plan.action === 'unavailable') throw new Error(`The original image for “${node.name}” is unavailable.`);
+  if (plan.action === 'unchanged') return false;
+
+  const assertBatchTarget = () => {
+    const entry = findBulkRecipeTarget(bulk, node.id, pageId);
+    if (signal?.aborted || state.bulk !== bulk || bulk.cancelled || bulk.ownershipLost || state.documentGeneration !== generation
+      || state.document.id !== documentId || state.documentTransitioning
+      || !entry || entry.node !== node || !isEditableImageRecipeTarget(entry)) {
+      throw new DOMException('The image changed while its recipe was being applied.', 'AbortError');
+    }
+    return entry;
+  };
+  const activate = outputAssetId => {
+    const entry = assertBatchTarget();
+    node.backgroundRemovalSourceAssetId = plan.sourceAssetId;
+    node.backgroundRemovalAssetId = outputAssetId;
+    node.backgroundRemoved = true;
+    node.assetId = outputAssetId;
+    recordNodeComponentOverrides(node, ['assetId', 'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId'], entry);
+    if (entry.node !== node) throw new DOMException('The image changed while its recipe was being applied.', 'AbortError');
+  };
+
+  if (plan.action === 'restore') {
+    await ensureBackgroundRemovalAssetResident(node, plan.sourceAssetId, 'source', generation);
+    const entry = assertBatchTarget();
+    if (!state.assets.get(plan.sourceAssetId)?.sourceBytes) throw new Error(`The original image for “${node.name}” could not be restored.`);
+    imageSourceResidency.markResident(plan.sourceAssetId);
+    node.assetId = plan.sourceAssetId;
+    node.backgroundRemoved = false;
+    recordNodeComponentOverrides(node, ['assetId', 'backgroundRemoved'], entry);
+    return true;
+  }
+
+  if (plan.action === 'activate-cache') {
+    await ensureBackgroundRemovalAssetResident(node, plan.outputAssetId, 'cache', generation);
+    assertBatchTarget();
+    if (!state.assets.get(plan.outputAssetId)?.sourceBytes) throw new Error(`The transparent result for “${node.name}” could not be restored.`);
+    activate(plan.outputAssetId);
+    return true;
+  }
+
+  if (!state.assets.get(plan.sourceAssetId)?.sourceBytes) {
+    await ensureBackgroundRemovalAssetResident(node, plan.sourceAssetId, 'source', generation);
+  }
+  const sourceAsset = state.assets.get(plan.sourceAssetId);
+  if (!sourceAsset?.sourceBytes) throw new Error(`The original image for “${node.name}” could not be restored.`);
+  const sourceBytes = sourceAsset.sourceBytes;
+  const width = sourceAsset.sourceWidth || node.sourceWidth;
+  const height = sourceAsset.sourceHeight || node.sourceHeight;
+  validateBackgroundRemovalDimensions(width, height);
+  const isCurrent = () => backgroundRemovalRecipeFenceMatches({
+    bulk, generation, documentId, pageId, node, sourceAssetId: plan.sourceAssetId, sourceAsset, sourceBytes, signal,
+  });
+  if (!isCurrent()) throw new DOMException('The image changed before local background removal could start.', 'AbortError');
+
+  bulk.localAiWaiting = (bulk.localAiWaiting || 0) + 1;
+  bulk.localAiStage = 'Waiting for the local image model…';
+  renderBulkBar();
+  let outputAssetId;
+  let activatedOutput = false;
+  let enteredWorker = false;
+  try {
+    outputAssetId = await withLocalModelWorkerSlot(() => {
+      if (!isCurrent()) throw new DOMException('The image changed while waiting for the local AI worker.', 'AbortError');
+      return createBackgroundRemovalAsset({
+        sourceAssetId: plan.sourceAssetId, sourceAsset, sourceBytes, width, height,
+        generation, documentId, workspace: bulk.workspace, signal, isCurrent,
+        sourceName: node.name || 'Image',
+        onStage: label => {
+          bulk.localAiStage = label;
+          state.imageStatus.set(node.id, `Removing background · ${label}`);
+          updateSelectedImageStatus(node.id);
+          renderBulkBar();
+        },
+      });
+    }, signal, {
+      onActive: () => {
+        enteredWorker = true;
+        bulk.localAiWaiting = Math.max(0, (bulk.localAiWaiting || 0) - 1);
+        bulk.localAiStage = 'Starting local image model…';
+      },
+      onIdle: () => {
+        bulk.localAiStage = bulk.localAiWaiting ? 'Waiting for the local image model…' : '';
+      },
+    });
+    if (!isCurrent()) throw new DOMException('The image changed before the transparent result could be applied.', 'AbortError');
+    activate(outputAssetId);
+    activatedOutput = true;
+    bulk.createdAssetIds?.add(outputAssetId);
+    return true;
+  } catch (error) {
+    if (outputAssetId && !activatedOutput) {
+      try { await deleteObjectIsolationAsset({ workspace: state.workspace, documentId }, outputAssetId); } catch { /* Unreferenced outputs are also eligible for local cleanup. */ }
+      const retained = state.assets.get(outputAssetId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(outputAssetId);
+      imageSourceResidency.evict(outputAssetId);
+      imageMemoryBudget.release(assetMemoryKey(outputAssetId));
+    }
+    throw error;
+  } finally {
+    if (!enteredWorker) bulk.localAiWaiting = Math.max(0, (bulk.localAiWaiting || 0) - 1);
+    if (!localModelWorkerActive && !bulk.localAiWaiting) bulk.localAiStage = '';
+    renderBulkBar();
+  }
+}
+
+async function applyResolutionBoostRecipeToTarget(node, enabled, bulk, generation, signal = null) {
+  const pageId = bulk.pageId;
+  const documentId = bulk.documentId;
+  const plan = planResolutionBoostRecipe(node, enabled);
+  if (plan.action === 'unavailable') throw new Error(`The original image for “${node.name}” is unavailable.`);
+  if (plan.action === 'unchanged') return false;
+
+  if (plan.action === 'restore') {
+    const signature = JSON.stringify(node);
+    await ensureResolutionBoostAssetResident(node, plan.sourceAssetId, 'source', generation);
+    const entry = assertBulkRecipeImageTarget(node, bulk, generation, signal);
+    const source = state.assets.get(plan.sourceAssetId);
+    if (JSON.stringify(node) !== signature || !source?.sourceBytes) {
+      throw new Error(`The original resolution for “${node.name}” could not be restored.`);
+    }
+    imageSourceResidency.markResident(plan.sourceAssetId);
+    node.assetId = plan.sourceAssetId;
+    node.sourceWidth = source.sourceWidth || Math.max(1, Math.round(node.sourceWidth / 4));
+    node.sourceHeight = source.sourceHeight || Math.max(1, Math.round(node.sourceHeight / 4));
+    node.resolutionBoosted = false;
+    recordNodeComponentOverrides(node, ['assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted'], entry);
+    return true;
+  }
+
+  const activate = (outputAssetId, dimensions, entry) => {
+    node.resolutionBoostSourceAssetId = plan.sourceAssetId;
+    node.resolutionBoostAssetId = outputAssetId;
+    node.resolutionBoosted = true;
+    node.assetId = outputAssetId;
+    node.sourceWidth = dimensions.outputWidth;
+    node.sourceHeight = dimensions.outputHeight;
+    recordNodeComponentOverrides(node, [
+      'assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted',
+      'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
+    ], entry);
+  };
+
+  if (plan.action === 'activate-cache') {
+    await ensureResolutionBoostAssetResident(node, plan.outputAssetId, 'cache', generation);
+    const entry = assertBulkRecipeImageTarget(node, bulk, generation, signal);
+    const output = state.assets.get(plan.outputAssetId);
+    if (!output?.sourceBytes) throw new Error(`The cached 4× image for “${node.name}” could not be restored.`);
+    const source = state.assets.get(plan.sourceAssetId);
+    const sourceWidth = source?.sourceWidth || Math.max(1, Math.round((output.sourceWidth || node.sourceWidth) / 4));
+    const sourceHeight = source?.sourceHeight || Math.max(1, Math.round((output.sourceHeight || node.sourceHeight) / 4));
+    activate(plan.outputAssetId, validateResolutionBoostDimensions(sourceWidth, sourceHeight), entry);
+    return true;
+  }
+
+  if (!state.assets.get(plan.sourceAssetId)?.sourceBytes) {
+    await ensureResolutionBoostAssetResident(node, plan.sourceAssetId, 'source', generation);
+  }
+  const sourceAsset = state.assets.get(plan.sourceAssetId);
+  if (!sourceAsset?.sourceBytes) throw new Error(`The original image for “${node.name}” could not be restored.`);
+  const sourceBytes = sourceAsset.sourceBytes;
+  const width = sourceAsset.sourceWidth || node.sourceWidth;
+  const height = sourceAsset.sourceHeight || node.sourceHeight;
+  const dimensions = validateResolutionBoostDimensions(width, height);
+  const sourceSignature = JSON.stringify(node);
+  const isCurrent = () => !signal?.aborted && state.bulk === bulk && !bulk.cancelled && !bulk.ownershipLost
+    && state.documentGeneration === generation && state.document.id === documentId && !state.documentTransitioning
+    && findBulkRecipeTarget(bulk, node.id, pageId)?.node === node && JSON.stringify(node) === sourceSignature
+    && state.assets.get(plan.sourceAssetId) === sourceAsset && sourceAsset.sourceBytes === sourceBytes;
+  if (!isCurrent()) throw new DOMException('The image changed before local resolution boost could start.', 'AbortError');
+
+  bulk.localAiWaiting = (bulk.localAiWaiting || 0) + 1;
+  bulk.localAiStage = 'Waiting for the local resolution model…';
+  renderBulkBar();
+  let outputAssetId = null;
+  let enteredWorker = false;
+  try {
+    outputAssetId = await withLocalModelWorkerSlot(() => {
+      if (!isCurrent()) throw new DOMException('The image changed while waiting for resolution boost.', 'AbortError');
+      return createResolutionBoostAsset({
+        sourceAssetId: plan.sourceAssetId, sourceAsset, sourceBytes, width, height,
+        generation, documentId, workspace: bulk.workspace, signal, isCurrent,
+        sourceName: node.name || 'Image',
+        onStage: label => {
+          bulk.localAiStage = label;
+          state.imageStatus.set(node.id, `Boosting resolution · ${label}`);
+          updateSelectedImageStatus(node.id);
+          renderBulkBar();
+        },
+      });
+    }, signal, {
+      cpuSlots: resolutionBoostEngine.numThreads,
+      onActive: () => {
+        enteredWorker = true;
+        bulk.localAiWaiting = Math.max(0, bulk.localAiWaiting - 1);
+        bulk.localAiStage = 'Starting local resolution model…';
+      },
+      onIdle: () => {
+        bulk.localAiStage = bulk.localAiWaiting ? 'Waiting for the local image model…' : '';
+      },
+    });
+    bulk.createdAssetIds?.add(outputAssetId);
+    if (!isCurrent()) throw new DOMException('The image changed before its 4× result could be applied.', 'AbortError');
+    const entry = assertBulkRecipeImageTarget(node, bulk, generation, signal);
+    activate(outputAssetId, dimensions, entry);
+    return true;
+  } finally {
+    if (!enteredWorker) bulk.localAiWaiting = Math.max(0, bulk.localAiWaiting - 1);
+    if (!localModelWorkerActive && !bulk.localAiWaiting) bulk.localAiStage = '';
+    renderBulkBar();
+  }
+}
+
+function assertBulkRecipeImageTarget(node, bulk, generation, signal = null) {
+  const entry = findBulkRecipeTarget(bulk, node.id);
+  if (signal?.aborted || state.bulk !== bulk || bulk.cancelled || bulk.ownershipLost || state.documentGeneration !== generation
+    || state.document.id !== bulk.documentId || state.documentTransitioning
+    || !entry || entry.node !== node || !isEditableImageRecipeTarget(entry)) {
+    throw new DOMException('The image changed while its recipe was being applied.', 'AbortError');
+  }
+  return entry;
+}
+
+async function cleanupImageRecipeBatchAssets(bulk) {
+  if (!bulk?.done || bulk.assetsCleanupStarted || !bulk.createdAssetIds?.size) return false;
+  // A switched document cannot prove which of its former recipe outputs are
+  // still referenced. Leave those assets for the normal workspace cleanup.
+  if (state.document.id !== bulk.documentId) return false;
+  bulk.assetsCleanupStarted = true;
+  const referenced = new Set(collectReferencedAssets(state.document).imageAssetIds);
+  const target = { workspace: bulk.workspace, documentId: bulk.documentId };
+  let failed = 0;
+  for (const assetId of bulk.createdAssetIds) {
+    if (referenced.has(assetId)) continue;
+    try {
+      await deleteObjectIsolationAsset(target, assetId);
+      const retained = state.assets.get(assetId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(assetId);
+      imageSourceResidency.evict(assetId);
+      imageMemoryBudget.release(assetMemoryKey(assetId));
+      imageEngine.dispose(assetId);
+    } catch {
+      failed += 1;
+    }
+  }
+  if (failed) showToast(`${failed} unused image recipe result${failed === 1 ? '' : 's'} could not be removed from local storage.`);
+  return true;
+}
+
+async function restoreImageExpansionForRecipeTarget(node, bulk, generation, signal = null) {
+  const expansion = node?.imageExpansion;
+  if (!expansion) return false;
+  const signature = JSON.stringify(node);
+  await ensureBackgroundRemovalAssetResident(node, expansion.sourceImageAssetId, 'source', generation);
+  const entry = assertBulkRecipeImageTarget(node, bulk, generation, signal);
+  const sourceAsset = state.assets.get(expansion.sourceImageAssetId);
+  if (JSON.stringify(node) !== signature || !sourceAsset?.sourceBytes) {
+    throw new Error(`The original image for “${node.name}” could not be restored.`);
+  }
+  const originalStrokes = structuredClone(expansion.originalInpaintStrokes || []);
+  imageSourceResidency.markResident(expansion.sourceImageAssetId);
+  node.assetId = expansion.sourceImageAssetId;
+  node.sourceWidth = expansion.sourceWidth;
+  node.sourceHeight = expansion.sourceHeight;
+  Object.assign(node, expansion.originalGeometry);
+  node.inpaintStrokes = originalStrokes;
+  delete node.imageExpansion;
+  recordNodeComponentOverrides(node, [
+    'assetId', 'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height', 'imageExpansion', 'inpaintStrokes',
+  ], entry);
+  return true;
+}
+
+async function applyImageExpansionRecipeToTarget(node, ratioValue, bulk, generation, signal = null) {
+  if (ratioValue === null) return restoreImageExpansionForRecipeTarget(node, bulk, generation, signal);
+  const ratio = normalizeImageExpansionRatio(ratioValue);
+  if (node.imageExpansion && JSON.stringify(normalizeImageExpansionRatio(node.imageExpansion.paddingRatio)) === JSON.stringify(ratio)) return false;
+  if (node.imageExpansion) await restoreImageExpansionForRecipeTarget(node, bulk, generation, signal);
+  assertBulkRecipeImageTarget(node, bulk, generation, signal);
+  const signature = JSON.stringify(node);
+  const sourceAssetId = node.assetId;
+  if (!state.assets.get(sourceAssetId)?.sourceBytes) {
+    await ensureBackgroundRemovalAssetResident(node, sourceAssetId, 'source', generation);
+  }
+  assertBulkRecipeImageTarget(node, bulk, generation, signal);
+  const sourceAsset = state.assets.get(sourceAssetId);
+  if (JSON.stringify(node) !== signature || !sourceAsset?.sourceBytes) {
+    throw new Error(`The original image for “${node.name}” could not be restored.`);
+  }
+  const sourceBytes = sourceAsset.sourceBytes;
+  const sourceWidth = sourceAsset.sourceWidth || node.sourceWidth;
+  const sourceHeight = sourceAsset.sourceHeight || node.sourceHeight;
+  const padding = imageExpansionPaddingFromRatio(sourceWidth, sourceHeight, ratio);
+  const plan = planImageExpansion(sourceWidth, sourceHeight, padding);
+  const documentId = bulk.documentId;
+  const workspace = bulk.workspace;
+  const isCurrent = () => {
+    if (signal?.aborted || state.bulk !== bulk || bulk.cancelled || bulk.ownershipLost || state.documentGeneration !== generation
+      || state.document.id !== documentId || state.documentTransitioning) return false;
+    const current = findBulkRecipeTarget(bulk, node.id);
+    const retained = state.assets.get(sourceAssetId);
+    return current?.node === node && JSON.stringify(node) === signature
+      && retained === sourceAsset && retained?.sourceBytes === sourceBytes;
+  };
+  if (!isCurrent()) throw new DOMException('The image changed before local expansion could start.', 'AbortError');
+
+  bulk.localAiWaiting = (bulk.localAiWaiting || 0) + 1;
+  bulk.localAiStage = 'Waiting for the local image model…';
+  renderBulkBar();
+  let outputAssetId = null;
+  let enteredWorker = false;
+  try {
+    outputAssetId = await withLocalModelWorkerSlot(() => {
+      if (!isCurrent()) throw new DOMException('The image changed while waiting for local expansion.', 'AbortError');
+      return createExpandedImageAsset({
+        sourceAssetId, sourceAsset, sourceBytes, plan, generation, documentId, workspace, signal, isCurrent,
+        sourceName: node.name || 'Image',
+        onStage: label => {
+          bulk.localAiStage = label;
+          state.imageStatus.set(node.id, `Expanding image · ${label}`);
+          updateSelectedImageStatus(node.id);
+          renderBulkBar();
+        },
+      });
+    }, signal, {
+      onActive: () => {
+        enteredWorker = true;
+        bulk.localAiWaiting = Math.max(0, bulk.localAiWaiting - 1);
+        bulk.localAiStage = 'Starting local image model…';
+      },
+      onIdle: () => {
+        bulk.localAiStage = bulk.localAiWaiting ? 'Waiting for the local image model…' : '';
+      },
+    });
+    if (outputAssetId) bulk.createdAssetIds?.add(outputAssetId);
+    if (!isCurrent()) throw new DOMException('The image changed before its expanded result could be applied.', 'AbortError');
+    const currentEntry = assertBulkRecipeImageTarget(node, bulk, generation, signal);
+    const geometry = expandedImageLayerGeometry(node, currentEntry.parents, sourceWidth, sourceHeight, padding);
+    const originalGeometry = { x: node.x, y: node.y, width: node.width, height: node.height };
+    const originalInpaintStrokes = structuredClone(node.inpaintStrokes || []);
+    const expandedStrokes = originalInpaintStrokes.length
+      ? remapImageEraseStrokesForExpansion(originalInpaintStrokes, sourceWidth, sourceHeight, padding)
+      : originalInpaintStrokes;
+    const expansionState = {
+      sourceImageAssetId: sourceAssetId,
+      sourceWidth,
+      sourceHeight,
+      originalGeometry,
+      paddingRatio: { ...ratio },
+      originalInpaintStrokes,
+    };
+    node.imageExpansion = expansionState;
+    node.assetId = outputAssetId;
+    node.sourceWidth = plan.width;
+    node.sourceHeight = plan.height;
+    Object.assign(node, geometry);
+    node.inpaintStrokes = expandedStrokes;
+    recordNodeComponentOverrides(node, [
+      'assetId', 'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height', 'inpaintStrokes', 'imageExpansion',
+    ], currentEntry);
+    return true;
+  } finally {
+    if (!enteredWorker) bulk.localAiWaiting = Math.max(0, (bulk.localAiWaiting || 0) - 1);
+    if (!localModelWorkerActive && !bulk.localAiWaiting) bulk.localAiStage = '';
+    renderBulkBar();
+  }
+}
+
+function backgroundRemovalFenceMatches(capture, { controller = null, requireSelection = true } = {}) {
+  if (controller && (controller.signal.aborted || state.backgroundRemovalController !== controller)) return false;
+  if (state.documentGeneration !== capture.generation || state.document.id !== capture.documentId
+    || state.documentTransitioning) return false;
+  if (requireSelection && (state.document.activePageId !== capture.pageId
+    || state.selectedIds.length !== 1 || state.selectedIds[0] !== capture.nodeId)) return false;
+  const entry = findNode(state.document, capture.nodeId, capture.pageId);
+  if (!entry || entry.node !== capture.sourceNode || JSON.stringify(entry.node) !== capture.sourceSignature) return false;
+  if (capture.sourceAssetId) {
+    const sourceAsset = state.assets.get(capture.sourceAssetId);
+    if (sourceAsset !== capture.sourceAsset || sourceAsset?.sourceBytes !== capture.sourceBytes) return false;
+  }
+  return true;
+}
+
+async function ensureBackgroundRemovalAssetResident(node, assetId, role, generation) {
+  if (state.assets.get(assetId)?.sourceBytes) {
+    imageSourceResidency.markResident(assetId);
+    return true;
+  }
+  const previewKey = assetId === node.assetId
+    ? imagePreviewKey(node.id)
+    : `background-removal-${role}:${node.id}`;
+  await restoreImageAssets(generation, { assetIds: [assetId], previewKeys: [previewKey], skipPreview: true });
+  return Boolean(state.assets.get(assetId)?.sourceBytes);
+}
+
+async function createBackgroundRemovalAsset({
+  sourceAssetId, sourceAsset, sourceBytes, width, height, generation, documentId, workspace,
+  signal, isCurrent, onStage = () => {}, sourceName = 'Image',
+}) {
+  validateBackgroundRemovalDimensions(width, height);
+  if (!sourceAsset || !sourceBytes || sourceAsset.sourceBytes !== sourceBytes) {
+    throw new Error('The original local image is no longer available for background removal.');
+  }
+  const outputAssetId = createId('asset');
+  const target = { workspace, documentId };
+  const outputBound = estimatePreviewMemoryReservationBytes({ width, height });
+  const workingBytes = 48 * MIB + sourceBytes.byteLength
+    + estimateBitmapBytes(width, height, 12) + outputBound.encodedByteLength;
+  const sourceLease = imageSourceResidency.acquire(sourceAssetId);
+  if (!sourceLease) throw new ImageMemoryLimitError('The original image could not be protected in memory for background removal.', 'background-removal-source');
+  let workingReservation = null;
+  let assetReservation = null;
+  let decodeReservation = null;
+  let bitmap = null;
+  let bitmapUrl = null;
+  let persisted = false;
+  let committed = false;
+  try {
+    workingReservation = reserveImageMemory(workingBytes, {
+      kind: 'background-removal-worker', excludeAssetIds: [sourceAssetId],
+    });
+    if (!workingReservation) {
+      throw new ImageMemoryLimitError('There is not enough local memory for this background-removal job. Close another large image or use a smaller source, then retry.', 'background-removal-worker');
+    }
+    const result = await backgroundRemovalEngine.run(sourceBytes, {
+      signal,
+      onStage: ({ stage }) => { if (isCurrent()) onStage(backgroundRemovalStageLabel(stage)); },
+    });
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed during background removal.', 'AbortError');
+    imageMemoryBudget.releaseReservation(workingReservation); workingReservation = null;
+    const dimensions = assertSafeRasterDimensions(result.bytes);
+    if (result.mimeType !== 'image/png' || dimensions.width !== width || dimensions.height !== height
+      || result.width !== width || result.height !== height) {
+      throw new Error('The local model returned a PNG whose dimensions do not match the original image.');
+    }
+    const fallbackDimensions = fallbackImageDimensions(width, height);
+    const outputAssetBytes = estimateAssetMemoryBytes({
+      sourceByteLength: result.bytes.byteLength,
+      bitmapWidth: fallbackDimensions.width,
+      bitmapHeight: fallbackDimensions.height,
+    });
+    assetReservation = reserveImageMemory(outputAssetBytes, {
+      kind: 'background-removal-asset', excludeAssetIds: [sourceAssetId],
+    });
+    if (!assetReservation) throw retainedImageLimitMessage();
+    decodeReservation = reserveImageMemory(estimateBitmapBytes(width, height), {
+      kind: 'background-removal-decode', excludeAssetIds: [sourceAssetId],
+    });
+    if (!decodeReservation) throw retainedImageLimitMessage();
+    const blob = new Blob([result.bytes], { type: 'image/png' });
+    const fallback = await createFallbackImage(blob);
+    bitmap = fallback.bitmap;
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while decoding the transparent result.', 'AbortError');
+    imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+    bitmapUrl = URL.createObjectURL(blob);
+    persisted = true;
+    await persistObjectIsolationAsset(target, outputAssetId, `${sourceName || 'Image'}-no-background.png`, result.bytes);
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while saving the transparent result.', 'AbortError');
+    imageMemoryBudget.commit(assetReservation, assetMemoryKey(outputAssetId), { bytes: outputAssetBytes, kind: 'asset' });
+    assetReservation = null;
+    state.assets.set(outputAssetId, {
+      id: outputAssetId, name: `${sourceName || 'Image'}-no-background.png`, type: 'image/png',
+      sourceBytes: result.bytes, bitmap, bitmapUrl, sourceWidth: width, sourceHeight: height,
+    });
+    imageSourceResidency.markResident(outputAssetId);
+    committed = true;
+    bitmap = null; bitmapUrl = null;
+    return outputAssetId;
+  } finally {
+    if (workingReservation) imageMemoryBudget.releaseReservation(workingReservation);
+    if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
+    if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
+    bitmap?.close?.();
+    if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
+    sourceLease.release();
+    if (persisted && !committed) {
+      try { await deleteObjectIsolationAsset(target, outputAssetId); }
+      catch (error) { showToast(`The unused transparent image could not be removed from local storage: ${error.message || 'storage error'}.`); }
+    }
+  }
+}
+
+function cancelBackgroundRemovalProcessing() {
+  const controller = state.backgroundRemovalController;
+  if (!controller) return false;
+  state.backgroundRemovalController = null;
+  controller.abort();
+  state.backgroundRemovalProgress = 'Cancelled · original image kept';
+  renderInspector(); renderer.invalidate();
+  return true;
+}
+
+async function toggleImageBackgroundRemoval(node) {
+  if (state.backgroundRemovalController) return;
+  if (node?.resolutionBoosted === true) {
+    showToast('Restore the original resolution before changing background removal.');
+    return;
+  }
+  if (node?.imageExpansion) {
+    showToast('Restore the expanded source before changing background removal.');
+    return;
+  }
+  if (node?.type !== 'image' || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id) return;
+  if (node.locked || isImageRecipeBatchActive(state.bulk) || state.documentTransitioning) {
+    showToast('Select one unlocked image and finish the active image batch first.'); return;
+  }
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const workspace = state.workspace;
+  const sourceSignature = JSON.stringify(node);
+  const restoring = node.backgroundRemoved === true;
+  const sourceAssetId = restoring ? node.backgroundRemovalSourceAssetId : node.assetId;
+  if (typeof sourceAssetId !== 'string' || !sourceAssetId) {
+    showToast('The original source for this image is no longer available.'); return;
+  }
+  const controller = new AbortController();
+  state.backgroundRemovalController = controller;
+  state.backgroundRemovalSourceId = node.id;
+  state.backgroundRemovalProgress = restoring ? 'Restoring the original image…' : 'Preparing local background removal…';
+  renderInspector();
+  let resultAssetId = null;
+  let success = false;
+  try {
+    const cacheMatchesSource = node.backgroundRemovalAssetId
+      && node.backgroundRemovalSourceAssetId === sourceAssetId;
+    const requiredAssetId = restoring ? sourceAssetId : cacheMatchesSource ? node.backgroundRemovalAssetId : sourceAssetId;
+    if (!state.assets.get(requiredAssetId)?.sourceBytes) {
+      const role = requiredAssetId === sourceAssetId && sourceAssetId !== node.assetId ? 'source' : 'cache';
+      state.backgroundRemovalProgress = restoring ? 'Restoring the original image…' : 'Loading local image…';
+      renderInspector();
+      await ensureBackgroundRemovalAssetResident(node, requiredAssetId, role, generation);
+    }
+    if (controller.signal.aborted) throw new DOMException('Background removal was cancelled.', 'AbortError');
+    const currentNode = findNode(state.document, node.id, pageId)?.node;
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || state.selectedIds.length !== 1
+      || state.selectedIds[0] !== node.id || currentNode !== node || JSON.stringify(node) !== sourceSignature) {
+      throw new DOMException('The selected image changed before background removal could start.', 'AbortError');
+    }
+    if (restoring) {
+      const originalAsset = state.assets.get(sourceAssetId);
+      if (!originalAsset?.sourceBytes) throw new Error('The original image could not be restored from local storage.');
+      imageSourceResidency.markResident(sourceAssetId);
+      checkpoint('Restore original image background');
+      node.assetId = sourceAssetId;
+      node.backgroundRemoved = false;
+      recordNodeComponentOverrides(node, ['assetId', 'backgroundRemoved']);
+      state.imageStatus.set(node.id, 'Processing locally…');
+      renderImagePreview(node.id, node.assetId, node.adjustments, node.transforms).catch(error => {
+        state.imageStatus.set(node.id, imagePreviewFailureStatus(error));
+        showToast(error.message || 'Could not restore the original image preview.');
+      });
+      state.backgroundRemovalProgress = '';
+      success = true;
+      renderUI(); queueSave(); renderer.invalidate();
+      showToast('Original image restored on the same layer.');
+      return;
+    }
+    const dimensions = state.assets.get(sourceAssetId);
+    const width = dimensions?.sourceWidth || node.sourceWidth;
+    const height = dimensions?.sourceHeight || node.sourceHeight;
+    validateBackgroundRemovalDimensions(width, height);
+    let outputAssetId = cacheMatchesSource ? node.backgroundRemovalAssetId : null;
+    if (outputAssetId) {
+      if (!state.assets.get(outputAssetId)?.sourceBytes) {
+        state.backgroundRemovalProgress = 'Restoring cached transparent image…';
+        renderInspector();
+        await ensureBackgroundRemovalAssetResident(node, outputAssetId, 'cache', generation);
+      }
+      if (!state.assets.get(outputAssetId)?.sourceBytes) throw new Error('The cached transparent image is missing from local storage.');
+    } else {
+      const sourceAsset = state.assets.get(sourceAssetId);
+      if (!sourceAsset?.sourceBytes) throw new Error('The original image could not be restored from local storage.');
+      const capture = {
+        generation, documentId, pageId, nodeId: node.id, sourceNode: node, sourceSignature,
+        sourceAssetId, sourceAsset, sourceBytes: sourceAsset.sourceBytes,
+        sourceWidth: width, sourceHeight: height, workspace,
+      };
+      outputAssetId = await withLocalModelWorkerSlot(() => {
+        if (!backgroundRemovalFenceMatches(capture, { controller })) {
+          throw new DOMException('The selected image changed while waiting for the local AI worker.', 'AbortError');
+        }
+        return createBackgroundRemovalAsset({
+          sourceAssetId, sourceAsset, sourceBytes: sourceAsset.sourceBytes, width, height,
+          generation, documentId, workspace, signal: controller.signal,
+          sourceName: node.name || 'Image',
+          isCurrent: () => backgroundRemovalFenceMatches(capture, { controller }),
+          onStage: label => {
+            state.backgroundRemovalProgress = label;
+            renderInspector();
+          },
+        });
+      }, controller.signal);
+      resultAssetId = outputAssetId;
+    }
+    if (controller.signal.aborted || generation !== state.documentGeneration
+      || state.document.id !== documentId || state.document.activePageId !== pageId
+      || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id
+      || findNode(state.document, node.id, pageId)?.node !== node || JSON.stringify(node) !== sourceSignature) {
+      throw new DOMException('The selected image changed before the transparent result could be applied.', 'AbortError');
+    }
+    checkpoint('Remove image background');
+    node.backgroundRemovalSourceAssetId = sourceAssetId;
+    node.backgroundRemovalAssetId = outputAssetId;
+    node.backgroundRemoved = true;
+    node.assetId = outputAssetId;
+    recordNodeComponentOverrides(node, ['assetId', 'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId']);
+    state.imageStatus.set(node.id, 'Processing locally…');
+    renderImagePreview(node.id, outputAssetId, node.adjustments, node.transforms, null, null, pageId).catch(error => {
+      state.imageStatus.set(node.id, imagePreviewFailureStatus(error));
+      showToast(error.message || 'Could not render the transparent image preview.');
+    });
+    state.backgroundRemovalProgress = '';
+    success = true;
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast('Background removed on this image layer. Undo restores the original.');
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not remove this image background.');
+    if (state.backgroundRemovalController === controller) {
+      state.backgroundRemovalProgress = error?.name === 'AbortError'
+        ? 'Cancelled · original image kept' : error.message || 'Background removal failed.';
+      if (state.documentGeneration === generation && state.document.id === documentId
+        && state.document.activePageId === pageId && state.selectedIds.length === 1
+        && state.selectedIds[0] === node.id) renderInspector();
+    }
+  } finally {
+    if (resultAssetId && !success) {
+      try { await deleteObjectIsolationAsset({ workspace, documentId }, resultAssetId); }
+      catch { /* The output is unreferenced and can be removed during local asset cleanup. */ }
+      const retained = state.assets.get(resultAssetId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(resultAssetId);
+      imageSourceResidency.evict(resultAssetId);
+      imageMemoryBudget.release(assetMemoryKey(resultAssetId));
+    }
+    if (state.backgroundRemovalController === controller) {
+      state.backgroundRemovalController = null;
+      state.backgroundRemovalSourceId = null;
+      if (success) state.backgroundRemovalProgress = '';
+      if (state.documentGeneration === generation && state.document.id === documentId) renderInspector();
+    }
+  }
+}
+
+function resolutionBoostStageLabel(stage) {
+  return ({
+    'loading-model': 'Loading the local model…',
+    'decoding-image': 'Reading the original image…',
+    upscaling: 'Rebuilding image detail…',
+    'restoring-transparency': 'Preserving transparency…',
+    'encoding-png': 'Encoding 4× PNG…',
+  })[stage] || 'Processing locally…';
+}
+
+function resolutionBoostFenceMatches(capture, { controller = null, requireSelection = true } = {}) {
+  if (controller && (controller.signal.aborted || state.resolutionBoostController !== controller)) return false;
+  if (state.documentGeneration !== capture.generation || state.document.id !== capture.documentId
+    || state.documentTransitioning) return false;
+  if (requireSelection && (state.document.activePageId !== capture.pageId
+    || state.selectedIds.length !== 1 || state.selectedIds[0] !== capture.nodeId)) return false;
+  const entry = findNode(state.document, capture.nodeId, capture.pageId);
+  if (!entry || entry.node !== capture.sourceNode || JSON.stringify(entry.node) !== capture.sourceSignature) return false;
+  const source = state.assets.get(capture.sourceAssetId);
+  return source === capture.sourceAsset && source?.sourceBytes === capture.sourceBytes;
+}
+
+async function ensureResolutionBoostAssetResident(node, assetId, role, generation) {
+  if (state.assets.get(assetId)?.sourceBytes) {
+    imageSourceResidency.markResident(assetId);
+    return true;
+  }
+  const previewKey = assetId === node.assetId
+    ? imagePreviewKey(node.id)
+    : `resolution-boost-${role}:${node.id}`;
+  await restoreImageAssets(generation, { assetIds: [assetId], previewKeys: [previewKey], skipPreview: true });
+  return Boolean(state.assets.get(assetId)?.sourceBytes);
+}
+
+async function createResolutionBoostAsset({
+  sourceAssetId, sourceAsset, sourceBytes, width, height, generation, documentId, workspace,
+  signal, isCurrent, onStage = () => {}, sourceName = 'Image',
+}) {
+  const dimensions = validateResolutionBoostDimensions(width, height);
+  if (!sourceAsset || !sourceBytes || sourceAsset.sourceBytes !== sourceBytes
+    || sourceBytes.byteLength > 64 * 1024 * 1024) {
+    throw new Error('The original local image is no longer available for resolution boost.');
+  }
+  const outputAssetId = createId('asset');
+  const target = { workspace, documentId };
+  const outputBound = estimatePreviewMemoryReservationBytes({ width: dimensions.outputWidth, height: dimensions.outputHeight });
+  const workingBytes = sourceBytes.byteLength + estimateBitmapBytes(width, height)
+    + estimateBitmapBytes(dimensions.outputWidth, dimensions.outputHeight, 8)
+    + outputBound.encodedByteLength;
+  const sourceLease = imageSourceResidency.acquire(sourceAssetId);
+  if (!sourceLease) throw new ImageMemoryLimitError('The original image could not be protected in memory for resolution boost.', 'resolution-boost-source');
+  let workingReservation = null;
+  let assetReservation = null;
+  let decodeReservation = null;
+  let bitmap = null;
+  let bitmapUrl = null;
+  let persisted = false;
+  let committed = false;
+  try {
+    workingReservation = reserveImageMemory(workingBytes, {
+      kind: 'resolution-boost-worker', excludeAssetIds: [sourceAssetId],
+    });
+    if (!workingReservation) {
+      throw new ImageMemoryLimitError('There is not enough local memory for a 4× image. Close another large image or use a smaller source, then retry.', 'resolution-boost-worker');
+    }
+    const result = await resolutionBoostEngine.run(sourceBytes, {
+      width, height, signal,
+      onStage: ({ stage, detail }) => { if (isCurrent()) onStage(resolutionBoostStageLabel(stage) + (detail ? ` · ${detail}` : '')); },
+    });
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed during resolution boost.', 'AbortError');
+    imageMemoryBudget.releaseReservation(workingReservation); workingReservation = null;
+    const actual = assertSafeRasterDimensions(result.bytes);
+    if (result.mimeType !== 'image/png' || result.bytes.byteLength > MAX_RESOLUTION_BOOST_OUTPUT_BYTES
+      || actual.width !== dimensions.outputWidth || actual.height !== dimensions.outputHeight
+      || result.width !== dimensions.outputWidth || result.height !== dimensions.outputHeight) {
+      throw new Error('The local model returned a PNG with unexpected 4× dimensions.');
+    }
+    const fallbackDimensions = fallbackImageDimensions(dimensions.outputWidth, dimensions.outputHeight);
+    const outputAssetBytes = estimateAssetMemoryBytes({
+      sourceByteLength: result.bytes.byteLength,
+      bitmapWidth: fallbackDimensions.width,
+      bitmapHeight: fallbackDimensions.height,
+    });
+    assetReservation = reserveImageMemory(outputAssetBytes, {
+      kind: 'resolution-boost-asset', excludeAssetIds: [sourceAssetId],
+    });
+    if (!assetReservation) throw retainedImageLimitMessage();
+    decodeReservation = reserveImageMemory(estimateBitmapBytes(dimensions.outputWidth, dimensions.outputHeight), {
+      kind: 'resolution-boost-decode', excludeAssetIds: [sourceAssetId],
+    });
+    if (!decodeReservation) throw retainedImageLimitMessage();
+    const blob = new Blob([result.bytes], { type: 'image/png' });
+    const fallback = await createFallbackImage(blob);
+    bitmap = fallback.bitmap;
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while decoding its 4× result.', 'AbortError');
+    imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+    bitmapUrl = URL.createObjectURL(blob);
+    persisted = true;
+    await persistObjectIsolationAsset(target, outputAssetId, `${sourceName || 'Image'}-4x.png`, result.bytes);
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while saving its 4× result.', 'AbortError');
+    imageMemoryBudget.commit(assetReservation, assetMemoryKey(outputAssetId), { bytes: outputAssetBytes, kind: 'asset' });
+    assetReservation = null;
+    state.assets.set(outputAssetId, {
+      id: outputAssetId, name: `${sourceName || 'Image'}-4x.png`, type: 'image/png',
+      sourceBytes: result.bytes, bitmap, bitmapUrl,
+      sourceWidth: dimensions.outputWidth, sourceHeight: dimensions.outputHeight,
+    });
+    imageSourceResidency.markResident(outputAssetId);
+    committed = true;
+    bitmap = null; bitmapUrl = null;
+    return outputAssetId;
+  } finally {
+    if (workingReservation) imageMemoryBudget.releaseReservation(workingReservation);
+    if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
+    if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
+    bitmap?.close?.();
+    if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
+    sourceLease.release();
+    if (persisted && !committed) {
+      try { await deleteObjectIsolationAsset(target, outputAssetId); }
+      catch (error) { showToast(`The unused 4× image could not be removed from local storage: ${error.message || 'storage error'}.`); }
+    }
+  }
+}
+
+function cancelResolutionBoostProcessing() {
+  const controller = state.resolutionBoostController;
+  if (!controller) return false;
+  state.resolutionBoostController = null;
+  state.resolutionBoostSourceId = null;
+  controller.abort();
+  state.resolutionBoostProgress = 'Cancelled · original image kept';
+  renderInspector(); renderer.invalidate();
+  return true;
+}
+
+async function toggleImageResolutionBoost(node) {
+  if (state.resolutionBoostController) return;
+  if (node?.type !== 'image' || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id) return;
+  if (node.locked || isImageRecipeBatchActive(state.bulk) || state.documentTransitioning
+    || state.backgroundRemovalController || state.imageExpansionController || state.objectIsolationController) {
+    showToast('Select one unlocked image and finish the active local image operation first.');
+    return;
+  }
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const workspace = state.workspace;
+  const sourceSignature = JSON.stringify(node);
+  const restoring = node.resolutionBoosted === true;
+  const sourceAssetId = restoring ? node.resolutionBoostSourceAssetId : node.assetId;
+  if (typeof sourceAssetId !== 'string' || !sourceAssetId) {
+    showToast('The original source for this image is no longer available.');
+    return;
+  }
+  const controller = new AbortController();
+  state.resolutionBoostController = controller;
+  state.resolutionBoostSourceId = node.id;
+  state.resolutionBoostProgress = restoring ? 'Restoring the original image…' : 'Preparing local resolution boost…';
+  renderInspector();
+  let resultAssetId = null;
+  let success = false;
+  try {
+    const cacheMatchesSource = node.resolutionBoostAssetId
+      && node.resolutionBoostSourceAssetId === sourceAssetId;
+    const requiredAssetId = restoring ? sourceAssetId : cacheMatchesSource ? node.resolutionBoostAssetId : sourceAssetId;
+    if (!state.assets.get(requiredAssetId)?.sourceBytes) {
+      state.resolutionBoostProgress = restoring ? 'Restoring the original image…' : 'Loading local image…';
+      renderInspector();
+      await ensureResolutionBoostAssetResident(node, requiredAssetId, requiredAssetId === sourceAssetId ? 'source' : 'cache', generation);
+    }
+    if (controller.signal.aborted) throw new DOMException('Resolution boost was cancelled.', 'AbortError');
+    const currentNode = findNode(state.document, node.id, pageId)?.node;
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || state.selectedIds.length !== 1
+      || state.selectedIds[0] !== node.id || currentNode !== node || JSON.stringify(node) !== sourceSignature) {
+      throw new DOMException('The selected image changed before resolution boost could start.', 'AbortError');
+    }
+    if (restoring) {
+      const originalAsset = state.assets.get(sourceAssetId);
+      if (!originalAsset?.sourceBytes) throw new Error('The original image could not be restored from local storage.');
+      imageSourceResidency.markResident(sourceAssetId);
+      checkpoint('Restore original image resolution');
+      node.assetId = sourceAssetId;
+      node.sourceWidth = originalAsset.sourceWidth || Math.max(1, Math.round(node.sourceWidth / 4));
+      node.sourceHeight = originalAsset.sourceHeight || Math.max(1, Math.round(node.sourceHeight / 4));
+      node.resolutionBoosted = false;
+      recordNodeComponentOverrides(node, ['assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted']);
+      state.imageStatus.set(node.id, 'Processing locally…');
+      schedulePreview(node, true);
+      state.resolutionBoostProgress = '';
+      success = true;
+      renderUI(); queueSave(); renderer.invalidate();
+      showToast('Original image resolution restored on the same layer.');
+      return;
+    }
+    const source = state.assets.get(sourceAssetId);
+    if (!source?.sourceBytes) throw new Error('The original image could not be restored from local storage.');
+    const width = source.sourceWidth || node.sourceWidth;
+    const height = source.sourceHeight || node.sourceHeight;
+    const dimensions = validateResolutionBoostDimensions(width, height);
+    let outputAssetId = cacheMatchesSource ? node.resolutionBoostAssetId : null;
+    if (outputAssetId) {
+      if (!state.assets.get(outputAssetId)?.sourceBytes) {
+        state.resolutionBoostProgress = 'Restoring cached 4× image…';
+        renderInspector();
+        await ensureResolutionBoostAssetResident(node, outputAssetId, 'cache', generation);
+      }
+      if (!state.assets.get(outputAssetId)?.sourceBytes) throw new Error('The cached 4× image is missing from local storage.');
+    } else {
+      const sourceBytes = source.sourceBytes;
+      const capture = {
+        generation, documentId, pageId, nodeId: node.id, sourceNode: node, sourceSignature,
+        sourceAssetId, sourceAsset: source, sourceBytes, sourceWidth: width, sourceHeight: height, workspace,
+      };
+      outputAssetId = await withLocalModelWorkerSlot(() => {
+        if (!resolutionBoostFenceMatches(capture, { controller })) {
+          throw new DOMException('The selected image changed while waiting for the local model.', 'AbortError');
+        }
+        return createResolutionBoostAsset({
+          sourceAssetId, sourceAsset: source, sourceBytes, width, height,
+          generation, documentId, workspace, signal: controller.signal,
+          sourceName: node.name || 'Image',
+          isCurrent: () => resolutionBoostFenceMatches(capture, { controller }),
+          onStage: label => { state.resolutionBoostProgress = label; renderInspector(); },
+        });
+      }, controller.signal, { cpuSlots: resolutionBoostEngine.numThreads });
+      resultAssetId = outputAssetId;
+    }
+    if (controller.signal.aborted || generation !== state.documentGeneration
+      || state.document.id !== documentId || state.document.activePageId !== pageId
+      || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id
+      || findNode(state.document, node.id, pageId)?.node !== node || JSON.stringify(node) !== sourceSignature) {
+      throw new DOMException('The selected image changed before the 4× result could be applied.', 'AbortError');
+    }
+    checkpoint('Boost image resolution');
+    node.resolutionBoostSourceAssetId = sourceAssetId;
+    node.resolutionBoostAssetId = outputAssetId;
+    node.resolutionBoosted = true;
+    node.assetId = outputAssetId;
+    node.sourceWidth = dimensions.outputWidth;
+    node.sourceHeight = dimensions.outputHeight;
+    recordNodeComponentOverrides(node, ['assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId']);
+    state.imageStatus.set(node.id, 'Processing locally…');
+    schedulePreview(node, true);
+    state.resolutionBoostProgress = '';
+    success = true;
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast('Resolution boosted 4× on this image layer. Undo restores the original.');
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not boost this image locally.');
+    if (state.resolutionBoostController === controller) {
+      state.resolutionBoostProgress = error?.name === 'AbortError'
+        ? 'Cancelled · original image kept' : error.message || 'Resolution boost failed.';
+      if (state.documentGeneration === generation && state.document.id === documentId
+        && state.document.activePageId === pageId && state.selectedIds.length === 1
+        && state.selectedIds[0] === node.id) renderInspector();
+    }
+  } finally {
+    if (resultAssetId && !success) {
+      try { await deleteObjectIsolationAsset({ workspace, documentId }, resultAssetId); }
+      catch { /* The output is unreferenced and can be removed during local asset cleanup. */ }
+      const retained = state.assets.get(resultAssetId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(resultAssetId);
+      imageSourceResidency.evict(resultAssetId);
+      imageMemoryBudget.release(assetMemoryKey(resultAssetId));
+    }
+    if (state.resolutionBoostController === controller) {
+      state.resolutionBoostController = null;
+      state.resolutionBoostSourceId = null;
+      if (success) state.resolutionBoostProgress = '';
+      if (state.documentGeneration === generation && state.document.id === documentId) renderInspector();
+    }
+  }
+}
+
+async function resetResolutionBoostedImage(node) {
+  const boostSourceAssetId = node?.resolutionBoostSourceAssetId;
+  if (node?.type !== 'image' || node.resolutionBoosted !== true || !boostSourceAssetId) return false;
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const signature = JSON.stringify(node);
+  const expansionSourceAssetId = node.imageExpansion?.sourceImageAssetId;
+  const backgroundSourceAssetId = node.backgroundRemoved ? node.backgroundRemovalSourceAssetId : null;
+  const sourceAssetId = backgroundSourceAssetId || expansionSourceAssetId || boostSourceAssetId;
+  const previewKey = sourceAssetId === backgroundSourceAssetId
+    ? `background-removal-source:${node.id}`
+    : sourceAssetId === expansionSourceAssetId
+      ? `image-expansion-source:${node.id}`
+      : `resolution-boost-source:${node.id}`;
+  try {
+    await restoreImageAssets(generation, { assetIds: [sourceAssetId], previewKeys: [previewKey], skipPreview: true });
+    const source = state.assets.get(sourceAssetId);
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || findNode(state.document, node.id, pageId)?.node !== node
+      || JSON.stringify(node) !== signature || !source?.sourceBytes) {
+      throw new DOMException('The original image changed before it could be reset.', 'AbortError');
+    }
+    checkpoint('Reset image');
+    node.assetId = sourceAssetId;
+    node.sourceWidth = source.sourceWidth || Math.max(1, Math.round(node.sourceWidth / 4));
+    node.sourceHeight = source.sourceHeight || Math.max(1, Math.round(node.sourceHeight / 4));
+    node.resolutionBoosted = false;
+    if (node.backgroundRemoved) node.backgroundRemoved = false;
+    delete node.backgroundRemovalSourceAssetId;
+    delete node.backgroundRemovalAssetId;
+    if (node.imageExpansion) {
+      Object.assign(node, node.imageExpansion.originalGeometry);
+      delete node.imageExpansion;
+    }
+    node.adjustments = { ...defaultImageAdjustments };
+    node.transforms = createImageTransforms();
+    node.fit = 'cover';
+    node.inpaintStrokes = [];
+    recordNodeComponentOverrides(node, [
+      'assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted', 'backgroundRemoved',
+      'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+      'x', 'y', 'width', 'height', 'imageExpansion', 'adjustments', 'transforms', 'fit', 'inpaintStrokes',
+    ]);
+    state.imageStatus.set(node.id, 'Processing locally…');
+    schedulePreview(node, true);
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
+    showToast('Original image restored and edits reset on the same layer.');
+    return true;
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not restore the original image before resetting it.');
+    return false;
+  }
+}
+
+async function restoreBackgroundRemovalForReset(node) {
+  const sourceAssetId = node?.backgroundRemovalSourceAssetId;
+  if (node?.type !== 'image' || node.backgroundRemoved !== true || !sourceAssetId) return false;
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const signature = JSON.stringify(node);
+  try {
+    await ensureBackgroundRemovalAssetResident(node, sourceAssetId, 'source', generation);
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || findNode(state.document, node.id, pageId)?.node !== node
+      || JSON.stringify(node) !== signature || !state.assets.get(sourceAssetId)?.sourceBytes) {
+      throw new DOMException('The image changed before its original source could be restored.', 'AbortError');
+    }
+    checkpoint('Reset image');
+    node.assetId = sourceAssetId;
+    node.backgroundRemoved = false;
+    node.adjustments = { ...defaultImageAdjustments };
+    node.transforms = createImageTransforms();
+    node.fit = 'cover';
+    node.inpaintStrokes = [];
+    recordNodeComponentOverrides(node, ['assetId', 'backgroundRemoved', 'adjustments', 'transforms', 'fit', 'inpaintStrokes']);
+    schedulePreview(node, true);
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
+    return true;
+  } catch (error) {
+    showToast(error.message || 'Could not restore this image before resetting it.');
+    return false;
+  }
+}
+
+function imageExpansionStageLabel(stage) {
+  return ({
+    'loading-model': 'Loading the local model…',
+    'decoding-image': 'Reading source pixels…',
+    inpainting: 'Generating the new edges…',
+    'encoding-preview': 'Preparing the expanded image…',
+  })[stage] || 'Processing locally…';
+}
+
+function imageExpansionFenceMatches(capture, controller = null) {
+  if (controller && (controller.signal.aborted || state.imageExpansionController !== controller)) return false;
+  if (state.documentGeneration !== capture.generation || state.document.id !== capture.documentId
+    || state.document.activePageId !== capture.pageId || state.documentTransitioning
+    || state.selectedIds.length !== 1 || state.selectedIds[0] !== capture.nodeId) return false;
+  const entry = findNode(state.document, capture.nodeId, capture.pageId);
+  if (!entry || entry.node !== capture.sourceNode || JSON.stringify(entry.node) !== capture.sourceSignature) return false;
+  const source = state.assets.get(capture.sourceAssetId);
+  return source === capture.sourceAsset && source?.sourceBytes === capture.sourceBytes;
+}
+
+async function createExpandedImageAsset({
+  sourceAssetId, sourceAsset, sourceBytes, plan, generation, documentId, workspace,
+  signal, isCurrent, onStage = () => {}, sourceName = 'Image',
+}) {
+  validateInpaintDimensions(plan.sourceWidth, plan.sourceHeight);
+  validateInpaintDimensions(plan.width, plan.height);
+  if (!sourceAsset || !sourceBytes || sourceAsset.sourceBytes !== sourceBytes) {
+    throw new Error('The local image source changed before expansion could start.');
+  }
+  const outputAssetId = createId('asset');
+  const target = { workspace, documentId };
+  const outputBound = estimatePreviewMemoryReservationBytes({ width: plan.width, height: plan.height });
+  const workingBytes = 48 * MIB + sourceBytes.byteLength
+    + estimateBitmapBytes(plan.width, plan.height, 12) + outputBound.encodedByteLength;
+  const sourceLease = imageSourceResidency.acquire(sourceAssetId);
+  if (!sourceLease) throw new ImageMemoryLimitError('The original image could not be protected in memory for expansion.', 'image-expansion-source');
+  let workingReservation = null;
+  let assetReservation = null;
+  let decodeReservation = null;
+  let bitmap = null;
+  let bitmapUrl = null;
+  let persisted = false;
+  let committed = false;
+  try {
+    workingReservation = reserveImageMemory(workingBytes, {
+      kind: 'local-image-expansion-worker', excludeAssetIds: [sourceAssetId],
+    });
+    if (!workingReservation) {
+      throw new ImageMemoryLimitError('There is not enough local memory to expand this image. Close another large image or use a smaller source, then retry.', 'image-expansion-worker');
+    }
+    const result = await inpaintEngine.expand(sourceBytes, plan, {
+      signal,
+      onStage: ({ stage }) => { if (isCurrent()) onStage(imageExpansionStageLabel(stage)); },
+    });
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed during expansion.', 'AbortError');
+    imageMemoryBudget.releaseReservation(workingReservation); workingReservation = null;
+    const dimensions = assertSafeRasterDimensions(result.bytes);
+    if (dimensions.width !== plan.width || dimensions.height !== plan.height
+      || result.width !== plan.width || result.height !== plan.height) {
+      throw new Error('The local model returned an image with unexpected expansion dimensions.');
+    }
+    const fallbackDimensions = fallbackImageDimensions(plan.width, plan.height);
+    const outputAssetBytes = estimateAssetMemoryBytes({
+      sourceByteLength: result.bytes.byteLength,
+      bitmapWidth: fallbackDimensions.width,
+      bitmapHeight: fallbackDimensions.height,
+    });
+    assetReservation = reserveImageMemory(outputAssetBytes, {
+      kind: 'image-expansion-asset', excludeAssetIds: [sourceAssetId],
+    });
+    if (!assetReservation) throw retainedImageLimitMessage();
+    decodeReservation = reserveImageMemory(estimateBitmapBytes(plan.width, plan.height), {
+      kind: 'image-expansion-decode', excludeAssetIds: [sourceAssetId],
+    });
+    if (!decodeReservation) throw retainedImageLimitMessage();
+    const blob = new Blob([result.bytes], { type: 'image/png' });
+    const fallback = await createFallbackImage(blob);
+    bitmap = fallback.bitmap;
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while decoding its expanded result.', 'AbortError');
+    imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+    bitmapUrl = URL.createObjectURL(blob);
+    persisted = true;
+    await persistObjectIsolationAsset(target, outputAssetId, `${sourceName || 'Image'}-expanded.png`, result.bytes);
+    if (signal?.aborted || !isCurrent()) throw new DOMException('The image changed while saving its expanded result.', 'AbortError');
+    imageMemoryBudget.commit(assetReservation, assetMemoryKey(outputAssetId), { bytes: outputAssetBytes, kind: 'asset' });
+    assetReservation = null;
+    state.assets.set(outputAssetId, {
+      id: outputAssetId, name: `${sourceName || 'Image'}-expanded.png`, type: 'image/png',
+      sourceBytes: result.bytes, bitmap, bitmapUrl, sourceWidth: plan.width, sourceHeight: plan.height,
+    });
+    imageSourceResidency.markResident(outputAssetId);
+    committed = true;
+    bitmap = null; bitmapUrl = null;
+    return outputAssetId;
+  } finally {
+    if (workingReservation) imageMemoryBudget.releaseReservation(workingReservation);
+    if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
+    if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
+    bitmap?.close?.();
+    if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
+    sourceLease.release();
+    if (persisted && !committed) {
+      try { await deleteObjectIsolationAsset(target, outputAssetId); }
+      catch (error) { showToast(`The unused expanded image could not be removed from local storage: ${error.message || 'storage error'}.`); }
+    }
+  }
+}
+
+function cancelImageExpansionProcessing() {
+  const controller = state.imageExpansionController;
+  if (!controller) return false;
+  state.imageExpansionController = null;
+  state.imageExpansionSourceId = null;
+  controller.abort();
+  state.imageExpansionProgress = 'Cancelled · original image kept';
+  renderInspector(); renderer.invalidate();
+  return true;
+}
+
+async function expandSelectedImage(node) {
+  if (state.imageExpansionController) return false;
+  if (node?.resolutionBoosted === true) {
+    showToast('Restore the original resolution before expanding this image.');
+    return false;
+  }
+  if (node?.type !== 'image' || state.selectedIds.length !== 1 || state.selectedIds[0] !== node.id) return false;
+  if (node.imageExpansion) return restoreImageExpansion(node);
+  const fields = [...document.querySelectorAll('[data-image-expansion-side]')];
+  let ratio;
+  try {
+    ratio = normalizeImageExpansionRatio(Object.fromEntries(fields.map(input => [input.dataset.imageExpansionSide, Number(input.value) / 100])));
+  } catch (error) {
+    showToast(error.message || 'Choose a valid expansion amount.');
+    return false;
+  }
+  const entry = findNode(state.document, node.id);
+  if (!entry || node.locked || entry.parents.some(parent => parent.locked)
+    || entry.parent?.autoLayout || ['x', 'y', 'width', 'height'].some(property => node.variableBindings?.[property])
+    || isImageRecipeBatchActive(state.bulk) || state.backgroundRemovalController || state.objectIsolationController) {
+    showToast('Unlock this image, unbind its geometry, move it outside Auto layout, and finish other image processing before expanding.');
+    return false;
+  }
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const workspace = state.workspace;
+  const sourceAssetId = node.assetId;
+  const sourceSignature = JSON.stringify(node);
+  const controller = new AbortController();
+  state.imageExpansionController = controller;
+  state.imageExpansionSourceId = node.id;
+  state.imageExpansionProgress = 'Preparing the local image…';
+  renderInspector();
+  let outputAssetId = null;
+  let success = false;
+  try {
+    if (!state.assets.get(sourceAssetId)?.sourceBytes) {
+      await ensureBackgroundRemovalAssetResident(node, sourceAssetId, 'source', generation);
+    }
+    const sourceAsset = state.assets.get(sourceAssetId);
+    if (!sourceAsset?.sourceBytes) throw new Error('The original image could not be restored from local storage.');
+    const sourceBytes = sourceAsset.sourceBytes;
+    const width = sourceAsset.sourceWidth || node.sourceWidth;
+    const height = sourceAsset.sourceHeight || node.sourceHeight;
+    const padding = imageExpansionPaddingFromRatio(width, height, ratio);
+    const plan = planImageExpansion(width, height, padding);
+    const capture = { generation, documentId, pageId, nodeId: node.id, sourceNode: node, sourceSignature, sourceAssetId, sourceAsset, sourceBytes };
+    const isCurrent = () => imageExpansionFenceMatches(capture, controller);
+    if (!isCurrent()) throw new DOMException('The image changed before expansion could start.', 'AbortError');
+    state.imageExpansionProgress = 'Waiting for the local AI worker…';
+    renderInspector();
+    outputAssetId = await withLocalModelWorkerSlot(() => createExpandedImageAsset({
+      sourceAssetId, sourceAsset, sourceBytes, plan, generation, documentId, workspace,
+      signal: controller.signal, isCurrent, sourceName: node.name || 'Image',
+      onStage: label => { state.imageExpansionProgress = label; renderInspector(); },
+    }), controller.signal);
+    if (!isCurrent()) throw new DOMException('The image changed before its expanded result could be applied.', 'AbortError');
+    const geometry = expandedImageLayerGeometry(node, entry.parents, width, height, padding);
+    checkpoint('Expand image');
+    node.imageExpansion = {
+      sourceImageAssetId: sourceAssetId,
+      sourceWidth: width,
+      sourceHeight: height,
+      originalGeometry: { x: node.x, y: node.y, width: node.width, height: node.height },
+      paddingRatio: { ...ratio },
+      originalInpaintStrokes: structuredClone(node.inpaintStrokes || []),
+    };
+    node.assetId = outputAssetId;
+    node.sourceWidth = plan.width;
+    node.sourceHeight = plan.height;
+    Object.assign(node, geometry);
+    if (node.inpaintStrokes?.length) node.inpaintStrokes = remapImageEraseStrokesForExpansion(node.inpaintStrokes, width, height, padding);
+    recordNodeComponentOverrides(node, ['assetId', 'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height', 'inpaintStrokes', 'imageExpansion']);
+    state.imageStatus.set(node.id, 'Processing locally…');
+    renderImagePreview(node.id, outputAssetId, node.adjustments, node.transforms, null, null, pageId).catch(error => {
+      state.imageStatus.set(node.id, imagePreviewFailureStatus(error));
+      showToast(error.message || 'Could not render the expanded image preview.');
+    });
+    success = true;
+    state.imageExpansionProgress = '';
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast('Image expanded on the same layer. Undo or Restore returns to its original pixels and size.');
+    return true;
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not expand this image.');
+    if (state.imageExpansionController === controller) {
+      state.imageExpansionProgress = error?.name === 'AbortError' ? 'Cancelled · original image kept' : error.message || 'Expansion failed.';
+      if (state.documentGeneration === generation && state.document.id === documentId
+        && state.document.activePageId === pageId && state.selectedIds.length === 1
+        && state.selectedIds[0] === node.id) renderInspector();
+    }
+    return false;
+  } finally {
+    if (outputAssetId && !success) {
+      try { await deleteObjectIsolationAsset({ workspace, documentId }, outputAssetId); }
+      catch { /* Unreferenced outputs can also be reclaimed by local asset cleanup. */ }
+      const retained = state.assets.get(outputAssetId);
+      retained?.bitmap?.close?.();
+      if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+      state.assets.delete(outputAssetId);
+      imageSourceResidency.evict(outputAssetId);
+      imageMemoryBudget.release(assetMemoryKey(outputAssetId));
+    }
+    if (state.imageExpansionController === controller) {
+      state.imageExpansionController = null;
+      state.imageExpansionSourceId = null;
+      if (success) state.imageExpansionProgress = '';
+      if (state.documentGeneration === generation && state.document.id === documentId) renderInspector();
+    }
+  }
+}
+
+async function restoreImageExpansion(node, { reset = false } = {}) {
+  const expansion = node?.imageExpansion;
+  if (node?.type !== 'image' || !expansion) return false;
+  const generation = state.documentGeneration;
+  const documentId = state.document.id;
+  const pageId = state.document.activePageId;
+  const sourceAssetId = reset && node.backgroundRemoved
+    ? node.backgroundRemovalSourceAssetId : expansion.sourceImageAssetId;
+  if (!sourceAssetId) { showToast('This expanded image has no recoverable source.'); return false; }
+  const signature = JSON.stringify(node);
+  try {
+    await ensureBackgroundRemovalAssetResident(node, sourceAssetId, 'source', generation);
+    const sourceAsset = state.assets.get(sourceAssetId);
+    if (generation !== state.documentGeneration || state.document.id !== documentId
+      || state.document.activePageId !== pageId || findNode(state.document, node.id, pageId)?.node !== node
+      || JSON.stringify(node) !== signature || !sourceAsset?.sourceBytes) {
+      throw new DOMException('The image changed before its original source could be restored.', 'AbortError');
+    }
+    checkpoint(reset ? 'Reset image' : 'Restore image expansion');
+    node.assetId = sourceAssetId;
+    node.sourceWidth = reset && node.backgroundRemoved ? sourceAsset.sourceWidth : expansion.sourceWidth;
+    node.sourceHeight = reset && node.backgroundRemoved ? sourceAsset.sourceHeight : expansion.sourceHeight;
+    Object.assign(node, expansion.originalGeometry);
+    if (reset) {
+      node.adjustments = { ...defaultImageAdjustments };
+      node.transforms = createImageTransforms();
+      node.fit = 'cover';
+      node.inpaintStrokes = [];
+      if (node.backgroundRemoved) {
+        node.backgroundRemoved = false;
+        delete node.backgroundRemovalSourceAssetId;
+        delete node.backgroundRemovalAssetId;
+      }
+    } else node.inpaintStrokes = structuredClone(expansion.originalInpaintStrokes || []);
+    delete node.imageExpansion;
+    const changed = ['assetId', 'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height', 'imageExpansion', 'inpaintStrokes'];
+    if (reset) changed.push('adjustments', 'transforms', 'fit', 'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId');
+    recordNodeComponentOverrides(node, changed);
+    schedulePreview(node, true);
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
+    showToast(reset ? 'Original image restored and edits reset.' : 'Original image pixels and size restored on the same layer.');
+    return true;
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not restore the image before expansion.');
+    return false;
+  }
+}
+
 async function createObjectIsolationLayer(node) {
   if (state.objectIsolationController) return;
   const pageId = state.document.activePageId;
@@ -7684,14 +9964,14 @@ async function createObjectIsolationLayer(node) {
     workingReservation = reserveImageMemory(workingBytes, { kind: 'object-isolation-worker', excludeAssetIds: [capture.assetId] });
     if (!workingReservation) throw new ImageMemoryLimitError('There is not enough free local memory for object isolation. Close another large image or use a smaller source, then retry.', 'object-isolation-worker');
     const strokes = state.objectIsolationStrokes.map(({ brushMode, isCompleted, point }) => ({ brushMode, isCompleted, point }));
-    const result = await objectIsolationEngine.run(capture.sourceBytes, strokes, {
+    const result = await withLocalModelWorkerSlot(() => objectIsolationEngine.run(capture.sourceBytes, strokes, {
       signal: controller.signal,
       onStage: ({ stage }) => {
         if (!objectIsolationFenceMatches(capture, controller)) return;
         state.objectIsolationProgress = objectIsolationStageLabel(stage);
         renderInspector();
       }
-    });
+    }), controller.signal);
     if (!objectIsolationFenceMatches(capture, controller)) throw new DOMException('The source or page changed during object isolation.', 'AbortError');
     imageMemoryBudget.releaseReservation(workingReservation); workingReservation = null;
     const dimensions = assertSafeRasterDimensions(result.bytes);
@@ -8091,13 +10371,17 @@ function updateInspectorInput(event) {
   const propertyValue = fontAxisMatch ? Math.max(Number(input.min), Math.min(Number(input.max), value))
     : fontFeatureMatch ? value === 'auto' ? null : value === 'off' ? 0 : value === 'on' ? 1 : Number(value)
     : prop === 'opacity' ? value / 100
-    : prop === 'points' ? Math.max(3, Math.min(32, Math.round(Number.isFinite(value) ? value : 3)))
+    : prop === 'points' ? Math.max(MIN_STAR_POINTS, Math.min(selected[0]?.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS, Math.round(Number.isFinite(value) ? value : MIN_STAR_POINTS)))
     : prop === 'innerRadius' ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : .48))
+      : /^vertexRadii\.\d+$/.test(prop) ? Math.max(0, Math.min(100_000, Number.isFinite(value) ? value : 0))
+      : prop === 'cornerSmoothing' ? Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0)) / 100
+      : prop === 'scalingFactor' ? Math.max(1, Math.min(1600, value)) / 100
+        : prop === 'maxLines' ? value == null ? null : Math.max(1, Math.min(100_000, Math.round(Number(value) || 1)))
       : ['paragraphSpacing', 'firstLineIndent', 'listSpacing'].includes(prop) ? Math.max(0, Math.min(10_000, Number.isFinite(value) ? value : 0))
         : value;
   if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = fontAxisMatch
     ? formatInspectorNumber(propertyValue)
-    : `${Math.round(value)}${['opacity', 'outputQuality'].includes(prop) ? '%' : ''}`;
+    : `${Math.round(value)}${['opacity', 'outputQuality', 'scalingFactor', 'cornerSmoothing'].includes(prop) ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
   const layoutSetting = prop.startsWith('autoLayout.');
   const constraintSetting = prop.startsWith('constraints.');
@@ -8190,6 +10474,12 @@ function updateInspectorInput(event) {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
+    else if (/^vertexRadii\.\d+$/.test(prop) && ['star', 'polygon'].includes(node.type)) {
+      const index = Number(prop.slice('vertexRadii.'.length));
+      const count = regularShapeVertexCount(node.type, node.points);
+      node.vertexRadii ||= Array.from({ length: count }, () => Math.max(0, Number(node.radius) || 0));
+      if (index >= 0 && index < count) node.vertexRadii[index] = propertyValue;
+    }
     else if (prop.startsWith('cornerRadii.')) {
       const side = prop.slice('cornerRadii.'.length);
       if (cornerRadiusKeys.includes(side)) {
@@ -8212,13 +10502,34 @@ function updateInspectorInput(event) {
       node.lineHeightUnit = value;
       node.lineHeight = value === 'auto' ? 1 : value === 'pixels' ? currentPx : value === 'percent' ? currentPx / size * 100 : currentPx / size;
     }
-    else if (prop === 'points' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
+    else if (prop === 'points') {
+      node.points = propertyValue;
+      if (node.vertexRadii) {
+        const count = regularShapeVertexCount(node.type, node.points);
+        node.vertexRadii = Array.from({ length: count }, (_, index) => node.vertexRadii[index] ?? Math.max(0, Number(node.radius) || 0));
+      }
+    }
+    else if (prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
-    else node[prop] = value;
-    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop))) {
+    else node[prop] = ['scalingFactor', 'cornerSmoothing'].includes(prop) ? propertyValue : value;
+    if (node.type === 'image' && prop === 'fit') {
+      if (node.fit === 'tile' && node.scalingFactor == null) node.scalingFactor = 1;
+      schedulePreview(node);
+    }
+    if (node.type === 'text' && prop === 'maxLines' && propertyValue != null) {
+      node.textTruncation = 'ending';
+      node.maxHeight = null;
+    } else if (node.type === 'text' && prop === 'textTruncation' && propertyValue !== 'ending') {
+      node.maxLines = null;
+    } else if (node.type === 'text' && prop === 'maxHeight' && propertyValue != null) {
+      node.maxLines = null;
+    }
+    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'text', 'width'].includes(prop))) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
-      if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
+      if (boundVariableId && ['text', 'fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent'].includes(prop)) {
+        resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
+      }
       else if ((resized || fontAxisMatch || fontFeatureMatch) && parent?.autoLayout) applyAutoLayout(parent);
     }
     const geometry = resolvedGeometry(node);
@@ -8245,6 +10556,7 @@ function updateInspectorInput(event) {
       const overrideProperty = fontFeatureMatch ? 'fontFeatures'
         : prop === 'closed' && state.selectedVectorPoint?.nodeId === node.id && (state.selectedVectorPoint.contourIndex || 0) > 0 ? 'subpaths' : prop;
       recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : overrideProperty);
+      if (prop === 'points' && node.vertexRadii) recordComponentOverride(instanceRoot, node, 'vertexRadii');
       if (prop === 'fillType' && value !== 'solid') {
         recordComponentOverride(instanceRoot, node, 'fillVariableId');
         recordComponentOverride(instanceRoot, node, 'fillStyleId');
@@ -8253,6 +10565,14 @@ function updateInspectorInput(event) {
       if (node.width !== oldRawWidth) recordComponentOverride(instanceRoot, node, 'width');
       if (node.height !== oldRawHeight) recordComponentOverride(instanceRoot, node, 'height');
       if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
+      if (node.type === 'text' && prop === 'maxLines' && propertyValue != null) {
+        recordComponentOverride(instanceRoot, node, 'textTruncation');
+        recordComponentOverride(instanceRoot, node, 'maxHeight');
+      } else if (node.type === 'text' && prop === 'textTruncation' && propertyValue !== 'ending') {
+        recordComponentOverride(instanceRoot, node, 'maxLines');
+      } else if (node.type === 'text' && prop === 'maxHeight' && propertyValue != null) {
+        recordComponentOverride(instanceRoot, node, 'maxLines');
+      }
     }
   }
   if (prop === 'overflowBehavior') {
@@ -8274,6 +10594,27 @@ function updateNetworkFaceInput(input) {
   }
   recordNodeComponentOverrides(node, ['faces']);
   renderer.invalidate();
+}
+
+function updateNetworkVertexCornerRadiusInput(input) {
+  const node = selectedNodes().length === 1 && selectedNodes()[0].type === 'network' ? selectedNodes()[0] : null;
+  const entry = node && findNode(state.document, node.id);
+  const vertex = node?.vertices?.find(item => item.id === input.dataset.networkVertexRadius);
+  if (!node || !entry || !vertex) return false;
+  if (node.locked || entry.parents.some(parent => parent.locked)) return false;
+  const eligibility = vectorNetworkVertexCornerRadiusEligibility(node, vertex.id);
+  if (!eligibility.eligible) return false;
+  if (!input.value.trim()) return false;
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) return false;
+  const radius = Math.max(0, Math.min(100_000, value));
+  if (radius === (Number(vertex.cornerRadius) || 0)) return true;
+  if (!state.controlEdit) { checkpoint('Edit vector corner radius'); state.controlEdit = true; }
+  if (radius > 0) vertex.cornerRadius = radius;
+  else delete vertex.cornerRadius;
+  recordNodeComponentOverrides(node, ['vertices']);
+  renderer.invalidate();
+  return true;
 }
 
 function finishInspectorInput() {
@@ -8399,22 +10740,15 @@ function visiblePreviewKeysForCanvas(targetCanvas, renderState) {
 }
 
 function selectedImagePreviewKeys() {
-  const protectedKeys = new Set();
-  for (const node of selectedNodes()) {
-    if (node.type === 'image' && node.assetId) protectedKeys.add(imagePreviewKey(node.id));
-    if (!Array.isArray(node.fills) && node.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id));
-    for (const fill of node.fills || []) {
-      if (fill.type === 'image' && fill.imageFill?.assetId) protectedKeys.add(imagePreviewKey(node.id, fill.id));
-    }
-  }
-  return protectedKeys;
+  const batchTargetIds = isImageRecipeBatchActive(state.bulk) ? state.bulk.targets : [];
+  return selectedImagePreviewKeysForNodes(selectedNodes(), { excludedNodeIds: batchTargetIds });
 }
 
 function busyImagePreviewKeys() {
   const busy = new Set([...previewTimers.keys(), ...state.inpaintControllers.keys()]);
   for (const previewKey of activeImagePreviewRenders.keys()) busy.add(previewKey);
   for (const [previewKey, status] of state.imageStatus) {
-    if (/^(Updating preview|Processing locally|Object erase|Restoring local preview)/.test(status || '')) busy.add(previewKey);
+    if (/^(Updating preview|Processing locally|Processing recipe|Object erase|Restoring local preview)/.test(status || '')) busy.add(previewKey);
   }
   return busy;
 }
@@ -8609,7 +10943,10 @@ async function renderImageWithEdits(node, asset, adjustments, transforms, option
     }
     if (signal?.aborted) throw new DOMException('Object erase was cancelled.', 'AbortError');
     if (!cachedSource) {
-      prepared = await inpaintEngine.run(asset.sourceBytes, strokes, { signal, onStage: onInpaintStage });
+      prepared = await withLocalModelWorkerSlot(
+        () => inpaintEngine.run(asset.sourceBytes, strokes, { signal, onStage: onInpaintStage }),
+        signal
+      );
       if (signal?.aborted) throw new DOMException('Object erase was cancelled.', 'AbortError');
       const preparedDimensions = assertSafeRasterDimensions(prepared.bytes);
       if (prepared.width !== originalDimensions.width || prepared.height !== originalDimensions.height
@@ -8636,7 +10973,7 @@ async function renderImageWithEdits(node, asset, adjustments, transforms, option
   }
 }
 
-async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null, queueGroup = null, pageId = state.document.activePageId) {
+async function renderImagePreview(nodeId, assetId, _capturedAdjustments, _capturedTransforms = {}, fillId = null, queueGroup = null, pageId = state.document.activePageId) {
   const previewKey = imagePreviewKey(nodeId, fillId);
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
@@ -8647,7 +10984,14 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   const previewLayer = findNode(state.document, nodeId, pageId)?.node;
   if (!previewLayer) return false;
   const imageNode = previewLayer.type === 'image' && !fillId ? previewLayer : null;
-  const previewSettings = imagePreviewSettingsForNode(previewLayer, previewKey, assetId);
+  // The layer is the source of truth. Callers may have captured settings
+  // before a restore or another async wait, so never render/sign that stale
+  // snapshot when the live layer has since changed.
+  const previewSettings = imagePreviewRenderSettingsForNode(previewLayer, previewKey, assetId);
+  const previewTransforms = previewSettings.transforms;
+  // Capture the exact settings identity before any worker or bitmap-decode
+  // await; the layer's nested edit objects can change while a render is live.
+  const previewSignature = imagePreviewSettingsSignature(previewSettings);
   const requiresRenderedPixels = imagePreviewRequiresRenderedPixels(previewSettings);
   const inpaintController = imageNode?.type === 'image' && imageNode.inpaintStrokes?.length ? new AbortController() : null;
   const version = ++nextImageRenderVersion;
@@ -8656,7 +11000,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   updateSelectedImageStatus(nodeId, previewKey, fillId);
   const sourceDimensions = inspectRasterDimensions(asset.sourceBytes);
   if (!sourceDimensions) throw new Error('Tiny Image Star could not verify this image size before rendering.');
-  const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
+  const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, previewTransforms);
   const pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const previewDimensionCeiling = innerWidth <= 820 || Number(navigator.deviceMemory) > 0 && navigator.deviceMemory <= 4 ? 2048 : 4096;
   const previewMaxDimension = imagePreviewMaxDimensionForNode(previewLayer, state.document, pageId, {
@@ -8691,10 +11035,8 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
     if (!reservation) throw retainedImageLimitMessage();
 
     return await withImageMemoryReservation(imageMemoryBudget, reservation, async () => {
-      const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
-      const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
-      const result = await renderImageWithEdits(imageNode, { assetId, sourceBytes: asset.sourceBytes }, adjustments, transforms, {
-        replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
+      const result = await renderImageWithEdits(imageNode, { assetId, sourceBytes: asset.sourceBytes }, previewSettings.adjustments, previewTransforms, {
+        replaceKey: `preview:${previewKey}`, format: 'png', quality: 90,
         queueGroup, previewMaxDimension,
       }, {
         signal: inpaintController?.signal,
@@ -8725,12 +11067,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
       state.previewUrls.set(previewKey, previewUrl);
       state.previews.set(previewKey, bitmap);
       state.previewAssetIds.set(previewKey, assetId);
-      state.previewSignatures.set(previewKey, imagePreviewSettingsSignature({
-        assetId, adjustments, transforms,
-        inpaintStrokes: imageNode?.type === 'image' ? imageNode.inpaintStrokes : [],
-        outputFormat: imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png',
-        outputQuality: imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90,
-      }));
+      state.previewSignatures.set(previewKey, previewSignature);
       state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
       state.previewDeferredKeys.delete(previewKey);
       previewUrl = null;
@@ -9156,11 +11493,19 @@ function stopRecipeBatchLeaseHeartbeat(bulk) {
   return true;
 }
 
+function abortRecipeBatchControllers(bulk, message) {
+  if (!bulk?.activeControllers) return;
+  for (const controller of bulk.activeControllers.values()) {
+    if (!controller.signal.aborted) controller.abort(new DOMException(message, 'AbortError'));
+  }
+}
+
 function loseRecipeBatchLease(bulk, error) {
   if (!bulk || state.bulk !== bulk || bulk.ownershipLost) return false;
   stopRecipeBatchLeaseHeartbeat(bulk);
   bulk.ownershipLost = true;
   bulk.leaseError = error?.message || 'This tab no longer owns the recovery record.';
+  abortRecipeBatchControllers(bulk, 'The image recipe recovery lease was lost.');
   setDocumentEditingBlocked(true);
   if (cancelImageRecipeBatch(bulk)) {
     for (const id of bulk.targets.slice(0, bulk.next)) {
@@ -9207,7 +11552,7 @@ function scheduleBulkConcurrency(bulk, immediate = false) {
   const apply = () => {
     bulkConcurrencyTimer = 0;
     if (state.bulk !== bulk || bulk.done || bulk.cancelled) return;
-    imageEngine.setConcurrency(bulk.concurrency);
+    imageEngine.setConcurrency(bulk.renderConcurrency || bulk.concurrency);
     renderBulkBar();
   };
   if (immediate) apply();
@@ -9285,6 +11630,7 @@ async function keepInterruptedRecipeChanges() {
     state.pendingRecipeRecovery = null;
     $('#recipe-recovery-dialog').close();
     setDocumentEditingBlocked(false);
+    if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
     return true;
   } catch (error) {
     $('#recipe-recovery-status').textContent = error.message || 'Could not clear the recovery record. Your saved edits are unchanged; try again.';
@@ -9307,13 +11653,14 @@ function resumeInterruptedRecipe() {
     return false;
   }
   const started = startRecipe(structuredClone(recovery.recipe), recovery.targetIds, {
-    concurrency: Math.min(2, CPU_LIMIT), pageId: recovery.pageId, recoveryOnFailure: recovery,
+    concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY, pageId: recovery.pageId, recoveryOnFailure: recovery,
     expectedRecoveryOwnerToken: recovery.ownerToken
   });
   if (!started) return false;
   state.pendingRecipeRecovery = null;
   $('#recipe-recovery-dialog').close();
   setDocumentEditingBlocked(false);
+  if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
   return true;
 }
 
@@ -9352,19 +11699,22 @@ function renderBulkBar() {
       ? `${updated} updated in place${bulk.failed ? ` · ${bulk.failed} failed` : ''}${bulk.superseded ? ` · ${bulk.superseded} newer edits preserved` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}${skipped ? ` · ${skipped} removed or unavailable skipped` : ''}`
       : bulk.paused
         ? `Queue held · ${bulk.inflight} admitted image${bulk.inflight === 1 ? '' : 's'} may still be finishing`
-        : `Editing original layers · ${bulk.inflight} queued or processing`;
+        : `Editing original layers · ${bulk.inflight} queued or processing${bulk.localAiRequired ? ` · ${localModelWorkerActive ? bulk.localAiStage || 'local image model' : bulk.localAiWaiting ? 'waiting for local image model' : 'one serialized local image model'} · ${localAiCpuReservationDescription(bulk)}` : ''}`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
   $('#bulk-rate').textContent = formatImageRecipeBatchTiming(bulk);
   const timing = imageRecipeBatchTiming(bulk);
-  $('#bulk-rate').title = `Historical average and trailing 5-second throughput. Paused time and paused completions are excluded; ETA uses the historical average.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
+  $('#bulk-rate').title = `Historical average and trailing 5-second throughput. Paused time and paused completions are excluded; ETA uses the historical average.${bulk.localAiRequired ? ' The reported image rate includes local AI processing and the Pillow-RS render.' : ''}${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
+  $('#bulk-speed').max = String(bulk.workerBudget || CPU_LIMIT);
   const speedValue = $('#bulk-speed-value');
-  speedValue.textContent = formatImageRecipeWorkerReadout(batchMetrics.active, bulk.concurrency);
-  speedValue.dataset.activeWorkers = String(engineMetrics.active);
+  const activeBatchWorkers = batchMetrics.active + (bulk.localAiRequired && localModelWorkerActive ? 1 : 0);
+  speedValue.textContent = formatImageRecipeWorkerReadout(activeBatchWorkers, bulk.concurrency);
+  speedValue.dataset.activeWorkers = String(activeBatchWorkers);
   speedValue.dataset.workersReady = String(engineMetrics.workersReady);
-  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum workers; ${batchMetrics.active} active in this batch; ${engineMetrics.active} active total; ${engineMetrics.workersReady} ready`);
-  speedValue.title = `Engine limit: ${engineMetrics.concurrency} worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued in this batch; ${engineMetrics.active} total active jobs. Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+  const localAiWorkerDescription = bulk.localAiRequired ? `; ${localAiCpuReservationDescription(bulk)} is included in the CPU budget` : '';
+  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum in-flight jobs; ${activeBatchWorkers} active workers in this batch; ${engineMetrics.active} active render jobs total; ${engineMetrics.workersReady} ready${localAiWorkerDescription}`);
+  speedValue.title = `Engine limit: ${engineMetrics.concurrency} render worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} in-flight job${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued render jobs.${bulk.localAiRequired ? ` A serialized local AI worker may run alongside render jobs and reserves up to ${bulk.localAiCpuSlots} CPU slot${bulk.localAiCpuSlots === 1 ? '' : 's'}; image rate includes both stages.` : ''} Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
@@ -9387,10 +11737,25 @@ function snapshotRecipeField(object, key) {
 
 function snapshotRecipeState(node) {
   return {
+    assetId: snapshotRecipeField(node, 'assetId'),
+    backgroundRemoved: snapshotRecipeField(node, 'backgroundRemoved'),
+    backgroundRemovalSourceAssetId: snapshotRecipeField(node, 'backgroundRemovalSourceAssetId'),
+    backgroundRemovalAssetId: snapshotRecipeField(node, 'backgroundRemovalAssetId'),
+    resolutionBoosted: snapshotRecipeField(node, 'resolutionBoosted'),
+    resolutionBoostSourceAssetId: snapshotRecipeField(node, 'resolutionBoostSourceAssetId'),
+    resolutionBoostAssetId: snapshotRecipeField(node, 'resolutionBoostAssetId'),
+    sourceWidth: snapshotRecipeField(node, 'sourceWidth'),
+    sourceHeight: snapshotRecipeField(node, 'sourceHeight'),
+    x: snapshotRecipeField(node, 'x'),
+    y: snapshotRecipeField(node, 'y'),
+    width: snapshotRecipeField(node, 'width'),
+    height: snapshotRecipeField(node, 'height'),
+    imageExpansion: snapshotRecipeField(node, 'imageExpansion'),
     adjustments: { ...(node.adjustments || {}) },
     transforms: snapshotRecipeField(node, 'transforms'),
     inpaintStrokes: snapshotRecipeField(node, 'inpaintStrokes'),
     fit: snapshotRecipeField(node, 'fit'),
+    scalingFactor: snapshotRecipeField(node, 'scalingFactor'),
     opacity: snapshotRecipeField(node, 'opacity'),
     opacityBinding: snapshotRecipeField(node.variableBindings || {}, 'opacity'),
     outputFormat: snapshotRecipeField(node, 'outputFormat'),
@@ -9405,7 +11770,7 @@ function recipeFieldMatches(current, expected) {
     && (!current.present || JSON.stringify(current.value) === JSON.stringify(expected.value));
 }
 
-function rollbackRecipeStateIfUnchanged(node, before, applied) {
+function rollbackRecipeStateIfUnchanged(node, before, applied, targetEntry = undefined) {
   let changed = false;
   const changedProperties = new Set();
   const currentAdjustments = { ...(node.adjustments || {}) };
@@ -9444,7 +11809,12 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     changedProperties.add('inpaintStrokes');
   }
 
-  for (const key of ['fit', 'opacity', 'outputFormat', 'outputQuality']) {
+  for (const key of [
+    'assetId', 'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+    'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
+    'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height',
+    'fit', 'scalingFactor', 'opacity', 'outputFormat', 'outputQuality'
+  ]) {
     const current = snapshotRecipeField(node, key);
     const recipeValue = applied[key];
     if (current.present !== recipeValue.present || (current.present && !Object.is(current.value, recipeValue.value))) continue;
@@ -9454,11 +11824,11 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     changed = true;
     changedProperties.add(key);
   }
-  for (const key of ['effects', 'blendMode']) {
+  for (const key of ['effects', 'blendMode', 'imageExpansion']) {
     const current = snapshotRecipeField(node, key);
     if (!recipeFieldMatches(current, applied[key])) continue;
+    if (recipeFieldMatches(current, before[key])) continue;
     const previous = before[key];
-    if (recipeFieldMatches(current, previous)) continue;
     if (previous.present) node[key] = structuredClone(previous.value);
     else delete node[key];
     changed = true;
@@ -9475,7 +11845,7 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     changed = true;
     changedProperties.add('variableBindings');
   }
-  if (changed) recordNodeComponentOverrides(node, [...changedProperties]);
+  if (changed) recordNodeComponentOverrides(node, [...changedProperties], targetEntry);
   return changed;
 }
 
@@ -9485,12 +11855,23 @@ function isEditableImageRecipeTarget(entry) {
     && !(entry.parents || []).some(parent => parent.locked);
 }
 
+function findBulkRecipeTarget(bulk, nodeId, pageId = bulk?.pageId) {
+  if (bulk?.nodeIndex && pageId === bulk.pageId) return bulk.nodeIndex.find(nodeId);
+  return findNode(state.document, nodeId, pageId);
+}
+
+function releaseBulkNodeIndexWhenDrained(bulk) {
+  if (!bulk?.done || bulk.inflight !== 0) return false;
+  bulk.nodeIndex = null;
+  return true;
+}
+
 function scheduleBulk() {
   const bulk = state.bulk;
   if (!bulk || bulk.journalPending || bulk.paused || bulk.cancelled || bulk.done || bulk.ownershipLost || state.documentTransitioning) return;
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
-    const entry = findNode(state.document, id, bulk.pageId);
+    const entry = findBulkRecipeTarget(bulk, id);
     if (!entry || entry.node.type !== 'image') {
       recordImageRecipeBatchTarget(bulk, { skipped: true });
       continue;
@@ -9503,6 +11884,7 @@ function scheduleBulk() {
     const node = entry.node;
     const assetId = node.assetId;
     const generation = state.documentGeneration;
+    const initialRenderVersion = state.renderVersion.get(id);
     const previousStatus = state.imageStatus.get(id);
     bulk.previousStatuses.set(id, previousStatus);
     const pendingPreview = previewTimers.get(id);
@@ -9515,9 +11897,15 @@ function scheduleBulk() {
     }
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     updateSelectedImageStatus(id);
+    const controller = new AbortController();
+    bulk.activeControllers.set(id, controller);
     let before = null;
     let applied = null;
     let recipeMutationApplied = false;
+    let expectedAssetId = assetId;
+    const renderIsCurrent = () => imageRecipeRenderIsCurrent(
+      bulk, id, initialRenderVersion, state.renderVersion.get(id)
+    );
     const restoreStableImageStatus = () => {
       const previousStatus = bulk.previousStatuses.get(id);
       const stablePreviousStatus = previousStatus && !previousStatus.startsWith('Processing') && !previousStatus.startsWith('Updating preview')
@@ -9532,8 +11920,8 @@ function scheduleBulk() {
       previewKey: imagePreviewKey(id),
       generation,
       isGenerationCurrent: () => state.documentGeneration === generation && !state.documentTransitioning,
-      isBatchCurrent: () => state.bulk === bulk && !bulk.cancelled && !bulk.ownershipLost,
-      resolveTarget: () => findNode(state.document, id, bulk.pageId),
+      isBatchCurrent: () => state.bulk === bulk && !bulk.cancelled && !bulk.ownershipLost && !controller.signal.aborted,
+      resolveTarget: () => findBulkRecipeTarget(bulk, id),
       expectedNode: node,
       isEditableTarget: isEditableImageRecipeTarget,
       onAdmit: currentEntry => {
@@ -9543,26 +11931,107 @@ function scheduleBulk() {
         // Capture the rollback state only after hydration, so edits made while
         // the source was loading remain the correct pre-recipe state.
         before = snapshotRecipeState(currentNode);
-        if (!applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId)) {
+        if (!applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId, {
+          deferBackgroundRemoval: true,
+          deferResolutionBoost: true,
+          targetEntry: currentEntry
+        })) {
           throw new Error(`Image “${currentNode.name}” is no longer a recipe target.`);
         }
         recipeMutationApplied = true;
         applied = snapshotRecipeState(currentNode);
-        const recipeOverrides = ['adjustments', 'transforms', 'fit', 'outputFormat', 'outputQuality'];
+          const recipeOverrides = ['adjustments', 'transforms', 'fit', 'scalingFactor', 'outputFormat', 'outputQuality'];
         if (Object.hasOwn(bulk.recipe, 'inpaintStrokes')) recipeOverrides.push('inpaintStrokes');
         if (Object.hasOwn(bulk.recipe, 'opacity') && bulk.recipe.opacity != null) recipeOverrides.push('opacity');
         if (bulk.recipe.effects != null) recipeOverrides.push('effects');
         if (bulk.recipe.blendMode != null) recipeOverrides.push('blendMode');
         const appliedOpacityBinding = snapshotRecipeField(currentNode.variableBindings || {}, 'opacity');
         if (!recipeFieldMatches(before.opacityBinding, appliedOpacityBinding)) recipeOverrides.push('variableBindings');
-        recordNodeComponentOverrides(currentNode, recipeOverrides);
-        // Save only after the source and target have both passed their fences.
-        queueSave({ refreshLayerTree: false });
-
-        const previousRenderVersion = state.renderVersion.get(id);
-        const render = renderImagePreview(id, assetId, currentNode.adjustments, currentNode.transforms, null, bulk.queueGroup, bulk.pageId);
-        const recipeRenderVersion = state.renderVersion.get(id);
-        if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
+        recordNodeComponentOverrides(currentNode, recipeOverrides, currentEntry);
+        const render = (async () => {
+          // Normalize an existing expansion before changing its source. This
+          // avoids compounding generated borders and makes repeated recipes
+          // idempotent while keeping every target on its own original pixels.
+          queueSave({ refreshLayerTree: false });
+          const expansionTransition = planImageExpansionRecipeTransition(currentNode, bulk.recipe);
+          if (Object.hasOwn(bulk.recipe, 'resolutionBoosted') && currentNode.resolutionBoosted === true) {
+            await applyResolutionBoostRecipeToTarget(currentNode, false, bulk, generation, controller.signal);
+            applied = snapshotRecipeState(currentNode);
+            expectedAssetId = currentNode.assetId;
+            recordNodeComponentOverrides(currentNode, [
+              'assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted',
+            ], findBulkRecipeTarget(bulk, id));
+            queueSave({ refreshLayerTree: false });
+          }
+          if (expansionTransition.restoreExistingExpansion) {
+            const recipeStrokes = snapshotRecipeField(currentNode, 'inpaintStrokes');
+            await restoreImageExpansionForRecipeTarget(currentNode, bulk, generation, controller.signal);
+            if (Object.hasOwn(bulk.recipe, 'inpaintStrokes') && bulk.recipe.inpaintStrokes != null && recipeStrokes.present) {
+              currentNode.inpaintStrokes = structuredClone(recipeStrokes.value);
+              recordNodeComponentOverrides(currentNode, ['inpaintStrokes'], findBulkRecipeTarget(bulk, id));
+            }
+            applied = snapshotRecipeState(currentNode);
+            expectedAssetId = currentNode.assetId;
+            queueSave({ refreshLayerTree: false });
+          } else if (expansionTransition.remapRecipeStrokes) {
+            const expansion = currentNode.imageExpansion;
+            const sourceStrokes = structuredClone(currentNode.inpaintStrokes || []);
+            const padding = imageExpansionPaddingFromRatio(expansion.sourceWidth, expansion.sourceHeight, expansion.paddingRatio);
+            expansion.originalInpaintStrokes = sourceStrokes;
+            currentNode.inpaintStrokes = remapImageEraseStrokesForExpansion(
+              sourceStrokes, expansion.sourceWidth, expansion.sourceHeight, padding
+            );
+            recordNodeComponentOverrides(currentNode, ['imageExpansion', 'inpaintStrokes'], findBulkRecipeTarget(bulk, id));
+            applied = snapshotRecipeState(currentNode);
+            queueSave({ refreshLayerTree: false });
+          }
+          // Background removal and expansion share one serialized local-model
+          // slot; their output pixels are local to this target, never copied
+          // from the recipe source image.
+          if (Object.hasOwn(bulk.recipe, 'backgroundRemoved')
+            && bulk.recipe.backgroundRemoved !== (currentNode.backgroundRemoved === true)) {
+            await applyBackgroundRemovalRecipeToTarget(currentNode, bulk.recipe.backgroundRemoved, bulk, generation, controller.signal);
+            applied = snapshotRecipeState(currentNode);
+            expectedAssetId = currentNode.assetId;
+            recordNodeComponentOverrides(currentNode, [
+              'assetId', 'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+            ], findBulkRecipeTarget(bulk, id));
+            queueSave({ refreshLayerTree: false });
+          }
+          if (expansionTransition.applyExpansion) {
+            const expansionChanged = await applyImageExpansionRecipeToTarget(
+              currentNode, expansionTransition.requestedRatio ?? null, bulk, generation, controller.signal
+            );
+            if (expansionChanged) {
+              applied = snapshotRecipeState(currentNode);
+              expectedAssetId = currentNode.assetId;
+              recordNodeComponentOverrides(currentNode, [
+                'assetId', 'sourceWidth', 'sourceHeight', 'x', 'y', 'width', 'height', 'inpaintStrokes', 'imageExpansion',
+              ], findBulkRecipeTarget(bulk, id));
+              queueSave({ refreshLayerTree: false });
+            }
+          }
+          if (Object.hasOwn(bulk.recipe, 'resolutionBoosted') && bulk.recipe.resolutionBoosted === true) {
+            const boostChanged = await applyResolutionBoostRecipeToTarget(currentNode, true, bulk, generation, controller.signal);
+            if (boostChanged) {
+              applied = snapshotRecipeState(currentNode);
+              expectedAssetId = currentNode.assetId;
+              recordNodeComponentOverrides(currentNode, [
+                'assetId', 'sourceWidth', 'sourceHeight', 'resolutionBoosted',
+                'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
+              ], findBulkRecipeTarget(bulk, id));
+              queueSave({ refreshLayerTree: false });
+            }
+          }
+          assertBulkRecipeImageTarget(currentNode, bulk, generation, controller.signal);
+          const previousRenderVersion = state.renderVersion.get(id);
+          const renderTask = renderImagePreview(id, currentNode.assetId, currentNode.adjustments, currentNode.transforms, null, bulk.queueGroup, bulk.pageId);
+          const recipeRenderVersion = state.renderVersion.get(id);
+          if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
+          state.imageStatus.set(id, 'Processing locally…');
+          updateSelectedImageStatus(id);
+          return renderTask;
+        })();
         return { render };
       }
     }).then(outcome => {
@@ -9585,8 +12054,8 @@ function scheduleBulk() {
       if (outcome.status !== 'rendering') return;
       const rendered = await outcome.rendered;
       if (bulk.ownershipLost) {
-        if (before && applied) rollbackRecipeStateIfUnchanged(node, before, applied);
-        if (bulk.renderVersions.get(id) === state.renderVersion.get(id)) schedulePreview(node, true);
+        if (before && applied) rollbackRecipeStateIfUnchanged(node, before, applied, findBulkRecipeTarget(bulk, id));
+        if (renderIsCurrent()) schedulePreview(node, true);
         recordImageRecipeBatchTarget(bulk, { canceled: true });
         return;
       }
@@ -9601,19 +12070,19 @@ function scheduleBulk() {
       if (state.bulk !== bulk) return;
       if (bulk.ownershipLost) {
         if (before && applied) {
-          rollbackRecipeStateIfUnchanged(node, before, applied);
+          rollbackRecipeStateIfUnchanged(node, before, applied, findBulkRecipeTarget(bulk, id));
           if (bulk.renderVersions.get(id) === state.renderVersion.get(id)) schedulePreview(node, true);
         } else restoreStableImageStatus();
         recordImageRecipeBatchTarget(bulk, { canceled: true });
         return;
       }
       const wasCanceledBeforeRender = bulk.cancelled && error.name === 'AbortError' && !error.superseded;
-      const renderStillCurrent = bulk.renderVersions.get(id) === state.renderVersion.get(id);
-      const currentEntry = findNode(state.document, id, bulk.pageId);
+      const renderStillCurrent = renderIsCurrent();
+      const currentEntry = findBulkRecipeTarget(bulk, id);
       const targetRemovedOrChanged = !currentEntry || currentEntry.node !== node
-        || currentEntry.node.type !== 'image' || currentEntry.node.assetId !== assetId;
+        || currentEntry.node.type !== 'image' || currentEntry.node.assetId !== expectedAssetId;
       const canRestoreBeforeState = renderStillCurrent && !error.superseded && !targetRemovedOrChanged && before && applied;
-      if (canRestoreBeforeState) rollbackRecipeStateIfUnchanged(node, before, applied);
+      if (canRestoreBeforeState) rollbackRecipeStateIfUnchanged(node, before, applied, currentEntry);
       if (wasCanceledBeforeRender) {
         if (renderStillCurrent) {
           const previousStatus = bulk.previousStatuses.get(id);
@@ -9650,6 +12119,7 @@ function scheduleBulk() {
       }
     }).finally(() => {
       if (state.bulk !== bulk) return;
+      bulk.activeControllers.delete(id);
       bulk.inflight -= 1;
       if (recipeMutationApplied && !bulk.ownershipLost) queueSave({ refreshLayerTree: false });
       renderer.invalidate();
@@ -9659,7 +12129,9 @@ function scheduleBulk() {
         bulk.paused = false;
         imageEngine.resumeQueueGroup(bulk.queueGroup);
         restoreImageRecipeBatchConcurrency(bulk);
+        void cleanupImageRecipeBatchAssets(bulk);
       }
+      releaseBulkNodeIndexWhenDrained(bulk);
       renderBulkBar();
     });
   }
@@ -9668,7 +12140,9 @@ function scheduleBulk() {
     bulk.paused = false;
     imageEngine.resumeQueueGroup(bulk.queueGroup);
     restoreImageRecipeBatchConcurrency(bulk);
+    void cleanupImageRecipeBatchAssets(bulk);
   }
+  releaseBulkNodeIndexWhenDrained(bulk);
   renderBulkBar();
 }
 
@@ -9683,7 +12157,7 @@ function restoreImageRecipeBatchConcurrency(bulk) {
   return true;
 }
 
-function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pageId = state.document.activePageId, replaceCompletedBatch = false, recoveryOnFailure = null, expectedRecoveryOwnerToken = recoveryOnFailure?.ownerToken ?? null } = {}) {
+function startRecipe(recipe, targets, { concurrency = DEFAULT_IMAGE_RECIPE_CONCURRENCY, pageId = state.document.activePageId, replaceCompletedBatch = false, recoveryOnFailure = null, expectedRecoveryOwnerToken = recoveryOnFailure?.ownerToken ?? null } = {}) {
   if (state.interaction || state.imageCropMode) {
     showToast('Finish the current canvas edit before starting an image recipe batch.');
     return false;
@@ -9697,18 +12171,33 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pa
     showToast('Finish the current recipe result before starting another image recipe batch.');
     return false;
   }
-  const entries = [...new Set(targets)].map(id => ({ id, entry: findNode(state.document, id, pageId) }))
+  const uniqueTargets = [...new Set(targets)];
+  const nodeIndex = createPageNodeIndex(state.document, pageId, {
+    nodeIds: uniqueTargets,
+    preserveNodeIdentity: true
+  });
+  const entries = uniqueTargets.map(id => ({ id, entry: nodeIndex.find(id) }))
     .filter(item => item.entry?.node.type === 'image');
   const lockedCount = entries.filter(item => !isEditableImageRecipeTarget(item.entry)).length;
   const unique = entries.filter(item => isEditableImageRecipeTarget(item.entry)).map(item => item.id);
   if (!unique.length) { showToast('Select one or more unlocked image layers first.'); return false; }
   if (lockedCount) showToast(`${lockedCount} locked image${lockedCount === 1 ? '' : 's'} skipped.`);
+  const backgroundRemoval = recipe.backgroundRemoved === true;
+  const imageExpansion = Object.hasOwn(recipe, 'imageExpansionPaddingRatio') && recipe.imageExpansionPaddingRatio !== null;
+  const localAiRequired = imageRecipeUsesLocalModel(recipe);
+  const localAiCpuSlots = recipe.resolutionBoosted === true ? resolutionBoostEngine.numThreads : 1;
+  const workerBudget = CPU_LIMIT;
+  concurrency = Math.max(1, Math.min(workerBudget, Math.trunc(Number(concurrency)) || 1));
+  const renderWorkerBudget = imageRecipeRenderWorkerBudget(CPU_LIMIT, concurrency);
   const ownerToken = createId('recipe-run');
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
   const replacedBulk = replaceCompletedBatch ? state.bulk : null;
   state.bulk = {
-    recipe: structuredClone(recipe), pageId, targets: unique, ownerToken, leaseExpiresAt: 0, leaseTimer: 0, ownershipLost: false, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
+    recipe: structuredClone(recipe), pageId, targets: unique, nodeIndex, documentId: state.document.id, workspace: state.workspace, ownerToken, leaseExpiresAt: 0, leaseTimer: 0, ownershipLost: false, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
     previousEngineConcurrency: imageEngine.concurrency, concurrencyRestored: false,
+    backgroundRemoval, imageExpansion, localAiRequired, localAiCpuSlots, localAiWaiting: 0, localAiStage: '',
+    activeControllers: new Map(), createdAssetIds: new Set(), assetsCleanupStarted: false,
+    workerBudget, renderConcurrency: renderWorkerBudget,
     paused: false, cancelled: false, done: false, journalPending: true, savePending: false, saveError: null,
     previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: [],
     recoveryOnFailure: recoveryOnFailure ? structuredClone(recoveryOnFailure) : null
@@ -9732,7 +12221,7 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pa
     bulk.leaseExpiresAt = claimed.leaseExpiresAt;
     bulk.journalPending = false;
     scheduleRecipeBatchLeaseHeartbeat(bulk);
-    imageEngine.setConcurrency(bulk.concurrency);
+    imageEngine.setConcurrency(bulk.renderConcurrency);
     renderBulkBar(); scheduleBulk();
   }).catch(async error => {
     if (state.bulk !== bulk) return;
@@ -9758,13 +12247,13 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pa
 function cancelBulkRecipe() {
   const bulk = state.bulk;
   if (!cancelImageRecipeBatch(bulk)) return false;
-  for (const id of bulk.targets.slice(0, bulk.next)) {
-    const recipeVersion = bulk.renderVersions.get(id);
-    if (recipeVersion == null || recipeVersion !== state.renderVersion.get(id)) continue;
+  abortRecipeBatchControllers(bulk, 'The image recipe batch was cancelled.');
+  for (const id of activeImageRecipeRenderTargets(bulk, targetId => state.renderVersion.get(targetId))) {
     imageEngine.cancelQueuedByKey(`preview:${imagePreviewKey(id)}`);
   }
   imageEngine.resumeQueueGroup(bulk.queueGroup);
   if (bulk.done) restoreImageRecipeBatchConcurrency(bulk);
+  releaseBulkNodeIndexWhenDrained(bulk);
   renderBulkBar();
   return true;
 }
@@ -9808,6 +12297,7 @@ function openImageRecipeDialog(type, { nodeId = null, recipeId = null } = {}) {
     const adjustments = node.adjustments || {};
     const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
       .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
+    if (node.backgroundRemoved) active.push('Remove background · local AI');
     if (adjustments.autoContrast) active.push('Auto contrast');
     if (Number(adjustments.posterizeBits) > 0) active.push(`Posterize ${adjustments.posterizeBits} bit`);
     if (adjustments.solarize) active.push(`Solarize at ${adjustments.solarizeThreshold}`);
@@ -10068,6 +12558,91 @@ function handleEffectStyleAction(action) {
   else if (action === 'apply') applyEffectStyleToSelection();
   else if (action === 'update') updateEffectStyleFromSelection();
   else if (action === 'delete') removeEffectStyleFromAssets();
+}
+
+function saveLayoutGuideStyleFor(nodeId) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (node?.type !== 'frame') { showToast('Select a frame before saving a layout guide style.'); return; }
+  const name = prompt('Layout guide style name', `${node.name} guides`);
+  if (name == null) return;
+  try {
+    checkpoint('Create layout guide style');
+    const style = createLayoutGuideStyle(state.document, node.id, name);
+    selectedLayoutGuideStyleId = style.id;
+    recordNodeComponentOverrides(node, ['layoutGuides', 'layoutGuideStyleId']);
+    renderUI(); queueSave(); renderer.invalidate(); showToast(`Layout guide style “${style.name}” saved.`);
+  } catch (error) { showToast(error.message); }
+}
+
+function applyLayoutGuideStyleToSelection() {
+  const style = state.document.layoutGuideStyles?.find(item => item.id === selectedLayoutGuideStyleId);
+  const entries = selectedEntries().filter(entry => entry.node.type === 'frame');
+  if (!style) { showToast('Choose a layout guide style first.'); return; }
+  if (!entries.length) { showToast('Select one or more frames to apply this layout guide style.'); return; }
+  if (entries.some(({ node, parents }) => node.locked || parents.some(parent => parent.locked))) {
+    showToast('Unlock every selected frame and its parent before applying a layout guide style.'); return;
+  }
+  checkpoint(`Apply ${style.name}`);
+  for (const entry of entries) {
+    const { node } = entry;
+    if (!applyLayoutGuideStyle(state.document, node.id, style.id)) continue;
+    recordNodeComponentOverrides(node, ['layoutGuides', 'layoutGuideStyleId'], entry);
+  }
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(`Applied “${style.name}” to ${entries.length} frame${entries.length === 1 ? '' : 's'}.`);
+}
+
+function updateLayoutGuideStyleFromFrame() {
+  const style = state.document.layoutGuideStyles?.find(item => item.id === selectedLayoutGuideStyleId);
+  const entries = selectedEntries();
+  if (!style) { showToast('Choose a layout guide style first.'); return; }
+  if (entries.length !== 1 || entries[0].node.type !== 'frame') { showToast('Select one frame to update this layout guide style.'); return; }
+  const { node } = entries[0];
+  if (node.locked || entries[0].parents.some(parent => parent.locked)) { showToast('Unlock the selected frame and its parent before updating a style.'); return; }
+  if (!(node.layoutGuides || []).length) { showToast('Add at least one guide before updating this style.'); return; }
+  checkpoint(`Update ${style.name}`);
+  if (!updateLayoutGuideStyle(state.document, style.id, node.id)) { showToast('Add at least one valid guide before updating this style.'); return; }
+  selectedLayoutGuideStyleId = style.id;
+  recordNodeComponentOverrides(node, ['layoutGuides', 'layoutGuideStyleId'], entries[0]);
+  renderUI(); queueSave(); renderer.invalidate(); showToast(`Updated “${style.name}” across linked frames.`);
+}
+
+function renameSelectedLayoutGuideStyle() {
+  const style = state.document.layoutGuideStyles?.find(item => item.id === selectedLayoutGuideStyleId);
+  if (!style) { showToast('Choose a layout guide style first.'); return; }
+  const name = prompt('Layout guide style name', style.name);
+  if (name == null) return;
+  checkpoint(`Rename ${style.name}`);
+  if (!renameLayoutGuideStyle(state.document, style.id, name)) { showToast('Could not rename this layout guide style.'); return; }
+  renderUI(); queueSave(); showToast(`Renamed style to “${style.name}”.`);
+}
+
+function deleteSelectedLayoutGuideStyle() {
+  const style = state.document.layoutGuideStyles?.find(item => item.id === selectedLayoutGuideStyleId);
+  if (!style) { showToast('Choose a layout guide style first.'); return; }
+  checkpoint(`Delete ${style.name}`);
+  deleteLayoutGuideStyle(state.document, style.id);
+  selectedLayoutGuideStyleId = '';
+  renderUI(); queueSave(); renderer.invalidate(); showToast(`Deleted “${style.name}”; linked frames keep their guides.`);
+}
+
+function detachSelectedLayoutGuideStyle() {
+  const entries = selectedEntries();
+  if (entries.length !== 1 || entries[0].node.type !== 'frame' || !entries[0].node.layoutGuideStyleId) return;
+  const { node } = entries[0];
+  checkpoint('Detach layout guide style');
+  if (!detachLayoutGuideStyle(state.document, node.id)) return;
+  recordNodeComponentOverrides(node, ['layoutGuideStyleId'], entries[0]);
+  renderUI(); queueSave(); showToast('Detached the layout guide style. This frame keeps its current guides.');
+}
+
+function handleLayoutGuideStyleAction(action) {
+  if (action === 'save') saveLayoutGuideStyleFor(selectedNodes()[0]?.id);
+  else if (action === 'apply') applyLayoutGuideStyleToSelection();
+  else if (action === 'update') updateLayoutGuideStyleFromFrame();
+  else if (action === 'rename') renameSelectedLayoutGuideStyle();
+  else if (action === 'delete') deleteSelectedLayoutGuideStyle();
+  else if (action === 'detach') detachSelectedLayoutGuideStyle();
 }
 
 function removeTypographyStyleFromAssets(styleId) {
@@ -10336,7 +12911,8 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   const selectedGroup = selectedNodes().length === 1 && selectedNodes()[0].type === 'group' ? selectedNodes()[0] : null;
   if (canGroupLayers(state.document, rootSelectedIds())) items.unshift({ label: `Group ${rootSelectedIds().length} layers`, shortcut: '⌘G', action: groupSelectedLayers }, { separator: true });
   if (selectedGroup && canUngroupLayers(state.document, selectedGroup.id)) items.unshift({ label: 'Ungroup', shortcut: '⌘⇧G', action: () => ungroupSelectedLayers(selectedGroup.id) }, { separator: true });
-  if (canCreateMaskGroup(state.document, rootSelectedIds())) items.unshift({ label: 'Use as mask', action: maskSelectedLayers }, { separator: true });
+  if (canCreateMaskGroup(state.document, rootSelectedIds())) items.unshift({ label: 'Use as alpha mask', action: () => maskSelectedLayers('alpha') }, { separator: true });
+  if (canCreateMaskGroup(state.document, rootSelectedIds(), state.document.activePageId, 'vector')) items.unshift({ label: 'Use as vector mask', action: () => maskSelectedLayers('vector') }, { separator: true });
   if (node?.type === 'group' && node.mask) items.unshift({ label: 'Release mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
   if (canCombine) {
     items.unshift(
@@ -10446,13 +13022,13 @@ function ungroupSelectedLayers(groupId = selectedNodes()[0]?.id) {
   } catch (error) { showToast(error.message || 'This group cannot be ungrouped.'); }
 }
 
-function maskSelectedLayers() {
+function maskSelectedLayers(maskMode = 'alpha') {
   const ids = rootSelectedIds();
   try {
-    checkpoint('Create mask group');
-    const group = createMaskGroup(state.document, ids);
+    checkpoint(maskMode === 'vector' ? 'Create vector mask group' : 'Create alpha mask group');
+    const group = createMaskGroup(state.document, ids, state.document.activePageId, maskMode);
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
-    showToast(`Mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Mask source'}”. Its source layers remain editable.`);
+    showToast(`${maskMode === 'vector' ? 'Vector' : 'Alpha'} mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Mask source'}”. Its source layers remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot form a mask.'); }
 }
 
@@ -10638,6 +13214,7 @@ function refreshLiveHostRoomUi(session) {
     session.status = 'connected';
     liveStatus('host', `${connected} guest${connected === 1 ? '' : 's'} connected. Your folder is the canonical saved copy.`);
     setLiveEditorBlocked(false);
+    queueLivePresenceSync();
   } else if (waiting) {
     const active = [...peers].reverse().find(peer => !liveTerminal(peer.status));
     session.status = active?.status || 'waiting-answer';
@@ -10693,6 +13270,41 @@ function currentLiveHostViewState() {
     centerY: Math.max(-10_000_000, Math.min(10_000_000, (canvas.clientHeight / 2 - state.panY) / zoom))
   };
 }
+function applyLivePresence(presence) {
+  const session = state.liveCollaboration;
+  if (!session || !presence?.peerActorId) return false;
+  if (presence.active === false) state.remotePresence.delete(presence.peerActorId);
+  else state.remotePresence.set(presence.peerActorId, { ...presence, selectedIds: [...presence.selectedIds] });
+  renderer?.invalidate();
+  return true;
+}
+function currentLivePresenceState(session) {
+  return {
+    active: true,
+    pageId: state.document.activePageId,
+    cursorX: session.localCursor?.x ?? null,
+    cursorY: session.localCursor?.y ?? null,
+    selectedIds: state.selectedIds.slice(0, 128)
+  };
+}
+function queueLivePresenceSync(cursor = undefined, { clearCursor = false } = {}) {
+  const session = state.liveCollaboration;
+  if (!session?.controller) return;
+  if (cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y)) session.localCursor = { x: cursor.x, y: cursor.y };
+  else if (clearCursor) session.localCursor = null;
+  if (session.role === 'host' && !session.controller.guestCount) return;
+  if (session.role === 'guest' && (!session.replicaReady || !['connected', 'pending'].includes(session.status))) return;
+  if (livePresenceSyncTimer) return;
+  livePresenceSyncTimer = setTimeout(() => {
+    livePresenceSyncTimer = 0;
+    if (state.liveCollaboration !== session || !session.controller) {
+      queueLivePresenceSync();
+      return;
+    }
+    try { session.controller.publishPresence(currentLivePresenceState(session)); }
+    catch { /* Ephemeral cursor state can be dropped without interrupting saved edits. */ }
+  }, 50);
+}
 function queueLiveHostViewSync() {
   const session = state.liveCollaboration;
   if (session?.role !== 'host' || session.status !== 'connected' || !session.controller) return;
@@ -10702,6 +13314,7 @@ function queueLiveHostViewSync() {
     if (!isLiveHostViewOnly()) return;
     try { session.controller.publishViewState(currentLiveHostViewState()); }
     catch (error) { liveStatus('host', `View sharing paused: ${error.message || 'the peer connection is unavailable'}`); }
+    queueLivePresenceSync();
   }, 40);
 }
 function applyGuestViewState(session, viewState) {
@@ -10709,6 +13322,7 @@ function applyGuestViewState(session, viewState) {
   session.latestViewState = { ...viewState };
   if (session.followHostView === false || !session.replicaReady) return false;
   if (!state.document.pages.some(page => page.id === viewState.pageId)) return false;
+  const pageChanged = state.document.activePageId !== viewState.pageId;
   state.document.activePageId = viewState.pageId;
   state.selectedIds = [];
   clearVectorAnchorSelection();
@@ -10716,6 +13330,7 @@ function applyGuestViewState(session, viewState) {
   state.panX = canvas.clientWidth / 2 - viewState.centerX * state.zoom;
   state.panY = canvas.clientHeight / 2 - viewState.centerY * state.zoom;
   renderUI();
+  if (pageChanged) queueLivePresenceSync();
   return true;
 }
 function pauseGuestViewFollowing() {
@@ -10823,9 +13438,10 @@ async function startLiveHost() {
     const firstPeer = { label: 'Guest 1', status: 'preparing', controller: null };
     const session = {
       role: 'host', status: 'preparing', controller: null, designId: state.document.id,
-      peerSessions: [firstPeer], currentHostPeer: firstPeer
+      peerSessions: [firstPeer], currentHostPeer: firstPeer, localCursor: null
     };
     state.liveCollaboration = session;
+    state.remotePresence.clear();
     liveStatus('host', 'Preparing the design and signed session offer…');
     $('#live-start-host').disabled = true;
     setLiveEditorBlocked(true);
@@ -10840,6 +13456,7 @@ async function startLiveHost() {
           if (liveViewSyncTimer) { clearTimeout(liveViewSyncTimer); liveViewSyncTimer = 0; }
         }
       },
+      onPresence: applyLivePresence,
       getViewState: currentLiveHostViewState,
       onSnapshot: (snapshot, head) => {
         const next = parseDocument(snapshot);
@@ -10909,6 +13526,7 @@ async function addLiveHostGuest() {
         peer.status = status;
         refreshLiveHostRoomUi(session);
       },
+      onPresence: applyLivePresence,
       onSnapshot: () => {}
     });
     peer.controller = controller;
@@ -11077,6 +13695,7 @@ async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null
   setSaveState('saved', 'Local shared copy saved');
   liveStatus('guest', 'Connected. Edits are saved to your local folder and sent to the owner for durable approval.');
   $('#live-stop-guest').hidden = false;
+  queueLivePresenceSync();
   renderer?.invalidate();
 }
 
@@ -11095,9 +13714,10 @@ async function startLiveGuest() {
     session = {
       role: 'guest', status: 'preparing-answer', controller: null, hostDesignId: invite.designId,
       localDesignId: localSeed.id, localHead: null, replicaReady: false, hostRevision: null,
-      createPromise: null, sessionId: null, hostHead: null, followHostView: true, latestViewState: null
+      createPromise: null, sessionId: null, hostHead: null, followHostView: true, latestViewState: null, localCursor: null
     };
     state.liveCollaboration = session;
+    state.remotePresence.clear();
     state.liveReplicaDesignId = session.localDesignId;
     state.liveReplicaHead = null;
     setLiveEditorBlocked(true);
@@ -11123,6 +13743,7 @@ async function startLiveGuest() {
           'failed': 'The live session failed before it could finish connecting.', 'closed': 'Live session closed.'
         };
         liveStatus('guest', copy[status] || `Live session: ${status}.`);
+        if (liveTerminal(status)) state.remotePresence.clear();
         $('#live-retry-fork').hidden = status !== 'fork-unsaved';
         if (status === 'fork-unsaved') setLiveEditorBlocked(true);
         else if (session.replicaReady && ['connected', 'pending', 'fork-saved'].includes(status)) setLiveEditorBlocked(status === 'pending');
@@ -11144,6 +13765,7 @@ async function startLiveGuest() {
         session.latestViewState = viewState;
         applyGuestViewState(session, viewState);
       },
+      onPresence: applyLivePresence,
       onAsset: async asset => {
         try {
           await ensureLiveReplicaDesign(session);
@@ -11224,6 +13846,7 @@ async function stopLiveHost() {
   try {
     await session.controller.revoke();
     session.status = 'revoked';
+    state.remotePresence.clear();
     liveStatus('host', 'Sharing stopped and the stable invitation was revoked.');
     $('#live-add-guest').hidden = true;
     setLiveEditorBlocked(false);
@@ -11236,7 +13859,10 @@ async function stopLiveGuest() {
   const session = state.liveCollaboration;
   if (session?.role !== 'guest' || !session.controller) return;
   $('#live-stop-guest').disabled = true;
-  try { session.controller.close(); }
+  try {
+    session.controller.close();
+    state.remotePresence.clear();
+  }
   catch (error) { liveStatus('guest', error.message || 'Could not leave the live session.'); }
   finally { $('#live-stop-guest').disabled = false; }
 }
@@ -11244,6 +13870,7 @@ async function stopLiveGuest() {
 function startJoinFromStableLink() {
   const hash = location.hash;
   if (!hash.startsWith('#tisd1.')) return false;
+  if (state.workspaceOnboardingRequired || state.workspacePermissionNeeded || state.pendingRecipeRecovery) return false;
   $('#live-join-invite').value = `${location.origin}${location.pathname}${location.search}${hash}`;
   history.replaceState(history.state, '', `${location.pathname}${location.search}`);
   openLiveDialog('guest');
@@ -11303,6 +13930,75 @@ function copySelected() {
     reconcileImageAssetRuntime();
     showToast(`Copied ${entries.length} layer${entries.length === 1 ? '' : 's'}.`);
   } catch (error) { showToast(error.message || 'Could not copy these layers.'); }
+}
+function copySelectedLayoutGuide() {
+  const frame = state.selectedLayoutGuideFrameId === state.selectedIds[0] && state.selectedIds.length === 1
+    ? findNode(state.document, state.selectedLayoutGuideFrameId, activePage()?.id)?.node : null;
+  if (frame?.type !== 'frame' || !state.selectedLayoutGuideId) return false;
+  try {
+    state.layoutGuideClipboard = copyLayoutGuide(state.document, frame.id, state.selectedLayoutGuideId, activePage().id);
+    const guide = frame.layoutGuides.find(item => item.id === state.selectedLayoutGuideId);
+    showToast(`Copied ${guide.type === 'grid' ? 'grid' : guide.type === 'columns' ? 'column' : 'row'} guide. Select a frame and paste to apply it.`);
+  } catch (error) { showToast(error.message || 'Could not copy this layout guide.'); }
+  return true;
+}
+function pasteLayoutGuideToSelection() {
+  if (!state.layoutGuideClipboard) { showToast('Select a layout guide and copy it before pasting.'); return; }
+  if (state.documentTransitioning || state.workspacePermissionNeeded || state.workspaceOnboardingRequired
+    || state.pendingRecipeRecovery || state.localPackageBuilding
+    || state.presenting || isLiveHostViewOnly() || isImageRecipeBatchActive(state.bulk) || state.interaction) {
+    showToast('Finish the current editor action before pasting a layout guide.');
+    return;
+  }
+  const entries = selectedEntries().filter(entry => entry.node.type === 'frame');
+  if (!entries.length) { showToast('Select one or more frames before pasting a layout guide.'); return; }
+  if (entries.some(({ node, parents }) => node.locked || parents.some(parent => parent.locked))) {
+    showToast('Unlock every selected frame and its parent before pasting a layout guide.');
+    return;
+  }
+  try {
+    const result = pasteLayoutGuide(state.document, state.layoutGuideClipboard, entries.map(entry => entry.node.id), activePage().id);
+    checkpoint('Paste layout guide');
+    state.document = result.document;
+    for (const entry of entries) {
+      const updated = findNode(state.document, entry.node.id, activePage().id);
+      if (updated) recordNodeComponentOverrides(updated.node, ['layoutGuides', 'layoutGuideStyleId'], updated);
+    }
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast(`Pasted a layout guide to ${entries.length} frame${entries.length === 1 ? '' : 's'}.`);
+  } catch (error) { showToast(error.message || 'Could not paste the layout guide.'); }
+}
+function duplicateSelectedLayoutGuide() {
+  const frame = state.selectedLayoutGuideFrameId === state.selectedIds[0] && state.selectedIds.length === 1
+    ? findNode(state.document, state.selectedLayoutGuideFrameId, activePage()?.id)?.node : null;
+  if (frame?.type !== 'frame' || !state.selectedLayoutGuideId) return false;
+  const entry = selectedEntries().find(item => item.node.id === frame.id);
+  if (frame.locked || entry?.parents.some(parent => parent.locked)) {
+    showToast('Unlock the selected frame and its parent before duplicating a layout guide.');
+    return true;
+  }
+  if (state.documentTransitioning || state.workspacePermissionNeeded || state.workspaceOnboardingRequired
+    || state.pendingRecipeRecovery || state.localPackageBuilding || state.presenting
+    || isLiveHostViewOnly() || isImageRecipeBatchActive(state.bulk) || state.interaction) {
+    showToast('Finish the current editor action before duplicating a layout guide.');
+    return true;
+  }
+  try {
+    const clipboard = copyLayoutGuide(state.document, frame.id, state.selectedLayoutGuideId, activePage().id);
+    const result = pasteLayoutGuide(state.document, clipboard, [frame.id], activePage().id);
+    const updated = findNode(result.document, frame.id, activePage().id);
+    const duplicate = updated?.node.layoutGuides?.at(-1);
+    if (!updated || !duplicate) throw new Error('The duplicated layout guide could not be selected.');
+    checkpoint('Duplicate layout guide');
+    state.document = result.document;
+    recordNodeComponentOverrides(updated.node, ['layoutGuides', 'layoutGuideStyleId'], updated);
+    state.layoutGuideClipboard = copyLayoutGuide(state.document, frame.id, duplicate.id, activePage().id);
+    state.selectedLayoutGuideId = duplicate.id;
+    state.selectedLayoutGuideFrameId = frame.id;
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast('Duplicated a layout guide.');
+  } catch (error) { showToast(error.message || 'Could not duplicate the layout guide.'); }
+  return true;
 }
 function propertyClipboardShortcut(key) {
   const platform = navigator.userAgentData?.platform || navigator.platform || '';
@@ -11388,7 +14084,7 @@ function pasteAppearanceToSelection() {
       }
       if (changed.has('effects')) componentProperties.add('effects');
       if (changed.has('radii')) {
-        componentProperties.add('radius'); componentProperties.add('cornerRadii');
+        componentProperties.add('radius'); componentProperties.add('cornerRadii'); componentProperties.add('vertexRadii');
       }
       if (changed.has('textStyle')) {
         for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
@@ -11462,8 +14158,10 @@ function onDocumentPaste(event) {
   routeClipboardPaste(event, {
     canEdit: !isLiveHostViewOnly() && !state.documentTransitioning && !state.presenting && !document.querySelector('dialog[open]'),
     isEditingText,
+    hasLayoutGuideClipboard: Boolean(state.layoutGuideClipboard),
     hasLayerClipboard: hasClipboardLayers(),
     importImages: files => { void importImageFiles(files); },
+    pasteLayoutGuide: () => pasteLayoutGuideToSelection(),
     pasteLayers: () => pasteSelectedLayers(),
   });
 }
@@ -11540,6 +14238,81 @@ function addComponentProperty(componentId, targetNodeId, type) {
     renderUI(); queueSave(); renderer.invalidate(); showToast(`${property.name} is ready on component instances.`);
   } catch (error) {
     showToast(error.message || 'Could not add this component property.');
+  }
+}
+function componentExposureCandidates(component) {
+  const root = findNodeAcrossPages(state.document, component?.rootNodeId)?.node;
+  if (!component || !root) return [];
+  return componentPropertyTargets(root).filter(target => target !== root && target.isInstance)
+    .map(target => ({
+      sourceId: target.id,
+      name: target.name || state.document.components?.find(item => item.id === target.componentId)?.name || 'Nested instance',
+      propertyCount: nestedInstanceExposurePropertyCount(component, target),
+      candidates: nestedInstanceExposureCandidates(component, target)
+    }))
+    .filter(candidate => candidate.propertyCount > 0 && candidate.candidates.some(item => componentPropertyDefinitionCount(state.document, item) > 0));
+}
+function openComponentExposureDialog(componentId) {
+  const component = state.document.components?.find(item => item.id === componentId);
+  const candidates = componentExposureCandidates(component);
+  if (!component || !candidates.length) { showToast('This component has no nested component properties to expose.'); return; }
+  const candidateIds = new Set(candidates.map(candidate => candidate.sourceId));
+  state.componentExposureDialog = {
+    componentId,
+    selectedIds: componentExposedNestedInstanceSourceIds(state.document, component).filter(sourceId => candidateIds.has(sourceId))
+  };
+  renderComponentExposureDialog();
+  const dialog = $('#component-exposure-dialog');
+  dialog.returnValue = 'cancel';
+  dialog.showModal();
+  dialog.querySelector('[data-exposed-nested-instance]')?.focus();
+}
+function updateComponentExposureDialogCount() {
+  const dialogState = state.componentExposureDialog;
+  if (!dialogState) return;
+  const component = state.document.components?.find(item => item.id === dialogState.componentId);
+  const candidates = componentExposureCandidates(component);
+  const selectedIds = $$('#component-exposure-options [data-exposed-nested-instance]:checked').map(input => input.value);
+  dialogState.selectedIds = selectedIds;
+  const candidateById = new Map(candidates.map(candidate => [candidate.sourceId, candidate]));
+  const total = componentPropertyDefinitionCount(state.document, component)
+    + selectedIds.reduce((sum, sourceId) => sum + (candidateById.get(sourceId)?.propertyCount || 0), 0);
+  const overLimit = total > 100;
+  $('#component-exposure-count').textContent = `${selectedIds.length} nested instance${selectedIds.length === 1 ? '' : 's'} · ${total}/100 properties`;
+  $('#component-exposure-status').textContent = overLimit
+    ? 'This selection exceeds the 100-property limit. Remove a nested instance to continue.'
+    : 'All properties from each selected nested instance will be exposed together.';
+  $('#component-exposure-status').classList.toggle('is-error', overLimit);
+  $('#component-exposure-apply').disabled = overLimit;
+}
+function renderComponentExposureDialog() {
+  const dialogState = state.componentExposureDialog;
+  if (!dialogState) return;
+  const component = state.document.components?.find(item => item.id === dialogState.componentId);
+  const candidates = componentExposureCandidates(component);
+  $('#component-exposure-dialog-title').textContent = `Expose nested properties · ${component?.name || 'Component'}`;
+  $('#component-exposure-options').innerHTML = candidates.map(candidate => (
+    `<label class="component-exposure-option"><input type="checkbox" data-exposed-nested-instance value="${escapeHtml(candidate.sourceId)}"${dialogState.selectedIds.includes(candidate.sourceId) ? ' checked' : ''}/><span><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.candidates.map(item => item.name).join(' · '))}</small></span><em>${candidate.propertyCount} properties</em></label>`
+  )).join('') || '<div class="slot-picker-empty">No nested components with properties are available.</div>';
+  updateComponentExposureDialogCount();
+}
+function applyComponentExposureDialog(dialogState) {
+  if (!dialogState) return;
+  const component = state.document.components?.find(item => item.id === dialogState.componentId);
+  if (!component) { showToast('The owning component was removed before its properties could be updated.'); return; }
+  const selected = dialogState.selectedIds || [];
+  try {
+    const stagedDocument = cloneDocument(state.document);
+    if (!setComponentNestedInstanceExposures(stagedDocument, component.id, selected)) return;
+    checkpoint(`Update exposed properties on ${component.name || 'component'}`);
+    setComponentNestedInstanceExposures(state.document, component.id, selected);
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast(selected.length
+      ? `Nested properties are available on ${component.name || 'component'} instances.`
+      : `Nested properties are hidden from ${component.name || 'component'} instances.`);
+  } catch (error) {
+    showToast(error.message || 'Could not update the exposed nested properties.');
+    renderInspector();
   }
 }
 function componentSlotCandidateEntries(instanceId, pageId = state.document.activePageId) {
@@ -11812,6 +14585,7 @@ function reorderSelected(direction) {
 function refreshHistoryImagePreviews(previousDocument) {
   const visiblePreviewKeys = visibleImagePreviewKeys();
   for (const reference of imageAssetReferencesAcrossPages()) {
+    if (reference.localModelAuxiliary) continue;
     const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, adjustments, transforms } = reference;
     const previousNode = findNode(previousDocument, node.id)?.node;
     const previousSource = fillId
@@ -11945,6 +14719,15 @@ function presentationFrameContentBounds(frame, ancestors = []) {
   return bounds;
 }
 
+function presentationHitTestBoolean(node, point, x, y) {
+  const overlayDocument = presentOverlayRenderState?.document;
+  const backdropDocument = presentBackdropRenderState?.document;
+  const overlayContainsNode = overlayDocument && findNode(overlayDocument, node?.id, overlayDocument.activePageId);
+  const backdropContainsNode = backdropDocument && findNode(backdropDocument, node?.id, backdropDocument.activePageId);
+  const rendererForNode = overlayContainsNode ? presentOverlayRenderer : backdropContainsNode ? presentBackdropRenderer : presentRenderer;
+  return rendererForNode?.hitTestBoolean(node, point, x, y) ?? true;
+}
+
 function presentationScrollLimits(frame, ancestors = []) {
   const behavior = frame?.overflowBehavior || 'none';
   const bounds = presentationFrameContentBounds(frame, ancestors);
@@ -11962,7 +14745,7 @@ function presentationScrollableFramesAt(world) {
   return scrollableFramePathAtPagePoint(
     page,
     world,
-    (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true,
+    presentationHitTestBoolean,
     presentRenderState.document,
     presentRenderState.presentationScrollOffsets,
     presentRenderState.zoom
@@ -12036,16 +14819,11 @@ function smartAnimateImageTransitionEndpoint(node, fill, kind) {
   const adjustments = isImageLayer ? node.adjustments : imageFill?.adjustments;
   const transforms = isImageLayer ? node.transforms : imageFill?.transforms;
   const inpaintStrokes = isImageLayer ? node.inpaintStrokes : [];
-  const outputFormat = isImageLayer ? node.outputFormat ?? 'png' : 'png';
-  const outputQuality = isImageLayer ? node.outputQuality ?? 90 : 90;
   const previewKey = imagePreviewKey(node.id, isImageLayer || !fill ? null : fill.id);
-  const signature = imagePreviewSettingsSignature({
-    assetId, adjustments, transforms, inpaintStrokes, outputFormat, outputQuality
-  });
+  const signature = imagePreviewSettingsSignature({ assetId, adjustments, transforms, inpaintStrokes });
   const sourceRenderable = Object.keys(adjustments || {}).every(property => Object.hasOwn(defaultImageAdjustments, property))
     && Object.entries(defaultImageAdjustments).every(([property, value]) => (adjustments?.[property] ?? value) === value)
-    && (!inpaintStrokes || inpaintStrokes.length === 0)
-    && outputFormat === 'png' && outputQuality === 90;
+    && (!inpaintStrokes || inpaintStrokes.length === 0);
   const status = state.imageStatus.get(previewKey) || '';
   const previewIsCurrent = state.previews.has(previewKey) && state.previewAssetIds.get(previewKey) === assetId
     && state.previewSignatures.get(previewKey) === signature
@@ -12064,7 +14842,7 @@ function resolveSmartAnimateImageTransition({ kind, fromNode, toNode, fromFill =
   return from && to ? { from, to } : null;
 }
 
-function renderPresentationFrame(interaction = null, previousFrame = null, progress = null) {
+function renderPresentationFrame(interaction = null, previousFrame = null, progress = null, previousOverlayFrame = null) {
   if (!state.presenting || !presentRenderState) return;
   const runtimeDocument = presentRuntimeDocument || state.document;
   const target = findNodeAcrossPages(runtimeDocument, state.presenting.frameId);
@@ -12087,24 +14865,44 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
+  const underlayChildren = [displayFrame];
+  const backdropChildren = [];
+  const overlayChildren = [];
+  const sceneDocument = children => ({
+    activePageId: target.page.id,
+    pages: [{ id: target.page.id, name: target.page.name, children }],
+    components: runtimeDocument.components || [], componentSets: runtimeDocument.componentSets || [],
+    colorStyles: runtimeDocument.colorStyles || [], variableCollections: runtimeDocument.variableCollections || [], variables: runtimeDocument.variables || []
+  });
   for (const [index, overlayState] of state.presenting.overlays.entries()) {
     const overlayTarget = findNode(runtimeDocument, overlayState.frameId, overlayState.pageId) || findNodeAcrossPages(runtimeDocument, overlayState.frameId);
     if (!overlayTarget || overlayTarget.node.type !== 'frame') continue;
-    if (overlayState.background) sceneChildren.push({
-      id: `presentation-overlay-backdrop-${index}`, type: 'rectangle', name: 'Overlay background',
-      x: 0, y: 0, width: displayFrame.width, height: displayFrame.height, rotation: 0,
-      opacity: overlayState.backgroundOpacity, visible: true, fill: overlayState.backgroundColor,
-      fillOpacity: 1, stroke: null, strokeWidth: 0, radius: 0, clip: false, children: []
-    });
-    const displayOverlay = applySessionVariableModes(structuredClone(overlayTarget.node));
+    const isTopOverlay = index === state.presenting.overlays.length - 1;
+    if (overlayState.background) {
+      const backdrop = {
+        id: `presentation-overlay-backdrop-${index}`, type: 'rectangle', name: 'Overlay background',
+        x: 0, y: 0, width: displayFrame.width, height: displayFrame.height, rotation: 0,
+        opacity: overlayState.backgroundOpacity, visible: true, fill: overlayState.backgroundColor,
+        fillOpacity: 1, stroke: null, strokeWidth: 0, radius: 0, clip: false, children: []
+      };
+      sceneChildren.push(backdrop);
+      if (isTopOverlay) backdropChildren.push(backdrop);
+      else underlayChildren.push(backdrop);
+    }
+    const overlayFrame = previousOverlayFrame && Number.isFinite(progress) && index === state.presenting.overlays.length - 1
+      ? interpolateSmartFrame(previousOverlayFrame, overlayTarget.node, progress, {
+        resolveRadius: resolveTransitionRadius,
+        resolveImageTransition: resolveSmartAnimateImageTransition,
+        allowOvershoot: true
+      })
+      : structuredClone(overlayTarget.node);
+    const displayOverlay = applySessionVariableModes(overlayFrame);
     Object.assign(displayOverlay, overlayPositionInFrame(overlayState.position, displayFrame, displayOverlay));
     sceneChildren.push(displayOverlay);
+    if (isTopOverlay) overlayChildren.push(displayOverlay);
+    else underlayChildren.push(displayOverlay);
   }
-  presentRenderState.document = {
-    activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: sceneChildren }],
-    components: runtimeDocument.components || [], componentSets: runtimeDocument.componentSets || [],
-    colorStyles: runtimeDocument.colorStyles || [], variableCollections: runtimeDocument.variableCollections || [], variables: runtimeDocument.variables || []
-  };
+  presentRenderState.document = sceneDocument(sceneChildren);
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
   presentRenderState.previewAssetIds = state.previewAssetIds;
@@ -12117,6 +14915,9 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   presentRenderState.zoom = Math.max(.05, Math.min(1.25, (width - margin * 2) / Math.max(1, displayFrame.width), (height - margin * 2) / Math.max(1, displayFrame.height)));
   presentRenderState.panX = (width - displayFrame.width * presentRenderState.zoom) / 2;
   presentRenderState.panY = (height - displayFrame.height * presentRenderState.zoom) / 2;
+  presentUnderlayRenderState = { ...presentRenderState, document: sceneDocument(underlayChildren) };
+  presentBackdropRenderState = { ...presentRenderState, document: sceneDocument(backdropChildren) };
+  presentOverlayRenderState = { ...presentRenderState, document: sceneDocument(overlayChildren) };
   $('#present-title').textContent = target.node.name;
   $('#present-back').disabled = state.presenting.stack.length === 0 && state.presenting.overlays.length === 0;
   $('#present-dialog').dataset.frameId = state.presenting.frameId;
@@ -12125,69 +14926,237 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   const scrollOffset = getPresentationScrollOffset(presentRenderState, displayFrame);
   $('#present-dialog').dataset.scrollX = String(scrollOffset.x);
   $('#present-dialog').dataset.scrollY = String(scrollOffset.y);
-  if (previousFrame && Number.isFinite(progress)) {
+  const isSmartAnimating = Number.isFinite(progress) && Boolean(previousFrame || previousOverlayFrame);
+  if (isSmartAnimating) {
     $('#present-dialog').dataset.smartAnimating = 'true';
     $('#present-dialog').dataset.smartProgress = String(progress);
+    $('#present-dialog').dataset.smartTarget = previousOverlayFrame ? 'overlay' : 'frame';
   } else {
     delete $('#present-dialog').dataset.smartAnimating;
     delete $('#present-dialog').dataset.smartProgress;
+    delete $('#present-dialog').dataset.smartTarget;
   }
   $('#present-dialog').style.setProperty('--present-duration', `${Math.max(0, interaction?.duration ?? 240)}ms`);
   $('#present-dialog').style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction?.easing || 'ease-in-out', interaction?.easingBezier));
-  if (interaction?.transition === 'smart-animate') {
-    $('#present-canvas').style.transition = '';
-    $('#present-canvas').style.opacity = '1';
-    $('#present-canvas').style.transform = 'translateX(0)';
-    presentRenderer?.invalidate();
-  } else if (interaction?.transition && interaction.transition !== 'instant' && interaction.duration > 0) {
-    const enterFrom = interaction.transition === 'move-left' ? 'translateX(22px)' : interaction.transition === 'move-right' ? 'translateX(-22px)' : 'translateX(0)';
-    const canvasElement = $('#present-canvas');
-    canvasElement.style.transition = 'none';
-    canvasElement.style.opacity = '0';
-    canvasElement.style.transform = enterFrom;
-    requestPresentationTransitionFrame(() => {
-      presentRenderer?.invalidate();
-      requestPresentationTransitionFrame(() => {
-        const duration = Math.max(0, Number(interaction.duration) || 0);
-        const startTime = performance.now();
-        const animate = now => {
-          if (!state.presenting || !canvasElement.isConnected) { presentationAnimationFrame = 0; return; }
-          const linear = duration ? Math.min(1, (now - startTime) / duration) : 1;
-          const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
-          canvasElement.style.opacity = String(interaction.transition === 'dissolve'
-            ? Math.max(0, Math.min(1, eased)) : linear);
-          const offset = interaction.transition === 'move-left' ? 22 : interaction.transition === 'move-right' ? -22 : 0;
-          canvasElement.style.transform = `translateX(${offset * (1 - eased)}px)`;
-          if (linear < 1) presentationAnimationFrame = requestAnimationFrame(animate);
-          else {
-            presentationAnimationFrame = 0;
-            canvasElement.style.transition = '';
-            canvasElement.style.opacity = '1';
-            canvasElement.style.transform = 'translateX(0)';
-          }
-        };
-        presentationAnimationFrame = requestAnimationFrame(animate);
-      });
-    });
-  } else {
-    $('#present-canvas').style.transition = '';
-    $('#present-canvas').style.opacity = '1';
-    $('#present-canvas').style.transform = 'translateX(0)';
-    presentRenderer?.invalidate();
+  const sceneElement = $('#present-scene');
+  sceneElement.style.transition = '';
+  if ($('#present-dialog').dataset.transitioning !== 'true' && $('#present-dialog').dataset.overlayAnimating !== 'true') {
+    sceneElement.style.opacity = '1';
+    sceneElement.style.transform = 'translate3d(0, 0, 0)';
+    sceneElement.style.zIndex = '';
+    $('#present-backdrop-canvas').style.opacity = '1';
+    $('#present-backdrop-canvas').style.transform = 'translate3d(0, 0, 0)';
+    $('#present-backdrop-canvas').style.zIndex = '';
+    $('#present-overlay-canvas').style.opacity = '1';
+    $('#present-overlay-canvas').style.transform = 'translate3d(0, 0, 0)';
+    $('#present-overlay-canvas').style.zIndex = '';
   }
+  presentRenderer?.invalidate();
+  presentBackdropRenderer?.invalidate();
+  presentOverlayRenderer?.invalidate();
 }
 
 function cancelPresentationAnimation() {
+  presentationTransitionToken += 1;
   if (presentationAnimationFrame) cancelAnimationFrame(presentationAnimationFrame);
   presentationAnimationFrame = 0;
   for (const frame of presentationTransitionFrames) cancelAnimationFrame(frame);
   presentationTransitionFrames.clear();
-  const canvasElement = $('#present-canvas');
-  if (canvasElement) {
-    canvasElement.style.transition = '';
-    canvasElement.style.opacity = '1';
-    canvasElement.style.transform = 'translateX(0)';
+  const sceneElement = $('#present-scene');
+  if (sceneElement) {
+    sceneElement.style.transition = '';
+    sceneElement.style.opacity = '1';
+    sceneElement.style.transform = 'translate3d(0, 0, 0)';
+    sceneElement.style.zIndex = '';
   }
+  const overlayCanvas = $('#present-overlay-canvas');
+  if (overlayCanvas) {
+    overlayCanvas.style.opacity = '1';
+    overlayCanvas.style.transform = 'translate3d(0, 0, 0)';
+    overlayCanvas.style.zIndex = '';
+  }
+  const backdropCanvas = $('#present-backdrop-canvas');
+  if (backdropCanvas) {
+    backdropCanvas.style.opacity = '1';
+    backdropCanvas.style.transform = 'translate3d(0, 0, 0)';
+    backdropCanvas.style.zIndex = '';
+  }
+  const transitionCanvas = $('#present-transition-canvas');
+  if (transitionCanvas) {
+    transitionCanvas.style.display = 'none';
+    transitionCanvas.style.opacity = '1';
+    transitionCanvas.style.transform = 'translate3d(0, 0, 0)';
+    transitionCanvas.style.zIndex = '';
+    transitionCanvas.width = 1;
+    transitionCanvas.height = 1;
+  }
+  const dialog = $('#present-dialog');
+  if (dialog) {
+    delete dialog.dataset.transitioning;
+    delete dialog.dataset.transitionType;
+    delete dialog.dataset.overlayAnimating;
+    delete dialog.dataset.overlayTransition;
+    delete dialog.dataset.overlayProgress;
+  }
+}
+
+const maxPresentationSnapshotPixels = 8_388_608;
+
+function capturePresentationSnapshot() {
+  const source = $('#present-canvas');
+  const snapshot = $('#present-transition-canvas');
+  const rect = source?.getBoundingClientRect();
+  if (!source || !snapshot || !presentRenderer || !rect?.width || !rect?.height) return null;
+  try {
+    // Commit the current visible frame before the session is changed. Calling
+    // draw directly avoids a second renderer and captures live local previews.
+    for (const renderer of [presentRenderer, presentBackdropRenderer, presentOverlayRenderer]) if (renderer?.frame) {
+      cancelAnimationFrame(renderer.frame);
+      renderer.frame = 0;
+    }
+    presentRenderer.draw();
+    presentBackdropRenderer?.draw();
+    presentOverlayRenderer?.draw();
+    const sourceWidth = Math.max(1, source.width);
+    const sourceHeight = Math.max(1, source.height);
+    const scale = Math.min(1, Math.sqrt(maxPresentationSnapshotPixels / (sourceWidth * sourceHeight)));
+    snapshot.width = Math.max(1, Math.floor(sourceWidth * scale));
+    snapshot.height = Math.max(1, Math.floor(sourceHeight * scale));
+    const context = snapshot.getContext('2d');
+    if (!context) return null;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, snapshot.width, snapshot.height);
+    context.drawImage(source, 0, 0, snapshot.width, snapshot.height);
+    const backdropCanvas = $('#present-backdrop-canvas');
+    if (backdropCanvas?.width && backdropCanvas.height) {
+      context.drawImage(backdropCanvas, 0, 0, snapshot.width, snapshot.height);
+    }
+    const overlayCanvas = $('#present-overlay-canvas');
+    if (overlayCanvas?.width && overlayCanvas.height) {
+      context.drawImage(overlayCanvas, 0, 0, snapshot.width, snapshot.height);
+    }
+    snapshot.style.display = 'block';
+    snapshot.style.opacity = '1';
+    snapshot.style.transform = 'translate3d(0, 0, 0)';
+    return { width: rect.width, height: rect.height };
+  } catch {
+    // A failed/tainted snapshot must degrade to an immediate frame change,
+    // never leave a half-visible or unresponsive transition layer behind.
+    snapshot.style.display = 'none';
+    snapshot.width = 1;
+    snapshot.height = 1;
+    return null;
+  }
+}
+
+function capturePresentationOverlaySnapshot() {
+  const source = $('#present-overlay-canvas');
+  const snapshot = $('#present-transition-canvas');
+  const rect = source?.getBoundingClientRect();
+  if (!source || !snapshot || !presentOverlayRenderer || !rect?.width || !rect?.height) return null;
+  try {
+    if (presentOverlayRenderer.frame) {
+      cancelAnimationFrame(presentOverlayRenderer.frame);
+      presentOverlayRenderer.frame = 0;
+    }
+    presentOverlayRenderer.draw();
+    const sourceWidth = Math.max(1, source.width);
+    const sourceHeight = Math.max(1, source.height);
+    const scale = Math.min(1, Math.sqrt(maxPresentationSnapshotPixels / (sourceWidth * sourceHeight)));
+    snapshot.width = Math.max(1, Math.floor(sourceWidth * scale));
+    snapshot.height = Math.max(1, Math.floor(sourceHeight * scale));
+    const context = snapshot.getContext('2d');
+    if (!context) return null;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, snapshot.width, snapshot.height);
+    context.drawImage(source, 0, 0, snapshot.width, snapshot.height);
+    snapshot.style.display = 'block';
+    snapshot.style.opacity = '1';
+    snapshot.style.transform = 'translate3d(0, 0, 0)';
+    return { width: rect.width, height: rect.height };
+  } catch {
+    snapshot.style.display = 'none';
+    snapshot.width = 1;
+    snapshot.height = 1;
+    return null;
+  }
+}
+
+function setPresentationTransitionMotion(interaction, width, height, progress) {
+  const motion = prototypeTransitionMotion(interaction.transition, width, height, progress);
+  const incoming = $('#present-scene');
+  const incomingBackdrop = $('#present-backdrop-canvas');
+  const incomingOverlay = $('#present-overlay-canvas');
+  const outgoing = $('#present-transition-canvas');
+  const setLayerMotion = (element, layerMotion) => {
+    element.style.transform = `translate3d(${layerMotion.x}px, ${layerMotion.y}px, 0)`;
+    element.style.opacity = String(layerMotion.opacity);
+  };
+  setLayerMotion(incoming, motion.incoming);
+  setLayerMotion(incomingBackdrop, motion.incoming);
+  setLayerMotion(incomingOverlay, motion.incoming);
+  setLayerMotion(outgoing, motion.outgoing);
+  if (motion.front === 'incoming') {
+    incoming.style.zIndex = '1';
+    incomingBackdrop.style.zIndex = '2';
+    incomingOverlay.style.zIndex = '3';
+    outgoing.style.zIndex = '0';
+  } else {
+    incoming.style.zIndex = '0';
+    incomingBackdrop.style.zIndex = '1';
+    incomingOverlay.style.zIndex = '2';
+    outgoing.style.zIndex = '3';
+  }
+}
+
+function animatePresentationTransition(snapshotSize, interaction) {
+  const duration = Math.max(0, Number(interaction.duration) || 0);
+  const dialog = $('#present-dialog');
+  const canvasElement = $('#present-canvas');
+  const transitionCanvas = $('#present-transition-canvas');
+  if (!snapshotSize || !duration || !state.presenting || !dialog.open) return false;
+    const rect = canvasElement.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  const token = ++presentationTransitionToken;
+  dialog.dataset.transitioning = 'true';
+  dialog.dataset.transitionType = interaction.transition;
+  dialog.style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction.easing || 'ease-in-out', interaction.easingBezier));
+  setPresentationTransitionMotion(interaction, width, height, 0);
+  for (const renderer of [presentRenderer, presentBackdropRenderer, presentOverlayRenderer]) if (renderer?.frame) {
+    cancelAnimationFrame(renderer.frame);
+    renderer.frame = 0;
+  }
+  presentRenderer?.draw();
+  presentBackdropRenderer?.draw();
+  presentOverlayRenderer?.draw();
+  // Force the start geometry to be painted before any layer advances.
+  void canvasElement.getBoundingClientRect();
+  requestPresentationTransitionFrame(() => {
+    if (token !== presentationTransitionToken || !state.presenting || !dialog.open) return;
+    requestPresentationTransitionFrame(() => {
+      if (token !== presentationTransitionToken || !state.presenting || !dialog.open) return;
+      const startTime = performance.now();
+      const animate = now => {
+        if (token !== presentationTransitionToken || !state.presenting || !canvasElement.isConnected) {
+          presentationAnimationFrame = 0;
+          return;
+        }
+        const linear = Math.min(1, Math.max(0, (now - startTime) / duration));
+        const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
+        setPresentationTransitionMotion(interaction, width, height, eased);
+        if (linear < 1) presentationAnimationFrame = requestAnimationFrame(animate);
+        else {
+          presentationAnimationFrame = 0;
+          if (token !== presentationTransitionToken) return;
+          cancelPresentationAnimation();
+          schedulePresentationDelay();
+        }
+      };
+      presentationAnimationFrame = requestAnimationFrame(animate);
+    });
+  });
+  return true;
 }
 
 function requestPresentationTransitionFrame(callback) {
@@ -12226,7 +15195,7 @@ function schedulePresentationDelay() {
   $('#present-dialog').dataset.afterDelayPending = String(Boolean(presentationDelayCancel));
 }
 
-function animateSmartTransition(fromFrame, interaction) {
+function animateSmartTransition(fromFrame, interaction, { target = 'frame' } = {}) {
   cancelPresentationAnimation();
   const duration = Math.max(0, Number(interaction.duration) || 0);
   if (!duration) { renderPresentationFrame(); schedulePresentationDelay(); return; }
@@ -12235,7 +15204,8 @@ function animateSmartTransition(fromFrame, interaction) {
     if (!state.presenting) { presentationAnimationFrame = 0; return; }
     const linear = Math.min(1, (now - startTime) / duration);
     const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
-    renderPresentationFrame(interaction, fromFrame, eased);
+    renderPresentationFrame(interaction, target === 'frame' ? fromFrame : null, eased,
+      target === 'overlay' ? fromFrame : null);
     if (linear < 1) presentationAnimationFrame = requestAnimationFrame(tick);
     else {
       presentationAnimationFrame = 0;
@@ -12244,6 +15214,99 @@ function animateSmartTransition(fromFrame, interaction) {
     }
   };
   presentationAnimationFrame = requestAnimationFrame(tick);
+}
+
+function animateOverlayPresentationTransition(interaction, result, outgoingSnapshot = null) {
+  const duration = Math.max(0, Number(interaction.duration) || 0);
+  const dialog = $('#present-dialog');
+  const backdropCanvas = $('#present-backdrop-canvas');
+  const overlayCanvas = $('#present-overlay-canvas');
+  const sceneElement = $('#present-scene');
+  const transitionCanvas = $('#present-transition-canvas');
+  if (!duration || interaction.transition === 'instant' || !state.presenting || !dialog.open) return false;
+  if (['overlay-swapped', 'overlay-closed'].includes(result) && !outgoingSnapshot) return false;
+  const rect = overlayCanvas.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  const incomingPage = presentOverlayRenderState?.document?.pages?.[0];
+  const hasIncomingOverlay = Boolean(incomingPage?.children?.length);
+  const transition = interaction.transition || 'dissolve';
+  const token = ++presentationTransitionToken;
+  dialog.dataset.overlayAnimating = 'true';
+  dialog.dataset.overlayTransition = transition;
+  dialog.style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction.easing || 'ease-in-out', interaction.easingBezier));
+
+  const setMotion = progress => {
+    dialog.dataset.overlayProgress = String(progress);
+    const incoming = prototypeOverlayMotion(transition, width, height, progress, 'enter');
+    const outgoing = prototypeOverlayMotion(transition, width, height, progress, 'exit');
+    const translate = motion => `translate3d(${motion.x * width}px, ${motion.y * height}px, 0)`;
+    if (result === 'overlay-opened') {
+      backdropCanvas.style.opacity = String(progress);
+      overlayCanvas.style.transform = translate(incoming);
+      overlayCanvas.style.opacity = String(incoming.opacity);
+      // Move Out and Slide Out animate the existing surface away; Push moves
+      // it away while the overlay travels in. Slide In fades that surface.
+      const movesUnderlayOut = transition.startsWith('move-out-') || transition.startsWith('push-') || transition.startsWith('slide-out-');
+      const isSlideIn = transition.startsWith('slide-in-');
+      const underlayOnTop = transition.startsWith('move-out-') || transition.startsWith('slide-out-') || isSlideIn;
+      sceneElement.style.transform = movesUnderlayOut ? translate(outgoing) : 'translate3d(0, 0, 0)';
+      sceneElement.style.opacity = isSlideIn ? String(outgoing.opacity) : '1';
+      sceneElement.style.zIndex = underlayOnTop ? '3' : '0';
+      backdropCanvas.style.zIndex = '1';
+      overlayCanvas.style.zIndex = '2';
+      return;
+    }
+
+    if (hasIncomingOverlay) {
+      backdropCanvas.style.opacity = '1';
+      overlayCanvas.style.transform = translate(incoming);
+      overlayCanvas.style.opacity = String(incoming.opacity);
+    } else {
+      backdropCanvas.style.opacity = String(1 - progress);
+      overlayCanvas.style.transform = 'translate3d(0, 0, 0)';
+      overlayCanvas.style.opacity = '0';
+    }
+    transitionCanvas.style.transform = translate(outgoing);
+    transitionCanvas.style.opacity = String(outgoing.opacity);
+    const outgoingOnTop = transition.startsWith('move-out-')
+      || transition.startsWith('slide-out-')
+      || transition.startsWith('slide-in-');
+    backdropCanvas.style.zIndex = '1';
+    transitionCanvas.style.zIndex = outgoingOnTop ? '3' : '1';
+    overlayCanvas.style.zIndex = '2';
+  };
+
+  transitionCanvas.style.display = outgoingSnapshot ? 'block' : 'none';
+  setMotion(0);
+  void overlayCanvas.getBoundingClientRect();
+  requestPresentationTransitionFrame(() => {
+    if (token !== presentationTransitionToken || !state.presenting || !dialog.open) return;
+    requestPresentationTransitionFrame(() => {
+      if (token !== presentationTransitionToken || !state.presenting || !dialog.open) return;
+      const startTime = performance.now();
+      const tick = now => {
+        if (token !== presentationTransitionToken || !state.presenting || !overlayCanvas.isConnected) {
+          presentationAnimationFrame = 0;
+          return;
+        }
+        const linear = Math.min(1, Math.max(0, (now - startTime) / duration));
+        const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
+        setMotion(eased);
+        if (linear < 1) presentationAnimationFrame = requestAnimationFrame(tick);
+        else {
+          presentationAnimationFrame = 0;
+          if (token !== presentationTransitionToken) return;
+          cancelPresentationAnimation();
+          delete dialog.dataset.overlayTransition;
+          renderPresentationFrame();
+          schedulePresentationDelay();
+        }
+      };
+      presentationAnimationFrame = requestAnimationFrame(tick);
+    });
+  });
+  return true;
 }
 
 function startPresentation(selectedId = null) {
@@ -12267,7 +15330,9 @@ function startPresentation(selectedId = null) {
   $('#present-canvas').style.touchAction = 'none';
   dialog.showModal();
   requestAnimationFrame(() => {
-    if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentRenderState);
+    if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentUnderlayRenderState);
+    if (!presentBackdropRenderer) presentBackdropRenderer = new SceneRenderer($('#present-backdrop-canvas'), () => presentBackdropRenderState, null, { transparent: true });
+    if (!presentOverlayRenderer) presentOverlayRenderer = new SceneRenderer($('#present-overlay-canvas'), () => presentOverlayRenderState, null, { transparent: true });
     renderPresentationFrame();
     schedulePresentationDelay();
   });
@@ -12324,28 +15389,62 @@ function restartPresentation(flowId = undefined) {
   presentRuntimeDocument = cloneDocument(state.document);
   presentRenderState.presentationScrollOffsets = new Map();
   $('#present-flow-select').value = session.flowId || '';
-  const canvasElement = $('#present-canvas');
-  canvasElement.style.transition = 'none';
-  canvasElement.style.opacity = '1';
-  canvasElement.style.transform = 'translateX(0)';
-  canvasElement.getBoundingClientRect();
-  canvasElement.style.removeProperty('transition');
+  const sceneElement = $('#present-scene');
+  sceneElement.style.transition = 'none';
+  sceneElement.style.opacity = '1';
+  sceneElement.style.transform = 'translate3d(0, 0, 0)';
+  sceneElement.style.zIndex = '';
+  sceneElement.getBoundingClientRect();
+  sceneElement.style.removeProperty('transition');
   renderPresentationFrame();
   schedulePresentationDelay();
 }
 
 function navigatePresentation(interaction) {
-  if (!state.presenting) return;
+  if (!state.presenting || $('#present-dialog').dataset.transitioning === 'true'
+    || $('#present-dialog').dataset.overlayAnimating === 'true') return;
   const linkUrl = interaction.action === 'open-link' ? normalizePrototypeLinkUrl(interaction.url) : null;
   const runtimeDocument = presentRuntimeDocument || state.document;
-  const source = interaction.action === 'navigate' && interaction.transition === 'smart-animate'
+  const isSmartAnimate = interaction.transition === 'smart-animate';
+  const currentOverlay = state.presenting.overlays?.at(-1) || null;
+  const source = isSmartAnimate && (interaction.action === 'navigate' || (interaction.action === 'swap-overlay' && !currentOverlay))
     ? findNode(runtimeDocument, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
   const previousFrame = source ? structuredClone(source) : null;
+  const previousOverlaySource = isSmartAnimate && currentOverlay
+    ? findNode(runtimeDocument, currentOverlay.frameId, currentOverlay.pageId)?.node
+      || findNodeAcrossPages(runtimeDocument, currentOverlay.frameId)?.node
+    : null;
+  const previousOverlayFrame = previousOverlaySource ? structuredClone(previousOverlaySource) : null;
+  const changesOverlay = Boolean(currentOverlay && ['swap-overlay', 'close-overlay', 'back'].includes(interaction.action));
+  const overlayTransition = interaction.action === 'back' && currentOverlay
+    ? {
+      ...interaction,
+      transition: reversePrototypeOverlayTransition(currentOverlay.transition || 'instant'),
+      easing: currentOverlay.easing || interaction.easing || 'ease-in-out',
+      easingBezier: currentOverlay.easingBezier || interaction.easingBezier,
+      duration: currentOverlay.duration ?? interaction.duration
+    }
+    : interaction;
   clearPresentationDelay();
   cancelPresentationAnimation();
+  const outgoingOverlaySnapshot = changesOverlay && overlayTransition.duration > 0
+    && overlayTransition.transition !== 'instant' && overlayTransition.transition !== 'smart-animate'
+    ? capturePresentationOverlaySnapshot()
+    : null;
+  const frameAction = interaction.action === 'navigate'
+    || (interaction.action === 'swap-overlay' && !currentOverlay)
+    || (interaction.action === 'back' && !currentOverlay);
+  const snapshotEligible = Number(interaction.duration) > 0
+    && !['instant', 'smart-animate', 'scroll'].includes(interaction.transition)
+    && frameAction;
+  const outgoingSnapshot = snapshotEligible ? capturePresentationSnapshot() : null;
   const result = applyPrototypeInteraction(runtimeDocument, state.presenting, interaction);
-  if (!result) { showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.'); return; }
+  if (!result) {
+    cancelPresentationAnimation();
+    showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.');
+    return;
+  }
   if (result === 'link-opened' && linkUrl) {
     window.open(linkUrl, '_blank', 'noopener,noreferrer');
     schedulePresentationDelay();
@@ -12394,19 +15493,67 @@ function navigatePresentation(interaction) {
     }
     return;
   }
-  if (result === 'navigated' && previousFrame) animateSmartTransition(previousFrame, interaction);
-  else { renderPresentationFrame(interaction); schedulePresentationDelay(); }
+  if (result === 'navigated' && previousFrame) {
+    animateSmartTransition(previousFrame, interaction);
+    return;
+  }
+  if (result === 'overlay-swapped' && previousOverlayFrame) {
+    animateSmartTransition(previousOverlayFrame, interaction, { target: 'overlay' });
+    return;
+  }
+  if (['overlay-opened', 'overlay-swapped', 'overlay-closed'].includes(result)) {
+    renderPresentationFrame(interaction);
+    const transitionInteraction = result === 'overlay-closed' ? overlayTransition : interaction;
+    if (animateOverlayPresentationTransition(transitionInteraction, result, outgoingOverlaySnapshot)) return;
+    cancelPresentationAnimation();
+    schedulePresentationDelay();
+    return;
+  }
+  renderPresentationFrame(interaction);
+  const fullFrameTransition = ['navigated', 'navigated-back'].includes(result);
+  const dissolveOverlayTransition = interaction.transition === 'dissolve'
+    && ['overlay-opened', 'overlay-swapped', 'overlay-closed'].includes(result);
+  if (outgoingSnapshot && (fullFrameTransition || dissolveOverlayTransition)
+    && animatePresentationTransition(outgoingSnapshot, interaction)) return;
+  cancelPresentationAnimation();
+  schedulePresentationDelay();
 }
 
 function presentationHitAtPointer(event) {
   if (!presentRenderState?.document) return null;
   const page = presentRenderState.document.pages[0];
-  return hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document, presentRenderState.presentationScrollOffsets, presentRenderState.zoom);
+  return hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), presentationHitTestBoolean, presentRenderState.document, presentRenderState.presentationScrollOffsets, presentRenderState.zoom);
+}
+
+function dismissPresentationOverlay() {
+  const session = state.presenting;
+  const overlay = session?.overlays?.at(-1);
+  if (!session || !overlay) return false;
+  const interaction = {
+    action: 'back',
+    transition: reversePrototypeOverlayTransition(overlay.transition || 'instant'),
+    easing: overlay.easing || 'ease-in-out',
+    easingBezier: overlay.easingBezier,
+    duration: overlay.duration ?? 240
+  };
+  clearPresentationDelay();
+  cancelPresentationAnimation();
+  const snapshot = interaction.duration > 0 && interaction.transition !== 'instant'
+    ? capturePresentationOverlaySnapshot()
+    : null;
+  const result = backPrototypeSession(session);
+  if (!result) return false;
+  renderPresentationFrame(interaction);
+  if (result === 'overlay-closed' && animateOverlayPresentationTransition(interaction, result, snapshot)) return true;
+  cancelPresentationAnimation();
+  schedulePresentationDelay();
+  return true;
 }
 
 function handlePresentationPointer(event, trigger, hitIdOverride = null) {
   if (!state.presenting || !presentRenderState?.document) return;
-  if ($('#present-dialog').dataset.smartAnimating === 'true') return;
+  if ($('#present-dialog').dataset.smartAnimating === 'true' || $('#present-dialog').dataset.transitioning === 'true'
+    || $('#present-dialog').dataset.overlayAnimating === 'true') return;
   const runtimeDocument = presentRuntimeDocument || state.document;
   let hit = hitIdOverride
     ? findNode(runtimeDocument, hitIdOverride, state.presenting.pageId) || findNodeAcrossPages(runtimeDocument, hitIdOverride)
@@ -12416,11 +15563,8 @@ function handlePresentationPointer(event, trigger, hitIdOverride = null) {
     const overlayTarget = findNode(runtimeDocument, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(runtimeDocument, topOverlayState.frameId);
     const insideOverlay = hit && overlayTarget && isNodeInSubtree(overlayTarget.node, hit.id);
     if (!insideOverlay && topOverlayState.outsideClick) {
-      state.presenting.overlays.pop();
       state.presenting.lastHoverInteractionId = null;
-      clearPresentationDelay();
-      renderPresentationFrame();
-      schedulePresentationDelay();
+      dismissPresentationOverlay();
       return;
     }
   }
@@ -12470,6 +15614,7 @@ function triggerPresentationDrag(event, gesture) {
 
 function handlePresentationPointerDown(event) {
   if (!state.presenting || !presentRenderState?.document || $('#present-dialog').dataset.smartAnimating === 'true'
+    || $('#present-dialog').dataset.transitioning === 'true' || $('#present-dialog').dataset.overlayAnimating === 'true'
     // Touch contact has no mouse button; engines may report -1 for it.
     || (event.pointerType !== 'touch' && event.button != null && event.button !== 0)
     || (presentationPointerGesture && presentationPointerGesture.pointerId !== event.pointerId)) return;
@@ -12528,6 +15673,13 @@ function handlePresentationPointerCancel(event) {
 function backPresentation() {
   clearPresentationDelay();
   cancelPresentationAnimation();
+  if (state.presenting?.overlays?.length) {
+    // Rebuild the outgoing surface after cancellation so it can be captured
+    // without inheriting stale CSS transforms from an interrupted transition.
+    renderPresentationFrame();
+    dismissPresentationOverlay();
+    return;
+  }
   if (!backPrototypeSession(state.presenting)) return;
   renderPresentationFrame();
   schedulePresentationDelay();
@@ -12737,6 +15889,7 @@ function exportDesignTokens() {
 }
 async function persistCurrentDocumentNow() {
   if (!state.ready) return true;
+  if (state.workspaceOnboardingRequired) return false;
   const saveOwner = state.bulk || null;
   if (saveOwner) {
     saveOwner.savePending = true;
@@ -12800,6 +15953,18 @@ async function persistCurrentDocumentNow() {
 
 function releaseImageRuntimeForDocumentSwitch() {
   resetObjectIsolationSession();
+  state.imageExpansionController?.abort();
+  state.imageExpansionController = null;
+  state.imageExpansionSourceId = null;
+  state.imageExpansionProgress = '';
+  state.backgroundRemovalController?.abort();
+  state.backgroundRemovalController = null;
+  state.backgroundRemovalSourceId = null;
+  state.backgroundRemovalProgress = '';
+  state.resolutionBoostController?.abort();
+  state.resolutionBoostController = null;
+  state.resolutionBoostSourceId = null;
+  state.resolutionBoostProgress = '';
   for (const timer of previewTimers.values()) clearTimeout(timer);
   previewTimers.clear();
   imageAssetRestoreTasks.clear();
@@ -13279,7 +16444,32 @@ function imageNodesAcrossPages() { const result = []; for (const page of state.d
 function imageAssetReferencesAcrossPages(documentData = state.document) {
   const result = [];
   for (const page of documentData.pages || []) walkNodes(page.children, ({ node }) => {
-    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms, previewKey: imagePreviewKey(node.id) });
+    if (node.type === 'image' && node.assetId) {
+      result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms, previewKey: imagePreviewKey(node.id) });
+      for (const [property, role] of [
+        ['backgroundRemovalSourceAssetId', 'source'], ['backgroundRemovalAssetId', 'cache'],
+        ['resolutionBoostSourceAssetId', 'source'], ['resolutionBoostAssetId', 'cache'],
+      ]) {
+        const assetId = node[property];
+        if (!assetId || assetId === node.assetId) continue;
+        const operation = property.startsWith('resolutionBoost') ? 'resolution-boost' : 'background-removal';
+        result.push({
+          node: { id: `${operation}-${role}:${node.id}`, type: 'image', name: node.fileName || node.name },
+          assetId, name: node.fileName || node.name,
+          previewKey: `${operation}-${role}:${node.id}`,
+          librarySource: true, localModelAuxiliary: true,
+        });
+      }
+      const expansionSourceAssetId = node.imageExpansion?.sourceImageAssetId;
+      if (expansionSourceAssetId && expansionSourceAssetId !== node.assetId) {
+        result.push({
+          node: { id: `image-expansion-source:${node.id}`, type: 'image', name: node.fileName || node.name },
+          assetId: expansionSourceAssetId, name: node.fileName || node.name,
+          previewKey: `image-expansion-source:${node.id}`,
+          librarySource: true, localModelAuxiliary: true,
+        });
+      }
+    }
     if (Array.isArray(node.fills)) {
       node.fills.forEach(fill => {
         if (fill.type !== 'image' || !fill.imageFill?.assetId) return;
@@ -13788,8 +16978,8 @@ function createSvgTextMeasurer() {
     const fontWeight = run?.fontWeight ?? getNodePropertyValue(state.document, node, 'fontWeight') ?? 400;
     const fontAxes = run?.fontAxes || node.fontAxes;
     const letterSpacing = run?.letterSpacing ?? getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
-    const fontStyle = run?.fontStyle ?? node.fontStyle;
-    const fontFamily = run?.fontFamily ?? node.fontFamily;
+    const fontStyle = run?.fontStyle ?? getNodePropertyValue(state.document, node, 'fontStyle');
+    const fontFamily = run?.fontFamily ?? getNodePropertyValue(state.document, node, 'fontFamily');
     context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, fontAxes)} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
     return measureTrackedText(context, text, letterSpacing);
   };
@@ -14372,20 +17562,33 @@ function updateLayoutGuide(input, finalize = false) {
   }
   if (property === 'color' && !/^#[0-9a-f]{6}$/i.test(value)) return;
   if (guide[property] !== value) {
-    if (!state.layoutGuideControlEdit) { checkpoint('Edit layout guide'); state.layoutGuideControlEdit = true; }
+    if (!state.layoutGuideControlEdit) {
+      checkpoint('Edit layout guide'); state.layoutGuideControlEdit = true;
+      detachLayoutGuideStyleForEdit(node);
+    }
     guide[property] = value;
     if (property === 'type') {
       const valid = value === 'columns' ? ['stretch', 'left', 'center', 'right'] : value === 'rows' ? ['stretch', 'top', 'center', 'bottom'] : [];
       if (value !== 'grid' && !valid.includes(guide.alignment)) guide.alignment = 'stretch';
     }
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    if (instanceRoot) {
+      recordComponentOverride(instanceRoot, node, 'layoutGuides');
+      recordComponentOverride(instanceRoot, node, 'layoutGuideStyleId');
+    }
     renderer.invalidate();
   }
   if (finalize && state.layoutGuideControlEdit) {
     state.layoutGuideControlEdit = false;
     renderInspector(); queueSave();
   }
+}
+
+function detachLayoutGuideStyleForEdit(node) {
+  if (!node?.layoutGuideStyleId) return;
+  detachLayoutGuideStyle(state.document, node.id);
+  const instanceRoot = componentInstanceRoot(node.id);
+  if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuideStyleId');
 }
 
 function updateExportSetting(input) {
@@ -14468,6 +17671,34 @@ function applyVectorOffset() {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'expand-image' && node?.type === 'image') {
+    void expandSelectedImage(node);
+    return;
+  }
+  if (action === 'cancel-image-expansion') {
+    cancelImageExpansionProcessing();
+    return;
+  }
+  if (action === 'restore-image-expansion' && node?.type === 'image') {
+    void restoreImageExpansion(node);
+    return;
+  }
+  if (action === 'toggle-image-background-removal' && node?.type === 'image') {
+    void toggleImageBackgroundRemoval(node);
+    return;
+  }
+  if (action === 'cancel-image-background-removal') {
+    cancelBackgroundRemovalProcessing();
+    return;
+  }
+  if (action === 'toggle-image-resolution-boost' && node?.type === 'image') {
+    void toggleImageResolutionBoost(node);
+    return;
+  }
+  if (action === 'cancel-image-resolution-boost') {
+    cancelResolutionBoostProcessing();
+    return;
+  }
   if (action === 'set-custom-font-feature') {
     const tag = $('#font-feature-tag-input')?.value || '';
     const inputValue = $('#font-feature-value-input')?.value ?? '';
@@ -14847,30 +18078,41 @@ function applyInspectorAction(action, details = {}) {
     recordNodeComponentOverrides(node, ['effects']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
-  else if (action === 'add-layout-guide' && node?.type === 'frame') {
+  else if (action === 'select-layout-guide' && node?.type === 'frame'
+    && node.layoutGuides?.some(guide => guide.id === details.guideId)) {
+    state.selectedLayoutGuideId = details.guideId;
+    state.selectedLayoutGuideFrameId = node.id;
+    $('#inspector-content').querySelectorAll('.layout-guide-card').forEach(card => {
+      const selected = card.dataset.layoutGuide === details.guideId;
+      card.classList.toggle('is-selected', selected);
+      const button = card.querySelector('[data-action="select-layout-guide"]');
+      button?.setAttribute('aria-pressed', String(selected));
+      if (button) button.textContent = selected ? '✓' : '◇';
+    });
+  } else if (action === 'add-layout-guide' && node?.type === 'frame') {
     node.layoutGuides ||= [];
     if (node.layoutGuides.length >= 32) { showToast('A frame can have up to 32 layout guides.'); return; }
-    checkpoint('Add layout guide'); node.layoutGuides.push(createLayoutGuide(details.guideType || 'grid'));
+    checkpoint('Add layout guide'); detachLayoutGuideStyleForEdit(node); node.layoutGuides.push(createLayoutGuide(details.guideType || 'grid'));
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    if (instanceRoot) { recordComponentOverride(instanceRoot, node, 'layoutGuides'); recordComponentOverride(instanceRoot, node, 'layoutGuideStyleId'); }
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'remove-layout-guide' && node?.type === 'frame') {
     const guides = node.layoutGuides || [];
     if (!guides.some(guide => guide.id === details.guideId)) return;
-    checkpoint('Remove layout guide'); node.layoutGuides = guides.filter(guide => guide.id !== details.guideId);
+    checkpoint('Remove layout guide'); detachLayoutGuideStyleForEdit(node); node.layoutGuides = guides.filter(guide => guide.id !== details.guideId);
     const instanceRoot = componentInstanceRoot(node.id);
     if (!node.layoutGuides.length) {
       if (instanceRoot) node.layoutGuides = [];
       else delete node.layoutGuides;
     }
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    if (instanceRoot) { recordComponentOverride(instanceRoot, node, 'layoutGuides'); recordComponentOverride(instanceRoot, node, 'layoutGuideStyleId'); }
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'toggle-layout-guide' && node?.type === 'frame') {
     const guide = node.layoutGuides?.find(item => item.id === details.guideId);
     if (!guide) return;
-    checkpoint('Toggle layout guide'); guide.visible = !guide.visible;
+    checkpoint('Toggle layout guide'); detachLayoutGuideStyleForEdit(node); guide.visible = !guide.visible;
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    if (instanceRoot) { recordComponentOverride(instanceRoot, node, 'layoutGuides'); recordComponentOverride(instanceRoot, node, 'layoutGuideStyleId'); }
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'add-export-setting' && node) {
     if ((node.exportSettings || []).length >= 8) { showToast('A layer can have up to 8 export settings.'); return; }
@@ -14908,6 +18150,7 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'detach-local-component') detachLocalComponentInstance(details.instanceId);
   else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-property') addComponentProperty(details.componentId, details.targetId, details.propertyType);
+  else if (action === 'edit-component-exposures') openComponentExposureDialog(details.componentId);
   else if (action === 'choose-component-slot-content') openComponentSlotDialog(details.instanceId, details.propertyId);
   else if (action === 'reset-component-slot') resetComponentSlot(details.instanceId, details.propertyId);
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
@@ -15122,6 +18365,20 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); renderer.invalidate();
   }
   else if (action === 'reset-image' && node?.type === 'image') {
+    if (state.resolutionBoostController && state.resolutionBoostSourceId === node.id) cancelResolutionBoostProcessing();
+    if (node.resolutionBoosted === true) {
+      void resetResolutionBoostedImage(node);
+      return;
+    }
+    if (state.backgroundRemovalController && state.backgroundRemovalSourceId === node.id) cancelBackgroundRemovalProcessing();
+    if (node.imageExpansion) {
+      void restoreImageExpansion(node, { reset: true });
+      return;
+    }
+    if (node.backgroundRemoved === true) {
+      void restoreBackgroundRemovalForReset(node);
+      return;
+    }
     if (state.objectIsolationMode || state.objectIsolationSourceId || state.objectIsolationController) resetObjectIsolationSession();
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageEraseMode = false;
@@ -15131,7 +18388,16 @@ function applyInspectorAction(action, details = {}) {
     recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit', 'inpaintStrokes']);
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
-  else if (action === 'unlink-corners' && node && ['rectangle', 'frame', 'section', 'image'].includes(node.type)) {
+  else if (action === 'ios-corner-smoothing') {
+    const targets = selectedNodes().filter(target => !target.locked && ['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(target.type));
+    if (!targets.length) return;
+    checkpoint('Set iOS corner smoothing');
+    for (const target of targets) {
+      target.cornerSmoothing = 0.6;
+      recordNodeComponentOverrides(target, ['cornerSmoothing']);
+    }
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'unlink-corners' && node && ['rectangle', 'frame', 'section', 'image'].includes(node.type)) {
     if (node.locked) return;
     checkpoint('Set independent corners');
     const radius = Math.max(0, Math.min(100_000, Number(getNodePropertyValue(state.document, node, 'radius')) || 0));
@@ -15154,6 +18420,30 @@ function applyInspectorAction(action, details = {}) {
     }
     delete node.cornerRadii;
     recordNodeComponentOverrides(node, ['radius', 'cornerRadii', 'variableBindings']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'unlink-vertices' && node && ['star', 'polygon'].includes(node.type)) {
+    if (node.locked) return;
+    checkpoint('Set independent vertex radii');
+    const radius = Math.max(0, Math.min(100_000, Number(getNodePropertyValue(state.document, node, 'radius')) || 0));
+    const count = regularShapeVertexCount(node.type, node.points);
+    node.radius = radius;
+    if (node.variableBindings) {
+      delete node.variableBindings.radius;
+      if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
+    }
+    node.vertexRadii = Array.from({ length: count }, () => radius);
+    recordNodeComponentOverrides(node, ['radius', 'vertexRadii', 'variableBindings']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'link-vertices' && node?.vertexRadii && ['star', 'polygon'].includes(node.type)) {
+    if (node.locked) return;
+    checkpoint('Link vertex radii');
+    node.radius = node.vertexRadii.reduce((sum, radius) => sum + radius, 0) / node.vertexRadii.length;
+    if (node.variableBindings) {
+      delete node.variableBindings.radius;
+      if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
+    }
+    delete node.vertexRadii;
+    recordNodeComponentOverrides(node, ['radius', 'vertexRadii', 'variableBindings']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
   else if (action === 'suggest-auto-layout' && node?.type === 'frame') {
@@ -15225,14 +18515,19 @@ function applyInspectorAction(action, details = {}) {
 }
 
 function updateImageEngineState(metrics) {
+  if (metrics.active <= imageEngine.activeWorkerLimit && imageEngineIdleWaiters.size) {
+    for (const waiter of [...imageEngineIdleWaiters]) waiter.resolve();
+  }
   const output = $('#bulk-speed-value');
   if (output && state.bulk) {
     const batchMetrics = imageEngine.queueGroupMetrics(state.bulk.queueGroup);
-    output.textContent = formatImageRecipeWorkerReadout(batchMetrics.active, state.bulk.concurrency);
-    output.dataset.activeWorkers = String(metrics.active);
+    const activeBatchWorkers = batchMetrics.active + (state.bulk.localAiRequired && localModelWorkerActive ? 1 : 0);
+    output.textContent = formatImageRecipeWorkerReadout(activeBatchWorkers, state.bulk.concurrency);
+    output.dataset.activeWorkers = String(activeBatchWorkers);
     output.dataset.workersReady = String(metrics.workersReady);
-    output.setAttribute('aria-label', `${state.bulk.concurrency} maximum workers; ${batchMetrics.active} active in this batch; ${metrics.active} active total; ${metrics.workersReady} ready`);
-    output.title = `Engine limit: ${metrics.concurrency} worker${metrics.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready. Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+    const localAiWorkerDescription = state.bulk.localAiRequired ? `; ${localAiCpuReservationDescription(state.bulk)} is included in the CPU budget` : '';
+    output.setAttribute('aria-label', `${state.bulk.concurrency} maximum in-flight jobs; ${activeBatchWorkers} active workers in this batch; ${metrics.active} active render jobs total; ${metrics.workersReady} ready${localAiWorkerDescription}`);
+    output.title = `Engine limit: ${metrics.concurrency} render worker${metrics.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready.${state.bulk.localAiRequired ? ` A serialized local AI worker may run alongside render jobs and reserves up to ${state.bulk.localAiCpuSlots} CPU slot${state.bulk.localAiCpuSlots === 1 ? '' : 's'}.` : ''} Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   }
 }
 
@@ -15262,12 +18557,16 @@ function syncMobilePanelAccessibility() {
     { panel: $('#left-panel'), toggle: $('#sidebar-toggle'), name: 'layers' },
     { panel: $('#right-panel'), toggle: $('#inspector-toggle'), name: 'properties' }
   ];
+  const layersOpen = mobile && panels[0].panel.classList.contains('is-open');
   const inspectorOpen = mobile && panels[1].panel.classList.contains('is-open');
   const commentPanelCanvasAccess = commentPanelCanvasIsInteractive({
     mobile,
     hostViewOnly,
     inspectorOpen,
+    layersOpen,
     inspectorTab: state.inspectorTab,
+    commentToolActive: state.tool === 'comment',
+    activeCommentId: state.activeCommentId,
     pendingCommentAnchor: state.pendingCommentAnchor
   });
   let anyOpen = false;
@@ -15285,11 +18584,13 @@ function syncMobilePanelAccessibility() {
   canvasRegion.inert = hostViewOnly ? false : anyOpen && !commentPanelCanvasAccess;
   canvasRegion.setAttribute('aria-hidden', String(!hostViewOnly && anyOpen && !commentPanelCanvasAccess));
   appShell.classList.toggle('mobile-inspector-open', inspectorOpen);
+  appShell.classList.toggle('mobile-comment-canvas-interactive', commentPanelCanvasAccess);
+  // Keep the visible canvas in a separate workspace row whenever either
+  // mobile drawer is used for comment review or selection.
   appShell.classList.toggle('mobile-comment-canvas-open', commentPanelCanvasAccess);
   scrim.classList.toggle('is-visible', !hostViewOnly && anyOpen);
 }
 function closeMobilePanels({ restoreFocus = true } = {}) {
-  if (innerWidth > 820) return;
   const left = $('#left-panel'); const right = $('#right-panel');
   const wasLeftOpen = left.classList.contains('is-open');
   const wasRightOpen = right.classList.contains('is-open');
@@ -15298,6 +18599,22 @@ function closeMobilePanels({ restoreFocus = true } = {}) {
   syncMobilePanelAccessibility();
   if (restoreFocus && wasLeftOpen) $('#sidebar-toggle').focus({ preventScroll: true });
   else if (restoreFocus && wasRightOpen) $('#inspector-toggle').focus({ preventScroll: true });
+}
+function updateCanvasViewportCamera() {
+  const nextCanvasViewportSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+  const previousSize = previousCanvasViewportSize;
+  if (!previousSize || (previousSize.width === nextCanvasViewportSize.width && previousSize.height === nextCanvasViewportSize.height)) {
+    previousCanvasViewportSize = nextCanvasViewportSize;
+    return false;
+  }
+  const camera = preserveCanvasWorldCenterOnResize({
+    panX: state.panX, panY: state.panY, zoom: state.zoom,
+    previousSize, nextSize: nextCanvasViewportSize
+  });
+  state.panX = camera.panX;
+  state.panY = camera.panY;
+  previousCanvasViewportSize = nextCanvasViewportSize;
+  return true;
 }
 function trapMobilePanelTab(event) {
   if (event.key !== 'Tab' || innerWidth > 820 || document.querySelector('dialog[open]')) return false;
@@ -15322,6 +18639,24 @@ function trapMobilePanelTab(event) {
 }
 
 function initEvents() {
+  initializeCollaborationQrHandoff({
+    validateInvitation: invitationFromText,
+    onGuestHandoff: ({ invitation, offer }) => {
+      $('#live-join-invite').value = invitation;
+      $('#live-join-offer').value = offer;
+      liveStatus('guest', 'Invitation and offer scanned. Review them, then join the live design.');
+      showToast('Invitation and offer scanned. Review them before joining.');
+    },
+    onHostAnswer: answer => {
+      const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
+      if (!session?.currentHostPeer?.controller && !session?.controller) throw new Error('Create a session offer before scanning a guest answer.');
+      $('#live-answer-value').value = answer;
+      if (session.currentHostPeer) session.currentHostPeer.answerDraft = answer;
+      liveStatus('host', 'Guest answer scanned. Connect the guest to verify it and finish negotiation.');
+      showToast('Guest answer scanned. Connect the guest to continue.');
+    },
+    notify: showToast
+  });
   syncInspectorTabAccessibility();
   syncSidebarTabAccessibility();
   $$('.sidebar-tabs, .inspector-tabs').forEach(installHorizontalTabListKeyboard);
@@ -15476,6 +18811,7 @@ function initEvents() {
   window.addEventListener('blur', () => {
     // Browsers can stop delivering pointer events when the window loses focus.
     // Roll back an unfinished gesture and release every tracked pointer.
+    canvasContextPress.cancel();
     if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     else state.pointerMap.clear();
   });
@@ -15484,6 +18820,7 @@ function initEvents() {
   }));
   canvas.addEventListener('pointerdown', onCanvasPointerDown);
   canvas.addEventListener('pointermove', onCanvasPointerMove);
+  canvas.addEventListener('pointerleave', () => queueLivePresenceSync(undefined, { clearCursor: true }));
   canvas.addEventListener('pointerup', onCanvasPointerUp);
   canvas.addEventListener('pointercancel', cancelCanvasInteraction);
   canvas.addEventListener('lostpointercapture', event => {
@@ -15509,6 +18846,7 @@ function initEvents() {
     if (insertPathPointAtWorld(world)) event.preventDefault();
   });
   canvas.addEventListener('contextmenu', event => {
+    canvasContextPress.cancel();
     event.preventDefault();
     if (isLiveHostViewOnly()) return;
     if (state.shapeBuilder) exitShapeBuilderMode();
@@ -15680,7 +19018,7 @@ function initEvents() {
       const nodeId = row.dataset.layerId;
       checkpoint(`Move layer ${orderDirection}`);
       if (moveLayerOneVisualRow(state.document, nodeId, orderDirection)) {
-        setSelection([nodeId]); renderUI(); queueSave(); renderer.invalidate();
+        setSelection([nodeId], { source: 'layers' }); renderUI(); queueSave(); renderer.invalidate();
         layerRowsById.get(nodeId)?.focus({ preventScroll: true });
       }
       return;
@@ -15689,7 +19027,7 @@ function initEvents() {
       event.preventDefault(); event.stopPropagation();
       const node = findNode(state.document, row.dataset.layerId)?.node;
       if (!node) return;
-      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false });
+      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false, source: 'layers' });
       const menuButton = layerRowsById.get(node.id)?.querySelector('[data-action="layer-actions-menu"]');
       const bounds = row.getBoundingClientRect();
       openNodeMenu(node.id, bounds.right, bounds.bottom);
@@ -15701,13 +19039,13 @@ function initEvents() {
     }
     if (event.key === 'Enter') {
       event.preventDefault(); event.stopPropagation();
-      setSelection([row.dataset.layerId], { refreshLayers: false });
+      setSelection([row.dataset.layerId], { refreshLayers: false, source: 'layers' });
       return;
     }
     if (event.key === ' ') {
       event.preventDefault(); event.stopPropagation();
       const id = row.dataset.layerId;
-      setSelection(toggleLayerSelection(state.selectedIds, id), { refreshLayers: false });
+      setSelection(toggleLayerSelection(state.selectedIds, id), { refreshLayers: false, source: 'layers' });
       state.lastLayerSelection = id;
       return;
     }
@@ -15734,7 +19072,7 @@ function initEvents() {
     event.preventDefault(); event.stopPropagation();
     if (target) {
       target.focus({ preventScroll: true });
-      if (target !== row && !['Home', 'End'].includes(event.key)) setSelection([target.dataset.layerId], { refreshLayers: false });
+      if (target !== row && !['Home', 'End'].includes(event.key)) setSelection([target.dataset.layerId], { refreshLayers: false, source: 'layers' });
     }
   });
   $('#layers-list').addEventListener('click', event => {
@@ -15748,7 +19086,7 @@ function initEvents() {
     const actionMenuButton = event.target.closest('[data-action="layer-actions-menu"]');
     if (actionMenuButton) {
       event.preventDefault();
-      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false });
+      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false, source: 'layers' });
       const currentButton = layerRowsById.get(node.id)?.querySelector('[data-action="layer-actions-menu"]') || actionMenuButton;
       const bounds = currentButton.getBoundingClientRect();
       openNodeMenu(node.id, bounds.right, bounds.top);
@@ -15764,7 +19102,7 @@ function initEvents() {
       const direction = moveControl.dataset.action === 'layer-move-up' ? 'up' : 'down';
       checkpoint(`Move layer ${direction}`);
       if (moveLayerOneVisualRow(state.document, node.id, direction)) {
-        setSelection([node.id]); renderUI(); queueSave(); renderer.invalidate();
+        setSelection([node.id], { source: 'layers' }); renderUI(); queueSave(); renderer.invalidate();
       }
       return;
     }
@@ -15774,23 +19112,29 @@ function initEvents() {
     clearVectorAnchorSelection();
     if (state.layerSelectionMode) {
       row.focus({ preventScroll: true });
-      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
+      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false, source: 'layers' });
       state.lastLayerSelection = node.id;
       return;
     }
     row.focus({ preventScroll: true });
     if (event.shiftKey) {
       const rows = latestPageLayerIds; const a = rows.indexOf(state.lastLayerSelection || row.dataset.layerId); const b = rows.indexOf(row.dataset.layerId); const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
-      setSelection([...new Set([...state.selectedIds, ...range])], { refreshLayers: false });
+      setSelection([...new Set([...state.selectedIds, ...range])], { refreshLayers: false, source: 'layers' });
     } else if (event.metaKey || event.ctrlKey) {
-      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
-    } else setSelection([node.id], { refreshLayers: false });
+      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false, source: 'layers' });
+    } else setSelection([node.id], { refreshLayers: false, source: 'layers' });
     state.lastLayerSelection = node.id;
   });
-  $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
+  $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId], { source: 'layers' }); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    const networkVertexRadius = event.target.closest('[data-network-vertex-radius]');
+    if (networkVertexRadius) { updateNetworkVertexCornerRadiusInput(networkVertexRadius); return; }
+    if (event.target.id === 'comment-draft' && event.target.form?.dataset.commentForm === 'new') {
+      state.pendingCommentText = event.target.value;
+      return;
+    }
     if (event.target.matches('[data-vector-offset-amount]')) {
       state.vectorOffsetAmount = event.target.value;
       return;
@@ -15854,6 +19198,12 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    const networkVertexRadius = event.target.closest('[data-network-vertex-radius]');
+    if (networkVertexRadius) {
+      updateNetworkVertexCornerRadiusInput(networkVertexRadius);
+      finishInspectorInput();
+      return;
+    }
     if (event.target.matches('[data-vector-offset-join]')) {
       state.vectorOffsetJoin = event.target.value === 'round' ? 'round' : 'square';
       return;
@@ -15880,6 +19230,24 @@ function initEvents() {
       for (const button of event.currentTarget.querySelectorAll('[data-effect-style-action]')) {
         const action = button.dataset.effectStyleAction;
         button.disabled = !styleExists || (action === 'apply' && !canApply) || (action === 'update' && entries.length !== 1);
+      }
+      return;
+    }
+    if (event.target.id === 'layout-guide-style-select') {
+      selectedLayoutGuideStyleId = event.target.value;
+      const styleExists = state.document.layoutGuideStyles?.some(style => style.id === selectedLayoutGuideStyleId) || false;
+      const entries = selectedEntries();
+      const frameEntries = entries.filter(entry => entry.node.type === 'frame');
+      const canApply = frameEntries.length > 0 && frameEntries.every(({ node, parents }) => !node.locked && !parents.some(parent => parent.locked));
+      const canDetach = entries.length === 1 && entries[0].node.type === 'frame' && Boolean(entries[0].node.layoutGuideStyleId);
+      for (const button of event.currentTarget.querySelectorAll('[data-layout-guide-style-action]')) {
+        const action = button.dataset.layoutGuideStyleAction;
+        button.disabled = action === 'apply' ? !styleExists || !canApply
+          : action === 'update' ? !styleExists || entries.length !== 1 || frameEntries.length !== 1 || !canApply || !(frameEntries[0].node.layoutGuides || []).length
+            : action === 'detach' ? !canDetach
+              : action === 'rename' || action === 'delete' ? !styleExists
+                : action === 'save' ? entries.length !== 1 || frameEntries.length !== 1 || !canApply || !(frameEntries[0].node.layoutGuides || []).length
+                  : false;
       }
       return;
     }
@@ -15926,7 +19294,8 @@ function initEvents() {
     const exportField = event.target.closest('[data-export-field]');
     if (exportField) { updateExportSetting(exportField); return; }
     if (event.target.matches('[data-prop="fontFamily"]') && !event.target.value.trim()) {
-      event.target.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
+      const node = selectedNodes()[0];
+      event.target.value = node ? getNodePropertyValue(state.document, node, 'fontFamily') || 'Inter, Arial, sans-serif' : 'Inter, Arial, sans-serif';
       finishInspectorInput();
       return;
     }
@@ -15978,6 +19347,13 @@ function initEvents() {
     if (event.target.id === 'prototype-action') {
       const previousAction = state.prototypeAction;
       state.prototypeAction = event.target.value;
+      const sharedOverlayTransitions = ['instant', 'dissolve',
+        ...['left', 'right', 'up', 'down'].flatMap(direction => [
+          `move-in-${direction}`, `move-out-${direction}`, `push-${direction}`, `slide-in-${direction}`, `slide-out-${direction}`
+        ])];
+      if (!state.prototypeEditingInteractionId && ['open-overlay', 'swap-overlay'].includes(state.prototypeAction)
+        && !(sharedOverlayTransitions.includes(state.prototypeTransition)
+          || (state.prototypeAction === 'swap-overlay' && state.prototypeTransition === 'smart-animate'))) state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'set-variable') {
         const variable = state.document.variables?.find(item => item.id === state.prototypeVariableId) || state.document.variables?.[0] || null;
         state.prototypeVariableId = variable?.id || null;
@@ -15987,7 +19363,7 @@ function initEvents() {
       }
       if (state.prototypeSourceId && !['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction)) clearPrototypeConnectPrompt();
       if (!['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTrigger === 'after-delay') state.prototypeTrigger = 'on-click';
-      if (state.prototypeAction !== 'navigate' && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
+      if (!['navigate', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'scroll-to') state.prototypeTransition = 'scroll';
       else if (previousAction === 'scroll-to' && state.prototypeTransition === 'scroll') state.prototypeTransition = 'instant';
       if (state.prototypeAction === 'set-variable-mode') {
@@ -16033,6 +19409,22 @@ function initEvents() {
   $('#inspector-content').addEventListener('pointerup', finishGradientStopPointer);
   $('#inspector-content').addEventListener('pointercancel', finishGradientStopPointer);
   $('#inspector-content').addEventListener('lostpointercapture', finishGradientStopPointer);
+  $('#inspector-content').addEventListener('pointerover', event => {
+    showComponentPropertyTarget(event.target.closest('[data-component-property-highlight]'));
+  });
+  $('#inspector-content').addEventListener('pointerout', event => {
+    const control = event.target.closest('[data-component-property-highlight]');
+    if (!control || event.relatedTarget?.closest?.('[data-component-property-highlight]') === control) return;
+    clearComponentPropertyTarget();
+  });
+  $('#inspector-content').addEventListener('focusin', event => {
+    showComponentPropertyTarget(event.target.closest('[data-component-property-highlight]'));
+  });
+  $('#inspector-content').addEventListener('focusout', event => {
+    const control = event.target.closest('[data-component-property-highlight]');
+    if (!control || event.relatedTarget?.closest?.('[data-component-property-highlight]') === control) return;
+    clearComponentPropertyTarget();
+  });
   $('#inspector-content').addEventListener('keydown', handleGradientStopKey);
   $('#inspector-content').addEventListener('keydown', event => {
     if (event.key !== 'Enter' || !event.target.matches('[data-vector-offset-amount]')) return;
@@ -16057,6 +19449,8 @@ function initEvents() {
     if (copy) { copyInspectText(copy.dataset.inspectCopy); return; }
     const effectStyleAction = event.target.closest('[data-effect-style-action]');
     if (effectStyleAction) { handleEffectStyleAction(effectStyleAction.dataset.effectStyleAction); return; }
+    const guideStyleAction = event.target.closest('[data-layout-guide-style-action]');
+    if (guideStyleAction) { handleLayoutGuideStyleAction(guideStyleAction.dataset.layoutGuideStyleAction); return; }
     const gridTrackMenu = event.target.closest('[data-action="grid-track-move-menu"]');
     if (gridTrackMenu) { openGridTrackMoveMenu(gridTrackMenu); return; }
     const button = event.target.closest('[data-action]');
@@ -16087,7 +19481,8 @@ function initEvents() {
     ];
     const ids = rootSelectedIds();
     const node = selectedNodes()[0];
-    if (canCreateMaskGroup(state.document, ids)) items.unshift({ label: 'Use selected layers as mask', action: maskSelectedLayers }, { separator: true });
+    if (canCreateMaskGroup(state.document, ids)) items.unshift({ label: 'Use selected layers as alpha mask', action: () => maskSelectedLayers('alpha') }, { separator: true });
+    if (canCreateMaskGroup(state.document, ids, state.document.activePageId, 'vector')) items.unshift({ label: 'Use selected layers as vector mask', action: () => maskSelectedLayers('vector') }, { separator: true });
     if (selectedNodes().length === 1 && node?.type === 'group' && node.mask) items.unshift({ label: 'Release selected mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
     showMenu(items, event.clientX, event.clientY, event.currentTarget, 'Layer options');
   });
@@ -16121,6 +19516,41 @@ function initEvents() {
     renderer.invalidate();
   });
   $('#variable-collections-list').addEventListener('change', event => {
+    const scopeInput = event.target.closest('[data-variable-scope]');
+    if (scopeInput) {
+      const variable = state.document.variables?.find(item => item.id === scopeInput.dataset.variableId);
+      const editor = scopeInput.closest('.variable-scopes-editor');
+      if (!variable || !editor) return;
+      const checks = [...editor.querySelectorAll('[data-variable-scope]')];
+      const scope = scopeInput.dataset.variableScope;
+      const fillScopes = new Set(['FRAME_FILL', 'SHAPE_FILL', 'TEXT_FILL']);
+      const allScopes = editor.querySelector('[data-variable-scope="ALL_SCOPES"]');
+      const allFills = editor.querySelector('[data-variable-scope="ALL_FILLS"]');
+      if (scope === 'ALL_SCOPES' && scopeInput.checked) {
+        for (const checkbox of checks) if (checkbox !== scopeInput) checkbox.checked = false;
+      } else if (scope !== 'ALL_SCOPES' && scopeInput.checked) {
+        if (allScopes) allScopes.checked = false;
+        if (scope === 'ALL_FILLS') {
+          for (const checkbox of checks) if (fillScopes.has(checkbox.dataset.variableScope)) checkbox.checked = false;
+        } else if (fillScopes.has(scope) && allFills) allFills.checked = false;
+      }
+      const scopes = checks.filter(checkbox => checkbox.checked).map(checkbox => checkbox.dataset.variableScope);
+      const normalized = normalizeVariableScopes(variable.type, scopes);
+      if (!normalized) {
+        renderUI();
+        showToast('Those variable scopes cannot be combined.');
+        return;
+      }
+      if (JSON.stringify(variableScopesFor(variable)) === JSON.stringify(normalized)) return;
+      checkpoint('Edit variable scopes');
+      if (!setVariableScopes(state.document, variable.id, normalized)) {
+        renderUI();
+        showToast('Those variable scopes could not be saved.');
+        return;
+      }
+      renderUI(); queueSave(); renderer.invalidate();
+      return;
+    }
     const alias = event.target.closest('[data-variable-alias]');
     if (alias) {
       const variable = state.document.variables?.find(item => item.id === alias.dataset.variableAlias);
@@ -16268,6 +19698,26 @@ function initEvents() {
   });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45, null, event.currentTarget));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45, null, event.currentTarget));
+  $('#workspace-onboarding-dialog').addEventListener('cancel', event => event.preventDefault());
+  $('#workspace-onboarding-choose-folder').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const status = $('#workspace-onboarding-status');
+    button.disabled = true;
+    status.textContent = 'Opening the folder picker…';
+    const opened = await chooseWorkspaceFolder();
+    button.disabled = false;
+    if (!opened && state.workspaceOnboardingRequired) {
+      status.textContent = 'Choose a folder to begin. Your existing local designs will remain unchanged if setup is cancelled or cannot be completed.';
+    }
+  });
+  $('#workspace-onboarding-browser-fallback').addEventListener('click', async event => {
+    event.currentTarget.disabled = true;
+    const status = $('#workspace-onboarding-status');
+    status.textContent = 'Preparing browser storage…';
+    const continued = await continueWithBrowserStorage();
+    event.currentTarget.disabled = false;
+    if (!continued && state.workspaceOnboardingRequired) status.textContent = 'Browser storage could not be prepared. Your existing local designs were preserved; retry or choose a writable folder.';
+  });
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50, null, event.currentTarget));
   $('#design-library-close').addEventListener('click', () => $('#design-library-dialog').close());
   $('#design-library-export').addEventListener('click', exportDesign);
@@ -16301,16 +19751,26 @@ function initEvents() {
     clearPresentationDelay();
     cancelPresentationAnimation();
     presentationPointerGesture = null;
-    presentRenderer?.destroy(); presentRenderer = null; presentRenderState = null; presentRuntimeDocument = null; state.presenting = null;
+    presentRenderer?.destroy(); presentRenderer = null;
+    presentBackdropRenderer?.destroy(); presentBackdropRenderer = null;
+    presentOverlayRenderer?.destroy(); presentOverlayRenderer = null;
+    presentRenderState = null; presentUnderlayRenderState = null; presentBackdropRenderState = null; presentOverlayRenderState = null;
+    presentRuntimeDocument = null; state.presenting = null;
     $('#present-canvas').style.removeProperty('touch-action');
-    $('#present-canvas').style.opacity = '1'; $('#present-canvas').style.transform = 'translateX(0)';
+    $('#present-scene').style.opacity = '1'; $('#present-scene').style.transform = 'translate3d(0, 0, 0)'; $('#present-scene').style.zIndex = '';
+    $('#present-backdrop-canvas').style.opacity = '1'; $('#present-backdrop-canvas').style.transform = 'translate3d(0, 0, 0)'; $('#present-backdrop-canvas').style.zIndex = '';
+    $('#present-overlay-canvas').style.opacity = '1'; $('#present-overlay-canvas').style.transform = 'translate3d(0, 0, 0)'; $('#present-overlay-canvas').style.zIndex = '';
   });
   $('#present-canvas').addEventListener('pointerdown', handlePresentationPointerDown);
   $('#present-canvas').addEventListener('pointerup', handlePresentationPointerUp);
   $('#present-canvas').addEventListener('pointercancel', handlePresentationPointerCancel);
   $('#present-canvas').addEventListener('lostpointercapture', handlePresentationPointerCancel);
   $('#present-canvas').addEventListener('pointermove', handlePresentationPointerMove);
-  window.addEventListener('resize', () => { if (state.presenting) renderPresentationFrame(); });
+  window.addEventListener('resize', () => {
+    if (!state.presenting) return;
+    cancelPresentationAnimation();
+    renderPresentationFrame();
+  });
   $$('.sidebar-tab').forEach(tab => tab.addEventListener('click', () => { state.sidebarTab = tab.dataset.sidebarTab; syncSidebarTabAccessibility(); }));
   $('#export-selection').addEventListener('click', exportSelectionPng);
   $('#recipe-dialog').addEventListener('close', () => {
@@ -16365,12 +19825,24 @@ function initEvents() {
     state.componentSlotDialog = null;
     if ($('#component-slot-dialog').returnValue === 'apply') applyComponentSlotDialog(dialogState);
   });
+  $('#component-exposure-options').addEventListener('change', event => {
+    if (event.target.matches('[data-exposed-nested-instance]')) updateComponentExposureDialogCount();
+  });
+  $('#component-exposure-form').addEventListener('submit', event => {
+    if (!['apply', 'cancel'].includes(event.submitter?.value)) event.preventDefault();
+  });
+  $('#component-exposure-dialog').addEventListener('close', () => {
+    const dialogState = state.componentExposureDialog;
+    state.componentExposureDialog = null;
+    if ($('#component-exposure-dialog').returnValue === 'apply') applyComponentExposureDialog(dialogState);
+  });
   $('#variable-dialog').addEventListener('close', commitVariableNameDialog);
   $('#variable-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#variable-dialog').returnValue = 'save'; });
   $('#bulk-speed').max = String(CPU_LIMIT);
   $('#bulk-speed').addEventListener('input', event => {
     if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled || state.bulk.journalPending) return;
-    state.bulk.concurrency = Math.max(1, Math.min(CPU_LIMIT, Math.trunc(Number(event.currentTarget.value)) || 1));
+    state.bulk.concurrency = Math.max(1, Math.min(state.bulk.workerBudget || CPU_LIMIT, Math.trunc(Number(event.currentTarget.value)) || 1));
+    state.bulk.renderConcurrency = imageRecipeRenderWorkerBudget(CPU_LIMIT, state.bulk.concurrency);
     scheduleBulkConcurrency(state.bulk); renderBulkBar(); scheduleBulk();
   });
   $('#bulk-speed').addEventListener('change', () => {
@@ -16599,14 +20071,14 @@ function onKeyDown(event) {
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
   if (mod && event.altKey && key === 'c') { event.preventDefault(); copyAppearanceFrom(); return; }
   if (mod && event.altKey && key === 'v') { event.preventDefault(); pasteAppearanceToSelection(); return; }
-  if (mod && key === 'c') { event.preventDefault(); copySelected(); return; }
+  if (mod && key === 'c') { event.preventDefault(); if (!copySelectedLayoutGuide()) copySelected(); return; }
   if (mod && key === 'x') { event.preventDefault(); cutSelected(); return; }
   // Let the native paste event expose external clipboard image data. The paste
   // handler chooses between placing an image and pasting our internal layers.
   if (mod && key === 'v') return;
   if (mod && key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
   if (mod && key === 'y') { event.preventDefault(); redo(); return; }
-  if (mod && key === 'd') { event.preventDefault(); duplicateSelected(); return; }
+  if (mod && key === 'd') { event.preventDefault(); if (!duplicateSelectedLayoutGuide()) duplicateSelected(); return; }
   if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
   if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
   if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
@@ -16710,7 +20182,8 @@ async function boot() {
     }
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
   const reopenedFolder = await restoreSavedWorkspaceOnBoot();
-  if (!state.workspace && !state.workspacePermissionNeeded) {
+  state.workspaceOnboardingRequired = !reopenedFolder && !state.workspace && !state.workspacePermissionNeeded;
+  if (!state.workspace && !state.workspacePermissionNeeded && !state.workspaceOnboardingRequired) {
     try { migratedImageLibrary = await ensureImageLibraryCompatibility(state.document); }
     catch (error) { console.warn('Could not migrate legacy image sources into the reusable image library.', error); }
   }
@@ -16718,16 +20191,21 @@ async function boot() {
   catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state, drawRulerScales);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+  previousCanvasViewportSize = { width: canvas.clientWidth, height: canvas.clientHeight };
   initEvents(); renderUI(); state.ready = true;
-  if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
-  else if (state.workspacePermissionNeeded) {
-    $('.workspace').inert = true;
+  if (state.pendingRecipeRecovery || state.workspacePermissionNeeded || state.workspaceOnboardingRequired) {
+    setDocumentEditingBlocked(true);
+  }
+  if (state.workspacePermissionNeeded) {
     $('#document-name').readOnly = true;
   }
   try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
-  renderRecipeRecoveryPrompt();
+  if (!state.workspaceOnboardingRequired) renderRecipeRecoveryPrompt();
   if (state.workspacePermissionNeeded) {
     setSaveState('error', 'Reconnect folder to edit');
+  } else if (state.workspaceOnboardingRequired) {
+    setSaveState('error', 'Choose workspace folder');
+    syncWorkspaceOnboardingDialog();
   } else if (reopenedFolder) {
     setSaveState('saved', savedStatusText());
   } else if (restoreReadSucceeded) {
@@ -16737,10 +20215,22 @@ async function boot() {
   } else if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
   else setSaveState('saved', savedStatusText());
   document.documentElement.dataset.appReady = 'true';
-  if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+  if (!state.workspaceOnboardingRequired && !state.pendingRecipeRecovery && !state.workspacePermissionNeeded
+    && location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
-  window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
+  window.addEventListener('resize', () => {
+    updateCanvasViewportCamera();
+    syncMobilePanelAccessibility();
+    renderer.invalidate();
+  });
+  // Inspector sheets, canvas panels, and responsive layouts can resize the
+  // canvas without resizing the browser window. Keep world-to-screen hit
+  // testing aligned with the newly centered drawing surface in those cases.
+  canvasViewportObserver = new ResizeObserver(() => {
+    if (updateCanvasViewportCamera()) renderer.invalidate();
+  });
+  canvasViewportObserver.observe(canvas);
   window.addEventListener('beforeunload', () => { resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 

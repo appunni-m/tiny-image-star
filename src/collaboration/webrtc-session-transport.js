@@ -7,7 +7,8 @@ import {
 
 export const DEFAULT_ICE_GATHERING_TIMEOUT_MS = 15_000;
 export const DEFAULT_CONNECTION_TIMEOUT_MS = 20_000;
-export const DEFAULT_DATA_CHANNEL_LABEL = 'tiny-image-star/v1';
+export const DEFAULT_DATA_CHANNEL_LABEL = 'tiny-image-star/v2';
+export const DEFAULT_ASSET_DATA_CHANNEL_LABEL = 'tiny-image-star/assets/v2';
 
 /** A typed failure raised by the user-mediated WebRTC capsule transport. */
 export class WebRtcSessionTransportError extends Error {
@@ -62,13 +63,13 @@ function createPeerConnection(factory, iceServers) {
   }
 }
 
-function makeController(peerConnection, role, timeoutMs) {
+function makeController(peerConnection, role, timeoutMs, labels) {
   let state = role === 'host' ? 'preparing-offer' : 'preparing-answer';
-  let dataChannel = null;
+  const channels = { control: null, assets: null };
   let disposed = false;
   const removers = [];
   const pendingRejectors = new Set();
-  const channelWaiters = new Set();
+  const channelWaiters = { control: new Set(), assets: new Set() };
 
   const dispose = () => {
     if (disposed) return;
@@ -84,8 +85,11 @@ function makeController(peerConnection, role, timeoutMs) {
     dispose();
     for (const reject of [...pendingRejectors]) reject(error);
     pendingRejectors.clear();
-    channelWaiters.clear();
-    try { dataChannel?.close?.(); } catch { /* Best effort. */ }
+    channelWaiters.control.clear();
+    channelWaiters.assets.clear();
+    for (const channel of Object.values(channels)) {
+      try { channel?.close?.(); } catch { /* Best effort. */ }
+    }
     try { peerConnection.close?.(); } catch { /* Best effort. */ }
   };
 
@@ -103,12 +107,19 @@ function makeController(peerConnection, role, timeoutMs) {
       fail(transportError('DATA_CHANNEL_UNAVAILABLE', 'The peer did not provide a usable data channel.'));
       return;
     }
-    if (dataChannel && dataChannel !== channel) {
+    const kind = channel.label === labels.control ? 'control'
+      : channel.label === labels.assets ? 'assets' : null;
+    if (!kind) {
       try { channel.close?.(); } catch { /* Ignore unexpected extra channel. */ }
-      fail(transportError('UNEXPECTED_DATA_CHANNEL', 'The peer opened more than one session data channel.'));
+      fail(transportError('UNEXPECTED_DATA_CHANNEL', 'The peer opened an unexpected session data channel.'));
       return;
     }
-    dataChannel = channel;
+    if (channels[kind] && channels[kind] !== channel) {
+      try { channel.close?.(); } catch { /* Ignore duplicate channel. */ }
+      fail(transportError('UNEXPECTED_DATA_CHANNEL', `The peer opened more than one ${kind} data channel.`));
+      return;
+    }
+    channels[kind] = channel;
     try { channel.binaryType = 'arraybuffer'; }
     catch (cause) {
       fail(transportError('DATA_CHANNEL_UNSUPPORTED', 'The browser could not configure binary data delivery.', cause));
@@ -124,8 +135,8 @@ function makeController(peerConnection, role, timeoutMs) {
     removers.push(listen(channel, 'error', event => {
       if (state !== 'closed' && state !== 'failed') fail(transportError('DATA_CHANNEL_ERROR', 'The live data channel failed.', event?.error));
     }));
-    for (const resolve of [...channelWaiters]) resolve(channel);
-    channelWaiters.clear();
+    for (const resolve of [...channelWaiters[kind]]) resolve(channel);
+    channelWaiters[kind].clear();
   };
 
   removers.push(listen(peerConnection, 'connectionstatechange', () => {
@@ -135,7 +146,7 @@ function makeController(peerConnection, role, timeoutMs) {
     }
   }));
 
-  const waitForOpen = () => {
+  const waitForChannelOpen = kind => {
     if (state === 'closed' || state === 'failed') return Promise.reject(transportError('SESSION_CLOSED', 'The live session is no longer available.'));
     return new Promise((resolve, reject) => {
       let done = false;
@@ -148,14 +159,13 @@ function makeController(peerConnection, role, timeoutMs) {
         clearTimeout(timer);
         for (const remove of removals) remove();
         pendingRejectors.delete(rejectFromTermination);
-        if (channelWaiter) channelWaiters.delete(channelWaiter);
+        if (channelWaiter) channelWaiters[kind].delete(channelWaiter);
         if (error) reject(error);
         else resolve(result);
       };
       const rejectFromTermination = error => finish(error);
       const onOpen = () => {
         if (channel?.readyState === 'open') {
-          state = 'connected';
           finish(null, channel);
         }
       };
@@ -176,17 +186,27 @@ function makeController(peerConnection, role, timeoutMs) {
         else if (channel.readyState === 'closed' || channel.readyState === 'closing') onClose();
       };
       pendingRejectors.add(rejectFromTermination);
-      if (dataChannel) bindChannel(dataChannel);
+      if (channels[kind]) bindChannel(channels[kind]);
       else {
         channelWaiter = value => bindChannel(value);
-        channelWaiters.add(channelWaiter);
+        channelWaiters[kind].add(channelWaiter);
       }
     });
   };
 
+  const waitForOpen = async () => {
+    const [control, assets] = await Promise.all([
+      waitForChannelOpen('control'),
+      waitForChannelOpen('assets')
+    ]);
+    if (state !== 'closed' && state !== 'failed') state = 'connected';
+    return control;
+  };
+
   return {
     get state() { return state; },
-    get dataChannel() { return dataChannel; },
+    get dataChannel() { return channels.control; },
+    get assetDataChannel() { return channels.assets; },
     peerConnection,
     installChannel,
     waitForOpen,
@@ -240,6 +260,7 @@ function sessionHandle(controller, role, extra = {}) {
     role,
     get state() { return controller.state; },
     get dataChannel() { return controller.dataChannel; },
+    get assetDataChannel() { return controller.assetDataChannel; },
     peerConnection: controller.peerConnection,
     waitForOpen: controller.waitForOpen,
     close: controller.close,
@@ -250,8 +271,9 @@ function sessionHandle(controller, role, extra = {}) {
 /**
  * Create a direct host offer. The returned capsule is available only after non-trickle ICE
  * gathering finishes, so the caller can carry it to the guest through a user-chosen channel.
- * The returned data channel transports bytes only; callers must authenticate and validate
- * every application message separately.
+ * The returned control and asset channels transport bytes only; callers must authenticate
+ * and validate every application message separately. Asset delivery ordering across the
+ * two channels is the session controller's responsibility.
  */
 export async function createHostWebRtcSession({
   invite,
@@ -262,15 +284,23 @@ export async function createHostWebRtcSession({
   now = () => Date.now(),
   iceGatheringTimeoutMs = DEFAULT_ICE_GATHERING_TIMEOUT_MS,
   connectionTimeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS,
-  dataChannelLabel = DEFAULT_DATA_CHANNEL_LABEL
+  dataChannelLabel = DEFAULT_DATA_CHANNEL_LABEL,
+  assetDataChannelLabel = DEFAULT_ASSET_DATA_CHANNEL_LABEL
 } = {}) {
   validateTimeout(iceGatheringTimeoutMs, 'iceGatheringTimeoutMs');
   validateTimeout(connectionTimeoutMs, 'connectionTimeoutMs');
+  if (typeof dataChannelLabel !== 'string' || !dataChannelLabel || typeof assetDataChannelLabel !== 'string'
+    || !assetDataChannelLabel || dataChannelLabel === assetDataChannelLabel) {
+    throw new TypeError('Control and asset data-channel labels must be distinct, non-empty strings.');
+  }
+  const labels = { control: dataChannelLabel, assets: assetDataChannelLabel };
   const peerConnection = createPeerConnection(peerConnectionFactory, iceServers);
-  const controller = makeController(peerConnection, 'host', connectionTimeoutMs);
+  const controller = makeController(peerConnection, 'host', connectionTimeoutMs, labels);
   try {
     const dataChannel = peerConnection.createDataChannel(dataChannelLabel, { ordered: true });
     controller.installChannel(dataChannel);
+    const assetDataChannel = peerConnection.createDataChannel(assetDataChannelLabel, { ordered: true });
+    controller.installChannel(assetDataChannel);
     const offer = await peerConnection.createOffer();
     await setLocalAndGather(peerConnection, offer, iceGatheringTimeoutMs);
     const localSdp = peerConnection.localDescription?.sdp;
@@ -315,7 +345,7 @@ export async function createHostWebRtcSession({
 /**
  * Verify the user's invitation and host offer before allocating any WebRTC resources, then
  * build an answer capsule after ICE gathering completes. Signaling remains out of band.
- * The returned data channel is unauthenticated; callers must authenticate/validate messages.
+ * Both returned channels are unauthenticated; callers must authenticate and validate messages.
  */
 export async function createGuestWebRtcSession({
   offerCapsule,
@@ -326,7 +356,8 @@ export async function createGuestWebRtcSession({
   now = () => Date.now(),
   iceGatheringTimeoutMs = DEFAULT_ICE_GATHERING_TIMEOUT_MS,
   connectionTimeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS,
-  dataChannelLabel = DEFAULT_DATA_CHANNEL_LABEL
+  dataChannelLabel = DEFAULT_DATA_CHANNEL_LABEL,
+  assetDataChannelLabel = DEFAULT_ASSET_DATA_CHANNEL_LABEL
 } = {}) {
   validateTimeout(iceGatheringTimeoutMs, 'iceGatheringTimeoutMs');
   validateTimeout(connectionTimeoutMs, 'connectionTimeoutMs');
@@ -337,11 +368,16 @@ export async function createGuestWebRtcSession({
     throw transportError('CAPSULE_REJECTED', 'The offer capsule is invalid, expired, or does not match this invitation.', cause);
   }
 
+  if (typeof dataChannelLabel !== 'string' || !dataChannelLabel || typeof assetDataChannelLabel !== 'string'
+    || !assetDataChannelLabel || dataChannelLabel === assetDataChannelLabel) {
+    throw new TypeError('Control and asset data-channel labels must be distinct, non-empty strings.');
+  }
+  const labels = { control: dataChannelLabel, assets: assetDataChannelLabel };
   const peerConnection = createPeerConnection(peerConnectionFactory, iceServers);
-  const controller = makeController(peerConnection, 'guest', connectionTimeoutMs);
+  const controller = makeController(peerConnection, 'guest', connectionTimeoutMs, labels);
   const removeIncomingChannel = listen(peerConnection, 'datachannel', event => {
     const channel = event?.channel;
-    if (channel?.label !== dataChannelLabel) {
+    if (channel?.label !== dataChannelLabel && channel?.label !== assetDataChannelLabel) {
       try { channel?.close?.(); } catch { /* Best effort. */ }
       controller.fail(transportError('UNEXPECTED_DATA_CHANNEL', 'The host opened an unexpected data channel.'));
       return;

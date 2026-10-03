@@ -191,3 +191,26 @@ test('network face hit testing resolves parallel edge pairs the same way as rend
   assert.equal(hitTestPage(document.pages[0], { x: 50, y: 10 }, null, document)?.id, network.id,
     'the renderer uses the first straight edge for this face, so hit testing must too');
 });
+
+test('network face hit testing follows per-vertex corner radii for both fills and strokes', () => {
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }
+  ], { closed: true });
+  geometry.vertices[0].cornerRadius = 20;
+
+  const fillDocument = createDocument();
+  const filled = createNode('network', { ...geometry, fill: '#ff0000', stroke: null, strokeWidth: 0 });
+  addNode(fillDocument, filled);
+  assert.equal(hitTestPage(fillDocument.pages[0], { x: 2, y: 2 }, null, fillDocument), null,
+    'the transparent area cut away by a rounded network corner must not select the filled network');
+  assert.equal(hitTestPage(fillDocument.pages[0], { x: 10, y: 10 }, null, fillDocument)?.id, filled.id,
+    'the painted interior of a rounded network face remains selectable');
+
+  const strokeDocument = createDocument();
+  const outlined = createNode('network', { ...geometry, fill: 'transparent', stroke: '#000000', strokeWidth: 2 });
+  addNode(strokeDocument, outlined);
+  assert.equal(hitTestVisibleGeometry(outlined, { x: 10, y: 0 }, { tolerance: 0.1 }), false,
+    'the sharp source edge trimmed away by the corner radius is no longer a stroke hit target');
+  assert.equal(hitTestVisibleGeometry(outlined, { x: 6, y: 6 }, { tolerance: 0.1 }), true,
+    'the visible rounded arc remains a stroke hit target');
+});

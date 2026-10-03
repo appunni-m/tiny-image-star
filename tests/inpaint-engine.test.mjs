@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LocalInpaintEngine } from '../src/inpaint-engine.js';
+import { planImageExpansion } from '../src/image-expansion-plan.js';
 
 class FakeWorker {
   messages = [];
@@ -102,4 +103,77 @@ test('bad input, worker startup errors, and post-disposal jobs are reported to c
   await assert.rejects(started, /local model failed/);
   engine.dispose();
   await assert.rejects(engine.run(new Uint8Array([1]), strokes), /worker is closed/);
+});
+
+test('expansion uses the existing serialized worker protocol and requires planned output dimensions', async () => {
+  const { engine, worker } = makeEngine();
+  const plan = planImageExpansion(4, 3, { top: 1, right: 2, bottom: 0, left: 3 });
+  const source = new Uint8Array([7, 8, 9, 10]);
+  const expanded = engine.expand(source, plan);
+  const erase = engine.run(new Uint8Array([1, 2]), strokes);
+  worker.emit({ type: 'ready' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  const expansionMessage = worker.messages[0];
+  assert.equal(expansionMessage.message.type, 'expand');
+  assert.deepEqual(expansionMessage.transfer, [expansionMessage.message.sourceBytes]);
+  assert.deepEqual([...new Uint8Array(expansionMessage.message.sourceBytes)], [7, 8, 9, 10]);
+  assert.deepEqual(expansionMessage.message.plan, {
+    sourceWidth: 4,
+    sourceHeight: 3,
+    padding: { top: 1, right: 2, bottom: 0, left: 3 },
+  });
+  assert.equal(worker.messages.filter(item => item.message.type === 'inpaint' || item.message.type === 'expand').length, 1,
+    'expansion and erase share one serialized model worker');
+
+  worker.emit({
+    type: 'rendered', requestId: expansionMessage.message.requestId,
+    width: plan.width, height: plan.height, bytes: new Uint8Array([11, 12]).buffer,
+  });
+  assert.deepEqual(await expanded, { bytes: new Uint8Array([11, 12]), width: plan.width, height: plan.height });
+  await new Promise(resolve => setImmediate(resolve));
+  const eraseMessage = worker.messages.find(item => item.message.type === 'inpaint');
+  assert.ok(eraseMessage, 'queued erase is dispatched after expansion completes');
+  worker.emit({ type: 'rendered', requestId: eraseMessage.message.requestId, width: 1, height: 1, bytes: new Uint8Array([13]).buffer });
+  await erase;
+
+  const invalid = engine.expand(new Uint8Array([5]), plan);
+  await new Promise(resolve => setImmediate(resolve));
+  const invalidMessage = worker.messages.filter(item => item.message.type === 'expand').at(-1).message;
+  worker.emit({
+    type: 'rendered', requestId: invalidMessage.requestId,
+    width: plan.width - 1, height: plan.height, bytes: new Uint8Array([14]).buffer,
+  });
+  await assert.rejects(invalid, /invalid image/);
+  engine.dispose();
+});
+
+test('expansion cancellation drains the shared worker before dispatching the next edit', async () => {
+  const { engine, worker } = makeEngine();
+  const controller = new AbortController();
+  const plan = planImageExpansion(2, 2, { right: 2 });
+  const expansion = engine.expand(new Uint8Array([1]), plan, { signal: controller.signal });
+  const erase = engine.run(new Uint8Array([2]), strokes);
+  worker.emit({ type: 'ready' });
+  await new Promise(resolve => setImmediate(resolve));
+  const requestId = worker.messages[0].message.requestId;
+  controller.abort();
+  assert.deepEqual(worker.messages.at(-1).message, { type: 'cancel', requestId });
+  assert.equal(worker.messages.filter(item => item.message.type === 'expand' || item.message.type === 'inpaint').length, 1);
+  worker.emit({ type: 'cancelled', requestId });
+  await assert.rejects(expansion, { name: 'AbortError' });
+  await new Promise(resolve => setImmediate(resolve));
+  const eraseMessage = worker.messages.find(item => item.message.type === 'inpaint');
+  assert.ok(eraseMessage);
+  worker.emit({ type: 'rendered', requestId: eraseMessage.message.requestId, width: 1, height: 1, bytes: new Uint8Array([3]).buffer });
+  await erase;
+  engine.dispose();
+});
+
+test('expansion rejects invalid plans before allocating or dispatching a worker request', async () => {
+  const { engine, worker } = makeEngine();
+  await assert.rejects(engine.expand(new Uint8Array([1]), { sourceWidth: 2 }), /integer/);
+  await assert.rejects(engine.expand({}, planImageExpansion(2, 2, { right: 1 })), /image bytes/);
+  assert.equal(worker.messages.length, 0);
+  engine.dispose();
 });

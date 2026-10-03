@@ -51,6 +51,19 @@ test('DTCG round-trip preserves collections, all modes, primitive types, and per
   assert.doesNotMatch(json, /https?:\/\//, 'the adapter does not upload or reference remote data');
 });
 
+test('DTCG extension round-trip preserves Figma-compatible variable picker scopes', () => {
+  const source = makeVariableDocument();
+  source.variables.find(variable => variable.id === 'var-brand-base').scopes = ['FRAME_FILL', 'STROKE_COLOR'];
+  source.variables.find(variable => variable.id === 'var-brand-title').scopes = ['FONT_FAMILY', 'TEXT_CONTENT'];
+  source.variables.find(variable => variable.id === 'var-layout-gap').scopes = ['GAP', 'WIDTH_HEIGHT'];
+  const imported = importDtcgTokens(stringifyDtcgTokens(source));
+  assert.deepEqual(imported.variables, source.variables);
+
+  const malformed = structuredClone(source);
+  malformed.variables[0].scopes = ['ALL_FILLS', 'FRAME_FILL'];
+  assert.throws(() => exportDtcgTokens(malformed), error => code(error, 'INVALID_LOCAL_SCOPES'));
+});
+
 test('DTCG token descriptions and deprecation metadata survive import, local merge, and export', () => {
   const plain = {
     palette: {

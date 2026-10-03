@@ -4,9 +4,20 @@ import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS } from './prot
 import { DEFAULT_PROTOTYPE_BEZIER, isValidPrototypeEasing } from './prototype-easing.js';
 
 export { easePrototypeProgress, prototypeEasingTimingFunction } from './prototype-easing.js';
+export { prototypeMoveInOffset } from './prototype-transition.js';
 
 const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
-const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
+const transitionDirections = ['left', 'right', 'up', 'down'];
+const transitions = new Set([
+  'instant', 'dissolve',
+  ...transitionDirections.map(direction => `move-in-${direction}`),
+  ...transitionDirections.map(direction => `move-${direction}`),
+  ...transitionDirections.map(direction => `move-out-${direction}`),
+  ...transitionDirections.map(direction => `push-${direction}`),
+  ...transitionDirections.map(direction => `slide-in-${direction}`),
+  ...transitionDirections.map(direction => `slide-out-${direction}`),
+  'smart-animate', 'scroll'
+]);
 const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
@@ -277,7 +288,9 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     ? [...(easingBezier ?? DEFAULT_PROTOTYPE_BEZIER)]
     : null;
   if (!isValidPrototypeEasing(easing, normalizedEasingBezier)) throw new TypeError('Unsupported prototype easing settings.');
-  if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
+  if (transition === 'smart-animate' && !['navigate', 'swap-overlay'].includes(action)) {
+    throw new TypeError('Smart animate can only be used for frame navigation or swap-overlay actions.');
+  }
   if (transition === 'scroll' && action !== 'scroll-to') throw new TypeError('Scroll transitions can only be used with scroll-to actions.');
   if (action === 'scroll-to' && transition !== 'scroll' && transition !== 'instant') throw new TypeError('Scroll-to actions support only instant or scroll transitions.');
   if (!['nearest', 'start', 'center', 'end'].includes(scrollAlignment)) throw new TypeError('Unsupported prototype scroll alignment.');
@@ -359,7 +372,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     existing.easing = easing;
     if (normalizedEasingBezier) existing.easingBezier = normalizedEasingBezier;
     else delete existing.easingBezier;
-    existing.duration = Math.max(0, Math.min(2000, Number(duration) || 0));
+    existing.duration = Math.max(0, Math.min(10_000, Number(duration) || 0));
     if (action === 'open-overlay') {
       existing.overlayPosition = overlayPosition;
       existing.overlayOutsideClick = Boolean(overlayOutsideClick);
@@ -394,7 +407,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     destinationPageId: destination?.page?.id ?? null,
     transition,
     easing,
-    duration: Math.max(0, Math.min(2000, Number(duration) || 0))
+    duration: Math.max(0, Math.min(10_000, Number(duration) || 0))
   };
   if (normalizedEasingBezier) interaction.easingBezier = normalizedEasingBezier;
   if (action === 'open-link') interaction.url = linkUrl;
@@ -648,7 +661,11 @@ export function applyPrototypeInteraction(document, session, interaction) {
       outsideClick: interaction.overlayOutsideClick !== false,
       background: interaction.overlayBackground !== false,
       backgroundColor: /^#[0-9a-f]{6}$/i.test(interaction.overlayBackgroundColor || '') ? interaction.overlayBackgroundColor : '#000000',
-      backgroundOpacity: Math.max(0, Math.min(1, Number(interaction.overlayBackgroundOpacity ?? 0.32)))
+      backgroundOpacity: Math.max(0, Math.min(1, Number(interaction.overlayBackgroundOpacity ?? 0.32))),
+      transition: transitions.has(interaction.transition) ? interaction.transition : 'instant',
+      easing: interaction.easing || 'ease-in-out',
+      ...(Array.isArray(interaction.easingBezier) ? { easingBezier: [...interaction.easingBezier] } : {}),
+      duration: Math.max(0, Math.min(10_000, Number(interaction.duration) || 0))
     });
     rememberPrototypeHoverInteraction(session, interaction);
     return 'overlay-opened';

@@ -13,13 +13,14 @@
     },
     "worker": {
       "bundle": "../src/workers/font-shaping-worker.bundle.js",
-      "sizeBytes": 44936,
-      "sha256": "2b38c6713303d546a43a662b80f71b96de76e3b8c5a57fe3feb67d156b622866"
+      "sizeBytes": 45073,
+      "sha256": "ea0eedd3a958c784fe88e8e977db5540fc4c88134358809d4c6c8071fbe3b041"
     },
     "limits": {
       "maxFontBytes": 20971520,
       "maxRetainedFontBytes": 67108864,
       "maxCachedFaces": 4,
+      "maxFontCoverageCodepoints": 300000,
       "maxTextCodeUnits": 32768,
       "maxGlyphsPerShape": 65536,
       "maxOutlinePathCharacters": 8388608,

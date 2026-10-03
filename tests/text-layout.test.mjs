@@ -55,6 +55,55 @@ test('resolves Auto, pixel, percent, and legacy ratio line heights through text 
   assert.equal(layout({ name: 'ratio', value: 1.5 }).height, 60);
 });
 
+test('ending truncation keeps the maximum visible lines and appends a fitting ellipsis', () => {
+  const measure = value => [...String(value)].length * 10;
+  const layout = layoutPlainText('abcdefgh', 30, measure, {
+    lineHeight: 10, textTruncation: 'ending', maxLines: 2
+  });
+  assert.deepEqual(layout.lines.map(line => line.displayText), ['abc', 'de…']);
+  assert.equal(layout.height, 20);
+  assert.ok(layout.lines.every(line => measure(line.displayText) <= 30));
+});
+
+test('ending truncation respects the text box height and clips a later paragraph with an ellipsis', () => {
+  const measure = value => [...String(value)].length * 10;
+  const layout = layoutPlainText('first\nsecond', 60, measure, {
+    lineHeight: 10, textTruncation: 'ending', boxHeight: 10
+  });
+  assert.deepEqual(layout.lines.map(line => line.displayText), ['first…']);
+  assert.equal(layout.height, 10);
+});
+
+test('ending truncation never exposes a partially visible line at a fractional height limit', () => {
+  const measure = value => [...String(value)].length * 10;
+  const layout = layoutPlainText('one\ntwo', 50, measure, {
+    lineHeight: 12, textTruncation: 'ending', maxHeight: 18
+  });
+  assert.deepEqual(layout.lines.map(line => line.displayText), ['one…']);
+  assert.equal(layout.height, 12);
+});
+
+test('rich ending truncation keeps the ellipsis in the final visible grapheme style', () => {
+  const layout = layoutTextRuns([
+    { text: 'a', fontWeight: 700 },
+    { text: 'bc' }
+  ], 20, { fontSize: 10, lineHeight: 10, letterSpacing: 0 }, value => [...String(value)].length * 10, {
+    textTruncation: 'ending', maxLines: 1
+  });
+  assert.equal(layout.lines[0].displayText, 'a…');
+  assert.equal(layout.lines[0].parts.length, 1);
+  assert.equal(layout.lines[0].parts[0].style.fontWeight, 700);
+});
+
+test('auto-height text respects a finite max height while calculating truncated bounds', () => {
+  const node = createNode('text', {
+    text: 'one\ntwo\nthree', width: 80, height: 80, fontSize: 10, lineHeight: 1,
+    textFit: 'auto-height', textTruncation: 'ending', maxHeight: 18
+  });
+  const size = calculateTextBox(context(), node);
+  assert.equal(size.height, 18);
+});
+
 test('auto-height relayout uses pixel line height', () => {
   const node = createNode('text', {
     text: 'one two three four', width: 40, height: 20, fontSize: 10,
@@ -63,6 +112,28 @@ test('auto-height relayout uses pixel line height', () => {
   const size = calculateTextBox(context(), node);
   assert.ok(size.height >= 4 * 18);
   assert.equal(node.lineHeightUnit, 'pixels');
+});
+
+test('text box measurement accepts resolved font and paragraph properties', () => {
+  const ctx = fontAwareContext();
+  const measuredStyles = [];
+  const node = createNode('text', {
+    text: 'one\ntwo\nthree\nfour\nfive', width: 100, height: 20, fontSize: 10, lineHeight: 1,
+    textFit: 'auto-height'
+  });
+  const size = calculateTextBox(ctx, node, {
+    fontFamily: 'Editorial Sans', fontWeight: 700, fontStyle: 'italic',
+    paragraphSpacing: 5, firstLineIndent: 7,
+    shapeText(text, style) {
+      measuredStyles.push({ fontFamily: style.fontFamily, fontWeight: style.fontWeight, fontStyle: style.fontStyle });
+      return null;
+    }
+  });
+  assert.equal(ctx.font, 'italic 700 10px Editorial Sans');
+  assert.deepEqual(size, { width: 100, height: 74 }, 'auto-height uses the resolved paragraph gap');
+  assert.ok(measuredStyles.length > 0 && measuredStyles.every(style => style.fontFamily === 'Editorial Sans'
+    && style.fontWeight === 700 && style.fontStyle === 'italic'),
+  'font shaping receives the resolved typography properties');
 });
 
 test('model validation accepts supported line-height units and rejects malformed values', () => {

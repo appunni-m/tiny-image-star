@@ -359,8 +359,8 @@ try {
   managerPicker = app.querySelector('#selection-image-recipe');
   managerPicker.value = temporaryRecipe.id;
   managerPicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
-  tap(app.querySelector('.recipe-management summary'));
-  tap(app.querySelector('[data-action="rename-image-recipe"]'));
+  tap(app, app.querySelector('.recipe-management summary'));
+  tap(app, app.querySelector('[data-action="rename-image-recipe"]'));
   assert(dialog.open && app.querySelector('#recipe-dialog-title').textContent === 'Rename recipe', 'recipe rename should use a focused, labeled dialog.');
   app.querySelector('#recipe-name').value = 'Phone renamed recipe';
   tap(app, app.querySelector('#save-recipe-confirm'));
@@ -373,7 +373,7 @@ try {
   managerPicker = app.querySelector('#selection-image-recipe');
   managerPicker.value = temporaryRecipe.id;
   managerPicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
-  tap(app.querySelector('.recipe-management summary'));
+  tap(app, app.querySelector('.recipe-management summary'));
   const originalConfirm = app.defaultView.confirm;
   app.defaultView.confirm = () => true;
   try { tap(app, app.querySelector('[data-action="delete-image-recipe"]')); }

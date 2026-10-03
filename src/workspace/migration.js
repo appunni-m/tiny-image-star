@@ -137,7 +137,9 @@ export function collectReferencedAssets(document, { maxNodes = 1_000_000, maxDep
     if (Object.hasOwn(value, 'fontWeight') && value.fontWeight != null) nextFont.weight = normalizeWeight(value.fontWeight, nextFont.weight ?? 400);
     if (Object.hasOwn(value, 'fontStyle') && value.fontStyle != null) nextFont.style = value.fontStyle === 'italic' ? 'italic' : 'normal';
     for (const [key, child] of Object.entries(value)) {
-      if ((key === 'assetId' || /imageAssetId$/iu.test(key)) && typeof child === 'string' && child) images.add(child);
+      if ((key === 'assetId' || key === 'backgroundRemovalSourceAssetId' || key === 'backgroundRemovalAssetId'
+        || key === 'resolutionBoostSourceAssetId' || key === 'resolutionBoostAssetId'
+        || /imageAssetId$/iu.test(key)) && typeof child === 'string' && child) images.add(child);
     }
     if (typeof nextFont.family === 'string' && nextFont.family.trim()
       && (typeof value.fontFamily === 'string' || Object.hasOwn(value, 'fontWeight') || Object.hasOwn(value, 'fontStyle'))) {

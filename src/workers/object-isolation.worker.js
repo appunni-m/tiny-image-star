@@ -1,8 +1,8 @@
 import { FilesetResolver, InteractiveSegmenter } from '@mediapipe/tasks-vision';
 import { applyObjectIsolationMaskToRgba, normalizeObjectIsolationStrokes, validateObjectIsolationDimensions } from '../object-isolation-mask.js';
 
-const wasmBaseUrl = new URL('../../wasm/mediapipe/', import.meta.url).href;
-const modelUrl = new URL('../../wasm/models/interactive_segmentation.task', import.meta.url).href;
+const wasmBaseUrl = new URL('../../wasm/mediapipe/', self.location.href).href;
+const modelUrl = new URL('../../wasm/models/interactive_segmentation.task', self.location.href).href;
 const cancelledRequests = new Set();
 let segmenterPromise = null;
 let activeRequestId = null;

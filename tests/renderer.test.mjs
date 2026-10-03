@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
@@ -56,6 +56,33 @@ test('single slice selection exposes eight axis-aligned resize handles and no ro
   assert.equal(sliceSelectionHandles({ type: 'slice', x: 0, y: 0, width: 0, height: 10 }), null);
 });
 
+test('remote live presence draws page-scoped cursor labels and selection outlines', () => {
+  const document = createDocument();
+  const page = document.pages[0];
+  const node = createNode('rectangle', { x: 24, y: 36, width: 80, height: 40 });
+  node.id = 'layer-remote';
+  addNode(document, node, { pageId: page.id });
+  const calls = [];
+  const context = {
+    save() {}, restore() {}, translate() {}, scale() {},
+    beginPath: () => calls.push('path'), moveTo() {}, lineTo() {}, closePath() {},
+    stroke: () => calls.push('stroke'), fill() {}, fillRect() {}, setLineDash() {},
+    measureText: value => ({ width: String(value).length * 6 }),
+    fillText: value => calls.push(`label:${value}`)
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.drawRemotePresence(context, page, {
+    document, zoom: 1, motionPreview: new Map(),
+    remotePresence: new Map([
+      ['peer-a', { peerActorId: 'peer-a', active: true, pageId: page.id, cursorX: 20, cursorY: 30, selectedIds: ['layer-remote'] }],
+      ['peer-b', { peerActorId: 'peer-b', active: true, pageId: 'another-page', cursorX: 1, cursorY: 2, selectedIds: ['layer-remote'] }],
+      ['peer-c', { peerActorId: 'peer-c', active: false, pageId: page.id, cursorX: null, cursorY: null, selectedIds: [] }]
+    ])
+  });
+  assert.equal(calls.filter(call => call === 'stroke').length, 2, 'one page-scoped layer outline and one cursor are drawn');
+  assert.deepEqual(calls.filter(call => String(call).startsWith('label:')), ['label:Guest er-a']);
+});
+
 test('live smart-image rendering crops the original bitmap before fitting, rotating, and flipping', () => {
   const calls = [];
   const context = {
@@ -89,6 +116,70 @@ test('live smart-image cover fitting uses the rotated crop bounds', () => {
     rotation: 90, flipHorizontal: false, flipVertical: false
   }), true);
   assert.deepEqual(calls, [[image, 100, 50, 200, 100, -120, -60, 240, 120]]);
+});
+
+test('Tile image rendering repeats the original-sized pattern at the requested scale and honors transforms', () => {
+  const calls = [];
+  const pattern = { setTransform: matrix => calls.push(['setTransform', matrix]) };
+  const context = {
+    createPattern: (...args) => { calls.push(['createPattern', ...args]); return pattern; },
+    save: () => calls.push(['save']), restore: () => calls.push(['restore']),
+    fillRect: (...args) => calls.push(['fillRect', ...args])
+  };
+  const image = { width: 200, height: 100 };
+  assert.equal(drawFittedImage(context, image, 10, 20, 80, 60, 'tile', 0.5, {
+    rotation: 90, flipHorizontal: true
+  }, { width: 400, height: 200 }), true);
+  assert.deepEqual(calls[0], ['createPattern', image, 'repeat']);
+  assert.deepEqual(calls[1], ['setTransform', { a: -0, b: -1, c: -1, d: 0, e: 110, f: 220 }]);
+  assert.deepEqual(calls.slice(2), [['save'], ['fillRect', 10, 20, 80, 60], ['restore']]);
+
+  const unsupportedContext = { createPattern: () => ({}) };
+  assert.equal(drawFittedImage(unsupportedContext, image, 0, 0, 50, 50, 'tile'), false,
+    'an unavailable CanvasPattern transform must fail closed instead of silently drawing a different fit mode');
+});
+
+test('image layers and fills render Tile through the clipped CanvasPattern path', () => {
+  const source = { name: 'source pixels', width: 320, height: 160 };
+  const asset = { bitmap: source, width: source.width, height: source.height, sourceWidth: source.width, sourceHeight: source.height };
+  const document = createDocument();
+  const fillNode = createNode('rectangle', {
+    width: 180, height: 100,
+    fills: [{ id: 'tile-fill', type: 'image', visible: true, opacity: 1,
+      imageFill: createImageFill('photo', { fit: 'tile', scalingFactor: 0.25 }) }]
+  });
+  const imageNode = createNode('image', { assetId: 'photo', width: 120, height: 90, fit: 'tile', scalingFactor: 0.5 });
+  addNode(document, fillNode);
+  addNode(document, imageNode);
+  const state = {
+    document, assets: new Map([['photo', asset]]), previews: new Map(), previewAssetIds: new Map(),
+    previewSignatures: new Map(), zoom: 1, selectedIds: [], imageCropMode: false, presenting: false,
+    outlineMode: false, imageStatus: new Map()
+  };
+  const calls = [];
+  const context = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'createPattern') return (image, repetition) => {
+        calls.push(['createPattern', image, repetition]);
+        return { setTransform: matrix => calls.push(['setTransform', matrix]) };
+      };
+      return (...args) => calls.push([property, ...args]);
+    },
+    set(target, property, value) { target[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+
+  renderer.drawNode(context, fillNode, 0, 0, state.assets);
+  renderer.drawNode(context, imageNode, 0, 0, state.assets);
+
+  const patternCalls = calls.filter(([method]) => method === 'createPattern');
+  assert.equal(patternCalls.length, 2, 'both image layers and image paints use the same Tile renderer');
+  assert.ok(patternCalls.every(([, image, repetition]) => image === source && repetition === 'repeat'));
+  assert.equal(calls.filter(([method]) => method === 'fillRect').length, 2);
+  assert.equal(calls.filter(([method]) => method === 'clip').length, 2,
+    'Tile paint is clipped to its image layer or fill geometry');
 });
 
 test('scene renderer bypasses endpoint previews for live smart-animate image layers and fills', () => {
@@ -230,6 +321,15 @@ test('image and container layers contribute their alpha when used as mask source
   assert.ok(imageCalls.some(call => call.method === 'drawImage' && call.args[0] === editedPreview),
     'image-mask alpha follows the current per-layer preview when one is available');
 
+  // Output format and quality affect downloads only. The editor preview stays
+  // lossless PNG and its existing bitmap must remain valid after those edits.
+  image.outputFormat = 'webp';
+  image.outputQuality = 34;
+  const formatOnlyCalls = [];
+  renderer.drawNode(makeContext(formatOnlyCalls), image, 0, 0, state.assets, false, true);
+  assert.ok(formatOnlyCalls.some(call => call.method === 'drawImage' && call.args[0] === editedPreview),
+    'changing only export format/quality must keep the current edited canvas bitmap visible');
+
   const containerCalls = [];
   class RecordingCanvas {
     constructor(width, height) {
@@ -289,6 +389,94 @@ test('shape alpha masks honor paint opacity and leave unpainted geometry transpa
   assert.equal(paintedFill?.fillStyle, 'rgba(255, 0, 0, 1)', 'mask compositing uses the source paint alpha');
   assert.equal(recordDraws(empty).some(call => call.method === 'fill'), false,
     'a shape with no visible fill or stroke contributes no mask alpha');
+});
+
+test('vector masks use opaque white visible fill and stroke geometry regardless of paint alpha', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', {
+    id: 'vector-mask-source', opacity: 0, fillOpacity: 0, strokeOpacity: 0,
+    fills: [{ id: 'hidden-by-alpha', type: 'solid', visible: true, opacity: 0, color: 'transparent' }],
+    strokes: [{ id: 'zero-alpha-stroke', color: 'transparent', width: 6, opacity: 0, visible: true,
+      cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10 }]
+  });
+  const noPaint = createNode('rectangle', {
+    id: 'vector-mask-no-paint', fills: [{ id: 'hidden-fill', type: 'solid', visible: false, opacity: 1, color: '#f00' }],
+    strokes: [{ id: 'hidden-stroke', color: '#00f', width: 5, opacity: 1, visible: false,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }]
+  });
+  addNode(document, source); addNode(document, noPaint);
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  const recordDraws = node => {
+    const calls = [];
+    const target = { globalAlpha: 1, globalCompositeOperation: 'source-over' };
+    const stack = [];
+    const context = new Proxy(target, {
+      get(current, property) {
+        if (property in current) return current[property];
+        if (property === 'save') return () => stack.push({ ...current });
+        if (property === 'restore') return () => Object.assign(current, stack.pop() || {});
+        return (...args) => calls.push({ method: property, args, alpha: current.globalAlpha,
+          fillStyle: current.fillStyle, strokeStyle: current.strokeStyle, lineWidth: current.lineWidth });
+      },
+      set(current, property, value) { current[property] = value; return true; }
+    });
+    renderer.drawNode(context, node, 0, 0, new Map(), false, 'vector');
+    return calls;
+  };
+  const calls = recordDraws(source);
+  const fill = calls.find(call => call.method === 'fill');
+  const stroke = calls.find(call => call.method === 'stroke');
+  assert.equal(fill?.alpha, 1, 'zero layer and fill alpha do not weaken vector fill geometry');
+  assert.equal(fill?.fillStyle, '#ffffff');
+  assert.equal(stroke?.alpha, 1, 'zero stroke alpha does not weaken vector stroke geometry');
+  assert.equal(stroke?.strokeStyle, '#ffffff');
+  assert.equal(stroke?.lineWidth, 6, 'the source stroke extent remains part of the vector mask');
+  assert.deepEqual(recordDraws(noPaint).filter(call => call.method === 'fill' || call.method === 'stroke'), [],
+    'invisible paints do not contribute vector mask regions');
+});
+
+test('vector mask groups build an opaque source surface before applying destination-in', () => {
+  const content = { id: 'masked-content', type: 'rectangle' };
+  const source = { id: 'vector-source', type: 'ellipse' };
+  const group = { id: 'mask-group', width: 20, height: 10, mask: true, maskMode: 'vector',
+    maskSourceId: source.id, children: [content, source] };
+  const canvases = [];
+  const drawCalls = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height;
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over', operations: [],
+        setTransform(...args) { this.operations.push({ method: 'setTransform', args }); },
+        drawImage(image, ...args) { this.operations.push({ method: 'drawImage', image, args, composite: this.globalCompositeOperation }); },
+        clearRect() {}, save() {}, restore() {}
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ zoom: 1 });
+    renderer.drawNode = (ctx, node, _x, _y, _assets, _draft, maskMode) => {
+      drawCalls.push({ surface: ctx, node: node.id, maskMode });
+    };
+    const destination = { getTransform: () => ({ a: 1, b: 0 }), drawImage() {} };
+    renderer.drawMaskGroup(destination, group, 3, 4, new Map());
+    assert.equal(canvases.length, 2, 'content and vector mask use separate bounded surfaces');
+    assert.deepEqual(drawCalls.map(call => [call.node, call.maskMode]), [
+      ['masked-content', false], ['vector-source', 'vector']
+    ]);
+    assert.ok(canvases[0].context.operations.some(operation => operation.method === 'drawImage'
+      && operation.image === canvases[1] && operation.composite === 'destination-in'),
+    'the fully composed vector source is applied once to the content surface');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
 });
 
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {
@@ -1014,6 +1202,33 @@ test('group selection overlay renders degenerate line and point bounds safely', 
   }
 });
 
+test('component property hover draws a purple outline around its instance layer', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 20, y: 30, width: 120, height: 80 });
+  const target = createNode('text', { x: 8, y: 12, width: 50, height: 20, text: 'Label' });
+  addNode(document, frame);
+  addNode(document, target, { parentId: frame.id });
+  const paths = [];
+  let path = [];
+  const colors = [];
+  const context = {
+    save() {}, restore() {}, beginPath() { path = []; },
+    moveTo(x, y) { path.push({ x, y }); }, lineTo(x, y) { path.push({ x, y }); },
+    closePath() { path.push('close'); }, stroke() { paths.push(path); },
+    set strokeStyle(value) { colors.push(value); }, set lineWidth(_value) {}
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, zoom: 1 });
+
+  assert.equal(renderer.drawComponentPropertyHighlight(context, document.pages[0].children, target.id), true);
+  assert.deepEqual(colors, ['#9747ff']);
+  assert.equal(paths.length, 1);
+  assert.equal(paths[0].length, 5, 'the target gets a closed four-corner outline');
+  target.visible = false;
+  assert.equal(renderer.drawComponentPropertyHighlight(context, document.pages[0].children, target.id), false,
+    'hidden targets do not show a hover outline');
+});
+
 test('text tracking affects measured line width and wrapping', () => {
   const context = textContext();
   assert.equal(measureTrackedText(context, 'ab cd', 0), 45);
@@ -1149,6 +1364,36 @@ test('vector network face paints honor each fill paint blend mode', () => {
   renderer.drawNode(context, network, 0, 0, new Map());
 
   assert.deepEqual(fills, ['source-over', 'color-dodge', 'luminosity']);
+});
+
+test('vector network rendering uses the shared rounded-face path for fills and strokes', () => {
+  const document = createDocument();
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 30 }, { x: 0, y: 30 }
+  ], { closed: true });
+  geometry.vertices[0].cornerRadius = 6;
+  geometry.vertices[2].cornerRadius = 4;
+  const network = createNode('network', { ...geometry, fill: '#123456', stroke: '#000000', strokeWidth: 2 });
+  addNode(document, network);
+  let arcCount = 0;
+  const stack = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '', lineWidth: 1,
+    save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }); },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    beginPath() {}, moveTo() {}, lineTo() {}, bezierCurveTo() {}, closePath() {}, fill() {}, stroke() {},
+    arc() { arcCount += 1; }
+  };
+  const context = new Proxy(target, {
+    get(current, property) { return property in current ? current[property] : () => {}; },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, network, 0, 0, new Map());
+
+  assert.ok(arcCount >= 4,
+    'each non-zero vertex radius must appear in both the face fill path and the shared stroke path');
 });
 
 test('shape rendering paints linear, radial, and angular stroke gradients through the stroke geometry', () => {
@@ -1399,6 +1644,25 @@ function textPaintContext() {
   return context;
 }
 
+test('canvas text rendering ellipsizes max-lines content and clips it to the text box', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    x: 7, y: 11, width: 50, height: 10, text: 'one\ntwo', textFit: 'fixed',
+    textTruncation: 'ending', maxLines: 1, fontSize: 10, lineHeight: 1
+  });
+  addNode(document, text);
+  const context = textPaintContext();
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, text, 0, 0, new Map());
+
+  const clipIndex = context.calls.findIndex(call => call.kind === 'clip');
+  assert.notEqual(clipIndex, -1,
+    'ending truncation establishes a local text-box clip');
+  assert.deepEqual(context.calls.slice(0, clipIndex).filter(call => call.kind === 'rect').at(-1).values, [7, 11, 50, 10]);
+  assert.deepEqual(context.calls.filter(call => call.kind === 'fillText').map(call => call.text), ['one…']);
+});
+
 test('text fill stacks composite ordered paints through the combined laid-out glyph alpha', () => {
   const document = createDocument();
   const text = createNode('text', {
@@ -1470,7 +1734,7 @@ test('text fill stacks composite ordered paints through the combined laid-out gl
   }
 });
 
-test('text strokes outline rich glyphs with matching grapheme positions and retain run colors without layer fills', () => {
+test('text strokes preserve emoji shaping and retain run colors without layer fills', () => {
   const document = createDocument();
   const text = createNode('text', {
     x: 8, y: 12, width: 180, height: 48, text: 'A👩‍💻',
@@ -1490,8 +1754,8 @@ test('text strokes outline rich glyphs with matching grapheme positions and reta
 
   const fills = context.calls.filter(call => call.kind === 'fillText');
   const outlines = context.calls.filter(call => call.kind === 'strokeText');
-  assert.deepEqual(fills.map(call => call.text), ['A', '👩‍💻'],
-    'fallback letter spacing positions the source text by grapheme cluster');
+  assert.deepEqual(fills.map(call => call.text), ['A👩‍💻'],
+    'fallback letter spacing must keep an emoji sequence in one browser-shaped text run');
   assert.ok(fills.every(call => call.fillStyle === 'rgba(255, 0, 0, 1)'),
     'rich-run color remains the fill when no explicit layer fill stack exists');
   assert.deepEqual(outlines.map(call => [call.text, call.x, call.y]), [
@@ -1645,6 +1909,36 @@ test('locally shaped rich text paints glyph outlines and falls back when an outl
     });
     assert.equal(strokeOnly.calls.filter(call => call.kind === 'strokeGlyphPath').length, 1,
       'stroke-only Canvas contexts can paint HarfBuzz outlines without a fill method');
+  } finally {
+    if (previousPath2D) Object.defineProperty(globalThis, 'Path2D', previousPath2D);
+    else delete globalThis.Path2D;
+  }
+});
+
+test('mixed-script local shaping paints covered runs and measures uncovered runs with the browser stack', () => {
+  const previousPath2D = Object.getOwnPropertyDescriptor(globalThis, 'Path2D');
+  class TestPath2D { constructor(data) { this.data = data; } }
+  Object.defineProperty(globalThis, 'Path2D', { configurable: true, value: TestPath2D });
+  try {
+    const context = richContext();
+    context.fill = path => context.calls.push({ kind: 'fillGlyphPath', data: path.data });
+    drawTextRuns(context, [{ text: 'Aمرحبا' }], 4, 8, 100, {
+      ...defaultRunStyle,
+      letterSpacing: 2,
+      shapeText: () => ({
+        mixedRuns: [
+          { text: 'A', shaped: { upem: 1000, extents: { ascender: 800 }, glyphs: [{ path: 'latin-path', cluster: 0, xAdvance: 1000 }] } },
+          { text: 'مرحبا', shaped: null }
+        ]
+      })
+    });
+    assert.equal(context.calls.filter(call => call.kind === 'fillGlyphPath').length, 1,
+      'supported text uses the local outline shaper');
+    const fallback = context.calls.find(call => call.text === 'مرحبا');
+    const fallbackGlyphs = context.calls.filter(call => call.text).map(call => call.text).join('');
+    assert.equal(fallbackGlyphs, 'مرحبا', 'the complete uncovered script run remains shaped as browser text');
+    assert.ok(context.calls.some(call => call.kind === 'fillGlyphPath'), 'the covered local run remains an outline');
+    assert.equal(fallback.x, 12, 'the browser fallback begins after the local run and one inter-run tracking step');
   } finally {
     if (previousPath2D) Object.defineProperty(globalThis, 'Path2D', previousPath2D);
     else delete globalThis.Path2D;
@@ -1840,6 +2134,48 @@ test('rich and plain canvas text position each paragraph using its own alignment
   assert.deepEqual(draws.filter(draw => draw.text).map(({ text, x, y }) => [text, x, y]), [
     ['one', 3 + (50 - 15) / 2, 4], ['two', 3 + 50 - 15, 16.5]
   ]);
+});
+
+test('canvas text resolves bound font and paragraph properties in the active frame mode', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Typography');
+  const editorial = addVariableMode(document, collection.id, 'Editorial');
+  const values = {
+    fontFamily: ['string', 'Base Sans', 'Editorial Sans'],
+    fontWeight: ['number', 400, 700],
+    fontStyle: ['string', 'normal', 'italic'],
+    paragraphSpacing: ['number', 0, 5],
+    firstLineIndent: ['number', 0, 8]
+  };
+  const variables = Object.fromEntries(Object.entries(values).map(([property, [type, initial, alternate]]) => {
+    const variable = createVariable(document, collection.id, property, type, initial);
+    assert.equal(setVariableValue(document, variable.id, alternate, editorial.id), true);
+    return [property, variable];
+  }));
+  const frame = createNode('frame', { width: 200, height: 100, variableModes: { [collection.id]: editorial.id } });
+  const text = createNode('text', {
+    text: 'one\ntwo', width: 100, height: 50, textFit: 'fixed', fontFamily: 'Fallback Sans',
+    fontSize: 10, lineHeight: 1.25, fontWeight: 400, fontStyle: 'normal'
+  });
+  addNode(document, frame);
+  addNode(document, text, { parentId: frame.id });
+  for (const [property, variable] of Object.entries(variables)) assert.equal(bindVariable(document, text.id, variable.id, property), true);
+  const draws = [];
+  const canvas = {
+    font: '', fillStyle: '', textAlign: 'left', textBaseline: 'top', globalAlpha: 1,
+    save() {}, restore() {}, beginPath() {}, rect() {},
+    measureText(value) { return { width: [...String(value)].length * 5 }; },
+    fillText(value, x, y) { draws.push({ text: value, x, y, font: this.font }); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(canvas, text, 0, 0, new Map());
+
+  assert.deepEqual(draws.map(({ text: value, x, y }) => [value, x, y]), [
+    ['one', 8, 0], ['two', 8, 17.5]
+  ], 'canvas wrapping uses the bound paragraph indent and spacing');
+  assert.ok(draws.every(draw => draw.font === 'italic 700 10px Editorial Sans'),
+    'canvas paint uses the bound font family, weight, and style');
 });
 
 test('justified canvas text retains letter spacing at token boundaries', () => {

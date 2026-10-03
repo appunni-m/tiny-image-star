@@ -1,3 +1,5 @@
+import { validateImageExpansionPlan } from './image-expansion-plan.js';
+
 function abortError(message = 'The object-erase request was cancelled.') {
   const error = new Error(message);
   error.name = 'AbortError';
@@ -10,6 +12,10 @@ function sourceBytesBuffer(sourceBytes) {
     return sourceBytes.buffer.slice(sourceBytes.byteOffset, sourceBytes.byteOffset + sourceBytes.byteLength);
   }
   throw new TypeError('Object erase needs the original image bytes.');
+}
+
+function isImageBytes(sourceBytes) {
+  return sourceBytes instanceof ArrayBuffer || ArrayBuffer.isView(sourceBytes);
 }
 
 /** One persistent local inference worker, with serialized jobs and drain-safe cancellation. */
@@ -36,15 +42,47 @@ export class LocalInpaintEngine {
     if (this.closed) return Promise.reject(new Error('The local object-erase worker is closed.'));
     if (!Array.isArray(strokes) || !strokes.length) return Promise.reject(new TypeError('Draw at least one erase stroke first.'));
     if (signal?.aborted) return Promise.reject(abortError());
-    if (!(sourceBytes instanceof ArrayBuffer) && !ArrayBuffer.isView(sourceBytes)) {
+    if (!isImageBytes(sourceBytes)) {
       return Promise.reject(new TypeError('Object erase needs the original image bytes.'));
     }
 
+    return this.#enqueue(sourceBytes, { type: 'inpaint', strokes }, { signal, onStage });
+  }
+
+  /** Run local unprompted expansion through the same serialized MI-GAN worker. */
+  expand(sourceBytes, plan, { signal, onStage } = {}) {
+    if (this.closed) return Promise.reject(new Error('The local object-erase worker is closed.'));
+    if (!isImageBytes(sourceBytes)) {
+      return Promise.reject(new TypeError('Image expansion needs the original image bytes.'));
+    }
+    if (signal?.aborted) return Promise.reject(abortError());
+    let validPlan;
+    try {
+      validPlan = validateImageExpansionPlan(plan);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.#enqueue(sourceBytes, {
+      type: 'expand',
+      plan: {
+        sourceWidth: validPlan.sourceWidth,
+        sourceHeight: validPlan.sourceHeight,
+        padding: { ...validPlan.padding },
+      },
+      expectedWidth: validPlan.width,
+      expectedHeight: validPlan.height,
+    }, { signal, onStage });
+  }
+
+  #enqueue(sourceBytes, operation, { signal, onStage } = {}) {
+    if (this.closed) return Promise.reject(new Error('The local object-erase worker is closed.'));
+    if (signal?.aborted) return Promise.reject(abortError());
+
     const request = {
       requestId: `erase-${++this.nextId}`,
+      ...operation,
       sourceBytes,
       buffer: null,
-      strokes,
       signal,
       onStage,
       sent: false,
@@ -134,10 +172,14 @@ export class LocalInpaintEngine {
       }
       request.sent = true;
       request.buffer = sourceBytesBuffer(request.sourceBytes);
-      this.worker.postMessage({
-        type: 'inpaint', requestId: request.requestId,
-        sourceBytes: request.buffer, strokes: request.strokes,
-      }, [request.buffer]);
+      const message = {
+        type: request.type,
+        requestId: request.requestId,
+        sourceBytes: request.buffer,
+      };
+      if (request.type === 'inpaint') message.strokes = request.strokes;
+      if (request.type === 'expand') message.plan = request.plan;
+      this.worker.postMessage(message, [request.buffer]);
       request.buffer = null;
       request.sourceBytes = null;
     }).catch(error => {
@@ -173,7 +215,8 @@ export class LocalInpaintEngine {
     if (message.type === 'rendered') {
       if (!(message.bytes instanceof ArrayBuffer)
         || !Number.isSafeInteger(message.width) || message.width < 1
-        || !Number.isSafeInteger(message.height) || message.height < 1) {
+        || !Number.isSafeInteger(message.height) || message.height < 1
+        || (request.type === 'expand' && (message.width !== request.expectedWidth || message.height !== request.expectedHeight))) {
         this.#complete(request, new TypeError('The object-erase worker returned an invalid image.'));
         return;
       }

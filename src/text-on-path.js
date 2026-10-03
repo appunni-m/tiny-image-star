@@ -1,5 +1,5 @@
 import { vectorPathContours } from './vector-path.js';
-import { textGraphemes } from './text-layout.js';
+import { requiresComplexTextShaping, textGraphemes } from './text-layout.js';
 import { canvasFontWeight } from './font-variation.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
@@ -236,21 +236,25 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   }
   const segments = [];
   const appendCanvasFallback = span => {
+    if (requiresComplexTextShaping(span.text)) {
+      const advance = Math.max(0, Number(measure(span.text, span.style)) || 0);
+      segments.push({ text: span.text, style: span.style, advance, letterSpacing: span.style.letterSpacing, shaped: null });
+      return;
+    }
     for (const grapheme of textGraphemes(span.text)) {
       const advance = Math.max(0, Number(measure(grapheme, span.style)) || 0);
       segments.push({ text: grapheme, style: span.style, advance, letterSpacing: span.style.letterSpacing, shaped: null });
     }
   };
-  for (const span of spans) {
-    const shaped = shapeText?.(span.text, span.style);
+  const appendShapedRun = (textValue, style, shaped) => {
     if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !shaped.glyphs.length
       || !(shaped.upem > 0) || !Number.isFinite(Number(shaped.extents?.ascender))) {
-      appendCanvasFallback(span);
-      continue;
+      appendCanvasFallback({ text: textValue, style });
+      return;
     }
     const groups = [];
     for (const glyph of shaped.glyphs) {
-      if (!Number.isInteger(glyph.cluster) || glyph.cluster < 0 || glyph.cluster >= span.text.length) {
+      if (!Number.isInteger(glyph.cluster) || glyph.cluster < 0 || glyph.cluster >= textValue.length) {
         groups.length = 0;
         break;
       }
@@ -259,26 +263,34 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
       else groups.push({ cluster: glyph.cluster, glyphs: [glyph] });
     }
     if (!groups.length) {
-      appendCanvasFallback(span);
-      continue;
+      appendCanvasFallback({ text: textValue, style });
+      return;
     }
     const starts = [...new Set(groups.map(group => group.cluster))].sort((left, right) => left - right);
-    const clusterText = new Map(starts.map((start, index) => [start, span.text.slice(start, starts[index + 1] ?? span.text.length)]));
+    const clusterText = new Map(starts.map((start, index) => [start, textValue.slice(start, starts[index + 1] ?? textValue.length)]));
     if (groups.some(group => !clusterText.get(group.cluster))) {
-      appendCanvasFallback(span);
-      continue;
+      appendCanvasFallback({ text: textValue, style });
+      return;
     }
-    const scale = Math.max(1, Number(span.style.fontSize) || 24) / shaped.upem;
+    const scale = Math.max(1, Number(style.fontSize) || 24) / shaped.upem;
     for (const group of groups) {
       const advanceUnits = group.glyphs.reduce((sum, glyph) => sum + (Number(glyph.xAdvance) || 0), 0);
       const advance = Math.abs(advanceUnits * scale);
       const groupText = clusterText.get(group.cluster) || '';
       segments.push({
-        text: groupText, style: span.style, advance, letterSpacing: span.style.letterSpacing,
+        text: groupText, style, advance, letterSpacing: style.letterSpacing,
         shaped: { ...shaped, glyphs: group.glyphs },
         shapedStartX: advanceUnits < 0 ? advance / 2 : -advance / 2
       });
     }
+  };
+  for (const span of spans) {
+    const shaped = shapeText?.(span.text, span.style);
+    if (Array.isArray(shaped?.mixedRuns)) {
+      for (const run of shaped.mixedRuns) appendShapedRun(run.text, span.style, run.shaped);
+      continue;
+    }
+    appendShapedRun(span.text, span.style, shaped);
   }
   ctx.textBaseline = 'alphabetic';
   const advances = segments.map(segment => segment.advance + (Number(segment.letterSpacing) || 0));

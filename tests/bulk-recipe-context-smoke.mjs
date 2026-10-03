@@ -255,11 +255,13 @@ try {
   'The inspector should lock selected recipe targets while the batch owns their edits.');
   assert(app.querySelector('#bulk-speed').min === '1' && Number(app.querySelector('#bulk-speed').max) === workerBudget,
     'The live speed slider did not expose the browser worker budget.');
-  const startConcurrency = Math.min(2, workerBudget);
+  const startConcurrency = Number(speed.value);
+  assert(Number.isSafeInteger(startConcurrency) && startConcurrency >= 1 && startConcurrency <= workerBudget,
+    'the recipe bar should start at a valid device-aware concurrency cap');
   const activeBatchRenders = Math.max(0, startConcurrency - 1);
-  await waitFor(() => workerGate.held.length >= startConcurrency && activeWorkers(app) === startConcurrency
+  await waitFor(() => workerGate.held.length >= startConcurrency && activeWorkers(app) === activeBatchRenders
     && workerGate.submissions.length - batchStart === activeBatchRenders,
-  'recipe work to queue behind the unrelated preview under the reported worker budget');
+  'recipe work to use the remaining batch slots while an unrelated preview is held');
 
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'recipe batch pause');

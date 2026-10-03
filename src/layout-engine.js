@@ -14,13 +14,17 @@ const boundedTrackValue = (value, fallback = 0) => {
 function normalizedGridTrack(track, fallbackMode = 'fill') {
   const source = track && typeof track === 'object' && !Array.isArray(track) ? track : {};
   const mode = gridTrackModes.has(source.mode) ? source.mode : fallbackMode;
+  const weight = Number.isFinite(Number(source.weight)) ? Math.max(0.01, Math.min(100_000, Number(source.weight))) : 1;
   const normalized = mode === 'fixed'
     ? { mode, value: boundedTrackValue(source.value, 120) }
     : mode === 'fill'
-      ? { mode, weight: Number.isFinite(Number(source.weight)) ? Math.max(0.01, Math.min(100_000, Number(source.weight))) : 1 }
+      ? { mode, weight }
       : { mode: 'hug' };
   if (source.minContent === true) normalized.minContent = true;
   else if (source.minSize != null) normalized.minSize = boundedTrackValue(source.minSize);
+  if (mode === 'fill' && Number.isFinite(Number(source.minWeight)) && Number(source.minWeight) > 0) {
+    normalized.minWeight = Math.min(weight, Math.max(0.01, Number(source.minWeight)));
+  }
   return normalized;
 }
 
@@ -246,13 +250,20 @@ function gridTrackSizes(definitions, count, available, gap, flowItems, placement
 
   const sizes = tracks.map((track, index) => track.mode === 'fixed' ? track.value
     : track.mode === 'hug' ? intrinsicSizes[index] : 0);
-  const minimums = tracks.map((track, index) => gridTrackMinimum(track, intrinsicSizes[index]));
+  const nonFillExtent = sizes.reduce((sum, size, index) => sum + (tracks[index].mode === 'fill' ? 0 : size), 0);
+  const fillAvailable = Math.max(0, available - gap * Math.max(0, count - 1) - nonFillExtent);
+  const totalFillWeight = tracks.reduce((sum, track) => sum + (track.mode === 'fill' ? track.weight || 1 : 0), 0);
+  // Fractional lower bounds use the same base fr unit as the maximum fill
+  // tracks. Absolute/content floors may still force the grid to overflow.
+  const fillUnit = totalFillWeight > 0 ? fillAvailable / totalFillWeight : 0;
+  const minimums = tracks.map((track, index) => Math.max(
+    gridTrackMinimum(track, intrinsicSizes[index]),
+    track.mode === 'fill' && Number.isFinite(track.minWeight) ? track.minWeight * fillUnit : 0
+  ));
   for (let index = 0; index < tracks.length; index += 1) {
     if (tracks[index].mode !== 'fill') sizes[index] = Math.max(sizes[index], minimums[index]);
   }
   const fillIndices = tracks.map((track, index) => track.mode === 'fill' ? index : -1).filter(index => index >= 0);
-  const nonFillExtent = sizes.reduce((sum, size, index) => sum + (tracks[index].mode === 'fill' ? 0 : size), 0);
-  const fillAvailable = Math.max(0, available - gap * Math.max(0, count - 1) - nonFillExtent);
   allocateGridFillTracks(tracks, fillIndices, sizes, minimums, fillAvailable);
   return sizes;
 }

@@ -1,5 +1,8 @@
-import { getBlobBytes, parseFigBinary, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
-import { createComponentSet, createDocument, createId, createNode, MAX_DOCUMENT_TREE_DEPTH, parseDocument } from './model.js';
+import { getBlobBytes, parseFigBinary, parseVectorNetworkBlob, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
+import {
+  canSwapComponentTo, createComponentSet, createDocument, createId, createNode, isMaskSource,
+  MAX_DOCUMENT_TREE_DEPTH, parseDocument, setComponentPropertyValue, switchComponentInstanceVariant
+} from './model.js';
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { createImageFill } from './image-fills.js';
 import { createAutoLayout } from './layout-engine.js';
@@ -10,6 +13,8 @@ import {
 } from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
+import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 
 const MAX_WARNINGS = 40;
 const MAX_NAME_LENGTH = 512;
@@ -183,6 +188,35 @@ function findImageHash(paint) {
   return null;
 }
 
+const figImageFilterFields = Object.freeze({
+  exposure: 'exposure', contrast: 'contrast', saturation: 'saturation', temperature: 'temperature',
+  tint: 'tint', highlights: 'highlights', shadows: 'shadows'
+});
+
+function mapImageFilters(filters, report, name) {
+  if (filters == null) return {};
+  if (typeof filters !== 'object' || Array.isArray(filters)) {
+    warn(report, 'flattened', 'IMAGE_FILTER', name, 'Image filters were malformed and reset to their defaults.');
+    return {};
+  }
+  const adjustments = {};
+  let omitted = false;
+  for (const [sourceField, value] of Object.entries(filters)) {
+    const targetField = figImageFilterFields[sourceField];
+    if (!targetField || !Number.isFinite(value) || value < -1 || value > 1) {
+      omitted = true;
+      continue;
+    }
+    // Figma stores image-filter sliders in [-1, 1]; the local adjustment
+    // model uses percentage points in [-100, 100].
+    adjustments[targetField] = value * 100;
+  }
+  if (omitted) {
+    warn(report, 'flattened', 'IMAGE_FILTER', name, 'Unknown or out-of-range image filters were reset; supported filter values were retained.');
+  }
+  return adjustments;
+}
+
 function rasterMime(bytes) {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
@@ -275,12 +309,26 @@ function mapPaints(paints, node, context, { allowFill = true } = {}) {
         assetId: asset.id, name: asset.name, type: asset.type, width: asset.width, height: asset.height
       });
       const scaleMode = String(paint.scaleMode || '').toUpperCase();
-      const fit = ['FIT', 'CONTAIN'].includes(scaleMode) ? 'contain' : 'cover';
-      if (paint.imageTransform || paint.filters) warn(context.report, 'flattened', 'IMAGE_TRANSFORM', node.name, 'Image crop, tint and filter settings use the nearest fill mode.');
-      if (['TILE', 'STRETCH'].includes(scaleMode)) warn(context.report, 'flattened', 'IMAGE_SCALE', node.name, 'Image tiling or stretch scaling was reduced to cover.');
+      const fit = scaleMode === 'TILE' ? 'tile' : ['FIT', 'CONTAIN'].includes(scaleMode) ? 'contain' : 'cover';
+      const rotation = paint.rotation == null ? 0 : Number(paint.rotation);
+      const transforms = Number.isInteger(rotation) && rotation % 90 === 0 ? { rotation } : {};
+      if (paint.rotation != null && !Object.hasOwn(transforms, 'rotation')) {
+        warn(context.report, 'flattened', 'IMAGE_ROTATION', node.name, 'Image fill rotations outside 90-degree increments were reset to 0 degrees.');
+      }
+      const scalingFactor = paint.scalingFactor == null ? DEFAULT_IMAGE_TILE_SCALE : Number(paint.scalingFactor);
+      if (paint.imageTransform) warn(context.report, 'flattened', 'IMAGE_TRANSFORM', node.name, 'The image crop transform uses the nearest supported fill mode.');
+      if (scaleMode === 'TILE' && !isValidImageTileScale(scalingFactor)) {
+        warn(context.report, 'flattened', 'IMAGE_TILE_SCALE', node.name, 'The tile percentage exceeded the local safe range and was reset to 100%.');
+      }
+      if (scaleMode === 'STRETCH') warn(context.report, 'flattened', 'IMAGE_SCALE', node.name, 'Stretch scaling was reduced to Fill.');
       supported.push({
         id: createId('fill'), type: 'image', visible: true, opacity: paintOpacity(paint), ...blend,
-        imageFill: createImageFill(asset.id, { fit })
+        imageFill: createImageFill(asset.id, {
+          fit,
+          transforms,
+          adjustments: mapImageFilters(paint.filters, context.report, node.name),
+          ...(fit === 'tile' ? { scalingFactor: isValidImageTileScale(scalingFactor) ? scalingFactor : DEFAULT_IMAGE_TILE_SCALE } : {})
+        })
       });
       continue;
     }
@@ -526,6 +574,174 @@ function vectorChildren(source, resolved, context) {
   return children;
 }
 
+function vectorNetworkFaceLoop(region, network) {
+  if (!region || region.loops?.length !== 1 || !Array.isArray(region.loops[0])
+    || region.loops[0].length < 3 || region.loops[0].length > network.segments.length) return null;
+  const loop = region.loops[0];
+  if (loop.some(index => !Number.isSafeInteger(index) || index < 0 || index >= network.segments.length)
+    || new Set(loop).size !== loop.length) return null;
+  for (const firstDirection of [1, -1]) {
+    const first = network.segments[loop[0]];
+    if (!first?.start || !first?.end) return null;
+    let current = firstDirection === 1 ? first.start.vertex : first.end.vertex;
+    const start = current;
+    const vertexIndices = [];
+    const segmentIndices = [];
+    let valid = true;
+    for (const segmentIndex of loop) {
+      const segment = network.segments[segmentIndex];
+      if (!segment?.start || !segment?.end) { valid = false; break; }
+      const next = segment.start.vertex === current ? segment.end.vertex
+        : segment.end.vertex === current ? segment.start.vertex : null;
+      if (next == null) { valid = false; break; }
+      vertexIndices.push(current);
+      segmentIndices.push(segmentIndex);
+      current = next;
+    }
+    if (valid && current === start && vertexIndices.length >= 3
+      && new Set(vertexIndices).size === vertexIndices.length) return { vertexIndices, segmentIndices };
+  }
+  return null;
+}
+
+function vectorNetworkPathMatches(path, network, faceLoop, width, height) {
+  if (typeof path?.svgPath !== 'string' || path.svgPath.length > MAX_VECTOR_PATH_CHARS) return false;
+  const { vertexIndices, segmentIndices } = faceLoop || {};
+  if (!Array.isArray(vertexIndices) || !Array.isArray(segmentIndices)
+    || vertexIndices.length < 3 || vertexIndices.length !== segmentIndices.length) return false;
+  let actual;
+  try { actual = parseSVGPathData(path.svgPath); }
+  catch { return false; }
+  const point = index => network.vertices[index];
+  const expected = [{ type: 'M', x: point(vertexIndices[0]).x, y: point(vertexIndices[0]).y }];
+  for (let index = 0; index < vertexIndices.length; index += 1) {
+    const from = vertexIndices[index];
+    const to = vertexIndices[(index + 1) % vertexIndices.length];
+    const segment = network.segments[segmentIndices[index]];
+    if (!segment || !((segment.start.vertex === from && segment.end.vertex === to)
+      || (segment.start.vertex === to && segment.end.vertex === from))) return false;
+    if (index === vertexIndices.length - 1 && segment.isStraight) continue;
+    const forward = segment.start.vertex === from;
+    const start = point(from); const end = point(to);
+    if (segment.isStraight) {
+      expected.push({ type: 'L', x: end.x, y: end.y });
+      continue;
+    }
+    const firstVertex = point(segment.start.vertex); const lastVertex = point(segment.end.vertex);
+    const firstControl = { x: firstVertex.x + segment.start.dx, y: firstVertex.y + segment.start.dy };
+    const lastControl = { x: lastVertex.x + segment.end.dx, y: lastVertex.y + segment.end.dy };
+    const control1 = forward ? firstControl : lastControl;
+    const control2 = forward ? lastControl : firstControl;
+    expected.push({ type: 'C', c1x: control1.x, c1y: control1.y, c2x: control2.x, c2y: control2.y, x: end.x, y: end.y });
+  }
+  expected.push({ type: 'Z' });
+  if (actual.length !== expected.length) return false;
+  // The .fig command blob serializes coordinates to hundredths while the
+  // vectorNetworkBlob keeps float32 values, so compare their declared geometry
+  // within the command format's rounding precision.
+  const tolerance = Math.max(0.02, Math.max(width, height) * 1e-7);
+  return actual.every((command, index) => {
+    const target = expected[index];
+    if (command.type !== target.type) return false;
+    if (target.type === 'Z') return true;
+    const properties = target.type === 'C'
+      ? ['c1x', 'c1y', 'c2x', 'c2y', 'x', 'y']
+      : ['x', 'y'];
+    return properties.every(property => Number.isFinite(command[property])
+      && Math.abs(command[property] - target[property]) <= tolerance);
+  });
+}
+
+function vectorNetworkHasUniqueEdges(network) {
+  const pairs = new Set();
+  for (const segment of network.segments) {
+    if (!Number.isSafeInteger(segment?.start?.vertex) || !Number.isSafeInteger(segment?.end?.vertex)
+      || segment.start.vertex < 0 || segment.end.vertex < 0
+      || segment.start.vertex >= network.vertices.length || segment.end.vertex >= network.vertices.length
+      || segment.start.vertex === segment.end.vertex
+      || ![segment.start.dx, segment.start.dy, segment.end.dx, segment.end.dy].every(Number.isFinite)) return false;
+    const key = segment.start.vertex < segment.end.vertex
+      ? `${segment.start.vertex}:${segment.end.vertex}`
+      : `${segment.end.vertex}:${segment.start.vertex}`;
+    if (pairs.has(key)) return false;
+    pairs.add(key);
+  }
+  return true;
+}
+
+/** Keep simple one-loop Figma vector regions as their editable network graph. */
+function editableFigVectorNetwork(source, network, resolvedFillPaths) {
+  const size = source.size || {};
+  const normalizedSize = source.vectorData?.normalizedSize || {};
+  const width = Number(size.x); const height = Number(size.y);
+  const normalizedWidth = Number(normalizedSize.x); const normalizedHeight = Number(normalizedSize.y);
+  const fillGeometry = Array.isArray(source.fillGeometry) ? source.fillGeometry : [];
+  const strokeGeometry = Array.isArray(source.strokeGeometry) ? source.strokeGeometry : [];
+  const styleOverrides = source.vectorData?.styleOverrideTable;
+  if (!network || !Array.isArray(network.vertices) || !Array.isArray(network.segments) || !Array.isArray(network.regions)
+    || network.vertices.length < 3 || network.vertices.length > 20_000
+    || network.segments.length < 3 || network.segments.length > 20_000
+    || network.regions.length < 1 || network.regions.length > MAX_VECTOR_GEOMETRY_ENTRIES
+    || !Array.isArray(resolvedFillPaths) || resolvedFillPaths.length !== network.regions.length
+    || fillGeometry.length !== network.regions.length || strokeGeometry.length !== 0
+    || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0
+    || !Number.isFinite(normalizedWidth) || !Number.isFinite(normalizedHeight)
+    || normalizedWidth <= 0 || normalizedHeight <= 0
+    // Figma's raw network coordinates are in normalizedSize units. Keeping
+    // exact source bounds avoids inferring an undocumented scale conversion.
+    || Math.abs(width - normalizedWidth) > EPSILON || Math.abs(height - normalizedHeight) > EPSILON
+    || fillGeometry.some(geometry => (geometry?.styleID ?? 0) !== 0)
+    || (styleOverrides != null && (!Array.isArray(styleOverrides) || styleOverrides.length > 0))
+    || network.vertices.some(vertex => vertex.styleID !== 0 || !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)
+      || Math.abs(vertex.x) > normalizedWidth * 1_000_000 || Math.abs(vertex.y) > normalizedHeight * 1_000_000)
+    || network.regions.some(region => region?.styleID !== 0)
+    || !vectorNetworkHasUniqueEdges(network)) return null;
+  const faceLoops = network.regions.map(region => vectorNetworkFaceLoop(region, network));
+  if (faceLoops.some(faceLoop => !faceLoop)) return null;
+  const usedSegments = new Set(faceLoops.flatMap(faceLoop => faceLoop.segmentIndices));
+  const usedVertices = new Set(faceLoops.flatMap(faceLoop => faceLoop.vertexIndices));
+  if (usedSegments.size !== network.segments.length || usedVertices.size !== network.vertices.length) return null;
+  const unmatchedRegions = new Set(faceLoops.map((_, index) => index));
+  for (const path of resolvedFillPaths) {
+    const matchingRegion = [...unmatchedRegions].find(index =>
+      vectorNetworkPathMatches(path, network, faceLoops[index], width, height));
+    if (matchingRegion == null) return null;
+    unmatchedRegions.delete(matchingRegion);
+  }
+  if (unmatchedRegions.size) return null;
+
+  const vertices = network.vertices.map((vertex, index) => ({
+    id: `fig-v${index + 1}`, x: vertex.x / normalizedWidth, y: vertex.y / normalizedHeight
+  }));
+  const edges = network.segments.map((segment, index) => {
+    const fromVertex = network.vertices[segment.start.vertex];
+    const toVertex = network.vertices[segment.end.vertex];
+    if (!fromVertex || !toVertex || ![segment.start.dx, segment.start.dy, segment.end.dx, segment.end.dy].every(Number.isFinite)) return null;
+    const control1 = segment.start.dx || segment.start.dy ? {
+      x: (fromVertex.x + segment.start.dx) / normalizedWidth,
+      y: (fromVertex.y + segment.start.dy) / normalizedHeight
+    } : null;
+    const control2 = segment.end.dx || segment.end.dy ? {
+      x: (toVertex.x + segment.end.dx) / normalizedWidth,
+      y: (toVertex.y + segment.end.dy) / normalizedHeight
+    } : null;
+    if ([control1, control2].some(control => control && (!Number.isFinite(control.x) || !Number.isFinite(control.y)))) return null;
+    return {
+      id: `fig-e${index + 1}`, from: `fig-v${segment.start.vertex + 1}`, to: `fig-v${segment.end.vertex + 1}`,
+      ...(control1 ? { control1 } : {}), ...(control2 ? { control2 } : {})
+    };
+  });
+  if (edges.some(edge => !edge)) return null;
+  return {
+    vertices, edges,
+    faces: faceLoops.map((faceLoop, index) => ({
+      id: `fig-f${index + 1}`,
+      vertexIds: faceLoop.vertexIndices.map(vertexIndex => `fig-v${vertexIndex + 1}`),
+      fill: null, fillOpacity: 1
+    }))
+  };
+}
+
 function modelType(sourceType) {
   switch (sourceType) {
     case 'FRAME': case 'COMPONENT': case 'COMPONENT_SET': case 'INSTANCE': case 'SYMBOL': return 'frame';
@@ -717,9 +933,27 @@ function textProperties(source, context) {
   const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight);
   const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
   const verticalAlign = ({ TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' })[String(source.textAlignVertical || '').toUpperCase()] || 'top';
-  const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[String(source.textAutoResize || '').toUpperCase()] || 'fixed';
-  if (source.textAutoResize && !['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE', 'TRUNCATE'].includes(String(source.textAutoResize).toUpperCase())) {
+  const textAutoResize = String(source.textAutoResize || '').toUpperCase();
+  const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[textAutoResize] || 'fixed';
+  if (source.textAutoResize && !['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE', 'TRUNCATE'].includes(textAutoResize)) {
     warn(context.report, 'flattened', 'TEXT_FIT', source.name, 'This text resizing mode was reduced to a fixed text box.');
+  }
+  let textTruncation;
+  if (source.textTruncation != null) {
+    const truncation = String(source.textTruncation).toUpperCase();
+    textTruncation = ({ DISABLED: 'disabled', ENDING: 'ending' })[truncation];
+    if (!textTruncation) warn(context.report, 'flattened', 'TEXT_TRUNCATION', source.name, 'This text truncation mode is unknown and was disabled.');
+  }
+  if (!textTruncation && textAutoResize === 'TRUNCATE') textTruncation = 'ending';
+  let maxLines;
+  if (Object.hasOwn(source, 'maxLines')) {
+    if (source.maxLines === null) maxLines = null;
+    else if (Number.isSafeInteger(source.maxLines) && source.maxLines >= 1) maxLines = source.maxLines;
+    else warn(context.report, 'flattened', 'TEXT_MAX_LINES', source.name, 'The text maximum line count was invalid and was omitted.');
+    if (maxLines != null && textTruncation !== 'ending') {
+      warn(context.report, 'flattened', 'TEXT_MAX_LINES', source.name, 'A maximum line count requires ending truncation and was omitted.');
+      maxLines = undefined;
+    }
   }
   const properties = {
     // Layer paint opacity stays attached to each imported fill. The legacy
@@ -737,6 +971,8 @@ function textProperties(source, context) {
     align: ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(source.textAlignHorizontal || '').toUpperCase()] || 'left',
     verticalAlign,
     textFit,
+    ...(textTruncation ? { textTruncation } : {}),
+    ...(maxLines !== undefined ? { maxLines } : {}),
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
     paragraphSpacing: finite(source.paragraphSpacing, 0, 0, 10_000),
     firstLineIndent: finite(source.firstLineIndent, 0, 0, 10_000),
@@ -920,11 +1156,13 @@ function mapGridTrackSize(source, report, name) {
       : minimum.mode === 'fill' ? minimum.weight === maximum.weight : true);
   if (sameSizing) return maximum;
 
-  // Local tracks can preserve fixed-pixel and content-based lower bounds
-  // alongside the maximum sizing function. A flexible lower bound with a
-  // different maximum is not yet modeled as a fractional interval.
+  // Local tracks preserve fixed-pixel, content-based, and fractional lower
+  // bounds alongside a flexible maximum sizing function.
   if (minimum.mode === 'fill') {
-    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This flexible minimum track bound cannot be represented locally; it was approximated with the maximum sizing function.');
+    if (maximum.mode === 'fill' && minimum.weight <= maximum.weight) {
+      return { ...maximum, minWeight: minimum.weight };
+    }
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This flexible minimum track bound exceeds or conflicts with the maximum sizing function; the maximum sizing function was used.');
     return maximum;
   }
   if (minimum.mode === 'fixed' && maximum.mode === 'fixed' && minimum.value > maximum.value) {
@@ -1119,8 +1357,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   if (source.type === 'VECTOR') {
     const vectorData = source.vectorData || {};
     const geometry = [
-      ...(Array.isArray(vectorData.fillGeometry) ? vectorData.fillGeometry : []),
-      ...(Array.isArray(vectorData.strokeGeometry) ? vectorData.strokeGeometry : [])
+      ...(Array.isArray(source.fillGeometry) ? source.fillGeometry : []),
+      ...(Array.isArray(source.strokeGeometry) ? source.strokeGeometry : [])
     ];
     if (geometry.length > MAX_VECTOR_GEOMETRY_ENTRIES) {
       warn(context.report, 'unsupported', 'VECTOR', name, 'This vector has too many separate geometry paths.');
@@ -1146,6 +1384,39 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     try { paths = resolveVectorNodePaths(context.parsed, source); }
     catch { warn(context.report, 'unsupported', 'VECTOR', name, 'Its vector data could not be resolved.'); }
     const transform = localTransform(source, context.report);
+    let importedNetwork = null;
+    if (Number.isSafeInteger(vectorData.vectorNetworkBlob)) {
+      try {
+        const bytes = getBlobBytes(context.parsed, vectorData.vectorNetworkBlob);
+        importedNetwork = editableFigVectorNetwork(source, parseVectorNetworkBlob(bytes), paths.fill);
+      } catch { /* The resolved path fallback remains available. */ }
+    }
+    const visibleStrokePaint = (source.strokePaints || []).some(paint => paint?.visible !== false && paintOpacity(paint) > 0);
+    const editableStrokeStyles = !visibleStrokePaint
+      || (['CENTER', undefined, null].includes(source.strokeAlign)
+        && !(Array.isArray(source.dashPattern) && source.dashPattern.length)
+        && (!source.strokeCap || ['ROUND', 'SQUARE', 'BUTT'].includes(String(source.strokeCap).toUpperCase()))
+        && (!source.strokeJoin || ['ROUND', 'BEVEL', 'MITER'].includes(String(source.strokeJoin).toUpperCase())));
+    const directNetworkPathChars = paths.fill.reduce((total, path) => total + (path?.svgPath?.length ?? 0), 0);
+    const editableNetworkPathsFitBudget = paths.fill.length > 0
+      && paths.fill.every(path => typeof path?.svgPath === 'string' && path.svgPath.length <= MAX_VECTOR_PATH_CHARS)
+      && context.totalVectorPathChars + directNetworkPathChars <= MAX_VECTOR_PATH_SOURCE_CHARS;
+    if (importedNetwork && editableNetworkPathsFitBudget && editableStrokeStyles && paths.stroke.length === 0) {
+      context.totalVectorPathChars += directNetworkPathChars;
+      const overrides = {
+        name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
+        visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1),
+        ...importedNetwork,
+        fills: mapPaints(source.fillPaints, source, context),
+        strokes: mapStrokes(source.strokePaints, source, context.report)
+      };
+      mapLayerBlendMode(source, overrides, context.report, name);
+      const effects = mapLayerEffects(source.effects, source, context.report);
+      if (effects.length) overrides.effects = effects;
+      mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+      context.report.importedNodes += 1;
+      return createNode('network', overrides);
+    }
     const overrides = {
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
       visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children: vectorChildren(source, paths, context)
@@ -1223,7 +1494,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
   const constraints = mapConstraints(source, context.report);
   if (constraints) overrides.constraints = constraints;
-  if (source.type === 'RECTANGLE' || source.type === 'ROUNDED_RECTANGLE') {
+  if (source.type === 'RECTANGLE' || source.type === 'ROUNDED_RECTANGLE' || source.type === 'FRAME') {
     const radii = source.rectangleCornerRadii;
     if (Array.isArray(radii) && radii.length === 4 && radii.every(Number.isFinite)) {
       overrides.cornerRadii = {
@@ -1233,11 +1504,15 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       overrides.radius = 0;
     } else overrides.radius = finite(source.cornerRadius, 0, 0, 100_000);
   }
+  if (['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(type) && Number.isFinite(source.cornerSmoothing)) {
+    overrides.cornerSmoothing = finite(source.cornerSmoothing, 0, 0, 1);
+  }
+  if (['star', 'polygon'].includes(type)) overrides.radius = finite(source.cornerRadius, 0, 0, 100_000);
   if (type === 'star') {
-    overrides.points = finite(source.pointCount, 5, 3, 32);
+    overrides.points = finite(source.pointCount, 5, MIN_STAR_POINTS, MAX_STAR_POINTS);
     overrides.innerRadius = finite(source.starInnerRadius, 0.48, 0, 1);
   }
-  if (type === 'polygon') overrides.points = finite(source.pointCount, 6, 3, 32);
+  if (type === 'polygon') overrides.points = finite(source.pointCount, 6, MIN_STAR_POINTS, MAX_POLYGON_POINTS);
   if (type === 'boolean') {
     const operation = String(source.booleanOperation || '').toUpperCase();
     overrides.operation = ({ UNION: 'union', SUBTRACT: 'subtract', INTERSECT: 'intersect', EXCLUDE: 'exclude' })[operation] || 'union';
@@ -1245,6 +1520,10 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   }
   if (type === 'text') {
     Object.assign(overrides, textProperties(source, context));
+    if (overrides.maxLines != null && overrides.maxHeight != null) {
+      delete overrides.maxLines;
+      warn(context.report, 'flattened', 'TEXT_MAX_LINES', name, 'The imported text has both a maximum line count and an auto-layout maximum height; the generic auto-layout size limit was preserved and the maximum line count was omitted.');
+    }
     if (source.textData?.paragraphStyle) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name, 'Paragraph layout settings were simplified.');
   }
   if (source.type === 'LINE') overrides.fill = 'transparent';
@@ -1268,9 +1547,9 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
 const componentOverrideProperties = [
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius',
-  'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId',
-  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
+  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
   'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points',
@@ -1288,9 +1567,356 @@ function sameJsonValue(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function figPropertyDisplayName(sourceName) {
+  return safeName(String(sourceName || '').replace(/#\d+:\d+$/u, ''), 'Imported property').slice(0, 80);
+}
+
+function sourcePropertyDefinitions(source) {
+  const definitions = source?.componentPropertyDefinitions;
+  return definitions && typeof definitions === 'object' && !Array.isArray(definitions)
+    ? Object.entries(definitions).slice(0, 100) : [];
+}
+
+function sourceComponentPropertyTargets(rootSourceId, propertyName, referenceField, childrenMap, sourcesById) {
+  const targets = [];
+  const active = new Set();
+  const visit = (sourceId, isRoot = false) => {
+    if (!sourceId || active.has(sourceId)) return;
+    const source = sourcesById.get(sourceId);
+    if (!source) return;
+    active.add(sourceId);
+    if (source.componentPropertyReferences?.[referenceField] === propertyName) targets.push(source);
+    // A nested instance owns a separate property namespace. The instance layer
+    // itself may be this component's swap target, but its descendants are not.
+    if (isRoot || !['INSTANCE', 'SYMBOL'].includes(source.type)) {
+      for (const child of childrenMap.get(sourceId) || []) visit(idOf(child));
+    }
+    active.delete(sourceId);
+  };
+  visit(rootSourceId, true);
+  return targets;
+}
+
+function localInstancePropertyTarget(root, targetSourceId) {
+  let target = null;
+  const visit = (node, isRoot = false) => {
+    if (!node || target) return;
+    if (node.componentSourceId === targetSourceId || node.nestedComponentSourceId === targetSourceId) {
+      target = node;
+      return;
+    }
+    if (!isRoot && node.isInstance) return;
+    for (const child of node.children || []) visit(child);
+  };
+  visit(root, true);
+  return target;
+}
+
+function sourceExposedInstances(rootSourceId, childrenMap, sourcesById) {
+  const exposed = [];
+  const active = new Set();
+  const visit = (sourceId, isRoot = false) => {
+    if (!sourceId || active.has(sourceId)) return;
+    const source = sourcesById.get(sourceId);
+    if (!source) return;
+    active.add(sourceId);
+    if (!isRoot && ['INSTANCE', 'SYMBOL'].includes(source.type)) {
+      if (source.isExposedInstance === true) exposed.push(source);
+    } else {
+      for (const child of childrenMap.get(sourceId) || []) visit(idOf(child));
+    }
+    active.delete(sourceId);
+  };
+  visit(rootSourceId, true);
+  return exposed;
+}
+
+function resolveImportedComponentId(value, sourcesById, componentsBySourceId, sourceComponentsByKey) {
+  if (typeof value !== 'string' || !value) return null;
+  const direct = componentsBySourceId.get(value);
+  if (direct) return direct.id;
+  const byKey = sourceComponentsByKey.get(value);
+  if (byKey) return componentsBySourceId.get(byKey)?.id || null;
+  const sourceId = sourceComponentGuid(value);
+  if (sourceId && sourcesById.has(sourceId)) return componentsBySourceId.get(sourceId)?.id || null;
+  return null;
+}
+
+function applyFigVariantDefinitions(document, sourceSet, localSet, childrenMap, sourcesById, componentsBySourceId, context) {
+  const definitions = sourcePropertyDefinitions(sourceSet).filter(([, definition]) => definition?.type === 'VARIANT');
+  if (!definitions.length) return;
+  const properties = [];
+  const sourceNames = new Set();
+  for (const [sourceName, definition] of definitions) {
+    const name = figPropertyDisplayName(sourceName);
+    const values = Array.isArray(definition.variantOptions)
+      ? [...new Set(definition.variantOptions.filter(value => typeof value === 'string').map(value => value.trim()))]
+      : [];
+    if (!name || sourceNames.has(sourceName) || !values.length || values.some(value => !value || value.length > 80 || /[\x00-\x1f\x7f]/u.test(value))) {
+      warn(context.report, 'flattened', 'COMPONENT_VARIANT_PROPERTY', sourceSet.name,
+        `Variant property “${name}” has invalid or missing options; the name-derived variant axes were retained.`);
+      return;
+    }
+    sourceNames.add(sourceName);
+    properties.push({ name, values });
+  }
+  const members = (childrenMap.get(idOf(sourceSet)) || [])
+    .map(source => ({ source, component: componentsBySourceId.get(idOf(source)) }))
+    .filter(({ source, component }) => ['COMPONENT', 'SYMBOL'].includes(source.type) && component?.componentSetId === localSet.id);
+  if (members.length !== localSet.componentIds.length) return;
+  const valuesByComponent = new Map();
+  const combinations = new Set();
+  for (const { source, component } of members) {
+    const raw = source.variantProperties && typeof source.variantProperties === 'object' ? source.variantProperties : {};
+    const values = {};
+    for (const [sourceName, definition] of definitions) {
+      const displayName = figPropertyDisplayName(sourceName);
+      const value = raw[sourceName] ?? raw[displayName];
+      if (typeof value !== 'string' || !properties.find(property => property.name === displayName)?.values.includes(value)) {
+        warn(context.report, 'flattened', 'COMPONENT_VARIANT_PROPERTY', source.name,
+          `Variant “${displayName}” was not mapped because the source member has no matching value in its declared options; name-derived axes were retained.`);
+        return;
+      }
+      values[displayName] = value;
+    }
+    const combination = JSON.stringify(properties.map(property => values[property.name]));
+    if (combinations.has(combination)) {
+      warn(context.report, 'flattened', 'COMPONENT_VARIANT_PROPERTY', sourceSet.name,
+        'The source variant definitions map multiple members to the same combination; name-derived axes were retained.');
+      return;
+    }
+    combinations.add(combination);
+    valuesByComponent.set(component.id, values);
+  }
+  localSet.properties = properties;
+  for (const { component } of members) component.variantProperties = valuesByComponent.get(component.id);
+}
+
+function preserveFigComponentProperties(document, parsed, childrenMap, context, sourcesById, componentsBySourceId, setsBySourceId) {
+  const sourceComponentsByKey = new Map();
+  for (const [sourceId, source] of sourcesById) {
+    if (['COMPONENT', 'SYMBOL'].includes(source.type) && typeof source.key === 'string' && source.key) {
+      sourceComponentsByKey.set(source.key, sourceId);
+    }
+  }
+  const localSetBySourceKey = new Map();
+  for (const [sourceId, source] of sourcesById) {
+    if (source.type !== 'COMPONENT_SET' || typeof source.key !== 'string' || !source.key) continue;
+    const localSet = setsBySourceId.get(sourceId);
+    if (localSet) localSetBySourceKey.set(source.key, localSet);
+  }
+
+  const propertyMapsByComponentId = new Map();
+  for (const [sourceId, component] of componentsBySourceId) {
+    const source = sourcesById.get(sourceId);
+    if (!source) continue;
+    const exposedNestedInstances = sourceExposedInstances(sourceId, childrenMap, sourcesById)
+      .map(exposedSource => context.convertedNodesBySourceId.get(idOf(exposedSource)))
+      .filter(node => {
+        if (node?.isInstance) return true;
+        warn(context.report, 'flattened', 'COMPONENT_EXPOSED_INSTANCE', source.name,
+          'An exposed nested instance could not be linked to an imported local component and was omitted from the exposed property list.');
+        return false;
+      })
+      .map(node => node.id);
+    if (exposedNestedInstances.length) component.exposedNestedInstances = [...new Set(exposedNestedInstances)].slice(0, 100);
+    const parentId = source.parentIndex?.guid ? guidKey(source.parentIndex.guid) : null;
+    const sourceSet = parentId ? sourcesById.get(parentId) : null;
+    const definitions = new Map();
+    if (sourceSet?.type === 'COMPONENT_SET') {
+      for (const [name, definition] of sourcePropertyDefinitions(sourceSet)) {
+        if (definition?.type !== 'VARIANT') definitions.set(name, definition);
+      }
+    }
+    for (const [name, definition] of sourcePropertyDefinitions(source)) {
+      if (definition?.type !== 'VARIANT') definitions.set(name, definition);
+    }
+    const propertyMap = new Map();
+    const importedNames = new Set();
+    for (const [sourceName, definition] of definitions) {
+      const type = definition?.type;
+      const referenceField = type === 'BOOLEAN' ? 'visible'
+        : type === 'TEXT' ? 'characters'
+          : type === 'INSTANCE_SWAP' ? 'mainComponent'
+            : type === 'SLOT' ? 'slotContentId' : null;
+      if (!referenceField) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
+          `The “${figPropertyDisplayName(sourceName)}” ${String(type || 'unknown')} property type is not represented by the local component property model.`);
+        continue;
+      }
+      const targets = sourceComponentPropertyTargets(sourceId, sourceName, referenceField, childrenMap, sourcesById);
+      if (targets.length !== 1) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
+          targets.length > 1
+            ? `The “${figPropertyDisplayName(sourceName)}” property targets multiple layers; the local model supports one target, so this property was not imported.`
+            : `The “${figPropertyDisplayName(sourceName)}” property has no matching ${referenceField} layer reference and was not imported.`);
+        continue;
+      }
+      const sourceTarget = targets[0];
+      const target = context.convertedNodesBySourceId.get(idOf(sourceTarget));
+      const supportedTarget = type === 'BOOLEAN'
+        || (type === 'TEXT' && target?.type === 'text')
+        || (type === 'INSTANCE_SWAP' && target?.isInstance)
+        || (type === 'SLOT' && ['frame', 'group', 'section'].includes(target?.type));
+      if (!target || !supportedTarget) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
+          `The “${figPropertyDisplayName(sourceName)}” property target was not converted to a compatible editable layer.`);
+        continue;
+      }
+      let defaultValue;
+      if (type === 'BOOLEAN') defaultValue = typeof definition.defaultValue === 'boolean' ? definition.defaultValue : target.visible;
+      else if (type === 'TEXT') defaultValue = typeof definition.defaultValue === 'string' ? definition.defaultValue : target.text;
+      else if (type === 'INSTANCE_SWAP') {
+        defaultValue = resolveImportedComponentId(definition.defaultValue, sourcesById, componentsBySourceId, sourceComponentsByKey)
+          || target.componentId;
+      } else defaultValue = [];
+      if ((type === 'BOOLEAN' && typeof defaultValue !== 'boolean')
+        || (type === 'TEXT' && (typeof defaultValue !== 'string' || defaultValue.length > 1_000_000))
+        || (type === 'INSTANCE_SWAP' && typeof defaultValue !== 'string')
+        || (type === 'SLOT' && !Array.isArray(defaultValue))) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
+          `The “${figPropertyDisplayName(sourceName)}” property has no safe local default and was not imported.`);
+        continue;
+      }
+      let name = figPropertyDisplayName(sourceName);
+      let suffix = 2;
+      while (importedNames.has(name.toLocaleLowerCase())) name = `${figPropertyDisplayName(sourceName).slice(0, 74)} (${suffix++})`;
+      if (name !== figPropertyDisplayName(sourceName)) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY_NAME', source.name,
+          `Duplicate component property labels were disambiguated as “${name}” in the local editor.`);
+      }
+      importedNames.add(name.toLocaleLowerCase());
+      const property = {
+        id: createId('component-property'), name, type,
+        targetSourceId: target.id, defaultValue
+      };
+      if (type === 'INSTANCE_SWAP' && Array.isArray(definition.preferredValues)) {
+        const preferred = [];
+        let unresolved = false;
+        for (const value of definition.preferredValues) {
+          let candidateIds = [];
+          if (value?.type === 'COMPONENT') {
+            const candidate = resolveImportedComponentId(value.key, sourcesById, componentsBySourceId, sourceComponentsByKey);
+            if (candidate) candidateIds = [candidate];
+          } else if (value?.type === 'COMPONENT_SET') {
+            const candidateSet = localSetBySourceKey.get(value.key);
+            if (candidateSet) candidateIds = [...candidateSet.componentIds];
+          }
+          if (!candidateIds.length) { unresolved = true; continue; }
+          preferred.push(...candidateIds.filter(candidate => canSwapComponentTo(document, component.id, candidate)));
+        }
+        const uniquePreferred = [...new Set(preferred)];
+        if (uniquePreferred.length) property.preferredComponentIds = uniquePreferred;
+        if (unresolved) warn(context.report, 'flattened', 'COMPONENT_PROPERTY_PREFERRED', sourceTarget.name,
+          `Some preferred swap choices for “${name}” refer to library components absent from this file and were omitted.`);
+      }
+      if (type === 'SLOT' && (definition.slotSettings || definition.preferredValues?.length)) {
+        warn(context.report, 'flattened', 'COMPONENT_SLOT_SETTINGS', sourceTarget.name,
+          `Slot insertion constraints or preferred values for “${name}” are not represented locally; the editable slot target was retained.`);
+      }
+      component.componentProperties ||= [];
+      if (component.componentProperties.length >= 100) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY_LIMIT', source.name,
+          'Additional component properties exceed the local 100-property limit and were omitted.');
+        continue;
+      }
+      component.componentProperties.push(property);
+      propertyMap.set(sourceName, property);
+    }
+    propertyMapsByComponentId.set(component.id, propertyMap);
+  }
+
+  for (const [sourceSetId, localSet] of setsBySourceId) {
+    const sourceSet = sourcesById.get(sourceSetId);
+    if (sourceSet) applyFigVariantDefinitions(document, sourceSet, localSet, childrenMap, sourcesById, componentsBySourceId, context);
+  }
+
+  for (const source of parsed.nodes) {
+    if (source.type !== 'INSTANCE') continue;
+    const instance = context.convertedNodesBySourceId.get(idOf(source));
+    if (!instance?.isInstance) continue;
+    let component = document.components.find(item => item.id === instance.componentId);
+    let map = propertyMapsByComponentId.get(component?.id);
+    const sourceInstanceProperties = source.componentProperties && typeof source.componentProperties === 'object' && !Array.isArray(source.componentProperties)
+      ? source.componentProperties : {};
+    const variantValues = {};
+    for (const [sourceName, value] of Object.entries(sourceInstanceProperties)) {
+      if (value?.type === 'VARIANT' && typeof value.value === 'string') variantValues[figPropertyDisplayName(sourceName)] = value.value;
+    }
+    if (component?.componentSetId && Object.keys(variantValues).length) {
+      const set = document.componentSets.find(item => item.id === component.componentSetId);
+      const target = set?.componentIds.map(id => document.components.find(item => item.id === id)).find(candidate => candidate
+        && Object.entries(variantValues).every(([name, value]) => candidate.variantProperties?.[name] === value));
+      if (target && target.id !== component.id) {
+        try {
+          switchComponentInstanceVariant(document, instance.id, target.id, context.sourcePagesBySourceId.get(idOf(source)));
+          component = target;
+          map = propertyMapsByComponentId.get(component.id);
+        } catch (error) {
+          warn(context.report, 'flattened', 'COMPONENT_VARIANT_VALUE', source.name,
+            `The selected variant values could not be applied: ${error.message}`);
+        }
+      } else if (!target) {
+        warn(context.report, 'flattened', 'COMPONENT_VARIANT_VALUE', source.name,
+          'The selected variant values did not match an imported component variant.');
+      }
+    }
+    for (const [sourceName, value] of Object.entries(sourceInstanceProperties)) {
+      if (!value || value.type === 'VARIANT' || value.type === 'SLOT') continue;
+      const property = map?.get(sourceName);
+      if (!property || value.type !== property.type) {
+        if (value.type === 'SLOT') warn(context.report, 'flattened', 'COMPONENT_PROPERTY_VALUE', source.name,
+          `The “${figPropertyDisplayName(sourceName)}” slot content cannot be safely reconstructed from this local .fig tree.`);
+        continue;
+      }
+      let propertyValue = value.value;
+      if (property.type === 'INSTANCE_SWAP') {
+        propertyValue = resolveImportedComponentId(propertyValue, sourcesById, componentsBySourceId, sourceComponentsByKey)
+          || propertyValue;
+      }
+      try {
+        if (!setComponentPropertyValue(document, instance.id, property.id, propertyValue, context.sourcePagesBySourceId.get(idOf(source)))) {
+          warn(context.report, 'flattened', 'COMPONENT_PROPERTY_VALUE', source.name,
+            `The “${property.name}” instance value could not be applied to its imported component.`);
+        }
+      } catch (error) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY_VALUE', source.name,
+          `The “${property.name}” instance value could not be applied: ${error.message}`);
+      }
+    }
+    for (const property of component?.componentProperties || []) {
+      if (property.type !== 'SLOT') continue;
+      const target = localInstancePropertyTarget(instance, property.targetSourceId);
+      if (!target?.children?.length) continue;
+      // Slot content is authored as ordinary child layers in .fig. Keep those
+      // concrete nodes as this instance's slot value so a later component sync
+      // does not replace them with the master slot contents.
+      instance.componentPropertyValues ||= {};
+      instance.componentPropertyValues[property.id] = target.children.map(child => child.id);
+    }
+  }
+}
+
 function preserveFigComponents(document, parsed, childrenMap, context) {
   const sourcesById = new Map(parsed.nodes.map(source => [idOf(source), source]).filter(([id]) => id));
+  const sourceDepths = new Map();
+  const sourceDepth = (sourceId, ancestry = new Set()) => {
+    if (sourceDepths.has(sourceId)) return sourceDepths.get(sourceId);
+    if (ancestry.has(sourceId)) return 0;
+    const source = sourcesById.get(sourceId);
+    const parentId = source?.parentIndex?.guid ? guidKey(source.parentIndex.guid) : null;
+    if (!parentId || !sourcesById.has(parentId)) {
+      sourceDepths.set(sourceId, 0);
+      return 0;
+    }
+    const nextAncestry = new Set(ancestry);
+    nextAncestry.add(sourceId);
+    const depth = sourceDepth(parentId, nextAncestry) + 1;
+    sourceDepths.set(sourceId, depth);
+    return depth;
+  };
   const componentsBySourceId = new Map();
+  const setsBySourceId = new Map();
   const modelBySourceId = context.convertedNodesBySourceId;
   const importedNodesById = new Map();
   const indexImportedNodes = nodes => nodes.forEach(node => {
@@ -1332,14 +1958,20 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
       continue;
     }
     try {
-      createComponentSet(document, variants.map(component => component.id), safeName(source.name, 'Imported variants'));
+      const localSet = createComponentSet(document, variants.map(component => component.id), safeName(source.name, 'Imported variants'));
+      setsBySourceId.set(setId, localSet);
     } catch (error) {
       warn(context.report, 'flattened', 'COMPONENT_SET', source.name, `Variant metadata could not be represented safely: ${error.message}`);
     }
   }
 
-  for (const source of parsed.nodes) {
-    if (source.type !== 'INSTANCE') continue;
+  const instanceSources = parsed.nodes.map((source, order) => ({ source, order, depth: sourceDepth(idOf(source)) }))
+    .filter(({ source }) => source.type === 'INSTANCE')
+    // Resolve inner instances first so an enclosing imported instance can
+    // preserve both its own source mapping and the nested component mapping.
+    .sort((left, right) => right.depth - left.depth || left.order - right.order)
+    .map(({ source }) => source);
+  for (const source of instanceSources) {
     const sourceId = idOf(source);
     const instance = modelBySourceId.get(sourceId);
     const targetSourceId = sourceComponentGuid(source.componentId);
@@ -1353,18 +1985,17 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
           : 'The local component reference could not be resolved to an imported component master; visible layers were imported detached.');
       continue;
     }
-    const nestedInstance = (root, isRoot = true) => {
-      if (!isRoot && root.type === 'INSTANCE') return true;
-      return (childrenMap.get(idOf(root)) || []).some(child => nestedInstance(child, false));
-    };
-    if (nestedInstance(masterSource) || nestedInstance(source)) {
-      warn(context.report, 'flattened', 'INSTANCE', source.name, 'Nested component instances are retained as editable layers, but their outer component link was left detached because nested source ownership cannot be mapped safely.');
-      continue;
-    }
-
-    const localPairsBySourceId = new Map([[targetSourceId, { master, instance }]]);
+    const masterParentId = masterSource.parentIndex?.guid ? guidKey(masterSource.parentIndex.guid) : null;
+    const masterSetSource = masterParentId ? sourcesById.get(masterParentId) : null;
+    const slotDefinitions = [
+      ...(masterSetSource?.type === 'COMPONENT_SET' ? sourcePropertyDefinitions(masterSetSource) : []),
+      ...sourcePropertyDefinitions(masterSource)
+    ].filter(([, definition]) => definition?.type === 'SLOT');
+    const slotSourceIds = new Set(slotDefinitions.flatMap(([propertyName]) =>
+      sourceComponentPropertyTargets(targetSourceId, propertyName, 'slotContentId', childrenMap, sourcesById).map(idOf)));
+    const localPairsBySourceId = new Map([[targetSourceId, { master, instance, nestedComponentBoundary: false }]]);
     const visitedPairs = new Set();
-    const mapChildren = (masterSourceNode, instanceSourceNode) => {
+    const mapChildren = (masterSourceNode, instanceSourceNode, insideNestedComponent = false) => {
       const pairKey = `${idOf(masterSourceNode)}>${idOf(instanceSourceNode)}`;
       if (visitedPairs.has(pairKey)) return false;
       visitedPairs.add(pairKey);
@@ -1383,8 +2014,15 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
         const localMasterChild = modelBySourceId.get(sourceChildId);
         const localInstanceChild = modelBySourceId.get(idOf(instanceChild));
         if (!sourceChildId || !localMasterChild || !localInstanceChild) return false;
-        localPairsBySourceId.set(sourceChildId, { master: localMasterChild, instance: localInstanceChild });
-        if (!mapChildren(masterChild, instanceChild)) return false;
+        const nestedTargetSourceId = masterChild.type === 'INSTANCE'
+          ? sourceComponentGuid(masterChild.componentId) : null;
+        const nestedComponentBoundary = insideNestedComponent
+          || Boolean(nestedTargetSourceId && componentsBySourceId.has(nestedTargetSourceId));
+        localPairsBySourceId.set(sourceChildId, {
+          master: localMasterChild, instance: localInstanceChild, nestedComponentBoundary
+        });
+        if (slotSourceIds.has(sourceChildId)) continue;
+        if (!mapChildren(masterChild, instanceChild, nestedComponentBoundary)) return false;
       }
       return true;
     };
@@ -1399,8 +2037,15 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
     instance.componentNameIsInherited = true;
     if (master.variantNodeKey) instance.componentSourceKey = master.variantNodeKey;
     const overrides = {};
-    for (const [sourceNodeId, { master: masterNode, instance: instanceNode }] of localPairsBySourceId) {
-      if (sourceNodeId !== targetSourceId) instanceNode.componentSourceId = masterNode.id;
+    for (const [sourceNodeId, { master: masterNode, instance: instanceNode, nestedComponentBoundary }] of localPairsBySourceId) {
+      if (sourceNodeId !== targetSourceId) {
+        if (nestedComponentBoundary) {
+          const nestedSourceId = instanceNode.nestedComponentSourceId || instanceNode.componentSourceId
+            || masterNode.nestedComponentSourceId || masterNode.componentSourceId;
+          if (nestedSourceId) instanceNode.nestedComponentSourceId = nestedSourceId;
+        }
+        instanceNode.componentSourceId = masterNode.id;
+      }
       if (masterNode.variantNodeKey) instanceNode.componentSourceKey = masterNode.variantNodeKey;
       const properties = {};
       for (const property of componentOverrideProperties) {
@@ -1415,6 +2060,7 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
     instance.componentOverrides = overrides;
     if (!Object.keys(overrides).length) delete instance.componentOverrides;
   }
+  preserveFigComponentProperties(document, parsed, childrenMap, context, sourcesById, componentsBySourceId, setsBySourceId);
 }
 
 function buildChildrenMap(parsed) {
@@ -1474,7 +2120,7 @@ function keepUnmasked(entries, start, end) {
   return entries.slice(start, end).map(entry => entry.node).filter(Boolean);
 }
 
-/** Convert safe sibling alpha-mask stacks into the editor's live, editable mask-group model. */
+/** Convert safe sibling mask stacks into the editor's live, editable mask-group model. */
 function convertSiblingMaskStacks(entries, parentSource, context) {
   const converted = [];
   for (let index = 0; index < entries.length;) {
@@ -1489,11 +2135,13 @@ function convertSiblingMaskStacks(entries, parentSource, context) {
     while (end < entries.length && entries[end].source?.isMask !== true) end += 1;
     const stack = entries.slice(index, end);
     const mode = maskModeOf(entry.source);
+    const localMode = mode === 'ALPHA' ? 'alpha' : mode === 'VECTOR' ? 'vector' : null;
     const name = safeName(entry.source?.name, 'Mask');
     let reason = null;
-    if (mode !== 'ALPHA') reason = `The ${mode || 'unknown'} mask mode is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.`;
+    if (!localMode) reason = `The ${mode || 'unknown'} mask mode is not supported by the local renderer; these layers were kept editable and unmasked.`;
     else if (!entry.node) reason = 'The mask source could not be converted, so the remaining layers were kept editable and unmasked.';
-    else if (!localAlphaMaskSource(entry.node)) reason = 'This mask source type is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.';
+    else if (localMode === 'alpha' && !localAlphaMaskSource(entry.node)) reason = 'This mask source type is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.';
+    else if (localMode === 'vector' && !isMaskSource(entry.node, 'vector')) reason = 'This mask source type is not supported by the local vector-mask renderer; these layers were kept editable and unmasked.';
     else if (!stack.slice(1).some(item => item.node)) reason = 'This mask has no converted following siblings to mask, so it was kept as an ordinary editable layer.';
     else if (supportsStackAutoLayout(parentSource)) reason = 'Grouping this mask stack would change its parent auto-layout flow; the layers were kept editable and unmasked.';
 
@@ -1519,7 +2167,7 @@ function convertSiblingMaskStacks(entries, parentSource, context) {
     converted.push(createNode('group', {
       name: safeName(`${name} mask`, 'Mask group'),
       x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height,
-      mask: true, maskSourceId: entry.node.id, children: nodes
+      mask: true, maskMode: localMode, maskSourceId: entry.node.id, children: nodes
     }));
     context.report.importedNodes += 1;
     index = end;
