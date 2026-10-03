@@ -24,6 +24,7 @@ import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason,
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
 import { beginCanvasDragAfterSlop } from './canvas-drag-slop.js';
 import { createPageNodeIndex } from './page-node-index.js';
+import { selectLayersWithSamePaint } from './select-similar-layers.js';
 import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount, componentPropertyExposureGroups, componentPropertyTargetInstanceId } from './component-property-exposure.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
@@ -13473,6 +13474,31 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
     { separator: true },
     { label: 'Delete', shortcut: '⌫', action: () => deleteSelected(deleteTargetIds) }
   ];
+  if (node) {
+    const paintStack = (candidate, kind) => {
+      const stack = (kind === 'fill' ? fillStackForNode(candidate) : strokeStackForNode(candidate))
+        .map(paint => structuredClone(paint));
+      if ((kind === 'fill' && stack[0]?.type === 'solid')
+        || (kind === 'stroke' && typeof stack[0]?.color === 'string')) {
+        const colorKind = kind === 'stroke' ? 'stroke' : candidate.type === 'text' ? 'text' : 'fill';
+        stack[0].color = getNodeColor(state.document, candidate, colorKind);
+      }
+      return stack;
+    };
+    const pageNodes = activePage()?.children || [];
+    for (const kind of ['fill', 'stroke']) {
+      const matchingIds = selectLayersWithSamePaint(pageNodes, node, kind, { getPaintStack: paintStack });
+      if (matchingIds.length < 2) continue;
+      const label = kind === 'fill' ? 'fill' : 'stroke';
+      items.splice(items.length - 2, 0, {
+        label: `Select all with same ${label} (${matchingIds.length})`,
+        action: () => {
+          setSelection(matchingIds, { source: 'programmatic' });
+          showToast(`Selected ${matchingIds.length} layers with the same ${label}.`);
+        }
+      }, { separator: true });
+    }
+  }
   const shapeEntries = shapeBuilderEntries(rootSelectedIds());
   if (canStartShapeBuilder(shapeEntries)) items.unshift({
     label: 'Shape Builder',
