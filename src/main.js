@@ -1639,6 +1639,93 @@ function installDesignToolToolbarKeyboard() {
     target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   });
 }
+function installDesignToolTooltips() {
+  const toolbar = $('#bottom-toolbar');
+  const tooltip = $('#design-tool-tooltip');
+  if (!toolbar || !tooltip) return;
+  let activeButton = null;
+  let hoveredButton = null;
+  let timer = null;
+
+  const removeTooltipDescription = button => {
+    const references = (button.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== tooltip.id);
+    if (references.length) button.setAttribute('aria-describedby', references.join(' '));
+    else button.removeAttribute('aria-describedby');
+  };
+  const position = button => {
+    const rect = button.getBoundingClientRect();
+    const tip = tooltip.getBoundingClientRect();
+    const left = Math.max(8, Math.min(innerWidth - tip.width - 8, rect.left + rect.width / 2 - tip.width / 2));
+    const above = rect.top - tip.height - 8;
+    const top = above >= 8 ? above : Math.min(innerHeight - tip.height - 8, rect.bottom + 8);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
+  };
+  const hide = () => {
+    clearTimeout(timer);
+    timer = null;
+    if (activeButton) removeTooltipDescription(activeButton);
+    activeButton = null;
+    tooltip.hidden = true;
+    tooltip.textContent = '';
+  };
+  const show = button => {
+    if (!button?.isConnected || button.disabled) return;
+    clearTimeout(timer);
+    timer = null;
+    if (activeButton && activeButton !== button) removeTooltipDescription(activeButton);
+    activeButton = button;
+    tooltip.textContent = button.dataset.tooltipText || button.getAttribute('aria-label') || 'Design tool';
+    tooltip.hidden = false;
+    const references = new Set((button.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
+    references.add(tooltip.id);
+    button.setAttribute('aria-describedby', [...references].join(' '));
+    position(button);
+  };
+  const prepareButton = button => {
+    const description = button.getAttribute('title');
+    const label = (button.getAttribute('aria-label') || description || 'Design tool').split(/\s[·•]\s/)[0].trim();
+    const shortcut = description?.match(/\(([^)]+)\)/)?.[1] || button.querySelector('kbd')?.textContent.trim();
+    button.dataset.tooltipText = shortcut ? `${label} · ${shortcut}` : label;
+    if (description && !button.hasAttribute('aria-description')) button.setAttribute('aria-description', description);
+    button.removeAttribute('title');
+  };
+  toolbar.querySelectorAll('.tool-button').forEach(prepareButton);
+
+  toolbar.addEventListener('pointerover', event => {
+    if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
+    const button = event.target.closest?.('.tool-button');
+    if (!button || !toolbar.contains(button) || button.contains(event.relatedTarget)) return;
+    hoveredButton = button;
+    clearTimeout(timer);
+    timer = setTimeout(() => show(button), 350);
+  });
+  toolbar.addEventListener('pointerout', event => {
+    const button = event.target.closest?.('.tool-button');
+    if (!button || button.contains(event.relatedTarget)) return;
+    if (hoveredButton === button) {
+      hoveredButton = null;
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (activeButton === button && document.activeElement !== button) hide();
+  });
+  toolbar.addEventListener('focusin', event => {
+    const button = event.target.closest?.('.tool-button');
+    if (button && toolbar.contains(button)) show(button);
+  });
+  toolbar.addEventListener('focusout', () => setTimeout(() => {
+    const focusedButton = toolbar.querySelector('.tool-button:focus');
+    if (focusedButton) show(focusedButton);
+    else if (hoveredButton) show(hoveredButton);
+    else hide();
+  }, 0));
+  toolbar.addEventListener('scroll', () => {
+    if (activeButton) position(activeButton);
+  }, { passive: true });
+  window.addEventListener('resize', hide, { passive: true });
+  window.addEventListener('blur', hide);
+}
 function releaseCanvasCapturesForComment() {
   if (state.shapeBuilder) exitShapeBuilderMode();
 
@@ -19432,6 +19519,7 @@ function initEvents() {
   $$('.sidebar-tabs, .inspector-tabs').forEach(installHorizontalTabListKeyboard);
   for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
   installDesignToolToolbarKeyboard();
+  installDesignToolTooltips();
   window.addEventListener('tiny-image-star:share-live', event => {
     event.preventDefault();
     void (async () => {
