@@ -115,19 +115,22 @@ try {
     const record = await loadRecipeBatchRecovery(activeDesign.id);
     return record?.ownerToken && record.ownerToken !== activeOwnerToken ? record : null;
   }, 'active lease taken over under the existing design identity');
-  assert.equal(resumedRecovery.documentId, activeDesign.id, 'Recovery stays on the original design.');
-  assert.equal(resumedRecovery.targetIds[0], activeImage.id, 'The saved batch target resumes in place.');
-  assert.equal(app.querySelector('#document-name').value, activeDesign.name, 'No recovery-copy design is opened.');
-  assert.equal((await listSavedDocuments()).some(item => item.name.endsWith('(recipe recovery copy)')), false,
+  assert(resumedRecovery.documentId === activeDesign.id, 'Recovery stays on the original design.');
+  assert(resumedRecovery.targetIds[0] === activeImage.id, 'The saved batch target resumes in place.');
+  assert(app.querySelector('#document-name').value === activeDesign.name, 'No recovery-copy design is opened.');
+  assert(!(await listSavedDocuments()).some(item => item.name.endsWith('(recipe recovery copy)')),
     'Taking over does not create a duplicate design.');
-  await assert.rejects(
-    saveRecipeBatchRecovery({
+  let previousOwnerError = null;
+  try {
+    await saveRecipeBatchRecovery({
       documentId: activeDesign.id, ownerToken: activeOwnerToken, recipe: activeRecipe,
       pageId: activeDesign.activePageId, targetIds: [activeImage.id], status: 'running'
-    }),
-    /no longer owns/,
-    'the previous tab owner is fenced from further recipe writes'
-  );
+    });
+  } catch (error) {
+    previousOwnerError = error;
+  }
+  assert(/no longer owns/.test(previousOwnerError?.message || ''),
+    'the previous tab owner is fenced from further recipe writes');
   outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true, activeLeaseTakenOverInPlace: true, previousOwnerFenced: true, sameDesignIdResumed: true })}`;
 } catch (error) {
   outcome = `FAIL\n${error?.stack || error}`;

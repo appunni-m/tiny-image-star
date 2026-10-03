@@ -70,6 +70,12 @@ export function imagePreviewSettingsSignature({
   }));
 }
 
+/** Whether an undo/redo history step changed any pixels in an image preview. */
+export function imagePreviewSettingsChanged(previousSettings, currentSettings) {
+  if (previousSettings == null || currentSettings == null) return previousSettings !== currentSettings;
+  return imagePreviewSettingsSignature(previousSettings) !== imagePreviewSettingsSignature(currentSettings);
+}
+
 /** Resolve the Pillow inputs represented by one renderer preview key. */
 export function imagePreviewSettingsForNode(node, previewKey, assetId = undefined) {
   if (!node || typeof node.id !== 'string') throw new TypeError('Image preview settings need a layer.');

@@ -1,4 +1,5 @@
 import { createImageRecipe, createNode, findNode, validateDocument } from '../src/model.js';
+import { latestRecordContainingNodeIds } from './mobile-document-records.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -590,8 +591,7 @@ try {
   tap(app, app.querySelector('#bulk-done'));
   await waitFor(() => app.querySelector('#bulk-bar').hidden, 'failed recipe result dismissal before reload');
   const storedRecords = await readDocuments(app);
-  storedRecords.sort((left, right) => right.savedAt - left.savedAt);
-  const lockRecord = storedRecords[0];
+  const lockRecord = latestRecordContainingNodeIds(storedRecords, imageIds);
   const lockDocument = lockRecord.document;
   const directlyLocked = findNode(lockDocument, imageIds[0])?.node;
   const ancestorLocked = findNode(lockDocument, imageIds[1])?.node;
@@ -645,8 +645,8 @@ try {
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied · locked images skipped'
     && app.querySelector('#bulk-progress-label')?.textContent === '1 / 1', 'locked recipe selection to process only the unlocked image');
   await waitFor(async () => {
-    const records = await readDocuments(app); records.sort((left, right) => right.savedAt - left.savedAt);
-    const document = records[0]?.document;
+    const records = await readDocuments(app);
+    const document = latestRecordContainingNodeIds(records, imageIds)?.document;
     const directResult = findNode(document, imageIds[0])?.node;
     const ancestorResult = findNode(document, imageIds[1])?.node;
     const unlockedResult = findNode(document, imageIds[2])?.node;
@@ -655,8 +655,7 @@ try {
       && unlockedResult?.adjustments?.brightness === 77;
   }, 'directly and ancestrally locked image settings to remain unchanged');
   const lockedResults = await readDocuments(app);
-  lockedResults.sort((left, right) => right.savedAt - left.savedAt);
-  const lockedResultDocument = lockedResults[0].document;
+  const lockedResultDocument = latestRecordContainingNodeIds(lockedResults, imageIds)?.document;
   const parentResult = findNode(lockedResultDocument, imageIds[1]);
   assert(parentResult?.parents.some(parent => parent.id === 'locked-recipe-parent-fixture' && parent.locked),
     'the skipped nested image should remain inside its locked parent.');

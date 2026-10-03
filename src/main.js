@@ -52,7 +52,7 @@ import { MAX_RESOLUTION_BOOST_OUTPUT_BYTES, validateResolutionBoostDimensions } 
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { ImageSourceResidencyManager } from './image-source-residency.js';
-import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, releaseRecipeBatchRecoveryLease, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
@@ -15208,16 +15208,18 @@ function refreshHistoryImagePreviews(previousDocument) {
   const visiblePreviewKeys = visibleImagePreviewKeys();
   for (const reference of imageAssetReferencesAcrossPages()) {
     if (reference.localModelAuxiliary) continue;
-    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, adjustments, transforms } = reference;
+    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, adjustments, transforms, inpaintStrokes = [] } = reference;
     const previousNode = findNode(previousDocument, node.id)?.node;
     const previousSource = fillId
       ? previousNode?.fills?.find(item => item.id === fillId)?.imageFill
       : previousNode?.type === 'image' ? previousNode : previousNode?.imageFill;
-    const previousSettings = previousSource
-      ? JSON.stringify([previousSource.assetId, previousSource.adjustments || {}, previousSource.transforms || {}])
-      : null;
-    const currentSettings = JSON.stringify([assetId, adjustments || {}, transforms || {}]);
-    if (previousSettings === currentSettings) continue;
+    const previousSettings = previousSource ? {
+      assetId: previousSource.assetId,
+      adjustments: previousSource.adjustments,
+      transforms: previousSource.transforms,
+      inpaintStrokes: previousSource.inpaintStrokes,
+    } : null;
+    if (!imagePreviewSettingsChanged(previousSettings, { assetId, adjustments, transforms, inpaintStrokes })) continue;
 
     const timer = previewTimers.get(previewKey);
     if (timer) clearTimeout(timer);

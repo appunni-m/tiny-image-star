@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
+import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -81,6 +81,32 @@ test('preview signatures include pixel inputs but ignore export-only format and 
     'export-only settings do not require a new preview render');
   assert.equal(imagePreviewRequiresRenderedPixels({ adjustments: { brightness: 5 }, outputFormat: 'jpeg', outputQuality: 40 }), true,
     'pixel-changing adjustments still require a rendered preview');
+});
+
+test('undo and redo detect object-erase changes even when image transforms and adjustments match', async () => {
+  const before = {
+    assetId: 'photo', adjustments: { brightness: 12 }, transforms: { rotation: 90 },
+    inpaintStrokes: [{ radius: 8, points: [{ x: 2, y: 4 }] }],
+  };
+  const afterUndo = { ...before, inpaintStrokes: [] };
+  const afterRedo = { ...before, inpaintStrokes: [{ radius: 8, points: [{ x: 2, y: 4 }, { x: 5, y: 7 }] }] };
+
+  assert.equal(imagePreviewSettingsChanged(before, afterUndo), true,
+    'undoing object erase changes the preview pixels even when the source, color edits, and crop are unchanged');
+  assert.equal(imagePreviewSettingsChanged(afterUndo, afterRedo), true,
+    'redoing or extending object erase must refresh the preview too');
+  assert.equal(imagePreviewSettingsChanged(before, { ...before, outputFormat: 'jpeg', outputQuality: 40 }), false,
+    'download-only settings do not invalidate a canvas preview');
+
+  const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const start = mainSource.indexOf('function refreshHistoryImagePreviews(');
+  const end = mainSource.indexOf('\nfunction undo()', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const body = mainSource.slice(start, end);
+  assert.match(body, /inpaintStrokes = \[\]/);
+  assert.match(body, /inpaintStrokes: previousSource\.inpaintStrokes/);
+  assert.match(body, /imagePreviewSettingsChanged\(previousSettings, \{ assetId, adjustments, transforms, inpaintStrokes \}\)/);
 });
 
 test('async preview work resolves edit values from the current layer, not a captured stale snapshot', async () => {
