@@ -104,6 +104,16 @@ test('share grant round-trips a stable invite and a matching persistent design s
   await assert.rejects(createShareGrant(workspace, 'design-1', { ...common, locks }), error => error.code === 'SHARE_ALREADY_ACTIVE');
 });
 
+test('a new design without a sharing folder is treated as unshared and can start sharing', async () => {
+  const { workspace, locks } = await fixture();
+  assert.equal(await loadShareGrant(workspace, 'design-1', { ...common, locks }), null);
+  assert.equal(await revokeShareGrant(workspace, 'design-1', { locks }), false);
+
+  const created = await createShareGrant(workspace, 'design-1', { ...common, locks, now: 150 });
+  const loaded = await loadShareGrant(workspace, 'design-1', { ...common, locks });
+  assert.equal(loaded.shareId, created.shareId);
+});
+
 test('revocation is durable, old capability is no longer active, and replacement keeps design identity', async () => {
   const { workspace, locks } = await fixture();
   const original = await createShareGrant(workspace, 'design-1', { ...common, locks, now: 200 });

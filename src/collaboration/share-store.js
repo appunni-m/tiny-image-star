@@ -152,7 +152,15 @@ async function openShareDirectories(workspace, designId, { create = false } = {}
   catch (error) { fail('DESIGN_NOT_FOUND', 'The design must exist in this workspace before it can be shared.', error); }
   try {
     const metadata = await design.getDirectoryHandle('.tiny-image-star', { create });
-    const sharing = await metadata.getDirectoryHandle('sharing', { create });
+    let sharing;
+    try { sharing = await metadata.getDirectoryHandle('sharing', { create }); }
+    catch (error) {
+      // A design that has never been shared has no sharing directory yet. Treat
+      // that normal state as an empty store when reading; creating the first
+      // grant will initialize it under the same cross-tab lock.
+      if (!create && isNotFound(error)) return null;
+      throw error;
+    }
     const grants = await sharing.getDirectoryHandle('grants', { create });
     const revoked = await sharing.getDirectoryHandle('revoked', { create });
     const sessions = await metadata.getDirectoryHandle('sessions', { create });
@@ -272,6 +280,7 @@ export async function loadShareGrant(workspace, designId, { crypto = globalThis.
   return locks.request(`tiny-image-star-share:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
     await requireWritePermission(workspace);
     const dirs = await openShareDirectories(workspace, designId);
+    if (!dirs) return null;
     const grant = await currentActiveGrant(dirs, designId);
     if (!grant) return null;
     const identity = await readIdentity(dirs.sharing, crypto);
@@ -291,6 +300,7 @@ export async function revokeShareGrant(workspace, designId, { locks = globalThis
   return locks.request(`tiny-image-star-share:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
     await requireWritePermission(workspace);
     const dirs = await openShareDirectories(workspace, designId);
+    if (!dirs) return false;
     const grant = await currentActiveGrant(dirs, designId);
     if (!grant) return false;
     await writeImmutableJson(dirs.revoked, `${grant.shareId}.json`, { formatVersion: SHARE_STORE_VERSION, designId, shareId: grant.shareId, revokedAt: now }, 1024);
