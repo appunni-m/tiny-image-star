@@ -45,7 +45,7 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   assert.match(output.css, /\.hero-title-[a-z0-9_-]+ \{/);
   assert.match(output.css, /left: 37px;/);
   assert.match(output.css, /top: 53px;/);
-  assert.match(output.css, /color: #445566;/);
+  assert.match(output.css, /color: var\(--tis-[a-z0-9_-]+, #445566\);/);
   assert.match(output.css, /font-size: 24px;/);
   assert.match(output.css, /line-height: 36px;/);
   assert.match(output.css, /text-transform: capitalize;/);
@@ -682,4 +682,49 @@ test('Inspect handoff reports mode-resolved geometry instead of stale raw layer 
   assert.match(output.css, /height: 60px;/);
   assert.match(output.css, /transform: rotate\(15deg\);/);
   assert.equal(compact, collection.modes[0].id);
+});
+
+test('Inspect CSS preserves color-variable names with resolved, overridable custom properties', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Brand / Theme');
+  const accent = createVariable(document, collection.id, 'Primary Accent', 'color', '#445566');
+  const label = createNode('text', { name: 'Label', text: 'Hello', color: '#000000' });
+  const tile = createNode('rectangle', { name: 'Tile', fill: '#ffffff' });
+  addNode(document, label); addNode(document, tile);
+  assert.equal(bindColorVariable(document, label.id, accent.id, 'text'), true);
+  assert.equal(bindColorVariable(document, tile.id, accent.id, 'fill'), true);
+
+  const output = buildInspectOutput(document, [findNode(document, label.id), findNode(document, tile.id)]);
+  const tokenNames = [...output.css.matchAll(/(--tis-[a-z0-9_-]+)/g)].map(match => match[1]);
+  assert.equal(new Set(tokenNames).size, 1, 'two layers using one token share one custom property');
+  const [tokenName] = tokenNames;
+  assert.match(output.css, new RegExp(`${tokenName}: #445566;`));
+  assert.match(output.css, new RegExp(`color: var\\(${tokenName}, #445566\\);`));
+  assert.match(output.css, new RegExp(`background-color: var\\(${tokenName}, #445566\\);`));
+});
+
+test('Inspect CSS emits distinct token properties for layers in different collection modes', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Surface');
+  const day = collection.defaultModeId;
+  const night = addVariableMode(document, collection.id, 'Night');
+  const color = createVariable(document, collection.id, 'Card', 'color', '#fafafa');
+  assert.equal(setVariableValue(document, color.id, '#181818', night.id), true);
+  const dayFrame = createNode('frame', { name: 'Day', variableModes: { [collection.id]: day } });
+  const nightFrame = createNode('frame', { name: 'Night', variableModes: { [collection.id]: night.id } });
+  const dayCard = createNode('rectangle', { name: 'Card' });
+  const nightCard = createNode('rectangle', { name: 'Card' });
+  addNode(document, dayFrame); addNode(document, nightFrame);
+  addNode(document, dayCard, { parentId: dayFrame.id });
+  addNode(document, nightCard, { parentId: nightFrame.id });
+  assert.equal(bindColorVariable(document, dayCard.id, color.id, 'fill'), true);
+  assert.equal(bindColorVariable(document, nightCard.id, color.id, 'fill'), true);
+
+  const output = buildInspectOutput(document, [findNode(document, dayCard.id), findNode(document, nightCard.id)]);
+  const definitions = [...output.css.matchAll(/(--tis-[a-z0-9_-]+): (#[0-9a-f]{6});/g)];
+  assert.equal(definitions.length, 2);
+  assert.deepEqual(new Set(definitions.map(([, , value]) => value)), new Set(['#fafafa', '#181818']));
+  assert.notEqual(definitions[0][1], definitions[1][1], 'mode IDs keep root properties collision-free');
+  assert.match(output.css, new RegExp(`background-color: var\\(${definitions[0][1]}, #(?:fafafa|181818)\\);`));
+  assert.match(output.css, new RegExp(`background-color: var\\(${definitions[1][1]}, #(?:fafafa|181818)\\);`));
 });

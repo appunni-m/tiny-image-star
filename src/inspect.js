@@ -1,4 +1,4 @@
-import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
+import { getNodeColor, getNodeGeometry, getNodePropertyValue, variableModeForNode } from './model.js';
 import { buildLayerEffectBoxShadow, buildLayerEffectFilter } from './layer-effects.js';
 import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
@@ -48,6 +48,40 @@ function cssFontFamily(value) {
 function cssIdentifier(value) {
   const token = String(value || 'layer').normalize('NFKD').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return token || 'layer';
+}
+
+function colorVariableToken(document, node, kind) {
+  const property = ({ fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' })[kind];
+  const variableId = property && node?.[property];
+  const variable = variableId && document.variables?.find(item => item.id === variableId && item.type === 'color');
+  const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+  if (!variable || !collection) return null;
+  const modeId = variableModeForNode(document, collection.id, node) || collection.defaultModeId;
+  const mode = collection.modes?.find(item => item.id === modeId);
+  if (!mode) return null;
+  const name = `--tis-${cssIdentifier(collection.name)}-${cssIdentifier(variable.name)}-${cssIdentifier(variable.id)}-${cssIdentifier(mode.id)}`;
+  return { name, value: getNodeColor(document, node, kind) };
+}
+
+function cssColorWithVariable(document, node, kind, alpha = 1) {
+  const value = getNodeColor(document, node, kind);
+  const fallback = cssColor(value, alpha);
+  if (Number(alpha) < 1) return fallback;
+  const token = colorVariableToken(document, node, kind);
+  return token && fallback ? `var(${token.name}, ${fallback})` : fallback;
+}
+
+function cssVariableDefinitions(document, entries) {
+  const definitions = new Map();
+  for (const { node } of entries) {
+    for (const kind of ['fill', 'text', 'stroke']) {
+      const token = colorVariableToken(document, node, kind);
+      const value = token && cssColor(token.value);
+      if (token && value) definitions.set(token.name, value);
+    }
+  }
+  if (!definitions.size) return '';
+  return `:root {\n${[...definitions].map(([name, value]) => `  ${name}: ${value};`).join('\n')}\n}`;
 }
 
 function cssClass(node) {
@@ -251,7 +285,7 @@ function cssForEntry(document, entry) {
     const paragraphStyles = normalizedParagraphStyles(node.text, node.paragraphStyles);
     const hasListParagraphs = paragraphStyles.some(paragraph => paragraph.listStyle !== 'none');
     const listSpacing = Math.max(0, Number(node.listSpacing) || 0);
-    const color = cssColor(getNodeColor(document, node, 'text'));
+    const color = cssColorWithVariable(document, node, 'text');
     if (color) declarations.push(`color: ${color};`);
     declarations.push(
       `font-family: ${cssFontFamily(node.fontFamily)};`,
@@ -300,8 +334,7 @@ function cssForEntry(document, entry) {
     if (radius) declarations.push(`border-radius: ${radius};`);
     if (node.cornerSmoothing > 0) declarations.push(`/* Corner smoothing ${number(node.cornerSmoothing * 100)}% is retained in Tiny Image Star layer JSON; CSS border-radius cannot represent the same curve. */`);
   } else {
-    const fill = getNodeColor(document, node, 'fill');
-    const background = cssColor(fill, node.fillOpacity ?? 1);
+    const background = cssColorWithVariable(document, node, 'fill', node.fillOpacity ?? 1);
     const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1, {
       width: geometry.width,
       height: geometry.height
@@ -312,11 +345,11 @@ function cssForEntry(document, entry) {
     const strokeLayers = strokeStackForNode(node).map((stroke, index) => resolvedStroke(document, node, stroke, index));
     const primaryStroke = strokeLayers[0];
     if (node.type === 'line') {
-      const stroke = primaryStroke?.visible ? cssColor(primaryStroke.color, primaryStroke.opacity) : null;
+      const stroke = primaryStroke?.visible ? cssColorWithVariable(document, node, 'stroke', primaryStroke.opacity) : null;
       if (stroke && primaryStroke.width > 0) declarations.push(`border-top: ${number(primaryStroke.width)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
       declarations.push('/* Exact line geometry is retained in layer JSON. */');
     } else if (primaryStroke?.visible && Math.max(...Object.values(primaryStroke.sideWidths || { top: primaryStroke.width })) > 0) {
-      const stroke = cssColor(primaryStroke.color, primaryStroke.opacity);
+      const stroke = cssColorWithVariable(document, node, 'stroke', primaryStroke.opacity);
       if (stroke) {
         const maxWidth = Math.max(...Object.values(primaryStroke.sideWidths || { top: primaryStroke.width }));
         declarations.push(`border: ${number(maxWidth)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
@@ -624,7 +657,8 @@ export function buildInspectOutput(document, entries) {
   const selectedIds = new Set(selected.map(entry => entry.node.id));
   const roots = selected.filter(entry => !(entry.parents || []).some(parent => selectedIds.has(parent.id)));
   const includedEntries = roots.flatMap(treeEntries);
-  const css = includedEntries.map(entry => cssForEntry(document, entry)).join('\n\n');
+  const css = [cssVariableDefinitions(document, includedEntries), includedEntries.map(entry => cssForEntry(document, entry)).join('\n\n')]
+    .filter(Boolean).join('\n\n');
   return {
     layers: selected.map(entry => summaryForEntry(document, entry)),
     css,
