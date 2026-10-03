@@ -8,6 +8,9 @@
 
 export const COMPONENT_LIBRARY_SCHEMA = 'tiny-image-star/component-library/1';
 export const LINKED_INSTANCE_SCHEMA = 'tiny-image-star/linked-component-instance/1';
+export const COMPONENT_DESIGN_TOKENS_SCHEMA = 'tiny-image-star/component-design-tokens/1';
+/** Ephemeral handoff from the editor tree adapter to the pure library publisher. */
+export const COMPONENT_PUBLICATION_TOKENS = Symbol('tiny-image-star.component-publication-tokens');
 
 const RESERVED_OVERRIDE_PROPERTIES = new Set([
   'id', 'type', 'children', 'componentId', 'componentSourceId', 'componentSourceKey',
@@ -49,6 +52,182 @@ function validName(value, label) {
 function validRevision(value, label = 'Revision') {
   if (!Number.isSafeInteger(value) || value < 0) fail(`${label} must be a non-negative safe integer.`);
   return value;
+}
+
+function tokenIdentity(value, label) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 4096 || value !== value.trim()) {
+    fail(`${label} must be a non-empty, trimmed token identity of at most 4096 characters.`);
+  }
+  return value;
+}
+
+/** Stable, collision-safe identity for a design token copied into a local library. */
+export function componentTokenIdentityId(kind, { documentId, collectionId, id }) {
+  for (const [value, label] of [[kind, 'Token kind'], [documentId, 'Source document ID'], [collectionId, 'Source collection ID'], [id, 'Source token ID']]) {
+    if (typeof value !== 'string' || !value.trim()) fail(`${label} is required to create a stable token identity.`);
+  }
+  return `tiny-image-star-token:${encodeURIComponent(JSON.stringify([kind, documentId, collectionId, id]))}`;
+}
+
+function assertComponentDesignTokens(tokens, label = 'Component design tokens') {
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens) || tokens.schema !== COMPONENT_DESIGN_TOKENS_SCHEMA
+    || !Array.isArray(tokens.collections) || !Array.isArray(tokens.variables)) fail(`Invalid ${label} snapshot.`);
+  assertJsonValue(tokens, label);
+  const collections = new Map();
+  const modesByCollection = new Map();
+  for (const collection of tokens.collections) {
+    if (!collection || typeof collection !== 'object' || Array.isArray(collection)) fail(`Invalid collection in ${label}.`);
+    tokenIdentity(collection.id, 'Token collection ID');
+    if (collections.has(collection.id) || typeof collection.name !== 'string' || !collection.name.trim()
+      || !Array.isArray(collection.modes) || !collection.modes.length) fail(`Invalid or duplicate collection in ${label}.`);
+    const modes = new Set();
+    for (const mode of collection.modes) {
+      if (!mode || typeof mode !== 'object' || Array.isArray(mode)) fail(`Invalid mode in ${label}.`);
+      tokenIdentity(mode.id, 'Token mode ID');
+      if (modes.has(mode.id) || typeof mode.name !== 'string' || !mode.name.trim()) fail(`Invalid or duplicate mode in ${label}.`);
+      modes.add(mode.id);
+    }
+    if (!modes.has(collection.defaultModeId)) fail(`A collection in ${label} has no default mode.`);
+    if (collection.source != null) {
+      tokenIdentity(collection.source.documentId, 'Source document ID');
+      tokenIdentity(collection.source.collectionId, 'Source collection ID');
+    }
+    collections.set(collection.id, collection);
+    modesByCollection.set(collection.id, modes);
+  }
+  const variables = new Map();
+  const namesByCollection = new Set();
+  for (const variable of tokens.variables) {
+    if (!variable || typeof variable !== 'object' || Array.isArray(variable)) fail(`Invalid variable in ${label}.`);
+    tokenIdentity(variable.id, 'Token variable ID');
+    const modes = modesByCollection.get(variable.collectionId);
+    const nameKey = `${variable.collectionId}:${String(variable.name || '').toLocaleLowerCase()}`;
+    const validType = ['color', 'number', 'string', 'boolean'].includes(variable.type);
+    const values = variable.valuesByMode;
+    if (variables.has(variable.id) || !modes || typeof variable.name !== 'string' || !variable.name.trim()
+      || namesByCollection.has(nameKey) || !validType || !values || typeof values !== 'object' || Array.isArray(values)
+      || Object.keys(values).length !== modes.size || [...modes].some(modeId => {
+        const value = values[modeId];
+        return variable.type === 'color' ? typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)
+          : variable.type === 'number' ? typeof value !== 'number' || !Number.isFinite(value)
+            : variable.type === 'string' ? typeof value !== 'string' : typeof value !== 'boolean';
+      })) fail(`Invalid or duplicate variable in ${label}.`);
+    if (variable.source != null) {
+      tokenIdentity(variable.source.documentId, 'Source document ID');
+      tokenIdentity(variable.source.collectionId, 'Source collection ID');
+      tokenIdentity(variable.source.variableId, 'Source variable ID');
+    }
+    const aliases = variable.aliasesByMode;
+    if (aliases != null && (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)
+      || Object.keys(aliases).some(modeId => !modes.has(modeId)))) fail(`Invalid aliases in ${label}.`);
+    variables.set(variable.id, variable);
+    namesByCollection.add(nameKey);
+  }
+  const edges = new Map([...variables.keys()].map(id => [id, new Set()]));
+  for (const variable of variables.values()) {
+    for (const [modeId, targetId] of Object.entries(variable.aliasesByMode || {})) {
+      const target = variables.get(targetId);
+      if (!target || target.type !== variable.type || !modesByCollection.get(variable.collectionId)?.has(modeId)) {
+        fail(`Invalid alias in ${label}.`);
+      }
+      edges.get(variable.id).add(targetId);
+    }
+  }
+  const visiting = new Set(); const visited = new Set();
+  const visit = id => {
+    if (visiting.has(id)) fail(`Variable aliases in ${label} cannot contain a cycle.`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const targetId of edges.get(id) || []) visit(targetId);
+    visiting.delete(id); visited.add(id);
+  };
+  for (const id of variables.keys()) visit(id);
+  return true;
+}
+
+function mergeComponentDesignTokens(existing, incoming) {
+  if (incoming == null) return existing ? clone(existing) : null;
+  assertComponentDesignTokens(incoming);
+  const next = existing ? clone(existing) : { schema: COMPONENT_DESIGN_TOKENS_SCHEMA, collections: [], variables: [] };
+  assertComponentDesignTokens(next);
+  const collections = new Map(next.collections.map(collection => [collection.id, collection]));
+  const variables = new Map(next.variables.map(variable => [variable.id, variable]));
+  for (const incomingCollection of incoming.collections) {
+    let collection = collections.get(incomingCollection.id);
+    if (!collection) {
+      collection = clone(incomingCollection);
+      next.collections.push(collection); collections.set(collection.id, collection);
+    } else {
+      if (stableValue(collection.source || null) !== stableValue(incomingCollection.source || null)) fail('A published token collection identity cannot change its source.');
+      collection.name = incomingCollection.name;
+      collection.defaultModeId = incomingCollection.defaultModeId;
+      for (const incomingMode of incomingCollection.modes) {
+        const current = collection.modes.find(mode => mode.id === incomingMode.id);
+        if (current) current.name = incomingMode.name;
+        else collection.modes.push(clone(incomingMode));
+      }
+    }
+  }
+  for (const incomingVariable of incoming.variables) {
+    let variable = variables.get(incomingVariable.id);
+    if (!variable) {
+      variable = clone(incomingVariable);
+      next.variables.push(variable); variables.set(variable.id, variable);
+      continue;
+    }
+    if (variable.collectionId !== incomingVariable.collectionId || variable.type !== incomingVariable.type
+      || stableValue(variable.source || null) !== stableValue(incomingVariable.source || null)) {
+      fail(`Published variable “${incomingVariable.name}” cannot change its collection, type, or source identity.`);
+    }
+    variable.name = incomingVariable.name;
+    if (Object.hasOwn(incomingVariable, 'scopes')) variable.scopes = clone(incomingVariable.scopes);
+    else delete variable.scopes;
+    for (const [modeId, value] of Object.entries(incomingVariable.valuesByMode)) variable.valuesByMode[modeId] = value;
+    variable.aliasesByMode ||= {};
+    const currentModes = new Set(incomingCollectionModes(incoming, incomingVariable.collectionId));
+    for (const modeId of currentModes) delete variable.aliasesByMode[modeId];
+    Object.assign(variable.aliasesByMode, clone(incomingVariable.aliasesByMode || {}));
+    if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
+  }
+  assertComponentDesignTokens(next);
+  return next;
+}
+
+function incomingCollectionModes(tokens, collectionId) {
+  return tokens.collections.find(collection => collection.id === collectionId)?.modes.map(mode => mode.id) || [];
+}
+
+function referencedComponentDesignTokens(tokens, root) {
+  if (!tokens) return null;
+  const variables = new Map(tokens.variables.map(variable => [variable.id, variable]));
+  const collections = new Map(tokens.collections.map(collection => [collection.id, collection]));
+  const required = new Set();
+  const visit = value => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+    for (const [key, child] of Object.entries(value)) {
+      if (['fillVariableId', 'textVariableId', 'strokeVariableId'].includes(key) && typeof child === 'string' && variables.has(child)) required.add(child);
+      if (key === 'variableBindings' && child && typeof child === 'object' && !Array.isArray(child)) {
+        for (const variableId of Object.values(child)) if (typeof variableId === 'string' && variables.has(variableId)) required.add(variableId);
+      }
+      visit(child);
+    }
+  };
+  visit(root);
+  const pending = [...required];
+  while (pending.length) {
+    const variable = variables.get(pending.pop());
+    for (const targetId of Object.values(variable?.aliasesByMode || {})) {
+      if (!required.has(targetId) && variables.has(targetId)) { required.add(targetId); pending.push(targetId); }
+    }
+  }
+  if (!required.size) return { schema: COMPONENT_DESIGN_TOKENS_SCHEMA, collections: [], variables: [] };
+  const collectionIds = new Set([...required].map(id => variables.get(id)?.collectionId).filter(Boolean));
+  return {
+    schema: COMPONENT_DESIGN_TOKENS_SCHEMA,
+    collections: [...collectionIds].map(id => collections.get(id)).filter(Boolean).map(clone),
+    variables: [...required].map(id => variables.get(id)).filter(Boolean).map(clone)
+  };
 }
 
 function assertJsonValue(value, label, ancestors = new Set()) {
@@ -101,6 +280,7 @@ function assertLibrary(library) {
   validRevision(library.revision, 'Library revision');
   if (!Array.isArray(library.components)) fail('Library components must be a list.');
   if (library.componentSets != null && !Array.isArray(library.componentSets)) fail('Library component sets must be a list.');
+  if (library.designTokens != null) assertComponentDesignTokens(library.designTokens, 'library design tokens');
 
   const componentIds = new Set();
   const publicationRevisions = new Set();
@@ -310,7 +490,8 @@ export function createComponentLibrary({ id, name }) {
     name: validName(name, 'Library name'),
     revision: 0,
     components: [],
-    componentSets: []
+    componentSets: [],
+    designTokens: { schema: COMPONENT_DESIGN_TOKENS_SCHEMA, collections: [], variables: [] }
   };
   return deepFreeze(library);
 }
@@ -361,7 +542,13 @@ export function publishComponent(library, input = {}) {
   if (existingIndex < 0) nextComponents.push({ id: componentId, versions: [clone(publication)] });
   else nextComponents[existingIndex].versions.push(clone(publication));
 
-  const nextLibrary = deepFreeze({ ...clone(library), revision, components: nextComponents, componentSets: clone(library.componentSets || []) });
+  const publicationTokens = options.designTokens ?? root[COMPONENT_PUBLICATION_TOKENS]
+    ?? (previous ? undefined : null);
+  const designTokens = mergeComponentDesignTokens(library.designTokens, publicationTokens);
+  const nextLibrary = deepFreeze({
+    ...clone(library), revision, components: nextComponents, componentSets: clone(library.componentSets || []),
+    ...(designTokens ? { designTokens } : {})
+  });
   assertLibrary(nextLibrary);
   return { library: nextLibrary, publication };
 }
@@ -453,6 +640,7 @@ export function createLinkedInstanceSnapshot(library, componentId, { instanceId,
   if (!publication) fail(`Published component “${componentId}” does not exist in this library.`);
   validateOverrides(publication.root, overrides);
   const sourceSnapshot = immutableClone(publication);
+  const linkedTokens = referencedComponentDesignTokens(library.designTokens, publication.root);
   return deepFreeze({
     schema: LINKED_INSTANCE_SCHEMA,
     id: instanceId,
@@ -461,7 +649,8 @@ export function createLinkedInstanceSnapshot(library, componentId, { instanceId,
     sourceRevision: publication.revision,
     sourceSnapshot,
     overrides: clone(overrides),
-    root: buildResolvedRoot(sourceSnapshot.root, overrides)
+    root: buildResolvedRoot(sourceSnapshot.root, overrides),
+    ...(linkedTokens ? { designTokens: linkedTokens } : {})
   });
 }
 
@@ -481,6 +670,7 @@ function assertLinkedInstance(instance) {
   validateOverrides(publication.root, instance.overrides);
   assertJsonValue(instance.root, 'Resolved instance root');
   collectSourceLayers(instance.root, 'Resolved instance root');
+  if (instance.designTokens != null) assertComponentDesignTokens(instance.designTokens, 'linked instance design tokens');
   if (stableValue(instance.root) !== stableValue(buildResolvedRoot(publication.root, instance.overrides))) {
     fail('Resolved instance root does not match its source snapshot and overrides.');
   }
@@ -558,6 +748,7 @@ export function updateLinkedInstanceSnapshot(instance, library) {
   }
 
   const changes = sourceLayerChanges(instance.sourceSnapshot.root, publication.root);
+  const updatedTokens = referencedComponentDesignTokens(library.designTokens, publication.root);
   const updated = deepFreeze({
     schema: LINKED_INSTANCE_SCHEMA,
     id: instance.id,
@@ -566,7 +757,8 @@ export function updateLinkedInstanceSnapshot(instance, library) {
     sourceRevision: publication.revision,
     sourceSnapshot: immutableClone(publication),
     overrides: nextOverrides,
-    root: buildResolvedRoot(publication.root, nextOverrides)
+    root: buildResolvedRoot(publication.root, nextOverrides),
+    ...(updatedTokens ? { designTokens: updatedTokens } : {})
   });
   const report = deepFreeze({
     fromRevision: instance.sourceRevision,

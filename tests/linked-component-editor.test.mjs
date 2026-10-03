@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, bindColorVariable, createColorStyle, createColorVariable, createDocument, createNode, createVariableCollection, validateDocument
+  addNode, addVariableMode, bindColorVariable, createColorStyle, createColorVariable, createDocument, createNode,
+  createVariableCollection, deleteVariable, getNodeColor, setColorVariableValue, setFrameVariableMode, validateDocument
 } from '../src/model.js';
 import {
-  createComponentLibrary, createLinkedInstanceSnapshot, publishComponent, updateLinkedInstanceSnapshot
+  componentTokenIdentityId, createComponentLibrary, createLinkedInstanceSnapshot, publishComponent, updateLinkedInstanceSnapshot
 } from '../src/component-library.js';
 import {
   applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance,
@@ -228,7 +229,7 @@ test('recordLinkedComponentOverride ignores inherited override-map entries when 
   assert.equal(snapshot.root.children[0].text, 'Local value');
 });
 
-test('cross-design publication materializes source variable and style values without dangling IDs', () => {
+test('cross-design publication keeps source tokens portable while materializing local styles', () => {
   const sourceDocument = createDocument();
   const collection = createVariableCollection(sourceDocument, 'Brand colors');
   const accent = createColorVariable(sourceDocument, collection.id, 'Accent', '#2563eb');
@@ -241,7 +242,7 @@ test('cross-design publication materializes source variable and style values wit
   root.interactions = [{ id: 'mode-route', action: 'set-variable-mode', trigger: 'on-click', collectionId: collection.id, modeId: collection.defaultModeId }];
   const portable = componentTreeForPublication(root, { document: sourceDocument });
   assert.equal(portable.children[0].fill, '#2563eb');
-  assert.equal(portable.children[0].fillVariableId, undefined);
+  assert.equal(typeof portable.children[0].fillVariableId, 'string', 'the published layer keeps a stable token reference');
   assert.equal(portable.children[1].color, textStyle.value);
   assert.equal(portable.children[1].textStyleId, undefined);
   assert.equal(portable.interactions, undefined, 'document-local variable mode interactions are not copied into an unrelated design');
@@ -255,7 +256,143 @@ test('cross-design publication materializes source variable and style values wit
     { document: destination }
   );
   addNode(destination, instance);
-  assert.equal(validateDocument(destination), true, 'the destination design saves without the source token collection or color style');
+  assert.equal(validateDocument(destination), true, 'the destination design saves with locally mapped tokens and no source color style');
   assert.equal(instance.children[0].fill, '#2563eb');
+  assert.ok(instance.children[0].fillVariableId, 'the destination receives a local token binding');
+  assert.equal(getNodeColor(destination, instance.children[0], 'fill'), '#2563eb');
+});
+
+test('published tokens preserve stable identities, alias and mode bindings, collision-safe destination mapping, and updates', () => {
+  const source = createDocument();
+  const collection = createVariableCollection(source, 'Brand');
+  const dark = addVariableMode(source, collection.id, 'Dark');
+  const brand = createColorVariable(source, collection.id, 'Brand accent', '#2463eb');
+  const alias = createColorVariable(source, collection.id, 'Action', '#2463eb');
+  alias.aliasesByMode = Object.fromEntries(collection.modes.map(mode => [mode.id, brand.id]));
+  const unused = createColorVariable(source, collection.id, 'Private unused token', '#ae00ff');
+  const root = createNode('frame', { name: 'Token card', width: 240, height: 100 });
+  const button = createNode('rectangle', { name: 'Button', fill: '#ffffff', width: 120, height: 48 });
+  addNode(source, root);
+  addNode(source, button, { parentId: root.id });
+  assert.equal(bindColorVariable(source, button.id, alias.id, 'fill'), true);
+  assert.equal(setColorVariableValue(source, brand.id, '#d946ef', dark.id), true);
+  assert.equal(setFrameVariableMode(source, root.id, collection.id, dark.id), true);
+  assert.equal(getNodeColor(source, button, 'fill'), '#d946ef');
+
+  const portable = componentTreeForPublication(root, { document: source });
+  const expectedCollectionId = componentTokenIdentityId('collection', {
+    documentId: source.id, collectionId: collection.id, id: collection.id
+  });
+  const expectedAliasId = componentTokenIdentityId('variable', {
+    documentId: source.id, collectionId: collection.id, id: alias.id
+  });
+  const expectedBrandId = componentTokenIdentityId('variable', {
+    documentId: source.id, collectionId: collection.id, id: brand.id
+  });
+  const expectedDarkModeId = componentTokenIdentityId('mode', {
+    documentId: source.id, collectionId: collection.id, id: dark.id
+  });
+  assert.equal(portable.children[0].fillVariableId, expectedAliasId);
+  assert.equal(portable.variableModes[expectedCollectionId], expectedDarkModeId);
+
+  let library = publishComponent(createComponentLibrary({ id: 'library-token-portability', name: 'Token portability' }), {
+    componentId: 'component-token-portability', name: 'Token card', root: portable
+  }).library;
+  const publishedTokens = library.designTokens;
+  assert.equal(publishedTokens.variables.length, 2, 'only the referenced token and its alias dependency are published');
+  assert.equal(publishedTokens.variables.some(variable => variable.name === unused.name), false, 'unreferenced source tokens stay private');
+  assert.equal(publishedTokens.variables.find(variable => variable.id === expectedAliasId).aliasesByMode[expectedDarkModeId], expectedBrandId);
+
+  const destination = createDocument();
+  // Pre-existing local IDs deliberately collide with source-stable IDs. They
+  // must remain untouched while the imported linked tokens receive new IDs.
+  const collisionCollection = createVariableCollection(destination, 'Local collision');
+  collisionCollection.id = expectedCollectionId;
+  collisionCollection.modes[0].id = expectedDarkModeId;
+  collisionCollection.defaultModeId = expectedDarkModeId;
+  const collisionVariable = createColorVariable(destination, collisionCollection.id, 'Local action', '#123456');
+  collisionVariable.id = expectedAliasId;
+  const collisionBrand = createColorVariable(destination, collisionCollection.id, 'Local brand', '#654321');
+  collisionBrand.id = expectedBrandId;
+  const initial = createLinkedInstanceSnapshot(library, 'component-token-portability', { instanceId: 'linked-token-card' });
+  const instance = createLinkedEditorInstance(initial, { document: destination });
+  addNode(destination, instance);
+  assert.equal(validateDocument(destination), true);
+  assert.equal(collisionVariable.valuesByMode[expectedDarkModeId], '#123456');
+  assert.equal(collisionBrand.valuesByMode[expectedDarkModeId], '#654321');
+  const importedCollection = destination.variableCollections.find(item => item.linkedLibraryToken?.libraryId === library.id);
+  const importedAlias = destination.variables.find(item => item.linkedLibraryToken?.libraryId === library.id && item.name === alias.name);
+  const importedBrand = destination.variables.find(item => item.linkedLibraryToken?.libraryId === library.id && item.name === brand.name);
+  assert.ok(importedCollection && importedAlias && importedBrand);
+  assert.notEqual(importedCollection.id, expectedCollectionId, 'an occupied destination collection ID is remapped');
+  assert.equal(instance.variableModes[expectedCollectionId], undefined, 'the source collection ID does not leak into the destination tree');
+  assert.equal(instance.variableModes[importedCollection.id], importedCollection.modes.find(mode => mode.name === 'Dark').id);
+  assert.equal(importedAlias.aliasesByMode[instance.variableModes[importedCollection.id]], importedBrand.id,
+    'alias references follow the destination variable map');
+  assert.equal(getNodeColor(destination, instance.children[0], 'fill'), '#d946ef', 'the imported dark mode resolves through its alias');
+
+  importedBrand.name = 'Locally renamed brand';
+  const nameCollision = createColorVariable(destination, importedCollection.id, brand.name, '#ffffff');
+  assert.equal(setColorVariableValue(source, brand.id, '#00aa44', dark.id), true);
+  const nextRoot = componentTreeForPublication(root, { document: source });
+  library = publishComponent(library, {
+    componentId: 'component-token-portability', name: 'Token card', root: nextRoot
+  }).library;
+  const updated = updateLinkedInstanceSnapshot(initial, library).instance;
+  applyLinkedComponentUpdate(instance, updated, { document: destination });
+  assert.equal(validateDocument(destination), true);
+  assert.equal(nameCollision.name, brand.name, 'a local variable that takes the source name remains intact');
+  assert.notEqual(importedBrand.name, brand.name, 'a colliding published name is disambiguated without breaking its identity');
+  assert.equal(importedBrand.valuesByMode[instance.variableModes[importedCollection.id]], '#00aa44',
+    'a source token edit updates the existing destination token in place');
+  assert.equal(getNodeColor(destination, instance.children[0], 'fill'), '#00aa44');
+});
+
+test('missing and deleted published tokens retain their resolved literal fallback', () => {
+  const source = createDocument();
+  const collection = createVariableCollection(source, 'Brand');
+  const accent = createColorVariable(source, collection.id, 'Accent', '#1759c7');
+  const root = createNode('frame', { name: 'Fallback card', width: 180, height: 80 });
+  const shape = createNode('rectangle', { fill: '#ffffff', width: 64, height: 32 });
+  addNode(source, root);
+  addNode(source, shape, { parentId: root.id });
+  assert.equal(bindColorVariable(source, shape.id, accent.id, 'fill'), true);
+  const library = publishComponent(createComponentLibrary({ id: 'library-fallback', name: 'Fallbacks' }), {
+    componentId: 'component-fallback', name: 'Fallback card', root: componentTreeForPublication(root, { document: source })
+  }).library;
+  const snapshot = createLinkedInstanceSnapshot(library, 'component-fallback', { instanceId: 'linked-fallback' });
+  const destination = createDocument();
+  const instance = createLinkedEditorInstance(snapshot, { document: destination });
+  addNode(destination, instance);
+  const imported = destination.variables.find(item => item.linkedLibraryToken?.libraryId === library.id);
+  assert.ok(imported);
+  assert.equal(instance.children[0].fill, '#1759c7');
+  assert.equal(deleteVariable(destination, imported.id), true);
   assert.equal(instance.children[0].fillVariableId, undefined);
+  assert.equal(instance.children[0].fill, '#1759c7');
+  assert.equal(getNodeColor(destination, instance.children[0], 'fill'), '#1759c7');
+  assert.equal(validateDocument(destination), true);
+
+  // A legacy library/component snapshot has no designTokens field and may
+  // carry only an already-resolved literal. Import strips the unresolvable
+  // reference while keeping that usable literal intact.
+  const legacyLibrary = createComponentLibrary({ id: 'library-legacy-tokens', name: 'Legacy' });
+  const legacyRoot = sourceTree({ includeBadge: true });
+  legacyRoot.children[1].fill = '#c0ffee';
+  legacyRoot.children[1].fillVariableId = 'removed-from-legacy-library';
+  const legacyWithoutTokens = { ...legacyLibrary };
+  delete legacyWithoutTokens.designTokens;
+  const legacyPublished = publishComponent(legacyWithoutTokens, {
+    componentId: 'component-legacy-token', name: 'Legacy card', root: legacyRoot
+  }).library;
+  const published = { ...legacyPublished };
+  delete published.designTokens;
+  const legacySnapshot = createLinkedInstanceSnapshot(published, 'component-legacy-token', { instanceId: 'legacy-token-link' });
+  assert.equal(Object.hasOwn(legacySnapshot, 'designTokens'), false);
+  const legacyDestination = createDocument();
+  const legacyInstance = createLinkedEditorInstance(legacySnapshot, { document: legacyDestination });
+  addNode(legacyDestination, legacyInstance);
+  assert.equal(legacyInstance.children[1].fillVariableId, undefined);
+  assert.equal(legacyInstance.children[1].fill, '#c0ffee');
+  assert.equal(validateDocument(legacyDestination), true);
 });
