@@ -2,8 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { workspaceEditingAccess } from '../src/workspace/editing-access.js';
+import { workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
 
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+
+test('workspace onboarding describes only storage choices available on this browser', () => {
+  const folder = workspaceOnboardingCopy({ folderPickerAvailable: true });
+  assert.match(folder.description, /Choose a folder/);
+  assert.match(folder.description, /local files/);
+  assert.doesNotMatch(folder.description, /browser profile/);
+
+  const browser = workspaceOnboardingCopy({ folderPickerAvailable: false });
+  assert.match(browser.description, /local profile/);
+  assert.match(browser.description, /Export a local design file/);
+  assert.match(browser.status, /cannot choose a writable folder/);
+  assert.match(browser.status, /stay in this browser profile/);
+});
 
 test('folder permission recovery keeps File navigation available and canvas editing blocked', () => {
   assert.deepEqual(workspaceEditingAccess({ blocked: true, permissionNeeded: true }), {

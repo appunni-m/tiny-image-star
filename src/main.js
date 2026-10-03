@@ -61,6 +61,7 @@ import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWo
 import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
 import { workspaceEditingAccess } from './workspace/editing-access.js';
+import { workspaceOnboardingCopy } from './workspace/onboarding-copy.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { canvasFontWeight, fontVariationInspectionStatus, fontVariationSettings, inspectFontVariationAxes, isValidFontVariationValues, setFontVariationValue } from './font-variation.js';
 import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings, setFontFeatureValue } from './font-features.js';
@@ -1284,11 +1285,11 @@ function syncWorkspaceOnboardingDialog() {
     return;
   }
   const pickerAvailable = typeof window.showDirectoryPicker === 'function';
+  const copy = workspaceOnboardingCopy({ folderPickerAvailable: pickerAvailable });
   $('#workspace-onboarding-browser-fallback').hidden = pickerAvailable;
   $('#workspace-onboarding-choose-folder').disabled = !pickerAvailable;
-  $('#workspace-onboarding-status').textContent = pickerAvailable
-    ? 'Choose a folder to create or reconnect your workspace. Existing browser designs will be copied and verified before the editor opens.'
-    : 'This browser cannot choose a writable folder. You can continue with browser-profile storage, but that storage will not live in a folder.';
+  $('#workspace-onboarding-copy').textContent = copy.description;
+  $('#workspace-onboarding-status').textContent = copy.status;
   if (!dialog.open) {
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else dialog.setAttribute('open', '');
