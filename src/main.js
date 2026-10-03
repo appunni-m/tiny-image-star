@@ -24,7 +24,7 @@ import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason,
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
 import { beginCanvasDragAfterSlop } from './canvas-drag-slop.js';
 import { createPageNodeIndex } from './page-node-index.js';
-import { selectLayersWithSamePaint } from './select-similar-layers.js';
+import { selectLayersWithSameFont, selectLayersWithSamePaint } from './select-similar-layers.js';
 import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount, componentPropertyExposureGroups, componentPropertyTargetInstanceId } from './component-property-exposure.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
@@ -13486,6 +13486,16 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
       return stack;
     };
     const pageNodes = activePage()?.children || [];
+    if (node.type === 'text') {
+      const matchingIds = selectLayersWithSameFont(pageNodes, state.document, node);
+      if (matchingIds.length > 1) items.splice(items.length - 2, 0, {
+        label: `Select all with same font (${matchingIds.length})`,
+        action: () => {
+          setSelection(matchingIds, { source: 'programmatic' });
+          showToast(`Selected ${matchingIds.length} text layers with the same font.`);
+        }
+      }, { separator: true });
+    }
     for (const kind of ['fill', 'stroke']) {
       const matchingIds = selectLayersWithSamePaint(pageNodes, node, kind, { getPaintStack: paintStack });
       if (matchingIds.length < 2) continue;

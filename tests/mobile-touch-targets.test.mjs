@@ -96,6 +96,11 @@ test('grid track controls expose sizing and weighted fill with phone-sized contr
   assert.match(mainSource, /function gridTrackEditor\(node, axis, count, tracks, fallbackMode, locked = node\.locked\)/);
   assert.match(mainSource, /\['fixed', 'Fixed'\], \['hug', 'Hug content'\], \['fill', 'Fill available'\]/);
   assert.match(mainSource, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.\$\{mode === 'fixed' \? 'value' : 'weight'\}"/);
+  assert.match(stylesheet, /\.grid-track-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*\.6fr\)\s+minmax\(0,\s*1\.1fr\)\s+minmax\(0,\s*\.9fr\)\s+34px\s+34px/,
+    'desktop grid-track columns must be allowed to shrink inside the fixed-width inspector');
+  const mobile = mediaBlock('(max-width: 820px)', 0);
+  assert.match(mobile, /\.grid-track-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*\.4fr\)\s+minmax\(0,\s*1fr\)\s+minmax\(0,\s*\.8fr\)\s+44px\s+44px/,
+    'mobile grid-track columns must shrink while preserving 44px actions');
   assert.match(coarsePhone, /\.grid-track-row \.select-field, \.grid-track-value\s*\{[^}]*min-height:\s*44px[^}]*height:\s*44px/);
   assert.match(coarsePhone, /\.grid-track-delete, \.grid-track-move-menu-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/,
     'grid track delete and reorder controls stay finger-sized on phones');

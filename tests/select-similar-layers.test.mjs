@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectLayersWithSamePaint } from '../src/select-similar-layers.js';
+import { selectLayersWithSameFont, selectLayersWithSamePaint } from '../src/select-similar-layers.js';
+import { addNode, bindVariable, createDocument, createNode, createVariable, createVariableCollection } from '../src/model.js';
 
 const solid = (id, color, overrides = {}) => ({ id, type: 'solid', color, visible: true, opacity: 1, ...overrides });
 const rectangle = (id, fills, overrides = {}) => ({ id, type: 'rectangle', fills, children: [], ...overrides });
@@ -62,4 +63,89 @@ test('same-paint selection skips hidden and locked ancestors and never reaches o
   assert.deepEqual(selectLayersWithSamePaint(roots, reference, 'fill'), ['reference', 'visible-child']);
   assert.deepEqual(selectLayersWithSamePaint([visibleChild], reference, 'fill'), []);
   assert.throws(() => selectLayersWithSamePaint(roots, reference, 'effect'), /Paint kind must be fill or stroke/);
+});
+
+test('same-font selection compares effective family only and honors rich-text run overrides', () => {
+  const document = createDocument();
+  const reference = createNode('text', {
+    name: 'Reference', text: 'Title', fontFamily: 'Inter, Arial, sans-serif',
+    fontWeight: 700, fontAxes: { wght: 700 }, typographyStyleId: 'style-one'
+  });
+  const differentAppearance = createNode('text', {
+    name: 'Same family', text: 'Body', fontFamily: '"INTER", system-ui',
+    fontWeight: 300, fontStyle: 'italic', fontAxes: { wght: 300 }, typographyStyleId: 'style-two'
+  });
+  const richText = createNode('text', {
+    name: 'Run family', text: 'Rich title', fontFamily: 'Body Sans',
+    textRuns: [{ text: 'Rich ', fontFamily: 'Inter' }, { text: 'title', fontFamily: 'Inter, sans-serif', fontWeight: 800 }]
+  });
+  const differentFamily = createNode('text', { name: 'Different family', text: 'Other', fontFamily: 'Arial, sans-serif' });
+  addNode(document, reference);
+  addNode(document, differentAppearance);
+  addNode(document, richText);
+  addNode(document, differentFamily);
+
+  assert.deepEqual(
+    selectLayersWithSameFont(document.pages[0].children, document, reference),
+    [reference.id, differentAppearance.id, richText.id],
+    'family names compare case-insensitively by primary family while unrelated typography metadata is ignored'
+  );
+});
+
+test('same-font selection resolves variable-bound families and rejects stale runs', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Typography');
+  const family = createVariable(document, collection.id, 'Heading family', 'string', 'Editorial Sans');
+  const reference = createNode('text', {
+    text: 'Selected', fontFamily: 'Fallback Sans', variableBindings: { fontFamily: family.id }
+  });
+  const sameByRun = createNode('text', {
+    text: 'Matching', fontFamily: 'Fallback Sans',
+    textRuns: [{ text: 'Matching', fontFamily: 'Editorial Sans' }]
+  });
+  const staleRunsUseBase = createNode('text', {
+    text: 'Changed text', fontFamily: 'Editorial Sans, Arial',
+    textRuns: [{ text: 'Old text', fontFamily: 'Other Sans' }]
+  });
+  const wrongRunFamily = createNode('text', {
+    text: 'Not matching', fontFamily: 'Editorial Sans',
+    textRuns: [{ text: 'Not matching', fontFamily: 'Other Sans' }]
+  });
+  addNode(document, reference);
+  addNode(document, sameByRun);
+  addNode(document, staleRunsUseBase);
+  addNode(document, wrongRunFamily);
+  assert.equal(bindVariable(document, reference.id, family.id, 'fontFamily'), true);
+
+  assert.deepEqual(
+    selectLayersWithSameFont(document.pages[0].children, document, reference),
+    [reference.id, sameByRun.id, staleRunsUseBase.id],
+    'node bindings resolve in the active variable mode and stale rich-text runs follow renderer fallback behavior'
+  );
+});
+
+test('same-font selection skips hidden or locked descendants and is scoped to the supplied page tree', () => {
+  const document = createDocument();
+  const reference = createNode('text', { text: 'Source', fontFamily: 'Inter' });
+  const visible = createNode('text', { text: 'Visible', fontFamily: 'Inter' });
+  const ownHidden = createNode('text', { text: 'Hidden', fontFamily: 'Inter', visible: false });
+  const ownLocked = createNode('text', { text: 'Locked', fontFamily: 'Inter', locked: true });
+  const hiddenAncestor = createNode('frame', {
+    visible: false, children: [createNode('text', { text: 'Hidden child', fontFamily: 'Inter' })]
+  });
+  const lockedAncestor = createNode('frame', {
+    locked: true, children: [createNode('text', { text: 'Locked child', fontFamily: 'Inter' })]
+  });
+  addNode(document, reference);
+  addNode(document, visible);
+  addNode(document, ownHidden);
+  addNode(document, ownLocked);
+  addNode(document, hiddenAncestor);
+  addNode(document, lockedAncestor);
+  const otherPageText = createNode('text', { text: 'Other page', fontFamily: 'Inter' });
+  document.pages.push({ id: 'other-page', name: 'Other', children: [otherPageText], guides: [] });
+
+  assert.deepEqual(selectLayersWithSameFont(document.pages[0].children, document, reference), [reference.id, visible.id]);
+  assert.deepEqual(selectLayersWithSameFont([visible], document, reference), []);
+  assert.deepEqual(selectLayersWithSameFont(document.pages[1].children, document, reference), []);
 });
