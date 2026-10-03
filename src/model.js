@@ -435,7 +435,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -3829,6 +3829,9 @@ export function validateDocument(document) {
       }
       if (Object.hasOwn(node, 'overflowBehavior') && (node.type !== 'frame' || !frameOverflowBehaviors.has(node.overflowBehavior))) {
         throw new TypeError(`Invalid frame overflow behavior on layer ${node.name || node.id}.`);
+      }
+      if (Object.hasOwn(node, 'fixedPositionWhenScrolling') && typeof node.fixedPositionWhenScrolling !== 'boolean') {
+        throw new TypeError('Invalid fixed scroll position on layer ' + (node.name || node.id) + '.');
       }
       const sizeLimits = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'];
       const hasSizeLimit = sizeLimits.some(property => node[property] != null);

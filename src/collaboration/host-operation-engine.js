@@ -44,7 +44,7 @@ const NODE_PROPERTIES = new Set([
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
+  'interactions', 'fixedPositionWhenScrolling', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
   'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',

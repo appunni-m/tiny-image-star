@@ -19,7 +19,7 @@ const SET_PROPERTY_ROOTS = new Set([
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
+  'interactions', 'fixedPositionWhenScrolling', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines',
   'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
@@ -164,9 +164,9 @@ function generatePropertyOperations(entries, working, target) {
     for (const property of keys) {
       const hasCurrent = Object.hasOwn(current, property);
       const hasWanted = Object.hasOwn(wanted, property);
-      const addsTextTruncationField = !hasCurrent && hasWanted
-        && ['textTruncation', 'maxLines'].includes(property);
-      if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures' && !addsTextTruncationField) {
+      const addsOptionalField = !hasCurrent && hasWanted
+        && ['textTruncation', 'maxLines', 'fixedPositionWhenScrolling'].includes(property);
+      if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures' && !addsOptionalField) {
         throw new Error('A property removal cannot be represented by the host protocol.');
       }
       if (equal(current[property], wanted[property])) continue;

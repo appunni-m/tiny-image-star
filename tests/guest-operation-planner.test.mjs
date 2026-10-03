@@ -135,6 +135,18 @@ test('plans supported text replacement and property changes in deterministic ord
   assert.deepEqual(plan.map(entry => entry.operation.property), ['opacity', undefined, 'fontSize']);
 });
 
+test('plans fixed-position scroll behavior as a validated collaborative property edit', async () => {
+  const { document, pageId } = fixture();
+  const after = structuredClone(document);
+  findNode(after, 'rectangle-a', pageId).node.fixedPositionWhenScrolling = true;
+  validateDocument(after);
+
+  const plan = await assertPlanMatchesHost(document, after, ['SetProperty']);
+  assert.equal(plan[0].operation.targetId, 'rectangle-a');
+  assert.equal(plan[0].operation.property, 'fixedPositionWhenScrolling');
+  assert.equal(plan[0].operation.value, true);
+});
+
 test('plans text truncation properties in host-valid order and supports clearing the line limit', async () => {
   const { document, pageId } = fixture();
   const ending = structuredClone(document);

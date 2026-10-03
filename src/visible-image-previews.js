@@ -2,6 +2,7 @@ import { fillStackForNode } from './fills.js';
 import { getNodeGeometry, getNodePropertyValue } from './model.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { nodeLocalToPage } from './transform-geometry.js';
+import { scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 
 const FRAME_OVERFLOW_BEHAVIORS = new Set(['none', 'vertical', 'horizontal', 'both']);
 
@@ -114,18 +115,19 @@ export function collectVisibleImagePreviewKeys(page, document, viewport, { prese
     { x: viewport.right, y: viewport.bottom },
     { x: viewport.left, y: viewport.bottom }
   ];
-  const visit = (nodes, ancestors = [], clipPolygons = [], parentScroll = { x: 0, y: 0 }, inheritedOpacity = 1) => {
+  const visit = (nodes, ancestors = [], clipPolygons = [], parentScroll = { x: 0, y: 0 }, inheritedOpacity = 1, parentFrame = null) => {
     for (const node of nodes || []) {
       if (!getNodePropertyValue(document, node, 'visible')) continue;
       const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
       const effectiveOpacity = inheritedOpacity * (Number.isFinite(opacity) ? opacity : 1);
       if (effectiveOpacity <= 0) continue;
       const resolved = getNodeGeometry(document, node);
+      const childScroll = scrollOffsetForPresentationChild(parentFrame, node, parentScroll);
       const geometry = {
         ...node,
         ...resolved,
-        x: Number(resolved.x) - parentScroll.x,
-        y: Number(resolved.y) - parentScroll.y
+        x: Number(resolved.x) - childScroll.x,
+        y: Number(resolved.y) - childScroll.y
       };
       const polygon = nodePolygon(geometry, ancestors);
       const previewKeys = imagePreviewKeysForNode(node);
@@ -138,7 +140,8 @@ export function collectVisibleImagePreviewKeys(page, document, viewport, { prese
         [...ancestors, geometry],
         childClips,
         presentationScrollOffset(node, presentationScrollOffsets),
-        effectiveOpacity
+        effectiveOpacity,
+        node
       );
     }
   };

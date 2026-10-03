@@ -113,6 +113,21 @@ test('smart animation switches frame clipping and overflow behavior at the midpo
   assert.deepEqual(sample(1), to, 'destination clipping settings remain exact at the endpoint');
 });
 
+test('smart animation switches a child fixed-position flag at the scroll-mode midpoint', () => {
+  const from = createNode('frame', {
+    overflowBehavior: 'vertical',
+    children: [createNode('rectangle', { name: 'Pinned badge', fixedPositionWhenScrolling: false })]
+  });
+  const to = createNode('frame', {
+    overflowBehavior: 'vertical',
+    children: [createNode('rectangle', { name: 'Pinned badge', fixedPositionWhenScrolling: true })]
+  });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].fixedPositionWhenScrolling;
+
+  assert.equal(at(0.499), false, 'the source child stays attached to scrolling content before halfway');
+  assert.equal(at(0.5), true, 'the fixed layer becomes stationary atomically at halfway');
+});
+
 test('smart animation interpolates imported affine scale and shear without changing authored endpoints', () => {
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Imported card' })] });
   const to = createNode('frame', { children: [createNode('rectangle', {

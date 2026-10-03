@@ -104,6 +104,29 @@ test('component child alignment overrides survive auto-layout sync and reload', 
   assert.throws(() => validateDocument(reloaded), /Invalid component auto layout child alignment override/);
 });
 
+test('fixed-position scrolling overrides survive component synchronization and reload', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Scrollable card', overflowBehavior: 'vertical' });
+  const badge = createNode('rectangle', { name: 'Pinned badge' });
+  addNode(document, master);
+  addNode(document, badge, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Scrollable card');
+  const instance = createComponentInstance(document, component.id);
+  const instanceBadge = instance.children[0];
+  instanceBadge.fixedPositionWhenScrolling = true;
+  instance.componentOverrides[instanceBadge.componentSourceId] = { fixedPositionWhenScrolling: true };
+
+  assert.equal(validateDocument(document), true);
+  syncAllComponentInstances(document);
+  assert.equal(instance.children[0].fixedPositionWhenScrolling, true);
+
+  const reloaded = parseDocument(serializeDocument(document));
+  syncAllComponentInstances(reloaded);
+  const reloadedInstance = findNode(reloaded, instance.id).node;
+  assert.equal(reloadedInstance.children[0].fixedPositionWhenScrolling, true);
+  assert.equal(validateDocument(reloaded), true);
+});
+
 test('component synchronization remaps internal prototype scroll targets to each instance', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Scrollable card', width: 300, height: 220 });

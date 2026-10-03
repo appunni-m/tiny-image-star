@@ -1414,6 +1414,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       const effects = mapLayerEffects(source.effects, source, context.report);
       if (effects.length) overrides.effects = effects;
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+      mapFixedPositionWhenScrolling(source, parentSource, overrides);
       context.report.importedNodes += 1;
       return createNode('network', overrides);
     }
@@ -1425,6 +1426,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     const effects = mapLayerEffects(source.effects, source, context.report);
     if (effects.length) overrides.effects = effects;
     mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+    mapFixedPositionWhenScrolling(source, parentSource, overrides);
     const node = createNode('group', {
       ...overrides
     });
@@ -1447,6 +1449,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       const effects = mapLayerEffects(source.effects, source, context.report);
       if (effects.length) overrides.effects = effects;
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+      mapFixedPositionWhenScrolling(source, parentSource, overrides);
       const node = createNode('group', overrides);
       warn(context.report, 'flattened', source.type || 'NODE', name, 'An unsupported container was kept as an editable group so its children remain available.');
       context.report.importedNodes += 1;
@@ -1492,6 +1495,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     if (autoLayout) overrides.autoLayout = autoLayout;
   }
   mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+  mapFixedPositionWhenScrolling(source, parentSource, overrides);
   const constraints = mapConstraints(source, context.report);
   if (constraints) overrides.constraints = constraints;
   if (source.type === 'RECTANGLE' || source.type === 'ROUNDED_RECTANGLE' || source.type === 'FRAME') {
@@ -1552,7 +1556,7 @@ const componentOverrideProperties = [
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
-  'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points',
+  'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings',
   'outputFormat', 'outputQuality', 'layoutGuides'
 ];
@@ -1561,6 +1565,13 @@ function sourceComponentGuid(value) {
   if (typeof value === 'string' && /^\d+:\d+$/u.test(value)) return value;
   if (value && typeof value === 'object') return guidKey(value.guid || value);
   return null;
+}
+
+function mapFixedPositionWhenScrolling(source, parentSource, overrides) {
+  const sourceId = idOf(source);
+  const fixedByParent = sourceId && Array.isArray(parentSource?.fixedChildren)
+    && parentSource.fixedChildren.some(reference => sourceComponentGuid(reference) === sourceId);
+  if (source.fixedPositionWhenScrolling === true || fixedByParent) overrides.fixedPositionWhenScrolling = true;
 }
 
 function sameJsonValue(left, right) {

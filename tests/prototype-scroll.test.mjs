@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { addNode, createDocument, createNode } from '../src/model.js';
 import { planPrototypeScrollTo } from '../src/prototype-scroll.js';
+const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
 function documentWithScrollFrame({ width = 100, height = 100, behavior = 'vertical' } = {}) {
   const document = createDocument();
@@ -109,4 +111,23 @@ test('scroll-to rejects stale targets, invalid alignment, and invalid current of
   assert.throws(() => planPrototypeScrollTo(document, target.id, { alignment: 'top' }), /Unsupported prototype scroll alignment/);
   assert.throws(() => planPrototypeScrollTo(document, target.id, { currentOffsets: {} }), /must be a Map/);
   assert.throws(() => planPrototypeScrollTo(document, target.id, { margin: -1 }), /non-negative/);
+});
+
+test('scroll-to leaves fixed targets visible and the Prototype inspector exposes fixed positioning', () => {
+  const { document, viewport } = documentWithScrollFrame();
+  const fixed = createNode('rectangle', { fixedPositionWhenScrolling: true, y: 10, width: 30, height: 20 });
+  const scrolling = createNode('rectangle', { y: 360, width: 30, height: 20 });
+  viewport.children.push(fixed, scrolling);
+  const currentOffsets = new Map([[viewport.id, { x: 0, y: 80 }]]);
+  const plan = planPrototypeScrollTo(document, fixed.id, { currentOffsets });
+  assert.deepEqual(plan.updates, [], 'a fixed target is already visible and does not scroll its parent');
+  assert.deepEqual(plan.offsets.get(viewport.id), { x: 0, y: 80 });
+
+  const start = editorSource.indexOf('function fixedScrollPositionSection');
+  const end = editorSource.indexOf('function inspectPanel()', start);
+  assert.ok(start >= 0 && end > start, 'the Prototype inspector must render fixed-position controls');
+  const section = editorSource.slice(start, end);
+  assert.ok(section.includes('isScrollableFrame(parent)'));
+  assert.ok(section.includes('data-prop="fixedPositionWhenScrolling"'));
+  assert.ok(section.includes("parent.autoLayout && node.layoutPositioning !== 'absolute'"));
 });

@@ -801,6 +801,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .prototype-edit-button { min-width: 42px; min-height: 30px; padding: 0 6px; border-radius: 5px; color: #69518d; font-size: 9px; }
 .prototype-edit-button:hover { background: #eee6fb; }
 .prototype-controls { display: grid; gap: 10px; margin-top: 14px; }
+.prototype-scroll-position { display: flex; align-items: center; gap: 9px; min-height: 40px; color: var(--muted); font-size: 10px; }
+.prototype-scroll-position input { width: 18px; height: 18px; accent-color: #0d99ff; }
 .prototype-controls label { display: grid; grid-template-columns: 1fr minmax(105px, 1.15fr); align-items: center; gap: 9px; color: #777; font-size: 10px; }
 .prototype-controls label.prototype-expression-field { grid-template-columns: minmax(0, 1fr); }
 .prototype-controls #prototype-variable-expression { width: 100%; min-height: 40px; }

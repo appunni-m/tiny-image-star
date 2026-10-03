@@ -132,6 +132,29 @@ test('imports a simple Figma vector as an editable network while preserving its 
   assert.deepEqual(restored.edges, vector.edges);
 });
 
+test('imports fixed scroll children from their parent frame references', () => {
+  const page = { sessionID: 86, localID: 1 };
+  const frame = { sessionID: 86, localID: 2 };
+  const fixed = { sessionID: 86, localID: 3 };
+  const scrolling = { sessionID: 86, localID: 4 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('FRAME', 2, page, 'a', {
+        guid: frame, name: 'Scrollable frame', clipsContent: true,
+        fixedChildren: [fixed]
+      }),
+      node('RECTANGLE', 3, frame, 'a', { guid: fixed, name: 'Pinned header' }),
+      node('RECTANGLE', 4, frame, 'b', { guid: scrolling, name: 'Scrolling content' })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const children = imported.document.pages[0].children[0].children;
+  assert.equal(children[0].fixedPositionWhenScrolling, true);
+  assert.equal(children[1].fixedPositionWhenScrolling, undefined);
+});
+
 test('imports multiple one-loop Figma vector regions as editable network faces', () => {
   const pageGuid = { sessionID: 93, localID: 1 };
   const first = [

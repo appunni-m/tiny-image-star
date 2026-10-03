@@ -35,6 +35,21 @@ test('frame overflow behavior defaults safely and persists across local document
   assert.throws(() => validateDocument(nonFrame), /Invalid frame overflow behavior/);
 });
 
+test('fixed scroll-position metadata validates and survives local document reload', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { overflowBehavior: 'vertical' });
+  const fixed = createNode('rectangle', { fixedPositionWhenScrolling: true });
+  addNode(document, frame);
+  addNode(document, fixed, { parentId: frame.id });
+  assert.equal(validateDocument(document), true);
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children[0].children[0].fixedPositionWhenScrolling, true);
+  assert.equal(validateDocument(restored), true);
+  const invalid = structuredClone(restored);
+  invalid.pages[0].children[0].children[0].fixedPositionWhenScrolling = 'yes';
+  assert.throws(() => validateDocument(invalid), /Invalid fixed scroll position/);
+});
+
 test('scrollable frames clip children while default clipping behavior is preserved', () => {
   const calls = [];
   const context = {
@@ -103,6 +118,34 @@ test('presentation hit testing follows scrolled children but keeps the frame vie
     'content outside the fixed scroll viewport cannot receive hits');
   assert.equal(hitTestPage(document.pages[0], { x: 30, y: 45 }, null, document)?.id, frame.id,
     'without presentation offsets existing document hit testing is unchanged');
+});
+
+test('fixed children stay in the viewport, paint above scrolling siblings, and remain hit-testable', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    id: 'fixed-scroll-frame', x: 10, y: 20, width: 100, height: 100,
+    clip: false, overflowBehavior: 'vertical'
+  });
+  const fixed = createNode('rectangle', {
+    id: 'fixed-header', x: 10, y: 10, width: 80, height: 30,
+    fixedPositionWhenScrolling: true
+  });
+  const scrolling = createNode('rectangle', { id: 'scrolling-layer', x: 10, y: 45, width: 80, height: 30 });
+  const lower = createNode('rectangle', { id: 'lower-content', x: 10, y: 110, width: 80, height: 20 });
+  addNode(document, frame);
+  addNode(document, fixed, { parentId: frame.id });
+  addNode(document, scrolling, { parentId: frame.id });
+  addNode(document, lower, { parentId: frame.id });
+  const offsets = new Map([[frame.id, { x: 0, y: 40 }]]);
+
+  assert.equal(hitTestPage(document.pages[0], { x: 25, y: 35 }, null, document, offsets)?.id, fixed.id,
+    'the fixed header stays at its original position and wins over overlapping scrolled content');
+  assert.equal(hitTestPage(document.pages[0], { x: 25, y: 95 }, null, document, offsets)?.id, lower.id,
+    'ordinary siblings still follow the frame scroll offset');
+  const path = scrollableFramePathAtPagePoint(document.pages[0], { x: 25, y: 35 }, null, document, offsets);
+  assert.deepEqual(path.map(entry => entry.frame.id), [frame.id],
+    'the fixed layer remains within its parent scroll viewport');
+  assert.deepEqual(path[0].local, { x: 15, y: 15 });
 });
 
 test('presentation hit testing keeps nested rounded clips aligned after an outer frame scrolls', () => {

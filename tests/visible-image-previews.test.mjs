@@ -57,6 +57,28 @@ test('visible preview collection includes unclipped overflow and accounts for pr
   assert.ok(withScroll.has(imagePreviewKey(scrolledImage.id)), 'presentation scroll offsets move descendants into the visible viewport');
 });
 
+test('fixed image previews stay resident while sibling images scroll away', () => {
+  const document = createDocument();
+  const scroller = createNode('frame', {
+    id: 'preview-fixed-scroller', x: 200, y: 0, width: 100, height: 100, overflowBehavior: 'vertical'
+  });
+  const fixed = createNode('image', {
+    id: 'preview-fixed-image', x: 10, y: 5, width: 25, height: 20,
+    assetId: 'asset-fixed', fixedPositionWhenScrolling: true
+  });
+  const scrolling = createNode('image', {
+    id: 'preview-scrolling-image', x: 10, y: 150, width: 25, height: 20, assetId: 'asset-scrolling'
+  });
+  addNode(document, scroller);
+  addNode(document, fixed, { parentId: scroller.id });
+  addNode(document, scrolling, { parentId: scroller.id });
+  const visible = collectVisibleImagePreviewKeys(document.pages[0], document, {
+    left: 205, right: 240, top: 0, bottom: 30
+  }, { presentationScrollOffsets: new Map([[scroller.id, { x: 0, y: 40 }]]) });
+  assert.ok(visible.has(imagePreviewKey(fixed.id)), 'fixed preview remains at its viewport position');
+  assert.ok(!visible.has(imagePreviewKey(scrolling.id)), 'ordinary preview moves out of this viewport');
+});
+
 test('visible preview collection respects clip polygons, resolved geometry, opacity, and legacy image fills', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Preview visibility');

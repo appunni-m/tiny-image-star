@@ -1,5 +1,6 @@
 import { findNode, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { IDENTITY_AFFINE, invertAffine, multiplyAffine, nodeToParentTransform, transformPoint } from './transform-geometry.js';
+import { isFixedPositionWhenScrolling } from './prototype-scroll-position.js';
 
 const scrollBehaviors = new Set(['vertical', 'horizontal', 'both']);
 const alignments = new Set(['nearest', 'start', 'center', 'end']);
@@ -23,9 +24,12 @@ function scrollOffset(offsets, frame) {
 /** Compose a node transform while accounting for already-applied ancestor scrolling. */
 function nodeMatrix(node, ancestors, offsets, omitScrollFrameId = null) {
   let matrix = IDENTITY_AFFINE;
-  for (const ancestor of ancestors) {
+  for (let index = 0; index < ancestors.length; index += 1) {
+    const ancestor = ancestors[index];
     matrix = multiplyAffine(matrix, nodeToParentTransform(ancestor));
-    if (ancestor.id === omitScrollFrameId || !scrollBehaviors.has(ancestor.overflowBehavior)) continue;
+    const nextChild = ancestors[index + 1] || node;
+    if (ancestor.id === omitScrollFrameId || !scrollBehaviors.has(ancestor.overflowBehavior)
+      || isFixedPositionWhenScrolling(nextChild, ancestor)) continue;
     const offset = scrollOffset(offsets, ancestor);
     if (offset.x || offset.y) matrix = multiplyAffine(matrix, translated(-offset.x, -offset.y));
   }
@@ -67,7 +71,7 @@ function frameScrollLimits(document, frame, frameAncestors) {
       }
     }
   };
-  visit(frame.children, []);
+  visit(frame.children.filter(child => !isFixedPositionWhenScrolling(child, frame)), []);
   const horizontal = frame.overflowBehavior === 'horizontal' || frame.overflowBehavior === 'both';
   const vertical = frame.overflowBehavior === 'vertical' || frame.overflowBehavior === 'both';
   return {
@@ -139,7 +143,8 @@ export function planPrototypeScrollTo(document, targetId, {
   const scrollAncestors = entry.parents
     .map((node, index) => ({ node: geometry(document, node), ancestors: entry.parents.slice(0, index), index }))
     .filter(({ node, index }) => node.type === 'frame' && scrollBehaviors.has(node.overflowBehavior)
-      && (minimumFrameIndex < 0 || index >= minimumFrameIndex))
+      && (minimumFrameIndex < 0 || index >= minimumFrameIndex)
+      && !isFixedPositionWhenScrolling(entry.parents[index + 1] || entry.node, node))
     .reverse();
 
   for (const { node: frame, ancestors } of scrollAncestors) {
