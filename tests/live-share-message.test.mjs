@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatLiveReplyMessage, formatLiveShareMessage, parseLiveReplyMessage, parseLiveShareMessage } from '../src/collaboration/share-message.js';
+import { createLiveInvitationLink } from '../src/collaboration/invitation-link.js';
 
 const invitation = 'https://appunni-m.github.io/tiny-image-star/#tisd1.invite_token';
 const code = `tisc1.${'a'.repeat(128)}`;
@@ -16,6 +17,11 @@ test('a single friendly invite message round-trips as one link and one short-liv
 test('the guest can paste the whole message or a standalone stable invitation link', () => {
   assert.deepEqual(parseLiveShareMessage(`Please join: ${invitation}.`), { invitation, sessionCode: '' });
   assert.deepEqual(parseLiveShareMessage(`tisd1.invite_token\n${code}`), { invitation: 'tisd1.invite_token', sessionCode: code });
+});
+
+test('a single owner URL carries the invitation and offer through the same paste parser', () => {
+  const link = createLiveInvitationLink('https://app.example/tiny-image-star/', 'tisd1.invite_token', code);
+  assert.deepEqual(parseLiveShareMessage(link), { invitation: link, sessionCode: code });
 });
 
 test('the owner can paste a whole phone-shared reply or the raw code', () => {

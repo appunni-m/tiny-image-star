@@ -45,13 +45,13 @@ test('folder permission recovery keeps File navigation available and canvas edit
   assert.match(implementation, /\$\(['"]\.workspace['"]\)\.inert\s*=\s*access\.workspaceInert/);
 });
 
-test('workspace activation surfaces a saved recipe recovery before it can start a stable-link join', () => {
+test('workspace activation surfaces recipe recovery before starting either invite-link join', () => {
   const start = mainSource.indexOf('async function activateWorkspace(handle');
   const end = mainSource.indexOf('\nasync function chooseWorkspaceFolder', start);
   assert.ok(start >= 0 && end > start);
   const activation = mainSource.slice(start, end);
   assert.match(activation, /const pendingRecipeRecovery = await recipeRecoveryForDocument[\s\S]*?state\.pendingRecipeRecovery = pendingRecipeRecovery;[\s\S]*?renderRecipeRecoveryPrompt\(\)/);
-  assert.match(activation, /!state\.pendingRecipeRecovery\s*&&\s*location\.hash\.startsWith\('#tisd1\.'\)/);
+  assert.match(activation, /!state\.pendingRecipeRecovery\s*&&\s*isLiveJoinHash\(\)/);
 });
 
 test('verified folder activation closes onboarding before optional asset restoration can fail', () => {

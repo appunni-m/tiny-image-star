@@ -148,12 +148,14 @@ import { mountImageLibraryView } from './image-library-view.js';
 import { createImageLibraryThumbnailBlob } from './image-library-thumbnail.js';
 import { createHostSessionController, createGuestSessionController } from './collaboration/session-controller.js';
 import { decodeStableDesignInvite } from './collaboration/session-capsules.js';
+import { createLiveInvitationLink, LIVE_INVITATION_HASH_PREFIX, parseLiveInvitationLink } from './collaboration/invitation-link.js';
 import { formatLiveReplyMessage, formatLiveShareMessage, parseLiveReplyMessage, parseLiveShareMessage } from './collaboration/share-message.js';
 import { createLiveReplyHandoff, createLiveReplyLink, parseLiveReplyLink } from './collaboration/reply-link.js';
 import { initializeCollaborationQrHandoff } from './collaboration/qr-handoff-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
+const isLiveJoinHash = (hash = location.hash) => hash.startsWith('#tisd1.') || hash.startsWith(LIVE_INVITATION_HASH_PREFIX);
 const themePreferences = createThemePreferenceController();
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
@@ -1251,7 +1253,7 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     setSaveState('saved', savedStatusText());
     showToast(reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
     renderRecipeRecoveryPrompt();
-    if (!state.pendingRecipeRecovery && location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    if (!state.pendingRecipeRecovery && isLiveJoinHash()) startJoinFromStableLink();
     return true;
   } catch (error) {
     setSaveState('error', failedStatusText());
@@ -1332,7 +1334,7 @@ async function continueWithBrowserStorage() {
     setDocumentEditingBlocked(Boolean(state.pendingRecipeRecovery));
     showToast('Browser storage selected. Designs stay in this browser profile; choose a folder later from File.');
     if (state.pendingRecipeRecovery) renderRecipeRecoveryPrompt();
-    else if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    else if (isLiveJoinHash()) startJoinFromStableLink();
     return true;
   } catch (error) {
     state.workspaceOnboardingRequired = true;
@@ -12365,7 +12367,7 @@ async function keepInterruptedRecipeChanges() {
     clearRecipeRecoveryExpiryTimer();
     $('#recipe-recovery-dialog').close();
     setDocumentEditingBlocked(false);
-    if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    if (isLiveJoinHash()) startJoinFromStableLink();
     return true;
   } catch (error) {
     $('#recipe-recovery-status').textContent = error.message || 'Could not take over and clear the recovery record. Your saved edits are unchanged; try again.';
@@ -12386,7 +12388,7 @@ async function keepInterruptedRecipeChanges() {
       state.pendingRecipeRecovery = null;
       $('#recipe-recovery-dialog').close();
       setDocumentEditingBlocked(false);
-      if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+      if (isLiveJoinHash()) startJoinFromStableLink();
       return true;
     }
     state.pendingRecipeRecovery = current;
@@ -12438,7 +12440,7 @@ async function resumeInterruptedRecipeSafely() {
     clearRecipeRecoveryExpiryTimer();
     $('#recipe-recovery-dialog').close();
     setDocumentEditingBlocked(false);
-    if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    if (isLiveJoinHash()) startJoinFromStableLink();
     return true;
   } catch (error) {
     $('#recipe-recovery-status').textContent = error.message || 'Could not resume the saved recipe. Your saved edits remain available.';
@@ -14022,6 +14024,31 @@ function liveHostStatusCopy(status) {
     diverged: 'Your guest’s changes were saved as a separate local copy.'
   }[status] || `Live session: ${status}.`;
 }
+function setLiveHostInviteFields(controller) {
+  const stableUrl = new URL(location.href);
+  stableUrl.hash = controller.invitation;
+  const baseUrl = new URL(location.href);
+  baseUrl.hash = '';
+  $('#live-invite-value').value = stableUrl.href;
+  $('#live-offer-value').value = controller.offerCapsule;
+  $('#live-share-message-value').value = formatLiveShareMessage(stableUrl.href, controller.offerCapsule);
+  const urlWrap = $('#live-invite-url-wrap');
+  const shareButton = $('#live-share-capsules');
+  try {
+    $('#live-invite-share-url').value = createLiveInvitationLink(baseUrl.href, controller.invitation, controller.offerCapsule);
+    urlWrap.hidden = false;
+    $('#live-invite-size-note').hidden = true;
+    shareButton.textContent = 'Share link';
+    return true;
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    $('#live-invite-share-url').value = '';
+    urlWrap.hidden = true;
+    $('#live-invite-size-note').hidden = false;
+    shareButton.textContent = 'Share invite details';
+    return false;
+  }
+}
 function renderLiveHostPeers(session) {
   const list = $('#live-peer-list');
   if (!list) return;
@@ -14045,11 +14072,7 @@ function renderLiveHostPeers(session) {
         select.addEventListener('click', () => {
           if (session.currentHostPeer) session.currentHostPeer.answerDraft = $('#live-answer-value').value;
           session.currentHostPeer = peer;
-          const link = new URL(location.href);
-          link.hash = peer.controller.invitation;
-          $('#live-invite-value').value = link.toString();
-          $('#live-offer-value').value = peer.controller.offerCapsule;
-          $('#live-share-message-value').value = formatLiveShareMessage(link.toString(), peer.controller.offerCapsule);
+          setLiveHostInviteFields(peer.controller);
           $('#live-answer-value').value = peer.answerDraft || '';
           $('#live-accept-answer').hidden = false;
           $('#live-share-capsules').hidden = false;
@@ -14274,6 +14297,9 @@ function invitationFromText(value) {
     let url;
     try { url = new URL(text); } catch { throw new Error('The invitation link is invalid.'); }
     if (!url.hash) throw new Error('This link has no design invitation fragment.');
+    if (url.hash.startsWith(LIVE_INVITATION_HASH_PREFIX)) {
+      return decodeStableDesignInvite(parseLiveInvitationLink(url.href).invitation);
+    }
     return decodeStableDesignInvite(url.hash);
   }
   return decodeStableDesignInvite(text);
@@ -14288,26 +14314,30 @@ async function copyLiveField(fieldId) {
     field.focus(); field.select();
     showToast('The text is selected. Copy it using your device’s copy command.');
   }
-  if (fieldId === 'live-share-message-value') revealLiveHostReplyStep('Invite copied. Keep this tab open for the reply link.');
+  if (fieldId === 'live-share-message-value' || fieldId === 'live-invite-share-url') revealLiveHostReplyStep('Invite copied. Keep this tab open for the reply link.');
 }
 async function shareLiveCapsules() {
-  const text = formatLiveShareMessage($('#live-invite-value').value, $('#live-offer-value').value);
-  $('#live-share-message-value').value = text;
+  const url = $('#live-invite-share-url').value.trim();
+  const text = url
+    ? 'Open this link to join my Tiny Image Star design. Keep the page open, then send me the reply link it gives you.'
+    : $('#live-share-message-value').value.trim();
+  if (!url && !text) { showToast('Create a fresh invite first.'); return; }
   if (typeof navigator.share === 'function') {
     try {
-      await navigator.share({ title: 'Tiny Image Star live design', text });
+      await navigator.share({ title: 'Tiny Image Star design invite', text, ...(url ? { url } : {}) });
       revealLiveHostReplyStep();
       return;
     }
     catch (error) { if (error?.name === 'AbortError') return; }
   }
   try {
-    await navigator.clipboard.writeText(text);
-    showToast('Invite copied. Send the message to your guest.');
+    await navigator.clipboard.writeText(url || text);
+    showToast(url ? 'Invite link copied. Send it to your guest.' : 'Full invite details copied. Send them to your guest.');
   } catch {
-    $('#live-share-message-value').focus();
-    $('#live-share-message-value').select();
-    showToast('The invite is selected. Copy and send the whole message.');
+    const field = url ? $('#live-invite-share-url') : $('#live-share-message-value');
+    field.focus();
+    field.select();
+    showToast(url ? 'The invite link is selected. Copy and send it to your guest.' : 'The full invite is selected. Copy and send it to your guest.');
   }
   revealLiveHostReplyStep();
 }
@@ -14398,18 +14428,19 @@ async function startLiveHost() {
     $('#live-host-reply-step').hidden = true;
     $('#live-add-guest').hidden = false;
     $('#live-accept-answer').hidden = false;
-    const link = new URL(location.href);
-    link.hash = controller.invitation;
-    $('#live-invite-value').value = link.toString();
-    $('#live-offer-value').value = controller.offerCapsule;
-    $('#live-share-message-value').value = formatLiveShareMessage(link.toString(), controller.offerCapsule);
+    setLiveHostInviteFields(controller);
     $('#live-share-capsules').hidden = false;
     $('#live-stop-host').hidden = false;
     refreshLiveHostRoomUi(session);
     liveStatus('host', liveHostStatusCopy('waiting-answer'));
     syncLiveViewDock();
   } catch (error) {
-    if (state.liveCollaboration?.role === 'host') state.liveCollaboration = null;
+    const failedSession = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
+    if (failedSession?.controller) {
+      try { await failedSession.controller.revoke(); }
+      catch { failedSession.controller.close?.(); }
+    }
+    if (failedSession) state.liveCollaboration = null;
     setLiveEditorBlocked(false);
     $('#live-host-start').hidden = false;
     $('#live-start-host').hidden = false;
@@ -14450,11 +14481,7 @@ async function addLiveHostGuest() {
       onSnapshot: () => {}
     });
     peer.controller = controller;
-    const link = new URL(location.href);
-    link.hash = controller.invitation;
-    $('#live-invite-value').value = link.toString();
-    $('#live-offer-value').value = controller.offerCapsule;
-    $('#live-share-message-value').value = formatLiveShareMessage(link.toString(), controller.offerCapsule);
+    setLiveHostInviteFields(controller);
     $('#live-answer-value').value = '';
     $('#live-accept-answer').hidden = false;
     $('#live-share-capsules').hidden = false;
@@ -14462,6 +14489,8 @@ async function addLiveHostGuest() {
     liveStatus('host', `Invite for ${peer.label} ready. Send it and keep this tab open for their reply link.`);
     renderLiveHostPeers(session);
   } catch (error) {
+    peer.controller?.close();
+    peer.controller = null;
     peer.status = 'failed';
     refreshLiveHostRoomUi(session);
     showToast(error.message || 'Could not prepare another invite.');
@@ -14632,7 +14661,7 @@ async function startLiveGuest() {
     const offerCapsule = pasted.sessionCode || $('#live-join-offer').value.trim();
     if (!inviteText) throw new Error('Paste the invite message from the owner, or scan their invite QR code.');
     const invite = invitationFromText(inviteText);
-    if (!offerCapsule) throw new Error('This is only the design link. Ask the owner for the full invite message or scan their invite QR code.');
+    if (!offerCapsule) throw new Error('This link only identifies the design. Ask the owner for the one-step share link or scan their invite QR code.');
     await prepareLiveWorkspace();
     if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before joining a live session.');
     const localSeed = createDocument();
@@ -14808,15 +14837,39 @@ async function stopLiveGuest() {
 
 function startJoinFromStableLink() {
   const hash = location.hash;
-  if (!hash.startsWith('#tisd1.')) return false;
+  if (!isLiveJoinHash(hash)) return false;
   if (state.workspaceOnboardingRequired || state.workspacePermissionNeeded || state.pendingRecipeRecovery) return false;
   const invitationUrl = `${location.origin}${location.pathname}${location.search}${hash}`;
-  $('#live-join-invite').value = invitationUrl;
-  $('#live-join-message').value = '';
+  const combinedInvite = hash.startsWith(LIVE_INVITATION_HASH_PREFIX);
+  if (combinedInvite) {
+    try { parseLiveInvitationLink(invitationUrl); }
+    catch (error) {
+      $('#live-join-message').value = '';
+      $('#live-join-invite').value = '';
+      $('#live-guest-join-step').hidden = false;
+      history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+      openLiveDialog('guest');
+      liveStatus('guest', error.message || 'This invite link is incomplete. Ask the owner for a fresh link.');
+      return true;
+    }
+    $('#live-join-invite').value = '';
+    $('#live-join-offer').value = '';
+    $('#live-join-message').value = invitationUrl;
+  } else {
+    $('#live-join-invite').value = invitationUrl;
+    $('#live-join-message').value = '';
+  }
   $('#live-guest-join-step').hidden = false;
   history.replaceState(history.state, '', `${location.pathname}${location.search}`);
   openLiveDialog('guest');
-  liveStatus('guest', 'This is part of the invite. Paste the owner’s full message or scan their QR code to join.');
+  if (combinedInvite && state.workspace) {
+    liveStatus('guest', 'Invite opened. Connecting to the owner…');
+    void startLiveGuest();
+  } else if (combinedInvite) {
+    liveStatus('guest', 'Invite ready. Choose where to save your local copy, then tap Join design.');
+  } else {
+    liveStatus('guest', 'This is the design link. Ask the owner for their one-step invite link to join.');
+  }
   return true;
 }
 function setLiveReplyLinkStatus(message, isError = false) {
@@ -20038,7 +20091,6 @@ function initEvents() {
       if (!session?.currentHostPeer?.controller && !session?.controller) throw new Error('Create an invite before scanning a reply.');
       $('#live-answer-value').value = answer;
       $('#live-host-reply-step').hidden = false;
-      $('#live-manual-answer-options').open = true;
       if (session.currentHostPeer) session.currentHostPeer.answerDraft = answer;
       liveStatus('host', 'Reply scanned. Tap Connect.');
       showToast('Reply scanned. Tap Connect.');
@@ -20068,6 +20120,7 @@ function initEvents() {
         $('#live-add-guest').hidden = true;
         $('#live-stop-host').hidden = true;
         $('#live-answer-value').value = '';
+        $('#live-invite-share-url').value = '';
         $('#live-invite-value').value = '';
         $('#live-offer-value').value = '';
         $('#live-share-message-value').value = '';
@@ -20104,11 +20157,25 @@ function initEvents() {
   $('#live-copy-answer').addEventListener('click', () => { void shareLiveAnswer(); });
   $('#live-accept-answer').addEventListener('click', async () => {
     const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
-    const peer = session?.currentHostPeer || null;
-    const controller = peer?.controller || session?.controller || null;
+    let peer = session?.currentHostPeer || null;
+    let controller = peer?.controller || session?.controller || null;
     if (!controller) { showToast('Create an invite before connecting a reply.'); return; }
     let answer;
-    try { answer = parseLiveReplyMessage($('#live-answer-value').value); }
+    try {
+      const replyText = $('#live-answer-value').value;
+      const replyUrl = replyText.match(/https?:\/\/[^\s<>"']+/iu)?.[0]?.replace(/[),.;!?]+$/gu, '');
+      if (replyUrl && new URL(replyUrl).hash.startsWith('#tisreply1.')) {
+        const reply = parseLiveReplyLink(replyUrl);
+        peer = (session.peerSessions || []).find(candidate => candidate.controller?.sessionId === reply.sessionId) || null;
+        controller = peer?.controller || (session.controller?.sessionId === reply.sessionId ? session.controller : null);
+        if (!controller) throw new Error('This reply link belongs to a different or expired invite. Select the matching guest or ask them for a fresh reply link.');
+        if (peer) session.currentHostPeer = peer;
+        answer = reply.answerCapsule;
+        renderLiveHostPeers(session);
+      } else {
+        answer = parseLiveReplyMessage(replyText);
+      }
+    }
     catch (error) {
       liveStatus('host', error.message || 'This reply could not be read.');
       showToast(error.message || 'This reply could not be read.');
@@ -21677,7 +21744,7 @@ async function boot() {
   document.documentElement.dataset.appReady = 'true';
   if (location.hash.startsWith('#tisreply1.')) await startLiveReplyFromLink();
   else if (!state.workspaceOnboardingRequired && !state.pendingRecipeRecovery && !state.workspacePermissionNeeded
-    && location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    && isLiveJoinHash()) startJoinFromStableLink();
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => {

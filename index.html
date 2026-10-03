@@ -310,20 +310,21 @@
             <div id="live-host-active" hidden>
               <div class="live-share-step" id="live-host-invite-step">
                 <span class="live-step-label">1 · Send your invite</span>
-                <p class="live-collaboration-note">Send one invite message. Keep this tab open; open the guest’s reply link in a new tab here to connect automatically.</p>
-                <div class="live-action-row"><button class="primary-button" id="live-share-capsules" type="button" hidden>Share invite</button></div>
+                <p class="live-collaboration-note">Tiny Image Star has no sharing server. Send this one link; they open it, save a local copy, then send you a reply link. Keep this tab open.</p>
+                <div id="live-invite-url-wrap">
+                  <label class="field-label" for="live-invite-share-url">Your share link</label>
+                  <textarea class="text-field live-capsule-field live-share-url" id="live-invite-share-url" readonly spellcheck="false" aria-label="One link to share this design"></textarea>
+                  <button class="secondary-button live-copy-button" id="live-copy-invite-link" type="button" data-copy-field="live-invite-share-url">Copy link</button>
+                </div>
+                <p class="live-collaboration-note" id="live-invite-size-note" hidden>This connection needs a longer invite than one link can safely carry. Use Share invite details and send the full message instead.</p>
+                <div class="live-action-row"><button class="primary-button" id="live-share-capsules" type="button" hidden>Share link</button></div>
               </div>
               <div class="live-share-step" id="live-host-reply-step" hidden>
-                <span class="live-step-label">2 · Waiting for their link</span>
-                <p class="live-collaboration-note">Keep this tab open. Open the guest’s reply link in a new tab in this browser; Tiny Image Star verifies it and connects automatically.</p>
-                <details class="live-advanced" id="live-manual-answer-options">
-                  <summary>Manual reply code</summary>
-                  <div class="live-advanced-content">
-                    <label class="field-label" for="live-answer-value">Paste their one-time reply code</label>
-                    <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste their reply here" aria-label="Reply from the other person"></textarea>
-                    <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect</button></div>
-                  </div>
-                </details>
+                <span class="live-step-label">2 · Paste their reply link</span>
+                <p class="live-collaboration-note">When they send their reply link back, paste it here and connect. Opening that link in a new tab on this same browser can also connect automatically.</p>
+                <label class="field-label" for="live-answer-value">Guest reply link or code</label>
+                <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste the guest’s reply link here" aria-label="Guest reply link or one-time code"></textarea>
+                <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button">Connect guest</button></div>
               </div>
               <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
               <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
@@ -349,7 +350,7 @@
           </section>
           <section id="live-guest-panel" hidden>
             <div id="live-guest-join-step">
-              <p class="live-collaboration-note">Paste the full invite message from the owner, or scan the QR code on their screen.</p>
+              <p class="live-collaboration-note">Open the owner’s share link to join. If you were sent the separate invite details, paste them here or scan the QR code.</p>
               <label class="field-label" for="live-join-message">Invite message</label>
               <textarea class="text-field live-capsule-field live-join-message" id="live-join-message" spellcheck="false" autocomplete="off" placeholder="Paste the whole invite message here"></textarea>
               <div class="live-action-row live-join-actions" id="live-join-actions"><button class="primary-button" id="live-join-session" type="button">Join design</button></div>
@@ -366,7 +367,7 @@
             </div>
             <div id="live-guest-reply" class="live-share-step" hidden>
               <span class="live-step-label">2 · Share this link to complete the shared context</span>
-              <p class="live-collaboration-note">Send this URL to the design owner. They should open it in a new tab in the browser where they started sharing. Keep this page open until they’re connected.</p>
+              <p class="live-collaboration-note">Send this URL back to the owner. They can paste it into the sharing panel, or open it in a new tab in this same browser to connect automatically. Keep this page open until they’re connected.</p>
               <label class="field-label" for="live-guest-reply-link">Your reply link</label>
               <textarea class="text-field live-capsule-field" id="live-guest-reply-link" readonly spellcheck="false" aria-label="Your one-time reply link"></textarea>
               <div class="live-action-row"><button class="primary-button live-copy-button" id="live-copy-answer" type="button" hidden>Share reply link</button></div>

@@ -1010,6 +1010,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .live-join-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: 10px 0 14px; }
 .live-join-actions > button { width: 100%; }
 .live-capsule-field { display: block; width: 100%; min-height: 66px; margin: 6px 0 8px; resize: vertical; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.live-share-url { min-height: 76px; overflow-wrap: anywhere; word-break: break-all; }
 .live-join-message { min-height: 104px; font: 13px/1.5 var(--ui-font, system-ui, sans-serif); }
 .live-copy-button { min-height: 38px; margin: 0 0 14px; }
 .live-peer-list { display: grid; gap: 8px; margin: 4px 0 14px; }
