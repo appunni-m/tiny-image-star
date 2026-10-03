@@ -513,7 +513,7 @@ const frameScrollPositions = new Set(['scroll', 'fixed', 'sticky']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -4105,7 +4105,20 @@ export function validateDocument(document) {
       if (node.componentOverrides != null) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
-          if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string'))) || (overrides.__deletedChildren != null && (!Array.isArray(overrides.__deletedChildren) || overrides.__deletedChildren.length > 100_000 || overrides.__deletedChildren.some(id => typeof id !== 'string' || !id || id.length > 160) || new Set(overrides.__deletedChildren).size !== overrides.__deletedChildren.length))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          const invalidOverrideFields = overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+            ? Object.keys(overrides).filter(key => !componentOverrideProperties.has(key)) : [];
+          if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides)
+            || invalidOverrideFields.length
+            || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))
+            || (overrides.__deletedChildren != null && (!Array.isArray(overrides.__deletedChildren)
+              || overrides.__deletedChildren.length > 100_000
+              || overrides.__deletedChildren.some(id => typeof id !== 'string' || !id || id.length > 160)
+              || new Set(overrides.__deletedChildren).size !== overrides.__deletedChildren.length))) {
+            const reportedFields = invalidOverrideFields.slice(0, 5).map(key => `“${key.slice(0, 80)}”`);
+            const extraFields = invalidOverrideFields.length > reportedFields.length ? ', …' : '';
+            const detail = reportedFields.length ? `: unsupported field${reportedFields.length === 1 ? '' : 's'} ${reportedFields.join(', ')}${extraFields}` : '';
+            throw new TypeError(`Invalid component override on ${node.name || node.id}${detail}.`);
+          }
           const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
           const imageOverrideProperties = [
             'assetId', 'sourceWidth', 'sourceHeight', 'scalingFactor', 'inpaintStrokes', 'imageExpansion',
@@ -4151,6 +4164,14 @@ export function validateDocument(document) {
           if (Object.hasOwn(overrides, 'textTruncation')
             && (sourceNode?.type !== 'text' || !textTruncations.has(overrides.textTruncation))) {
             throw new TypeError(`Invalid component text truncation override on ${node.name || node.id}.`);
+          }
+          if (overrides.overflowBehavior != null
+            && (sourceNode?.type !== 'frame' || !frameOverflowBehaviors.has(overrides.overflowBehavior))) {
+            throw new TypeError(`Invalid component frame overflow override on ${node.name || node.id}.`);
+          }
+          if (overrides.maskMode != null
+            && (sourceNode?.type !== 'group' || sourceNode.mask !== true || !maskModes.has(overrides.maskMode))) {
+            throw new TypeError(`Invalid component mask mode override on ${node.name || node.id}.`);
           }
           if (Object.hasOwn(overrides, 'maxLines')
             && (sourceNode?.type !== 'text' || (overrides.maxLines !== null && (!Number.isSafeInteger(overrides.maxLines) || overrides.maxLines < 1)))) {

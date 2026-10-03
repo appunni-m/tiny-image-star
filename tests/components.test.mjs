@@ -495,7 +495,64 @@ test('document validation rejects identity and prototype-field component overrid
   const component = createComponent(document, main.id);
   const instance = createComponentInstance(document, component.id);
   instance.componentOverrides[main.id] = { id: 'replace-layer-identity' };
-  assert.throws(() => validateDocument(document), /Invalid component override/);
+  assert.throws(() => validateDocument(document), /Invalid component override.*unsupported field “id”/);
+});
+
+test('long-named image card instances persist frame overflow and image recipe overrides', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Image card', width: 320, height: 240 });
+  const image = createNode('image', {
+    name: '003-ChatGPT Image', fileName: '003-ChatGPT Image.png', assetId: 'image-source',
+    width: 280, height: 200, sourceWidth: 1400, sourceHeight: 1000
+  });
+  addNode(document, master);
+  addNode(document, image, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Image card');
+  const instance = createComponentInstance(document, component.id);
+  instance.name = '003-ChatGPT Image 2026-10-03 image instance';
+  instance.overflowBehavior = 'vertical';
+  instance.componentOverrides[master.id] = { overflowBehavior: 'vertical' };
+
+  const imageInstance = instance.children[0];
+  imageInstance.fit = 'tile';
+  imageInstance.scalingFactor = 1.25;
+  imageInstance.outputFormat = 'webp';
+  imageInstance.outputQuality = 84;
+  imageInstance.adjustments = { ...imageInstance.adjustments, brightness: 12 };
+  imageInstance.transforms = { ...imageInstance.transforms, rotation: 90 };
+  instance.componentOverrides[image.id] = {
+    fit: 'tile', scalingFactor: 1.25, outputFormat: 'webp', outputQuality: 84,
+    adjustments: imageInstance.adjustments, transforms: imageInstance.transforms
+  };
+
+  assert.equal(validateDocument(document), true);
+  syncAllComponentInstances(document);
+  assert.equal(instance.overflowBehavior, 'vertical', 'frame overflow remains an editable component override');
+  assert.deepEqual([instance.children[0].fit, instance.children[0].scalingFactor,
+    instance.children[0].outputFormat, instance.children[0].outputQuality], ['tile', 1.25, 'webp', 84]);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reopened), true);
+  assert.equal(findNode(reopened, instance.id).node.overflowBehavior, 'vertical');
+  assert.deepEqual([findNode(reopened, imageInstance.id).node.fit, findNode(reopened, imageInstance.id).node.outputFormat], ['tile', 'webp']);
+});
+
+test('masked group mode can be overridden on a component instance and rejects invalid mode targets', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Content' });
+  const mask = createNode('rectangle', { name: 'Mask' });
+  addNode(document, content); addNode(document, mask);
+  const group = createMaskGroup(document, [content.id, mask.id]);
+  const component = createComponent(document, group.id, 'Masked artwork');
+  const instance = createComponentInstance(document, component.id);
+  instance.maskMode = 'vector';
+  instance.componentOverrides[group.id] = { maskMode: 'vector' };
+
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reopened, instance.id).node.maskMode, 'vector');
+  const invalid = structuredClone(reopened);
+  findNode(invalid, instance.id).node.componentOverrides[group.id].maskMode = 'unsupported';
+  assert.throws(() => validateDocument(invalid), /Invalid component mask mode override/);
 });
 
 test('image recipe and processing metadata survives component override save and reload', () => {
