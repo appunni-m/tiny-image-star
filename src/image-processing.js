@@ -214,14 +214,16 @@ export function imagePreviewDimensions(width, height, maxDimension) {
 /**
  * A memory-bounded worker may retain an unedited, downsampled source for fast
  * slider previews. Accept that lower resolution only when it stays inside the
- * verified output bounds and preserves aspect ratio within one output pixel.
+ * verified output bounds and can be explained by one uniform scale, with at
+ * most one pixel of integer-rounding error on either axis.
  */
 export function imagePreviewResolutionMatches(actualWidth, actualHeight, expectedWidth, expectedHeight) {
   if (![actualWidth, actualHeight, expectedWidth, expectedHeight].every(Number.isSafeInteger)
     || actualWidth < 1 || actualHeight < 1 || expectedWidth < 1 || expectedHeight < 1
     || actualWidth > expectedWidth || actualHeight > expectedHeight) return false;
-  const ratioDelta = Math.abs(actualWidth * expectedHeight - actualHeight * expectedWidth);
-  return ratioDelta <= Math.max(expectedWidth, expectedHeight);
+  const scale = Math.min(actualWidth / expectedWidth, actualHeight / expectedHeight);
+  return Math.abs(actualWidth - expectedWidth * scale) <= 1
+    && Math.abs(actualHeight - expectedHeight * scale) <= 1;
 }
 
 /**

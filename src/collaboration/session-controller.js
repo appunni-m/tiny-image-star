@@ -1364,8 +1364,21 @@ export async function createGuestSessionController({
         return proposal;
       });
       lastProposedSnapshot = targetSnapshot;
-      for (const proposal of accepted) {
-        sendMessage(channel, { ...context(), kind: 'OPERATION', operation: proposal }, 'guest-to-host');
+      try {
+        for (const proposal of accepted) {
+          sendMessage(channel, { ...context(), kind: 'OPERATION', operation: proposal }, 'guest-to-host');
+        }
+      } catch (error) {
+        // Once a proposal has been staged, a synchronous DataChannel send
+        // failure can leave an unknown prefix of the operation plan in flight.
+        // Stop editing and persist the full local checkpoint as a fork instead
+        // of leaving the replica appearing connected with stranded operations.
+        void freezeWithFork({
+          type: 'connection-failed',
+          reason: 'proposal-send-failed',
+          message: error?.message || 'The live connection could not send the edit.'
+        });
+        throw error;
       }
       emit('pending');
       return accepted.at(-1).opId;

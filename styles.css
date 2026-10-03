@@ -2834,6 +2834,12 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .page-row-menu { flex-basis: 44px; }
   .page-row-menu > summary { width: 44px; min-width: 44px; height: 44px; }
   .bottom-toolbar .tool-button { width: 44px; min-width: 44px; height: 44px; flex-basis: 44px; }
+  /* Shape Builder has its own temporary action bar. Lift the canvas tools
+     above it on phones so both bars clear the home-indicator area. */
+  #shape-builder-bar { bottom: max(8px, env(safe-area-inset-bottom)); }
+  #canvas-region:has(#shape-builder-bar:not([hidden])) > #bottom-toolbar {
+    bottom: calc(116px + max(env(safe-area-inset-bottom), 8px));
+  }
 }
 @media (max-width: 820px) and (max-height: 520px) {
   .bulk-bar { bottom: calc(66px + max(env(safe-area-inset-bottom), 8px)); }

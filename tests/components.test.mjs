@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addNode, canCreateMaskGroup, canGroupLayers, canUngroupLayers, combineBoolean, createComponent, createComponentInstance, createComponentSet, createDocument, createMaskGroup, createNode, detachComponentInstance,
-  canSwapComponentTo, createComponentProperty, duplicateNode, findNode, moveNode, removeNode, reorderNode, releaseMaskGroup, separateBoolean, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant, ungroupLayers, groupLayers, updateNode,
+  canSwapComponentTo, createComponentProperty, duplicateNode, findNode, moveNode, removeNode, reorderNode, recordComponentChildOrder, releaseMaskGroup, separateBoolean, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant, ungroupLayers, groupLayers, updateNode,
   resetComponentSlotContent, setComponentNestedInstanceExposure, setComponentNestedInstanceExposures, setComponentSlotContent, syncAllComponentInstances, syncComponentInstances, validateDocument
 } from '../src/model.js';
 import { addPrototypeInteraction } from '../src/prototype.js';
@@ -444,7 +444,7 @@ test('local child ordering and geometry overrides are restored after a master ed
   const instance = createComponentInstance(document, component.id);
   instance.children.reverse();
   instance.children[0].x = 72;
-  instance.componentOverrides[main.id] = { __childOrder: instance.children.map(child => child.componentSourceId) };
+  assert.equal(recordComponentChildOrder(document, instance.id), true);
   instance.componentOverrides[first.id] = { x: 72 };
   first.width = 150;
   syncComponentInstances(document, component.id);
@@ -453,6 +453,31 @@ test('local child ordering and geometry overrides are restored after a master ed
   assert.deepEqual(synced.children.map(child => child.componentSourceId), [second.id, first.id]);
   assert.equal(synced.children.find(child => child.componentSourceId === first.id).x, 72);
   assert.equal(synced.children.find(child => child.componentSourceId === first.id).width, 150);
+  assert.equal(validateDocument(document), true);
+});
+
+test('reordering custom component SLOT contents never writes missing source IDs to component overrides', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: '003-ChatGPT Image... image' });
+  const slot = createNode('frame', { name: 'Artwork' });
+  addNode(document, main);
+  addNode(document, slot, { parentId: main.id });
+  const component = createComponent(document, main.id);
+  const property = createComponentProperty(document, component.id, {
+    name: 'Artwork', type: 'SLOT', targetNodeId: slot.id
+  });
+  const instance = createComponentInstance(document, component.id);
+  setComponentSlotContent(document, instance.id, property.id, [
+    createNode('image', { name: '003-ChatGPT Image...' }),
+    createNode('rectangle', { name: 'Overlay' })
+  ]);
+  const target = instance.children.find(child => child.componentSourceId === slot.id);
+  const [image, overlay] = target.children;
+
+  assert.equal(reorderNode(document, overlay.id, 0), true);
+  assert.equal(recordComponentChildOrder(document, target.id), false);
+  assert.deepEqual(instance.componentPropertyValues[property.id], [overlay.id, image.id]);
+  assert.equal(Object.hasOwn(instance.componentOverrides || {}, slot.id), false);
   assert.equal(validateDocument(document), true);
 });
 

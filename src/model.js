@@ -1252,6 +1252,30 @@ export function reorderNode(document, nodeId, index, pageId = document.activePag
   return true;
 }
 
+/** Persist child order for a component instance, leaving SLOT order in its property value. */
+export function recordComponentChildOrder(document, nodeId, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry) return false;
+  const node = entry.node;
+  const instance = [...(entry.parents || []), node].reverse().find(candidate => candidate.isInstance);
+  if (!instance || !node.componentSourceId || !Array.isArray(node.children)) return false;
+
+  // SLOT content is not part of the published component tree. Its stable order
+  // lives in componentPropertyValues, which reorderNode already updates. Putting
+  // these ad-hoc layers in __childOrder would store undefined source IDs and
+  // make the whole design fail validation on save.
+  if (componentSlotMutationContext(document, entry)?.target === node) return false;
+
+  const sourceId = node.nestedComponentSourceId || node.componentSourceId;
+  const childSourceIds = node.children.map(child => child.componentSourceId);
+  if (childSourceIds.some(id => typeof id !== 'string' || !id)) return false;
+
+  instance.componentOverrides ||= {};
+  instance.componentOverrides[sourceId] ||= {};
+  instance.componentOverrides[sourceId].__childOrder = childSourceIds;
+  return true;
+}
+
 function visualBounds(node) {
   const centerX = node.x + node.width / 2;
   const centerY = node.y + node.height / 2;

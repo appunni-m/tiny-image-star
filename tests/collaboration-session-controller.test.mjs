@@ -851,6 +851,59 @@ test('guest stages and sends every operation in a multi-property edit with order
   controller.close();
 });
 
+test('guest freezes and saves the full local checkpoint when sending a multi-operation edit fails partway through', async () => {
+  const channel = new FakeChannel();
+  const initial = fakeDesign().document;
+  const layer = createNode('rectangle', { id: 'layer-send-failure', name: 'Before' });
+  addNode(initial, layer);
+  const savedForks = [];
+  let operationSends = 0;
+  const send = channel.send.bind(channel);
+  channel.send = data => {
+    if (typeof data === 'string') {
+      let message;
+      try { message = JSON.parse(data); } catch { /* Let the protocol encoder own malformed data errors. */ }
+      if (message?.kind === 'OPERATION' && ++operationSends === 2) {
+        throw new Error('DataChannel send queue is full.');
+      }
+    }
+    send(data);
+  };
+
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async fork => { savedForks.push(fork); return true; }
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({
+    v: 2, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a',
+    revision: 2, headHash: 'a'.repeat(64), snapshot: initial
+  });
+  await settle();
+
+  const changed = controller.snapshot;
+  findNode(changed, layer.id).node.name = 'After';
+  findNode(changed, layer.id).node.x = 24;
+  assert.throws(() => controller.proposeSnapshot(changed), /DataChannel send queue is full/);
+  await settle();
+
+  assert.equal(operationSends, 2);
+  assert.equal(channel.sent.map(raw => {
+    try { return JSON.parse(raw).kind; } catch { return null; }
+  }).filter(kind => kind === 'OPERATION').length, 1, 'the first operation may have been sent before backpressure surfaced');
+  assert.equal(controller.state, 'fork-saved');
+  assert.equal(savedForks.length, 1, 'the ambiguous partial send is preserved as one local recovery point');
+  assert.equal(savedForks[0].pendingOperations.length, 2, 'the recovery point retains the complete staged edit, including unsent operations');
+  assert.deepEqual(savedForks[0].pendingOperations.map(operation => operation.baseRevision), [2, 3]);
+  assert.deepEqual(savedForks[0].pendingOperations.map(operation => operation.value), ['After', 24]);
+  controller.close();
+});
+
 test('guest controller exposes a retry after the automatic local fork save initially fails', async () => {
   const channel = new FakeChannel();
   let attempts = 0;

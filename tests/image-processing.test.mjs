@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
 import * as pillow from '../wasm/pillow_rs_js.js';
-import { decodeOriginal, imagePreviewDimensions, renderImage, renderImageOutput } from '../src/image-processing.js';
+import { decodeOriginal, imagePreviewDimensions, imagePreviewResolutionMatches, renderImage, renderImageOutput } from '../src/image-processing.js';
 import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
 import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
@@ -125,6 +125,18 @@ test('preview dimension planning matches Pillow-RS thumbnail bounds including as
   assert.deepEqual(imagePreviewDimensions(384, 257, 512), { width: 384, height: 257 }, 'preview bounds never upscale small images');
   assert.throws(() => imagePreviewDimensions(0, 1, 10), /positive safe integers/);
   assert.throws(() => imagePreviewDimensions(1, 1, 0), /positive safe integer/);
+});
+
+test('preview resolution validation rejects aspect drift beyond one pixel at the fitted scale', () => {
+  assert.equal(imagePreviewResolutionMatches(2048, 1, 2048, 1), true);
+  assert.equal(imagePreviewResolutionMatches(999, 499, 1000, 500), true,
+    'independent integer rounding may shift the fitted width by one pixel');
+  assert.equal(imagePreviewResolutionMatches(3000, 2, 4000, 4), false,
+    'a tiny-axis panorama must not accept hundreds of pixels of width error when the short axis is scaled');
+  assert.equal(imagePreviewResolutionMatches(1000, 499, 1000, 500), false,
+    'the best uniform scale still differs by two pixels on the long axis');
+  assert.equal(imagePreviewResolutionMatches(1001, 500, 1000, 500), false,
+    'preview output cannot exceed its reserved dimensions');
 });
 
 test('bounded Pillow-RS previews scale blur after geometry while exports stay full resolution', async () => {

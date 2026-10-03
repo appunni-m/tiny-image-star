@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   addComponentVariantFromMaster, applyLayoutGuideStyle, copyLayoutGuide, pasteLayoutGuide, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayoutGuideStyle, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteLayoutGuideStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, detachLayoutGuideStyle, detachNodeTextPath, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, recordComponentChildOrder, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentNestedInstanceExposures, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -6838,12 +6838,7 @@ function onCanvasPointerUp(event) {
       const node = findNode(state.document, id)?.node;
       if (!node) continue;
       if (interaction.kind === 'reorder') {
-        const instanceRoot = componentInstanceRoot(id);
-        if (instanceRoot && node.componentSourceId) {
-          instanceRoot.componentOverrides ||= {};
-          instanceRoot.componentOverrides[node.componentSourceId] ||= {};
-          instanceRoot.componentOverrides[node.componentSourceId].__childOrder = node.children.map(child => child.componentSourceId);
-        }
+        recordComponentChildOrder(state.document, id);
       } else {
         const properties = interaction.kind === 'resize' || interaction.kind === 'group-resize' ? ['x', 'y', 'width', 'height']
           : interaction.kind === 'rotate' ? ['rotation']
