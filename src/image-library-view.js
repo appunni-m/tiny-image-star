@@ -109,14 +109,17 @@ export function renderImageLibraryMarkup(documentData, options = {}) {
   const rangeLabel = page.totalEntries
     ? `Showing ${page.start}–${page.end} of ${page.totalEntries} images`
     : (query.trim() ? 'No images match this search.' : 'No images in this library yet. Add images to keep reusable originals here.');
+  const statusLabel = options.message || (page.totalEntries
+    ? rangeLabel
+    : (query.trim() ? 'No search results' : 'No saved images'));
   return `<section class="image-library-view" data-image-library-view aria-label="Original image library">
     <header class="image-library-heading">
-      <div class="image-library-heading-copy"><strong>Image library</strong><small>Original files for this design</small></div>
-      <button type="button" class="image-library-add" data-image-library-action="add"${options.pending ? ' disabled' : ''}>＋ Add images</button>
+      <div class="image-library-heading-copy"><strong>Reusable images</strong><small>Original files for this design</small></div>
+      <button type="button" class="image-library-add" data-image-library-action="add"${options.pending ? ' disabled' : ''}>＋ Add sources</button>
     </header>
     <label class="image-library-search-label" for="image-library-search">Search images</label>
     <input id="image-library-search" class="image-library-search" type="search" data-image-library-search value="${escapeHtml(query)}" placeholder="Search by name, type or size" autocomplete="off" />
-    <p class="image-library-status" data-image-library-status aria-live="polite" aria-atomic="true">${escapeHtml(options.message || rangeLabel)}</p>
+    <p class="image-library-status" data-image-library-status aria-live="polite" aria-atomic="true">${escapeHtml(statusLabel)}</p>
     ${page.entries.length
       ? `<ul class="image-library-list" aria-label="Images in this design">${page.entries.map(entry => entryMarkup(entry, Boolean(options.pending))).join('')}</ul>`
       : `<p class="image-library-empty" data-image-library-empty>${escapeHtml(rangeLabel)}</p>`}

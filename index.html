@@ -49,26 +49,26 @@
             <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Draw on the canvas or place an image</span></div>
           </section>
           <section class="assets-section" id="assets-section" role="tabpanel" aria-labelledby="sidebar-tab-assets" tabindex="0" hidden>
-            <div class="section-heading"><span>Components</span></div>
-            <div id="components-list" class="components-list"></div>
-            <div class="section-heading local-component-library-heading"><span>Local component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
-            <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
-            <div class="section-heading"><span>Variables</span><div class="heading-actions"><button class="tiny-icon-button" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">↓</button><button class="tiny-icon-button" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">↑</button><button class="tiny-icon-button" id="add-variable-collection" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
-            <div class="image-properties-note token-interop-note">Token JSON stays on this device. Tiny Image Star files preserve all modes; other DTCG tools receive the default mode.</div>
-            <div id="variable-collections-list" class="variable-collections-list"></div>
-            <input id="design-token-file-input" type="file" accept="application/json,.json" hidden />
-            <div class="section-heading"><span>Color styles</span></div>
-            <div id="color-styles-list" class="color-styles-list"></div>
-            <div class="section-heading"><span>Text styles</span></div>
-            <div id="text-styles-list" class="text-styles-list"></div>
-            <div class="section-heading local-fonts-heading"><span>Local fonts</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
-            <div class="image-properties-note local-fonts-note">Font files stay on this device and travel with exported .flocal designs.</div>
-            <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
-            <div class="section-heading local-assets-heading"><span>Local images</span><button class="tiny-icon-button" id="place-image-assets" title="Place image">＋</button></div>
+            <div class="section-heading local-assets-heading" role="heading" aria-level="3"><span>Images</span><button class="asset-section-action asset-place-button" id="place-image-assets" type="button" aria-label="Add an image to this page from this device" title="Add to page">＋ Add to page</button></div>
             <div id="assets-list" class="assets-list">
               <div id="placed-image-assets" class="placed-image-assets" aria-label="Images used on this page"></div>
               <div id="image-library-root" class="image-library-root"></div>
             </div>
+            <div class="section-heading" role="heading" aria-level="3"><span>Components</span></div>
+            <div id="components-list" class="components-list"></div>
+            <div class="section-heading local-component-library-heading" role="heading" aria-level="3"><span>Component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
+            <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
+            <div class="section-heading" role="heading" aria-level="3"><span>Variables</span><div class="heading-actions"><button class="asset-section-action" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">Import</button><button class="asset-section-action" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">Export</button><button class="tiny-icon-button" id="add-variable-collection" type="button" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
+            <div class="image-properties-note token-interop-note">Stored on this device. Tiny Image Star files keep all modes; DTCG exports use the default mode.</div>
+            <div id="variable-collections-list" class="variable-collections-list"></div>
+            <input id="design-token-file-input" type="file" accept="application/json,.json" hidden />
+            <div class="section-heading" role="heading" aria-level="3"><span>Color styles</span></div>
+            <div id="color-styles-list" class="color-styles-list"></div>
+            <div class="section-heading" role="heading" aria-level="3"><span>Text styles</span></div>
+            <div id="text-styles-list" class="text-styles-list"></div>
+            <div class="section-heading local-fonts-heading" role="heading" aria-level="3"><span>Local fonts</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
+            <div class="image-properties-note local-fonts-note">Font files stay on this device and travel with exported .flocal designs.</div>
+            <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
             <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
           </section>
           <div class="sidebar-footer"><span class="device-icon" aria-hidden="true">◉</span><span id="storage-mode-label" aria-live="polite">Browser storage</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>

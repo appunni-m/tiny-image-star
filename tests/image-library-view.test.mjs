@@ -72,8 +72,14 @@ test('search and page markup is escaped and exposes accessible source actions', 
 });
 
 test('an empty library and an unmatched search have clear, distinct states', () => {
-  assert.match(renderImageLibraryMarkup({}), /No images in this library yet/u);
-  assert.match(renderImageLibraryMarkup({ imageLibrary: makeImages(1) }, { query: 'missing' }), /No images match this search/u);
+  const emptyLibrary = renderImageLibraryMarkup({});
+  assert.match(emptyLibrary, /No images in this library yet/u);
+  assert.match(emptyLibrary, /data-image-library-status[^>]*>No saved images/u);
+  assert.equal((emptyLibrary.match(/No images in this library yet/gu) || []).length, 1);
+
+  const unmatchedSearch = renderImageLibraryMarkup({ imageLibrary: makeImages(1) }, { query: 'missing' });
+  assert.match(unmatchedSearch, /No images match this search/u);
+  assert.match(unmatchedSearch, /data-image-library-status[^>]*>No search results/u);
 });
 
 test('mount delegates add, place and remove with detached manifest entries and supports refresh/destroy', async () => {
