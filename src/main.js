@@ -90,7 +90,7 @@ import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSessio
 import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
-import { isScrollableFrame, isStickyScrollFrame, scrollPositionForNode } from './prototype-scroll-position.js';
+import { fixedScrollLayerLabel, isScrollableFrame, isStickyScrollFrame, scrollPositionForNode } from './prototype-scroll-position.js';
 import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
@@ -1800,7 +1800,7 @@ function renderLayers() {
   const matchingSelf = node => !search || node.name.toLowerCase().includes(search);
   const matchingNode = node => matchingSelf(node) || (node.children || []).some(matchingNode);
   let firstVisibleId = null;
-  const addRows = (nodes, container, depth = 0, lockedParent = false) => {
+  const addRows = (nodes, container, depth = 0, lockedParent = false, parentFrame = null) => {
     const visibleNodes = nodes.map((node, index) => ({ node, index })).reverse().filter(({ node }) => matchingNode(node));
     for (const { node, index } of visibleNodes) {
       if (!matchingNode(node)) continue;
@@ -1832,8 +1832,9 @@ function renderLayers() {
       const depthMarker = `<span class="layer-depth-marker" aria-hidden="true">${depth + 1}</span>`;
       const reorderHandle = `<button type="button" class="layer-reorder-handle" data-layer-drag-handle tabindex="-1" aria-label="Reorder ${escapeHtml(node.name)}. Drag with touch or pen; use Alt+ArrowUp or Alt+ArrowDown with a keyboard." title="Drag to reorder"><span aria-hidden="true">⠿</span></button>`;
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
+      const positionLabel = fixedScrollLayerLabel(node, parentFrame);
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
-      row.innerHTML = `${depthMarker}${chevron}<span class="layer-icon" aria-hidden="true">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span>${reorderHandle}<button type="button" class="layer-order-control" data-action="layer-move-up" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" tabindex="-1" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
+      row.innerHTML = `${depthMarker}${chevron}<span class="layer-icon" aria-hidden="true">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span>${positionLabel ? `<span class="layer-position-badge" aria-label="${positionLabel} while scrolling">${positionLabel}</span>` : ''}${reorderHandle}<button type="button" class="layer-order-control" data-action="layer-move-up" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" tabindex="-1" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
       container.append(row);
       layerRowsById.set(node.id, row);
       if (node.children?.length) {
@@ -1842,7 +1843,7 @@ function renderLayers() {
         group.id = `layer-children-${encodeURIComponent(node.id)}`;
         group.hidden = effectivelyCollapsed;
         container.append(group);
-        if (!group.hidden) addRows(node.children, group, depth + 1, lockedInChain);
+        if (!group.hidden) addRows(node.children, group, depth + 1, lockedInChain, node);
       }
     }
   };

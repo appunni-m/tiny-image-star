@@ -21,6 +21,11 @@ export function isFixedPositionWhenScrolling(node, parentFrame) {
     && (!parentFrame.autoLayout || node.layoutPositioning === 'absolute');
 }
 
+/** Return the Layers-panel label for a child fixed to its scrolling frame. */
+export function fixedScrollLayerLabel(node, parentFrame) {
+  return isFixedPositionWhenScrolling(node, parentFrame) ? 'Fixed' : null;
+}
+
 /** Sticky positioning is available only in a vertical scroll container. */
 export function isStickyPositionWhenScrolling(node, parentFrame) {
   return scrollPositionForNode(node) === 'sticky'

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  fixedScrollLayerLabel,
   isFixedPositionWhenScrolling,
   isStickyPositionWhenScrolling,
   isScrollableFrame,
@@ -8,6 +9,21 @@ import {
   scrollPositionForNode,
   scrollOffsetForPresentationChild
 } from '../src/prototype-scroll-position.js';
+
+test('Layers labels fixed-position children only inside the scrolling frame that owns them', () => {
+  const frame = { type: 'frame', overflowBehavior: 'vertical' };
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'fixed' }, frame), 'Fixed');
+  assert.equal(fixedScrollLayerLabel({ fixedPositionWhenScrolling: true }, frame), 'Fixed',
+    'legacy fixed flags receive the same layer label');
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'scroll', fixedPositionWhenScrolling: true }, frame), null,
+    'an explicit Scroll value takes precedence over the legacy flag');
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'fixed' }, { ...frame, overflowBehavior: 'none' }), null);
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'fixed' }, { type: 'group', overflowBehavior: 'vertical' }), null);
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'fixed' }, { ...frame, autoLayout: { axis: 'vertical' } }), null,
+    'flow children of auto layout cannot be marked Fixed');
+  assert.equal(fixedScrollLayerLabel({ scrollPosition: 'fixed', layoutPositioning: 'absolute' }, { ...frame, autoLayout: { axis: 'vertical' } }), 'Fixed',
+    'absolutely positioned auto-layout children remain eligible');
+});
 
 test('fixed scroll positioning applies only to direct children of scrolling frames', () => {
   const frame = { type: 'frame', overflowBehavior: 'vertical' };

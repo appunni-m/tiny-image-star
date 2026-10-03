@@ -134,6 +134,19 @@ test('scroll-to leaves fixed targets visible and the Prototype inspector exposes
   assert.ok(section.includes("scrollFrame.autoLayout && node.layoutPositioning !== 'absolute'"));
 });
 
+test('the Layers panel identifies fixed children with their owning scroll frame', () => {
+  const start = editorSource.indexOf('function renderLayers()');
+  const end = editorSource.indexOf('function section(', start);
+  assert.ok(start >= 0 && end > start, 'the Layers panel must have a bounded renderer');
+  const layerTree = editorSource.slice(start, end);
+  assert.match(layerTree, /fixedScrollLayerLabel\(node, parentFrame\)/,
+    'the label must be based on the owning frame, not merely a legacy node flag');
+  assert.match(layerTree, /class="layer-position-badge"/,
+    'the fixed status must be visible beside the layer name');
+  assert.match(layerTree, /addRows\(node\.children, group, depth \+ 1, lockedInChain, node\)/,
+    'nested layer rows must receive their actual parent frame');
+});
+
 test('scroll-to recognizes direct and nested sticky targets at their current pinned positions', () => {
   const { document, viewport } = documentWithScrollFrame({ width: 200, height: 100 });
   const directSticky = createNode('rectangle', { y: 80, width: 30, height: 20, scrollPosition: 'sticky' });
