@@ -4,6 +4,13 @@ const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
 let coarsePointerGradientTargetChecked = false;
 function assert(value, message) { if (!value) throw new Error(message); }
+function assertInspectorFits(app, label) {
+  const panel = app.querySelector('#right-panel');
+  const content = app.querySelector('#inspector-content');
+  assert(panel && content, `${label}: the properties panel should be present`);
+  assert(panel.scrollWidth <= panel.clientWidth + 1, `${label}: the properties panel should not overflow horizontally`);
+  assert(content.scrollWidth <= content.clientWidth + 1, `${label}: inspector content should not overflow horizontally`);
+}
 function waitFor(test, label, timeout = 10000) {
   const start = performance.now();
   return new Promise((resolve, reject) => {
@@ -47,6 +54,12 @@ try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
   let app = frame.contentDocument;
   assert(app.title === 'Tiny Image Star', 'The editor should use Tiny Image Star as its public name.');
+  const onboarding = app.querySelector('#workspace-onboarding-dialog');
+  const browserFallback = app.querySelector('#workspace-onboarding-browser-fallback');
+  if (onboarding?.open && browserFallback && !browserFallback.hidden) {
+    click(browserFallback);
+    await waitFor(() => !onboarding.open, 'browser storage setup');
+  }
   const design = createDocument();
   const screen = createNode('frame', { name: 'Mobile screen', x: 30, y: 40, width: 350, height: 700, autoLayout: { axis: 'vertical', gap: 16, padding: 20 } });
   const button = createNode('rectangle', { name: 'Primary button', x: 18, y: 24, width: 180, height: 52, minWidth: 150, maxWidth: 240, minHeight: 44, maxHeight: 72, fill: '#1769aa', radius: 10, rotation: 3 });
@@ -59,6 +72,7 @@ try {
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('Local design opened')), 'design import');
 
   click(app.querySelector(`[data-layer-id="${label.id}"]`));
+  assertInspectorFits(app, 'text selection');
   const textFit = app.querySelector('[data-prop="textFit"]');
   assert(textFit && ['fixed', 'auto-height', 'auto-width'].every(value => [...textFit.options].some(option => option.value === value)), 'text resize modes should be available on the phone');
   assert(textFit.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the text resize control should fit inside the phone inspector');
@@ -121,6 +135,7 @@ try {
   restoreParagraphInput.value = '12'; restoreParagraphInput.dispatchEvent(new Event('input', { bubbles: true })); restoreParagraphInput.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'restore paragraph spacing');
   click(app.querySelector(`[data-layer-id="${button.id}"]`));
+  assertInspectorFits(app, 'shape selection');
   const limitFields = [...app.querySelectorAll('.size-limits-grid .size-limit-field')];
   assert(limitFields.length === 4 && limitFields.every(field => field.getBoundingClientRect().width >= 96), 'the four size-limit controls should remain readable in the phone inspector');
   const maxWidthInput = app.querySelector('[data-prop="maxWidth"]');

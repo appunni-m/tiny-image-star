@@ -440,6 +440,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   text-align: center;
 }
 .inspector-content { min-width: 0; flex: 1; min-height: 0; overflow: auto; padding: 0 0 12px; }
+.inspector-content > * { min-width: 0; max-width: 100%; }
 .comments-panel { display: grid; align-content: start; gap: 12px; padding: 12px; }
 .motion-panel { display: grid; align-content: start; }
 .motion-section { display: grid; gap: 11px; padding: 14px 12px; border-bottom: 1px solid var(--border); }
@@ -520,11 +521,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .inspector-empty .empty-layer-icon { width: 40px; height: 40px; font-size: 18px; }
 .inspector-empty strong { color: #666; font-weight: 550; }
 .inspector-empty span { font-size: 10px; line-height: 1.5; }
-.property-section { border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
+.property-section { min-width: 0; border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
 .delete-layer-button { width: 100%; min-height: 38px; margin-top: 7px; padding: 0 12px; border: 1px solid #e5b8b4; border-radius: 6px; background: transparent; color: #a43a33; font-size: 11px; font-weight: 550; text-align: center; }
 .delete-layer-button:hover { border-color: #d78f88; background: #fff5f4; }
 .delete-layer-button:focus-visible { outline: 2px solid #d94b45; outline-offset: 2px; }
 .property-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; color: #444; font-size: 11px; font-weight: 550; }
+.property-heading > :first-child { min-width: 0; overflow-wrap: anywhere; }
 .property-heading .tiny-icon-button { margin: -5px -5px -5px 0; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .corner-radius-controls { display: grid; gap: 8px; margin-top: 8px; }
