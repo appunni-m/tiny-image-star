@@ -1,6 +1,6 @@
 import { findNode, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { IDENTITY_AFFINE, invertAffine, multiplyAffine, nodeToParentTransform, transformPoint } from './transform-geometry.js';
-import { isFixedPositionWhenScrolling } from './prototype-scroll-position.js';
+import { isFixedPositionWhenScrolling, isScrollableFrame, isStickyScrollFrame, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 
 const scrollBehaviors = new Set(['vertical', 'horizontal', 'both']);
 const alignments = new Set(['nearest', 'start', 'center', 'end']);
@@ -22,16 +22,31 @@ function scrollOffset(offsets, frame) {
 }
 
 /** Compose a node transform while accounting for already-applied ancestor scrolling. */
-function nodeMatrix(node, ancestors, offsets, omitScrollFrameId = null) {
+function nodeMatrix(document, node, ancestors, offsets, omitScrollFrameId = null) {
   let matrix = IDENTITY_AFFINE;
+  let stickyScrollContext = null;
   for (let index = 0; index < ancestors.length; index += 1) {
-    const ancestor = ancestors[index];
+    const ancestor = geometry(document, ancestors[index]);
+    const parentAncestors = ancestors.slice(0, index).map(parent => geometry(document, parent));
     matrix = multiplyAffine(matrix, nodeToParentTransform(ancestor));
     const nextChild = ancestors[index + 1] || node;
-    if (ancestor.id === omitScrollFrameId || !scrollBehaviors.has(ancestor.overflowBehavior)
-      || isFixedPositionWhenScrolling(nextChild, ancestor)) continue;
-    const offset = scrollOffset(offsets, ancestor);
-    if (offset.x || offset.y) matrix = multiplyAffine(matrix, translated(-offset.x, -offset.y));
+    const offset = isScrollableFrame(ancestor) ? scrollOffset(offsets, ancestor) : { x: 0, y: 0 };
+    if (isStickyScrollFrame(ancestor)) {
+      stickyScrollContext = {
+        frame: ancestor,
+        ancestors: parentAncestors,
+        offset: ancestor.id === omitScrollFrameId ? { x: 0, y: 0 } : offset
+      };
+    }
+    if (ancestor.id === omitScrollFrameId) continue;
+    const effectiveOffset = scrollOffsetForPresentationChild(
+      ancestor,
+      geometry(document, nextChild),
+      offset,
+      stickyScrollContext,
+      parentAncestors
+    );
+    if (effectiveOffset.x || effectiveOffset.y) matrix = multiplyAffine(matrix, translated(-effectiveOffset.x, -effectiveOffset.y));
   }
   return multiplyAffine(matrix, nodeToParentTransform(node));
 }
@@ -54,14 +69,14 @@ function transformedBounds(matrix, width, height) {
 /** Return the scroll range implied by visible content, stopping at nested viewports. */
 function frameScrollLimits(document, frame, frameAncestors) {
   const resolvedFrame = geometry(document, frame);
-  const frameMatrix = nodeMatrix(resolvedFrame, frameAncestors, new Map());
+  const frameMatrix = nodeMatrix(document, resolvedFrame, frameAncestors, new Map());
   const pageToFrame = invertAffine(frameMatrix);
   const bounds = { right: resolvedFrame.width, bottom: resolvedFrame.height };
   const visit = (nodes, parents) => {
     for (const node of nodes || []) {
       if (!getNodePropertyValue(document, node, 'visible')) continue;
       const resolved = geometry(document, node);
-      const matrix = nodeMatrix(resolved, [frame, ...parents], new Map());
+      const matrix = nodeMatrix(document, resolved, [frame, ...parents], new Map());
       const localMatrix = multiplyAffine(pageToFrame, matrix);
       const childBounds = transformedBounds(localMatrix, resolved.width, resolved.height);
       bounds.right = Math.max(bounds.right, childBounds.right);
@@ -148,14 +163,22 @@ export function planPrototypeScrollTo(document, targetId, {
     .reverse();
 
   for (const { node: frame, ancestors } of scrollAncestors) {
-    const frameMatrix = nodeMatrix(frame, ancestors, offsets);
-    const targetMatrix = nodeMatrix(target, entry.parents, offsets, frame.id);
+    const frameMatrix = nodeMatrix(document, frame, ancestors, offsets);
     const pageToFrame = invertAffine(frameMatrix);
+    const marginX = Math.min(margin, frame.width / 2);
+    const marginY = Math.min(margin, frame.height / 2);
+    const currentTargetMatrix = nodeMatrix(document, target, entry.parents, offsets);
+    const currentTargetInFrame = transformedBounds(multiplyAffine(pageToFrame, currentTargetMatrix), target.width, target.height);
+    const currentlyVisible = currentTargetInFrame.left >= marginX
+      && currentTargetInFrame.top >= marginY
+      && currentTargetInFrame.right <= frame.width - marginX
+      && currentTargetInFrame.bottom <= frame.height - marginY;
+    if (alignment === 'nearest' && currentlyVisible) continue;
+
+    const targetMatrix = nodeMatrix(document, target, entry.parents, offsets, frame.id);
     const targetInFrame = transformedBounds(multiplyAffine(pageToFrame, targetMatrix), target.width, target.height);
     const limits = frameScrollLimits(document, frame, ancestors);
     const current = scrollOffset(offsets, frame);
-    const marginX = Math.min(margin, frame.width / 2);
-    const marginY = Math.min(margin, frame.height / 2);
     const next = {
       x: frame.overflowBehavior === 'horizontal'
         || frame.overflowBehavior === 'both'

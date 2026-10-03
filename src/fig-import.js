@@ -1556,7 +1556,7 @@ const componentOverrideProperties = [
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
-  'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'points',
+  'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings',
   'outputFormat', 'outputQuality', 'layoutGuides'
 ];
@@ -1571,7 +1571,12 @@ function mapFixedPositionWhenScrolling(source, parentSource, overrides) {
   const sourceId = idOf(source);
   const fixedByParent = sourceId && Array.isArray(parentSource?.fixedChildren)
     && parentSource.fixedChildren.some(reference => sourceComponentGuid(reference) === sourceId);
-  if (source.fixedPositionWhenScrolling === true || fixedByParent) overrides.fixedPositionWhenScrolling = true;
+  const explicitPosition = ['scroll', 'fixed', 'sticky'].includes(source.scrollPosition)
+    ? source.scrollPosition : null;
+  if (explicitPosition) overrides.scrollPosition = explicitPosition;
+  else if (source.fixedPositionWhenScrolling === true || fixedByParent) overrides.scrollPosition = 'fixed';
+  if (explicitPosition) overrides.fixedPositionWhenScrolling = explicitPosition === 'fixed';
+  else if (source.fixedPositionWhenScrolling === true || fixedByParent) overrides.fixedPositionWhenScrolling = true;
 }
 
 function sameJsonValue(left, right) {

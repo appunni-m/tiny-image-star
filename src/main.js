@@ -90,7 +90,7 @@ import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSessio
 import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
-import { isScrollableFrame } from './prototype-scroll-position.js';
+import { isScrollableFrame, isStickyScrollFrame, scrollPositionForNode } from './prototype-scroll-position.js';
 import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
@@ -2999,16 +2999,35 @@ function frameOverflowSection(frame) {
   const selected = ['none', 'vertical', 'horizontal', 'both'].includes(frame.overflowBehavior) ? frame.overflowBehavior : 'none';
   return section('Overflow', `<select class="prop-input select-field" data-prop="overflowBehavior" aria-label="Frame overflow behavior"${frame.locked ? ' disabled' : ''}>${options.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`).join('')}</select><div class="image-properties-note">Presentation lets users drag inside this clipped frame to reveal content beyond its edges.</div>`);
 }
-function fixedScrollPositionSection(node, entry) {
-  const parent = entry?.parents?.at(-1);
-  if (!isScrollableFrame(parent)) return '';
+function scrollPositionSection(node, entry) {
+  const parents = entry?.parents || [];
+  const parent = parents.at(-1);
+  const scrollFrame = [...parents].reverse().find(isScrollableFrame);
+  const stickyFrame = [...parents].reverse().find(isStickyScrollFrame);
+  if (!scrollFrame && !stickyFrame) return '';
   const heading = '<div class="prototype-section-label">Scroll behavior</div>';
-  if (parent.autoLayout && node.layoutPositioning !== 'absolute') {
-    return heading + '<p class="prototype-hint">Set this layer to Absolute in its parent auto layout to fix it while scrolling.</p>';
-  }
-  const disabled = node.locked || parent.locked ? ' disabled' : '';
-  const checked = node.fixedPositionWhenScrolling ? ' checked' : '';
-  return heading + '<label class="prototype-scroll-position"><input class="prop-input" data-prop="fixedPositionWhenScrolling" type="checkbox" aria-label="Fix position when scrolling"' + checked + disabled + '/> Fix position when scrolling</label><p class="prototype-hint">Fixed layers stay in place and stack above content that scrolls.</p>';
+  const disabled = node.locked || (scrollFrame || stickyFrame)?.locked ? ' disabled' : '';
+  const position = scrollPositionForNode(node);
+  const fixedUnavailable = !scrollFrame || parent?.id !== scrollFrame.id
+    || (scrollFrame.autoLayout && node.layoutPositioning !== 'absolute');
+  const stickyUnavailable = !stickyFrame;
+  const options = [
+    ['scroll', 'Scroll with parent', false],
+    ['fixed', 'Fixed', fixedUnavailable],
+    ['sticky', 'Sticky', stickyUnavailable]
+  ].map(([value, label, unavailable]) => `<option value="${value}"${position === value ? ' selected' : ''}${unavailable ? ' disabled' : ''}>${label}</option>`).join('');
+  const hint = fixedUnavailable && position === 'fixed'
+    ? parent?.id !== scrollFrame?.id
+      ? '<p class="prototype-hint">Fixed positioning is available on direct children of a scroll frame.</p>'
+      : '<p class="prototype-hint">Set this layer to Absolute in its parent auto layout before fixing it while scrolling.</p>'
+    : stickyUnavailable && position === 'sticky'
+      ? '<p class="prototype-hint">Sticky is available in frames with vertical scrolling.</p>'
+      : position === 'fixed'
+        ? '<p class="prototype-hint">Fixed layers stay in place and stack above scrolling content.</p>'
+        : position === 'sticky'
+          ? '<p class="prototype-hint">Sticky layers pin at the top of the scroll frame and stay within their direct parent.</p>'
+          : '';
+  return heading + `<label class="property-label prototype-scroll-position">Position<select class="prop-input select-field" data-prop="scrollPosition" aria-label="Scroll position"${disabled}>${options}</select></label>${hint}`;
 }
 function inspectPanel() {
   const entries = selectedEntries();
@@ -3323,7 +3342,7 @@ function prototypeInspector() {
     : '';
   const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
   const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
-  const sourceLabel = node ? `${fixedScrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
+  const sourceLabel = node ? `${scrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
 
@@ -10449,6 +10468,11 @@ function updateInspectorInput(event) {
       if (value === 'absolute') node.layoutPositioning = 'absolute';
       else delete node.layoutPositioning;
     }
+    else if (prop === 'scrollPosition') {
+      node.scrollPosition = value;
+      // Preserve the fixed-only field for existing designs and older readers.
+      node.fixedPositionWhenScrolling = value === 'fixed';
+    }
     else if (variableProperty && instanceRoot) { delete node[variableProperty]; if (prop === 'fill') delete node.fillStyleId; if (prop === 'color') delete node.textStyleId; node[prop] = value; }
     else if (prop === 'fill' && node.fillVariableId) setColorVariableValue(state.document, node.fillVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.fillVariableId)?.collectionId, node));
     else if (prop === 'color' && node.textVariableId) setColorVariableValue(state.document, node.textVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.textVariableId)?.collectionId, node));
@@ -10567,6 +10591,7 @@ function updateInspectorInput(event) {
       const overrideProperty = fontFeatureMatch ? 'fontFeatures'
         : prop === 'closed' && state.selectedVectorPoint?.nodeId === node.id && (state.selectedVectorPoint.contourIndex || 0) > 0 ? 'subpaths' : prop;
       recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : overrideProperty);
+      if (prop === 'scrollPosition') recordComponentOverride(instanceRoot, node, 'fixedPositionWhenScrolling');
       if (prop === 'points' && node.vertexRadii) recordComponentOverride(instanceRoot, node, 'vertexRadii');
       if (prop === 'fillType' && value !== 'solid') {
         recordComponentOverride(instanceRoot, node, 'fillVariableId');

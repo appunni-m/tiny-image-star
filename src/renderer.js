@@ -13,7 +13,7 @@ import { applyStrokeStyle } from './stroke-style.js';
 import { strokeStackForNode } from './strokes.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
-import { isFixedPositionWhenScrolling, isScrollableFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
+import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode } from './image-preview-runtime.js';
@@ -905,6 +905,18 @@ export function applyPresentationScrollOffset(ctx, state, frame) {
   const offset = getPresentationScrollOffset(state, frame);
   if (offset.x || offset.y) ctx.translate(offset.x ? -offset.x : 0, offset.y ? -offset.y : 0);
   return offset;
+}
+
+function scrollContextForChildren(node, ancestors, offset, inherited) {
+  return isStickyScrollFrame(node) ? { frame: node, ancestors, offset } : inherited || null;
+}
+
+function renderOptionsForChildren(options, node, stickyScrollContext) {
+  return {
+    ...options,
+    presentationAncestors: [...(options.presentationAncestors || []), node],
+    stickyScrollContext
+  };
 }
 
 function clipsNodeContents(node) {
@@ -1814,13 +1826,22 @@ export class SceneRenderer {
     if (node.children?.length) {
       clipNodeContents(ctx, node, x, y, radius);
       const scrollOffset = applyPresentationScrollOffset(ctx, state, node);
+      const presentationAncestors = renderOptions.presentationAncestors || [];
+      const stickyScrollContext = scrollContextForChildren(node, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
+      const childRenderOptions = renderOptionsForChildren(renderOptions, node, stickyScrollContext);
       for (const child of presentationChildrenInPaintOrder(node)) {
-        if (isFixedPositionWhenScrolling(child, node) && (scrollOffset.x || scrollOffset.y)) {
+        const childGeometry = { ...child, ...getNodeGeometry(document, child) };
+        const effectiveOffset = scrollOffsetForPresentationChild(
+          node, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
+        );
+        const compensationX = scrollOffset.x - effectiveOffset.x;
+        const compensationY = scrollOffset.y - effectiveOffset.y;
+        if (compensationX || compensationY) {
           ctx.save();
-          ctx.translate(scrollOffset.x, scrollOffset.y);
-          this.drawNode(ctx, child, x, y, assets, draft, false, renderOptions);
+          ctx.translate(compensationX, compensationY);
+          this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
           ctx.restore();
-        } else this.drawNode(ctx, child, x, y, assets, draft, false, renderOptions);
+        } else this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
       }
     }
     if (node.type === 'frame' && !node.children.length && !draft && renderOptions.showEmptyFrameHint !== false) {
@@ -2356,13 +2377,22 @@ export class SceneRenderer {
       ctx.save();
       clipNodeContents(ctx, node, x, y, radius);
       const scrollOffset = applyPresentationScrollOffset(ctx, state, node);
+      const presentationAncestors = renderOptions.presentationAncestors || [];
+      const stickyScrollContext = scrollContextForChildren(node, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
+      const childRenderOptions = renderOptionsForChildren(renderOptions, node, stickyScrollContext);
       for (const child of presentationChildrenInPaintOrder(node)) {
-        if (isFixedPositionWhenScrolling(child, node) && (scrollOffset.x || scrollOffset.y)) {
+        const childGeometry = { ...child, ...getNodeGeometry(state.document, child) };
+        const effectiveOffset = scrollOffsetForPresentationChild(
+          node, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
+        );
+        const compensationX = scrollOffset.x - effectiveOffset.x;
+        const compensationY = scrollOffset.y - effectiveOffset.y;
+        if (compensationX || compensationY) {
           ctx.save();
-          ctx.translate(scrollOffset.x, scrollOffset.y);
-          this.drawNode(ctx, child, x, y, assets, false, false, renderOptions);
+          ctx.translate(compensationX, compensationY);
+          this.drawNode(ctx, child, x, y, assets, false, false, childRenderOptions);
           ctx.restore();
-        } else this.drawNode(ctx, child, x, y, assets, false, false, renderOptions);
+        } else this.drawNode(ctx, child, x, y, assets, false, false, childRenderOptions);
       }
       ctx.restore();
     }
@@ -3329,15 +3359,18 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
     };
     markPickPaths(page?.children || []);
   }
-  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }, parentScrollFrame = null) => {
+  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }, parentScrollFrame = null, stickyScrollContext = null, layoutAncestors = []) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
       const insideAncestorClips = pointInsideAncestorClips(point, ancestors, document);
       const isClippedPickTarget = clippedPickIds.has(node.id);
       if (!insideAncestorClips && !allowAnyClippedNodes && !clippedPickPathIds.has(node.id)) continue;
       const geometry = document ? getNodeGeometry(document, node) : node;
-      let resolvedNode = document ? { ...node, ...geometry } : node;
-      const childScrollOffset = scrollOffsetForPresentationChild(parentScrollFrame, node, parentScrollOffset);
+      const rawNode = document ? { ...node, ...geometry } : node;
+      let resolvedNode = rawNode;
+      const childScrollOffset = scrollOffsetForPresentationChild(
+        parentScrollFrame, rawNode, parentScrollOffset, stickyScrollContext, layoutAncestors.slice(0, -1)
+      );
       if (childScrollOffset.x || childScrollOffset.y) {
         resolvedNode = {
           ...resolvedNode,
@@ -3363,7 +3396,9 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
       if (contained && (insideAncestorClips || isClippedPickTarget || allowAnyClippedNodes)) hits.push(resolvedNode);
       if (node.type !== 'boolean') {
         const ownScrollOffset = getPresentationScrollOffset(scrollState, resolvedNode);
-        visit(presentationChildrenInPaintOrder(node), [...ancestors, resolvedNode], ownScrollOffset, node);
+        const childStickyContext = scrollContextForChildren(rawNode, layoutAncestors, ownScrollOffset, stickyScrollContext);
+        visit(presentationChildrenInPaintOrder(node), [...ancestors, resolvedNode], ownScrollOffset, rawNode,
+          childStickyContext, [...layoutAncestors, rawNode]);
       }
     }
   };
@@ -3376,13 +3411,16 @@ export function scrollableFramePathAtPagePoint(page, point, containsBoolean = nu
   const hit = hitTestPage(page, point, containsBoolean, document, presentationScrollOffsets, zoom);
   if (!hit) return [];
   const scrollState = { presentationScrollOffsets };
-  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }, parentScrollFrame = null) => {
+  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }, parentScrollFrame = null, stickyScrollContext = null, layoutAncestors = []) => {
     for (const node of nodes || []) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
       if (!pointInsideAncestorClips(point, ancestors, document)) continue;
       const geometry = document ? getNodeGeometry(document, node) : node;
-      let frame = document ? { ...node, ...geometry } : node;
-      const childScrollOffset = scrollOffsetForPresentationChild(parentScrollFrame, node, parentScrollOffset);
+      const rawNode = document ? { ...node, ...geometry } : node;
+      let frame = rawNode;
+      const childScrollOffset = scrollOffsetForPresentationChild(
+        parentScrollFrame, rawNode, parentScrollOffset, stickyScrollContext, layoutAncestors.slice(0, -1)
+      );
       if (childScrollOffset.x || childScrollOffset.y) {
         frame = {
           ...frame,
@@ -3394,7 +3432,10 @@ export function scrollableFramePathAtPagePoint(page, point, containsBoolean = nu
       let path = null;
       if (node.id === hit.id) path = [];
       else if (node.type !== 'boolean') {
-        path = visit(presentationChildrenInPaintOrder(node), [...ancestors, frame], getPresentationScrollOffset(scrollState, frame), node);
+        const ownScrollOffset = getPresentationScrollOffset(scrollState, frame);
+        const childStickyContext = scrollContextForChildren(rawNode, layoutAncestors, ownScrollOffset, stickyScrollContext);
+        path = visit(presentationChildrenInPaintOrder(node), [...ancestors, frame], ownScrollOffset, rawNode,
+          childStickyContext, [...layoutAncestors, rawNode]);
       }
       if (path) {
         if (isScrollableFrame(frame) && containsPointInClip(frame, point, ancestors, document)) {

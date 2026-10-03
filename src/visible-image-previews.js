@@ -2,7 +2,7 @@ import { fillStackForNode } from './fills.js';
 import { getNodeGeometry, getNodePropertyValue } from './model.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { nodeLocalToPage } from './transform-geometry.js';
-import { scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
+import { isStickyScrollFrame, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 
 const FRAME_OVERFLOW_BEHAVIORS = new Set(['none', 'vertical', 'horizontal', 'both']);
 
@@ -115,17 +115,19 @@ export function collectVisibleImagePreviewKeys(page, document, viewport, { prese
     { x: viewport.right, y: viewport.bottom },
     { x: viewport.left, y: viewport.bottom }
   ];
-  const visit = (nodes, ancestors = [], clipPolygons = [], parentScroll = { x: 0, y: 0 }, inheritedOpacity = 1, parentFrame = null) => {
+  const visit = (nodes, ancestors = [], clipPolygons = [], parentScroll = { x: 0, y: 0 }, inheritedOpacity = 1, parentFrame = null, stickyScrollContext = null, layoutAncestors = []) => {
     for (const node of nodes || []) {
       if (!getNodePropertyValue(document, node, 'visible')) continue;
       const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
       const effectiveOpacity = inheritedOpacity * (Number.isFinite(opacity) ? opacity : 1);
       if (effectiveOpacity <= 0) continue;
       const resolved = getNodeGeometry(document, node);
-      const childScroll = scrollOffsetForPresentationChild(parentFrame, node, parentScroll);
+      const resolvedNode = { ...node, ...resolved };
+      const childScroll = scrollOffsetForPresentationChild(
+        parentFrame, resolvedNode, parentScroll, stickyScrollContext, layoutAncestors.slice(0, -1)
+      );
       const geometry = {
-        ...node,
-        ...resolved,
+        ...resolvedNode,
         x: Number(resolved.x) - childScroll.x,
         y: Number(resolved.y) - childScroll.y
       };
@@ -135,13 +137,19 @@ export function collectVisibleImagePreviewKeys(page, document, viewport, { prese
         for (const key of previewKeys) visible.add(key);
       }
       const childClips = clipsChildren(node) ? [...clipPolygons, polygon] : clipPolygons;
+      const ownScroll = presentationScrollOffset(node, presentationScrollOffsets);
+      const childStickyContext = isStickyScrollFrame(resolvedNode)
+        ? { frame: resolvedNode, ancestors: layoutAncestors, offset: ownScroll }
+        : stickyScrollContext;
       visit(
         node.children,
         [...ancestors, geometry],
         childClips,
-        presentationScrollOffset(node, presentationScrollOffsets),
+        ownScroll,
         effectiveOpacity,
-        node
+        geometry,
+        childStickyContext,
+        [...layoutAncestors, resolvedNode]
       );
     }
   };

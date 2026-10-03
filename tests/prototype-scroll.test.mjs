@@ -113,7 +113,7 @@ test('scroll-to rejects stale targets, invalid alignment, and invalid current of
   assert.throws(() => planPrototypeScrollTo(document, target.id, { margin: -1 }), /non-negative/);
 });
 
-test('scroll-to leaves fixed targets visible and the Prototype inspector exposes fixed positioning', () => {
+test('scroll-to leaves fixed targets visible and the Prototype inspector exposes scroll positioning', () => {
   const { document, viewport } = documentWithScrollFrame();
   const fixed = createNode('rectangle', { fixedPositionWhenScrolling: true, y: 10, width: 30, height: 20 });
   const scrolling = createNode('rectangle', { y: 360, width: 30, height: 20 });
@@ -123,11 +123,32 @@ test('scroll-to leaves fixed targets visible and the Prototype inspector exposes
   assert.deepEqual(plan.updates, [], 'a fixed target is already visible and does not scroll its parent');
   assert.deepEqual(plan.offsets.get(viewport.id), { x: 0, y: 80 });
 
-  const start = editorSource.indexOf('function fixedScrollPositionSection');
+  const start = editorSource.indexOf('function scrollPositionSection');
   const end = editorSource.indexOf('function inspectPanel()', start);
-  assert.ok(start >= 0 && end > start, 'the Prototype inspector must render fixed-position controls');
+  assert.ok(start >= 0 && end > start, 'the Prototype inspector must render scroll-position controls');
   const section = editorSource.slice(start, end);
-  assert.ok(section.includes('isScrollableFrame(parent)'));
-  assert.ok(section.includes('data-prop="fixedPositionWhenScrolling"'));
-  assert.ok(section.includes("parent.autoLayout && node.layoutPositioning !== 'absolute'"));
+  assert.ok(section.includes('[...parents].reverse().find(isScrollableFrame)'));
+  assert.ok(section.includes('[...parents].reverse().find(isStickyScrollFrame)'));
+  assert.ok(section.includes('data-prop="scrollPosition"'));
+  assert.ok(section.includes("['sticky', 'Sticky', stickyUnavailable]"));
+  assert.ok(section.includes("scrollFrame.autoLayout && node.layoutPositioning !== 'absolute'"));
+});
+
+test('scroll-to recognizes direct and nested sticky targets at their current pinned positions', () => {
+  const { document, viewport } = documentWithScrollFrame({ width: 200, height: 100 });
+  const directSticky = createNode('rectangle', { y: 80, width: 30, height: 20, scrollPosition: 'sticky' });
+  const nestedParent = createNode('group', { x: 50, y: 30, width: 80, height: 120 });
+  const nestedSticky = createNode('rectangle', { x: 0, y: 40, width: 30, height: 20, scrollPosition: 'sticky' });
+  nestedParent.children.push(nestedSticky);
+  viewport.children.push(directSticky, nestedParent, createNode('rectangle', { y: 400, width: 20, height: 20 }));
+
+  const directPlan = planPrototypeScrollTo(document, directSticky.id, {
+    currentOffsets: new Map([[viewport.id, { x: 0, y: 180 }]])
+  });
+  assert.deepEqual(directPlan.updates, [], 'a directly pinned target is already visible at the viewport top');
+
+  const nestedPlan = planPrototypeScrollTo(document, nestedSticky.id, {
+    currentOffsets: new Map([[viewport.id, { x: 0, y: 90 }]])
+  });
+  assert.deepEqual(nestedPlan.updates, [], 'a nested sticky target is already visible within its direct parent bounds');
 });

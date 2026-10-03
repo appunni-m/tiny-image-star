@@ -83,6 +83,41 @@ test('remote live presence draws page-scoped cursor labels and selection outline
   assert.deepEqual(calls.filter(call => String(call).startsWith('label:')), ['label:Guest er-a']);
 });
 
+test('scene renderer carries sticky scroll context through nested groups', () => {
+  const document = createDocument();
+  const scroller = createNode('frame', {
+    x: 0, y: 0, width: 100, height: 100, overflowBehavior: 'vertical', fill: 'transparent', strokeWidth: 0
+  });
+  const parent = createNode('group', { x: 0, y: 30, width: 80, height: 120, fill: 'transparent', strokeWidth: 0 });
+  const sticky = createNode('rectangle', {
+    x: 0, y: 40, width: 40, height: 20, scrollPosition: 'sticky', fill: '#ff0000', strokeWidth: 0
+  });
+  parent.children.push(sticky);
+  scroller.children.push(parent);
+  addNode(document, scroller);
+  const state = {
+    document, assets: new Map(), previews: new Map(), previewAssetIds: new Map(), previewSignatures: new Map(),
+    imageStatus: new Map(), motionPreview: new Map(), selectedIds: [], zoom: 1,
+    imageCropMode: false, presenting: true, outlineMode: false,
+    presentationScrollOffsets: new Map([[scroller.id, { x: 0, y: 90 }]])
+  };
+  const calls = [];
+  const context = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      return (...args) => calls.push([property, ...args]);
+    },
+    set(target, property, value) { target[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+  renderer.drawNode(context, scroller, 0, 0, state.assets);
+
+  const translations = calls.filter(([method]) => method === 'translate').map(([, x, y]) => [x, y]);
+  assert.ok(translations.some(([x, y]) => x === 0 && y === -90), 'the scroll frame moves its content');
+  assert.ok(translations.some(([x, y]) => x === 0 && y === 20), 'the nested sticky child is compensated to the viewport top');
+});
+
 test('live smart-image rendering crops the original bitmap before fitting, rotating, and flipping', () => {
   const calls = [];
   const context = {

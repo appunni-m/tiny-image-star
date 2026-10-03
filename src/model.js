@@ -424,6 +424,7 @@ const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
 const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
+const frameScrollPositions = new Set(['scroll', 'fixed', 'sticky']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
@@ -435,7 +436,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -3832,6 +3833,9 @@ export function validateDocument(document) {
       }
       if (Object.hasOwn(node, 'fixedPositionWhenScrolling') && typeof node.fixedPositionWhenScrolling !== 'boolean') {
         throw new TypeError('Invalid fixed scroll position on layer ' + (node.name || node.id) + '.');
+      }
+      if (Object.hasOwn(node, 'scrollPosition') && !frameScrollPositions.has(node.scrollPosition)) {
+        throw new TypeError('Invalid scroll position on layer ' + (node.name || node.id) + '.');
       }
       const sizeLimits = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'];
       const hasSizeLimit = sizeLimits.some(property => node[property] != null);

@@ -50,6 +50,23 @@ test('fixed scroll-position metadata validates and survives local document reloa
   assert.throws(() => validateDocument(invalid), /Invalid fixed scroll position/);
 });
 
+test('scroll position enums validate and survive local document reload', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { overflowBehavior: 'vertical' });
+  const sticky = createNode('rectangle', { scrollPosition: 'sticky' });
+  addNode(document, frame);
+  addNode(document, sticky, { parentId: frame.id });
+  assert.equal(validateDocument(document), true);
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children[0].children[0].scrollPosition, 'sticky');
+  assert.equal(validateDocument(restored), true);
+
+  const invalid = structuredClone(restored);
+  invalid.pages[0].children[0].children[0].scrollPosition = 'float';
+  assert.throws(() => validateDocument(invalid), /Invalid scroll position/);
+});
+
 test('scrollable frames clip children while default clipping behavior is preserved', () => {
   const calls = [];
   const context = {
@@ -146,6 +163,53 @@ test('fixed children stay in the viewport, paint above scrolling siblings, and r
   assert.deepEqual(path.map(entry => entry.frame.id), [frame.id],
     'the fixed layer remains within its parent scroll viewport');
   assert.deepEqual(path[0].local, { x: 15, y: 15 });
+});
+
+test('sticky children pin to the top of their scrolled frame and remain hit-testable', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    id: 'sticky-scroll-frame', x: 10, y: 20, width: 100, height: 100,
+    clip: false, overflowBehavior: 'vertical'
+  });
+  const sticky = createNode('rectangle', {
+    id: 'sticky-header', x: 10, y: 80, width: 80, height: 20, scrollPosition: 'sticky'
+  });
+  const scrolling = createNode('rectangle', { id: 'scrolling-layer', x: 10, y: 120, width: 80, height: 30 });
+  addNode(document, frame);
+  addNode(document, sticky, { parentId: frame.id });
+  addNode(document, scrolling, { parentId: frame.id });
+
+  assert.equal(hitTestPage(document.pages[0], { x: 25, y: 30 }, null, document,
+    new Map([[frame.id, { x: 0, y: 180 }]]))?.id, sticky.id,
+  'the sticky hit target remains at the frame top even after scrolling beyond its original position');
+  assert.equal(hitTestPage(document.pages[0], { x: 25, y: 30 }, null, document,
+    new Map([[frame.id, { x: 0, y: 40 }]]))?.id, frame.id,
+  'before reaching the sticky threshold, the child continues to scroll with the frame');
+});
+
+test('nested sticky children stay pinned until their direct parent reaches the scroller edge', () => {
+  const document = createDocument();
+  const scroller = createNode('frame', {
+    id: 'nested-sticky-scroller', x: 10, y: 20, width: 100, height: 100,
+    clip: false, overflowBehavior: 'vertical'
+  });
+  const parent = createNode('group', { id: 'nested-sticky-parent', x: 5, y: 30, width: 80, height: 120 });
+  const sticky = createNode('rectangle', {
+    id: 'nested-sticky-layer', x: 5, y: 40, width: 50, height: 20, scrollPosition: 'sticky'
+  });
+  parent.children.push(sticky);
+  scroller.children.push(parent);
+  addNode(document, scroller);
+
+  const offsets = new Map([[scroller.id, { x: 0, y: 90 }]]);
+  assert.equal(hitTestPage(document.pages[0], { x: 30, y: 25 }, null, document, offsets)?.id, sticky.id,
+    'the nested layer is hittable at the scroller top after its natural position has moved above the viewport');
+  const path = scrollableFramePathAtPagePoint(document.pages[0], { x: 30, y: 25 }, null, document, offsets);
+  assert.deepEqual(path.map(entry => entry.frame.id), [scroller.id]);
+
+  const afterParentLeaves = new Map([[scroller.id, { x: 0, y: 160 }]]);
+  assert.notEqual(hitTestPage(document.pages[0], { x: 30, y: 25 }, null, document, afterParentLeaves)?.id, sticky.id,
+    'the sticky layer leaves with its direct parent once the parent bottom passes the scroller top');
 });
 
 test('presentation hit testing keeps nested rounded clips aligned after an outer frame scrolls', () => {

@@ -79,6 +79,33 @@ test('fixed image previews stay resident while sibling images scroll away', () =
   assert.ok(!visible.has(imagePreviewKey(scrolling.id)), 'ordinary preview moves out of this viewport');
 });
 
+test('nested sticky image previews follow their sticky position and direct-parent boundary', () => {
+  const document = createDocument();
+  const scroller = createNode('frame', {
+    id: 'nested-preview-scroller', x: 0, y: 0, width: 100, height: 100, overflowBehavior: 'vertical'
+  });
+  const parent = createNode('group', { id: 'nested-preview-parent', x: 0, y: 30, width: 80, height: 120 });
+  const image = createNode('image', {
+    id: 'nested-sticky-preview', x: 0, y: 40, width: 25, height: 20,
+    assetId: 'asset-nested-sticky', scrollPosition: 'sticky'
+  });
+  parent.children.push(image);
+  scroller.children.push(parent);
+  addNode(document, scroller);
+  const viewport = { left: 0, top: 0, right: 100, bottom: 50 };
+
+  const hiddenBeforeScroll = collectVisibleImagePreviewKeys(document.pages[0], document, viewport);
+  assert.ok(!hiddenBeforeScroll.has(imagePreviewKey(image.id)), 'the original nested location is below the checked viewport');
+  const pinned = collectVisibleImagePreviewKeys(document.pages[0], document, viewport, {
+    presentationScrollOffsets: new Map([[scroller.id, { x: 0, y: 90 }]])
+  });
+  assert.ok(pinned.has(imagePreviewKey(image.id)), 'the preview remains resident while the sticky image is pinned');
+  const parentGone = collectVisibleImagePreviewKeys(document.pages[0], document, viewport, {
+    presentationScrollOffsets: new Map([[scroller.id, { x: 0, y: 160 }]])
+  });
+  assert.ok(!parentGone.has(imagePreviewKey(image.id)), 'the preview leaves once its direct parent scrolls away');
+});
+
 test('visible preview collection respects clip polygons, resolved geometry, opacity, and legacy image fills', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Preview visibility');
