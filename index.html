@@ -310,14 +310,20 @@
             <div id="live-host-active" hidden>
               <div class="live-share-step" id="live-host-invite-step">
                 <span class="live-step-label">1 · Send your invite</span>
-                <p class="live-collaboration-note">Send one message using any chat app. The other person will send one reply back to connect.</p>
+                <p class="live-collaboration-note">Send one invite message. Keep this tab open; open the guest’s reply link in a new tab here to connect automatically.</p>
                 <div class="live-action-row"><button class="primary-button" id="live-share-capsules" type="button" hidden>Share invite</button></div>
               </div>
               <div class="live-share-step" id="live-host-reply-step" hidden>
-                <span class="live-step-label">2 · Connect their reply</span>
-                <p class="live-collaboration-note">Ask them to send their reply. Paste it here, or scan the QR code on their screen.</p>
-                <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste their reply here" aria-label="Reply from the other person"></textarea>
-                <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect</button></div>
+                <span class="live-step-label">2 · Waiting for their link</span>
+                <p class="live-collaboration-note">Keep this tab open. Open the guest’s reply link in a new tab in this browser; Tiny Image Star verifies it and connects automatically.</p>
+                <details class="live-advanced" id="live-manual-answer-options">
+                  <summary>Manual reply code</summary>
+                  <div class="live-advanced-content">
+                    <label class="field-label" for="live-answer-value">Paste their one-time reply code</label>
+                    <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste their reply here" aria-label="Reply from the other person"></textarea>
+                    <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect</button></div>
+                  </div>
+                </details>
               </div>
               <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
               <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
@@ -359,10 +365,19 @@
               </details>
             </div>
             <div id="live-guest-reply" class="live-share-step" hidden>
-              <span class="live-step-label">2 · Send your reply</span>
-              <p class="live-collaboration-note">Send this reply to the owner. They’ll connect you when they receive it.</p>
-              <textarea class="text-field live-capsule-field" id="live-guest-answer" readonly spellcheck="false" aria-label="Your one-time reply"></textarea>
-              <div class="live-action-row"><button class="secondary-button live-copy-button" id="live-copy-answer" type="button" hidden>Send reply</button></div>
+              <span class="live-step-label">2 · Share this link to complete the shared context</span>
+              <p class="live-collaboration-note">Send this URL to the design owner. They should open it in a new tab in the browser where they started sharing. Keep this page open until they’re connected.</p>
+              <label class="field-label" for="live-guest-reply-link">Your reply link</label>
+              <textarea class="text-field live-capsule-field" id="live-guest-reply-link" readonly spellcheck="false" aria-label="Your one-time reply link"></textarea>
+              <div class="live-action-row"><button class="primary-button live-copy-button" id="live-copy-answer" type="button" hidden>Share reply link</button></div>
+              <details class="live-advanced">
+                <summary>Manual reply code</summary>
+                <div class="live-advanced-content">
+                  <label class="field-label" for="live-guest-answer">One-time connection code</label>
+                  <textarea class="text-field live-capsule-field" id="live-guest-answer" readonly spellcheck="false" aria-label="Manual one-time reply code"></textarea>
+                  <p class="live-collaboration-note">Use this only if the reply URL is too large or your chat app removes it. The owner can paste this code in the sharing panel.</p>
+                </div>
+              </details>
             </div>
             <p class="live-status" id="live-guest-status" role="status" aria-live="polite"></p>
             <p class="live-status" id="live-guest-transfer-status" role="status" aria-live="polite"></p>
@@ -371,6 +386,23 @@
               <div class="live-advanced-content"><p class="live-collaboration-note">Tiny Image Star has no sharing server. Your chat app can see the invite and reply. The owner’s device saves the original. If the connection ends or your edits cannot be added safely, your work stays in a separate local copy.</p></div>
             </details>
             <div class="dialog-actions"><button class="secondary-button" id="live-retry-fork" type="button" hidden>Retry saving local copy</button><button class="secondary-button" id="live-stop-guest" type="button" hidden>Leave live design</button></div>
+          </section>
+          <section id="live-reply-link-panel" hidden>
+            <div class="live-share-step live-reply-link-card">
+              <span class="live-step-label">Connecting to shared design</span>
+              <p class="live-collaboration-note">This link sends the one-time reply to the owner’s open Tiny Image Star tab.</p>
+              <p class="live-status" id="live-reply-link-status" role="status" aria-live="polite">Looking for the owner’s sharing tab…</p>
+              <details class="live-advanced" id="live-reply-manual-fallback" hidden>
+                <summary>Manual reply code</summary>
+                <div class="live-advanced-content">
+                  <label class="field-label" for="live-reply-code-value">One-time reply code</label>
+                  <textarea class="text-field live-capsule-field" id="live-reply-code-value" readonly spellcheck="false" aria-label="One-time reply code from this link"></textarea>
+                  <button class="secondary-button" id="live-reply-code-copy" type="button">Copy code for the owner</button>
+                </div>
+              </details>
+              <button class="secondary-button" id="live-reply-link-retry" type="button" hidden>Try again</button>
+            </div>
+            <div class="dialog-actions"><button class="secondary-button" id="live-reply-link-close" type="button">Close</button></div>
           </section>
         </section>
       </dialog>

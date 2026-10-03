@@ -9,13 +9,17 @@ test('live sharing reveals one clear next step for each person', () => {
   assert.match(html, /id="live-start-host"[^>]*>Start sharing<\/button>/);
   assert.match(html, /id="live-share-capsules"[^>]*>Share invite<\/button>/);
   assert.match(html, /id="live-host-reply-step"[^>]*hidden/);
-  assert.match(html, /2 · Connect their reply/);
+  assert.match(html, /2 · Waiting for their link/);
   assert.match(html, /id="live-accept-answer"[^>]*>Connect<\/button>/);
   assert.match(html, /id="live-guest-join-step"/);
   assert.match(html, /id="live-join-message"/);
   assert.match(html, /id="live-join-session"[^>]*>Join design<\/button>/);
-  assert.match(html, /2 · Send your reply/);
-  assert.match(html, /Send this reply to the owner/);
+  assert.match(html, /2 · Share this link to complete the shared context/);
+  assert.match(html, /Send this URL to the design owner/);
+  assert.match(html, /id="live-copy-answer"[^>]*>Share reply link<\/button>/);
+  assert.match(html, /id="live-guest-reply-link"/);
+  assert.match(html, /id="live-reply-link-panel"/);
+  assert.match(html, /id="live-reply-link-retry"/);
   assert.match(html, /id="live-guest-reply"[^>]*hidden/);
   assert.match(html, /<summary>More options<\/summary>/);
   assert.match(html, /<summary>Privacy and connection details<\/summary>/);
@@ -28,6 +32,9 @@ test('live sharing reveals one clear next step for each person', () => {
   assert.match(main, /This is only the design link\. Ask the owner for the full invite message or scan their invite QR code\./);
   assert.match(main, /revealLiveHostReplyStep\(\)/);
   assert.match(main, /\$\('#live-guest-join-step'\)\.hidden = true/);
+  assert.match(main, /createLiveReplyLink\(baseUrl\.href, controller\.sessionId, controller\.answerCapsule\)/);
+  assert.match(main, /startLiveReplyFromLink\(\)/);
+  assert.match(main, /acceptLiveReplyInOpenHostTab\(reply\)/);
 });
 
 test('live sharing offers a bundled QR handoff and a local answer scanner without removing text fallback', async () => {

@@ -1026,6 +1026,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .live-stun-option { display: flex; align-items: flex-start; gap: 9px; color: #676b74; font-size: 11px; line-height: 1.45; }
 .live-stun-option input { flex: 0 0 auto; margin: 2px 0 0; accent-color: #7564f6; }
 .live-status { min-height: 1.3em; margin: 10px 0 0; color: #60646e; font-size: 12px; line-height: 1.4; }
+.live-reply-link-card .live-status[data-state="error"] { color: #a13e43; }
+.live-reply-link-card .live-status[data-state="ready"] { color: var(--ink); }
 .live-join-button { min-height: 44px; width: 100%; margin: 12px 0 18px; }
 .live-collaboration-content .dialog-actions { justify-content: flex-start; flex-wrap: wrap; }
 .live-view-dock { position: fixed; z-index: 60; top: calc(58px + env(safe-area-inset-top)); left: 50%; display: flex; align-items: center; justify-content: center; gap: 10px; width: max-content; max-width: calc(100vw - 24px); padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--ink); box-shadow: var(--panel-shadow); transform: translateX(-50%); }
