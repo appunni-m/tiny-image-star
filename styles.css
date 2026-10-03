@@ -554,7 +554,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .gradient-geometry-point input { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--ink); font: inherit; font-size: 11px; }
 .gradient-geometry-point input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .gradient-geometry-point input[aria-invalid="true"] { border-color: #d94b45; box-shadow: 0 0 0 1px #d94b4540; }
-.gradient-stop-rail { padding: 0 1px; }
+.gradient-stop-rail { overflow-x: hidden; overflow-x: clip; padding: 0 1px; }
 .gradient-stop-track {
   position: relative;
   height: 28px;
@@ -577,19 +577,34 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   position: absolute;
   z-index: 1;
   top: 50%;
+  left: clamp(8px, var(--gradient-stop-position), calc(100% - 8px));
   width: 18px;
   height: 24px;
   min-width: 0;
   min-height: 0;
   padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: ew-resize;
+  transform: translate(-50%, -50%);
+  touch-action: none;
+}
+.gradient-stop-marker {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  display: block;
+  width: 16px;
+  height: 20px;
   border: 1px solid #fff;
   border-radius: 5px;
   outline: 1px solid #4c4c4c;
   background: var(--gradient-stop-color);
   box-shadow: 0 1px 3px #0004;
-  cursor: ew-resize;
+  pointer-events: none;
   transform: translate(-50%, -50%);
-  touch-action: none;
 }
 .gradient-stop-handle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .gradient-stop-handle:disabled { cursor: not-allowed; }
@@ -2239,23 +2254,13 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .inspector-content .gradient-geometry-point input { min-height: 44px; height: 44px; font-size: 16px; }
   .inspector-content .gradient-stop-track { height: 44px; }
   .inspector-content .gradient-stop-handle {
+    left: clamp(21px, var(--gradient-stop-position), calc(100% - 21px));
     width: 44px;
     height: 44px;
     background: transparent;
     border: 0;
     outline: 0;
     box-shadow: none;
-  }
-  .inspector-content .gradient-stop-handle::after {
-    display: block;
-    width: 16px;
-    height: 20px;
-    border: 1px solid #fff;
-    border-radius: 5px;
-    outline: 1px solid #4c4c4c;
-    background: var(--gradient-stop-color);
-    box-shadow: 0 1px 3px #0004;
-    content: "";
   }
   .inspector-content .gradient-stop-handle:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
   .inspector-content .gradient-stop-row .tiny-icon-button,

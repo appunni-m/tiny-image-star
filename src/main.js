@@ -2100,8 +2100,15 @@ function gradientStopRail(node, gradient, { fillId = '', strokeId = '' } = {}) {
   const background = gradientFillToCSS(gradient);
   if (!background) return '';
   const ownerData = `data-gradient-node-id="${escapeHtml(node.id)}"${fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : ''}${strokeId ? ` data-stroke-id="${escapeHtml(strokeId)}"` : ''}`;
-  const handles = gradient.stops.map((stop, index) => `<button class="gradient-stop-handle" type="button" role="slider" aria-orientation="horizontal" aria-label="Gradient stop ${index + 1} position" aria-valuemin="0" aria-valuemax="100" aria-valuestep="0.01" aria-valuenow="${formatInspectorNumber(stop.position * 100)}" aria-valuetext="${formatInspectorNumber(stop.position * 100)} percent" title="Drag to move stop ${index + 1}; use arrow keys to adjust" data-gradient-stop-handle data-gradient-stop-id="${escapeHtml(stop.id)}" style="left:${Number((stop.position * 100).toFixed(4))}%;--gradient-stop-color:${escapeHtml(stop.color)}"${node.locked ? ' disabled' : ''}></button>`).join('');
-  return `<div class="gradient-stop-rail" role="group" aria-label="Gradient color stops"><div class="gradient-stop-track" data-gradient-stop-track ${ownerData} style="--gradient-preview:${escapeHtml(background)}">${handles}</div></div>`;
+  const markers = gradient.stops.map(stop => {
+    const position = Number((stop.position * 100).toFixed(4));
+    return `<span class="gradient-stop-marker" aria-hidden="true" style="left:${position}%;--gradient-stop-color:${escapeHtml(stop.color)}"></span>`;
+  }).join('');
+  const handles = gradient.stops.map((stop, index) => {
+    const position = Number((stop.position * 100).toFixed(4));
+    return `<button class="gradient-stop-handle" type="button" role="slider" aria-orientation="horizontal" aria-label="Gradient stop ${index + 1} position" aria-valuemin="0" aria-valuemax="100" aria-valuestep="0.01" aria-valuenow="${formatInspectorNumber(position)}" aria-valuetext="${formatInspectorNumber(position)} percent" title="Drag to move stop ${index + 1}; use arrow keys to adjust" data-gradient-stop-handle data-gradient-stop-id="${escapeHtml(stop.id)}" style="--gradient-stop-position:${position}%;--gradient-stop-color:${escapeHtml(stop.color)}"${node.locked ? ' disabled' : ''}></button>`;
+  }).join('');
+  return `<div class="gradient-stop-rail" role="group" aria-label="Gradient color stops"><div class="gradient-stop-track" data-gradient-stop-track ${ownerData} style="--gradient-preview:${escapeHtml(background)}">${markers}${handles}</div></div>`;
 }
 function gradientFillControls(node, gradient = node.fillGradient, fillId = '') {
   if (!gradient) return '';
