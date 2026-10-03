@@ -264,6 +264,29 @@ test('recipe recovery claims serialize concurrent tabs and fence stale save/dele
   assert.equal(await storage.deleteRecipeBatchRecovery(base.documentId, nextOwner), true);
 });
 
+test('a drained batch owner can release its lease for a safe immediate recovery handoff', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const base = {
+    documentId: 'design-recipe-handoff', ownerToken: 'run-tab-owner',
+    recipe: { id: 'recipe-1', name: 'Warm' }, pageId: 'page-1', targetIds: ['image-a'], status: 'cancelled'
+  };
+  const now = 75_000;
+  await storage.claimRecipeBatchRecovery(base, { now, leaseMs: 5_000 });
+  await assert.rejects(storage.releaseRecipeBatchRecoveryLease(base.documentId, 'run-stale-owner', { now: now + 1 }), /no longer owns/);
+
+  const released = await storage.releaseRecipeBatchRecoveryLease(base.documentId, base.ownerToken, { now: now + 2 });
+  assert.equal(released.leaseExpiresAt, now + 2);
+  assert.equal((await storage.loadRecipeBatchRecovery(base.documentId)).leaseExpiresAt, now + 2);
+
+  const nextOwner = await storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-tab-recovery' }, {
+    expectedOwnerToken: base.ownerToken, now: now + 2, leaseMs: 5_000
+  });
+  assert.equal(nextOwner.ownerToken, 'run-tab-recovery');
+  await assert.rejects(storage.releaseRecipeBatchRecoveryLease(base.documentId, base.ownerToken, { now: now + 3 }), /no longer owns/);
+});
+
 test('legacy recovery rows retain their savedAt grace window before fenced takeover', async () => {
   const mock = createIndexedDbMock();
   globalThis.indexedDB = mock.indexedDB;

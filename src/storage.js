@@ -582,6 +582,30 @@ export async function saveRecipeBatchRecovery(input = {}, { now = Date.now(), le
   return { leaseExpiresAt: now + leaseMs };
 }
 
+/** Release an owned recovery lease after its batch has drained and its edits are saved. */
+export async function releaseRecipeBatchRecoveryLease(documentId, ownerToken, { now = Date.now() } = {}) {
+  if (!validRecipeBatchId(documentId) || !validRecipeBatchOwnerToken(ownerToken) || !Number.isFinite(now)) {
+    throw new TypeError('A design ID, image recipe owner token, and valid release time are required.');
+  }
+  const db = await openDatabase();
+  const tx = db.transaction('recipeBatchRecovery', 'readwrite');
+  const store = tx.objectStore('recipeBatchRecovery');
+  const done = transactionDone(tx);
+  let failure = null;
+  const request = store.get(documentId);
+  request.onsuccess = () => {
+    const existing = request.result;
+    if (!existing || existing.ownerToken !== ownerToken) {
+      failure = new RecipeBatchRecoveryLeaseError(documentId, 'owner', existing?.leaseExpiresAt ?? null);
+      return;
+    }
+    store.put({ ...existing, leaseExpiresAt: now, savedAt: now });
+  };
+  await done;
+  if (failure) throw failure;
+  return { leaseExpiresAt: now };
+}
+
 /** Read a validated local recovery journal without removing corrupt rows. */
 export async function loadRecipeBatchRecovery(documentId) {
   if (!validRecipeBatchId(documentId)) return null;

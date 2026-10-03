@@ -182,7 +182,7 @@
           <p class="modal-copy">Tiny Image Star saved a recovery point before this batch began.</p>
           <div class="recipe-recovery-card"><strong id="recipe-recovery-recipe">Image recipe</strong><span id="recipe-recovery-copy"></span></div>
           <p class="recipe-recovery-status" id="recipe-recovery-status" role="status" aria-live="polite"></p>
-          <div class="dialog-actions"><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
+          <div class="dialog-actions"><button class="secondary-button" id="recipe-recovery-stop-other" type="button" hidden>Stop other tab and recover here</button><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
         </section>
       </dialog>
 
@@ -196,6 +196,10 @@
       </dialog>
 
       <div class="context-menu" id="context-menu" role="menu" aria-label="Editor actions" hidden></div>
+      <div class="recipe-recovery-handoff-banner" id="recipe-recovery-handoff-banner" role="status" aria-live="polite" hidden>
+        <span>The other tab is recovering this recipe. This design is read-only until recovery finishes.</span>
+        <button class="secondary-button" id="recipe-recovery-handoff-reload" type="button">Check recovery</button>
+      </div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />
       <input id="image-library-input" type="file" accept="image/*" multiple hidden />

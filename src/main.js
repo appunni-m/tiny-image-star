@@ -54,7 +54,7 @@ import { encodeRenderedImageOutput } from './image-output.js';
 import { ImageSourceResidencyManager } from './image-source-residency.js';
 import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
-import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, releaseRecipeBatchRecoveryLease, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
 import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
 import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
@@ -232,6 +232,11 @@ let bulkBarTicker = null;
 let bulkConcurrencyTimer = 0;
 const RECIPE_BATCH_LEASE_RENEW_MS = 30_000;
 let recipeRecoveryExpiryTimer = 0;
+let recipeBatchCoordinationChannel = null;
+let pendingRecipeStopRequestId = null;
+let recipeStopRequestPending = false;
+let recipeStopReplyTimer = 0;
+let handedOffRecipeBatchDocumentId = null;
 let latestPageLayerIds = [];
 let layerRowsById = new Map();
 const collapsedLayerIds = new Set();
@@ -1386,8 +1391,10 @@ async function preserveDocumentSaveConflict(snapshot, error) {
   return recovery;
 }
 function setDocumentEditingBlocked(blocked) {
+  const handoffReadOnly = handedOffRecipeBatchDocumentId === state.document.id;
+  $('#recipe-recovery-handoff-banner').hidden = !handoffReadOnly;
   const access = workspaceEditingAccess({
-    blocked,
+    blocked: blocked || handoffReadOnly,
     onboarding: state.workspaceOnboardingRequired,
     permissionNeeded: state.workspacePermissionNeeded
   });
@@ -11580,8 +11587,9 @@ function scheduleRecipeBatchLeaseHeartbeat(bulk) {
   bulk.leaseTimer = window.setTimeout(async () => {
     bulk.leaseTimer = 0;
     if (state.bulk !== bulk || bulk.ownershipLost) return;
+    let renewal = null;
     try {
-      const renewed = await saveRecipeBatchRecovery({
+      renewal = saveRecipeBatchRecovery({
         documentId: state.document.id,
         ownerToken: bulk.ownerToken,
         recipe: bulk.recipe,
@@ -11589,14 +11597,23 @@ function scheduleRecipeBatchLeaseHeartbeat(bulk) {
         targetIds: bulk.targets,
         status: bulk.cancelled ? 'cancelled' : 'running'
       });
+      bulk.leaseRenewalPromise = renewal;
+      const renewed = await renewal;
       if (state.bulk !== bulk || bulk.ownershipLost) return;
       bulk.leaseExpiresAt = renewed.leaseExpiresAt;
-      scheduleRecipeBatchLeaseHeartbeat(bulk);
+      if (!bulk.recoveryHandoffReadyToRelease) scheduleRecipeBatchLeaseHeartbeat(bulk);
     } catch (error) {
       loseRecipeBatchLease(bulk, error);
+    } finally {
+      if (bulk.leaseRenewalPromise === renewal) bulk.leaseRenewalPromise = null;
     }
   }, RECIPE_BATCH_LEASE_RENEW_MS);
   return true;
+}
+
+async function waitForRecipeBatchLeaseRenewal(bulk) {
+  while (bulk?.leaseRenewalPromise) await bulk.leaseRenewalPromise.catch(() => {});
+  return !bulk?.ownershipLost;
 }
 
 function scheduleBulkConcurrency(bulk, immediate = false) {
@@ -11634,37 +11651,192 @@ async function recipeRecoveryForDocument(documentId) {
   }
 }
 
+function initializeRecipeBatchCoordination() {
+  if (typeof BroadcastChannel !== 'function' || recipeBatchCoordinationChannel) return;
+  try { recipeBatchCoordinationChannel = new BroadcastChannel('tiny-image-star-recipe-batch-recovery-v1'); }
+  catch { return; }
+  recipeBatchCoordinationChannel.addEventListener('message', event => {
+    const message = event.data;
+    if (!message || typeof message !== 'object' || typeof message.documentId !== 'string') return;
+    if (message.type === 'STOP_AND_RECOVER') {
+      const bulk = state.bulk;
+      if (!bulk || bulk.documentId !== message.documentId || state.document.id !== message.documentId
+        || bulk.ownerToken !== message.ownerToken || bulk.ownershipLost
+        || typeof message.requestId !== 'string') return;
+      bulk.recoveryHandoffRequestIds ||= new Set();
+      bulk.recoveryHandoffRequestIds.add(message.requestId);
+      recipeBatchCoordinationChannel.postMessage({
+        type: 'RECOVERY_STOPPING', documentId: bulk.documentId, ownerToken: bulk.ownerToken, requestId: message.requestId
+      });
+      if (!bulk.recoveryHandoffPromise) {
+        bulk.recoveryHandoffPending = true;
+        setDocumentEditingBlocked(true);
+        renderBulkBar();
+        bulk.recoveryHandoffPromise = stopOwnedRecipeBatchForRecovery(bulk).catch(error => {
+          if (state.bulk === bulk) {
+            bulk.recoveryHandoffPending = false;
+            bulk.recoveryHandoffReadyToRelease = false;
+            if (!bulk.ownershipLost) setDocumentEditingBlocked(false);
+            if (!bulk.ownershipLost && !bulk.leaseTimer) scheduleRecipeBatchLeaseHeartbeat(bulk);
+            renderBulkBar();
+          }
+          showToast(`Could not safely hand off this batch: ${error.message || 'the saved edits could not be confirmed'}. The other tab can try again.`, 8000);
+          for (const requestId of bulk.recoveryHandoffRequestIds || []) {
+            recipeBatchCoordinationChannel?.postMessage({
+              type: 'RECOVERY_STOP_FAILED', documentId: bulk.documentId,
+              ownerToken: bulk.ownerToken, requestId
+            });
+          }
+          bulk.recoveryHandoffPromise = null;
+          bulk.recoveryHandoffRequestIds = new Set();
+        });
+      }
+      return;
+    }
+    if (message.type === 'RECOVERY_STOPPING') {
+      if (message.requestId !== pendingRecipeStopRequestId) return;
+      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
+      recipeStopRequestPending = true;
+      $('#recipe-recovery-stop-other').disabled = true;
+      $('#recipe-recovery-status').textContent = 'The other tab is stopping the batch and saving its edits. Keep this screen open…';
+      recipeStopReplyTimer = window.setTimeout(() => {
+        recipeStopReplyTimer = 0;
+        if (pendingRecipeStopRequestId !== message.requestId) return;
+        recipeStopRequestPending = false;
+        $('#recipe-recovery-stop-other').disabled = false;
+        $('#recipe-recovery-status').textContent = 'The other tab is still saving. Keep this screen open, or switch to that tab to check its progress.';
+      }, 30_000);
+      return;
+    }
+    if (message.type === 'RECOVERY_STOP_FAILED') {
+      if (message.requestId !== pendingRecipeStopRequestId) return;
+      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
+      recipeStopReplyTimer = 0;
+      pendingRecipeStopRequestId = null;
+      recipeStopRequestPending = false;
+      $('#recipe-recovery-stop-other').disabled = false;
+      $('#recipe-recovery-status').textContent = 'The other tab could not save and release the batch. Its work is still protected; try again or switch to that tab.';
+      return;
+    }
+    if (['RECOVERY_RELEASED', 'RECOVERY_RESOLVED'].includes(message.type)) {
+      if (message.type === 'RECOVERY_RESOLVED' && message.documentId === handedOffRecipeBatchDocumentId) {
+        if (state.document.id === message.documentId) window.setTimeout(() => location.reload(), 300);
+        else {
+          handedOffRecipeBatchDocumentId = null;
+          setDocumentEditingBlocked(false);
+        }
+      }
+      const recovery = state.pendingRecipeRecovery;
+      if (!recovery || recovery.documentId !== message.documentId || recovery.ownerToken !== message.ownerToken) return;
+      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
+      recipeStopReplyTimer = 0;
+      pendingRecipeStopRequestId = null;
+      recipeStopRequestPending = false;
+      $('#recipe-recovery-status').textContent = 'The other tab saved the latest edits. Reloading this design…';
+      window.setTimeout(() => location.reload(), 300);
+    }
+  });
+}
+
+async function stopOwnedRecipeBatchForRecovery(bulk) {
+  if (!canDismissImageRecipeBatch(bulk)) cancelBulkRecipe();
+  while (state.bulk === bulk && !canDismissImageRecipeBatch(bulk)) {
+    await new Promise(resolve => window.setTimeout(resolve, 50));
+  }
+  if (state.bulk !== bulk || bulk.ownershipLost) throw new Error('the batch no longer belongs to this tab');
+  if (!(await persistCurrentDocumentNow()) || state.bulk !== bulk || bulk.saveError) {
+    throw new Error(bulk.saveError || 'the completed image edits could not be saved');
+  }
+  bulk.recoveryHandoffReadyToRelease = true;
+  stopRecipeBatchLeaseHeartbeat(bulk);
+  if (!(await waitForRecipeBatchLeaseRenewal(bulk))) throw new Error('the recovery lock changed while saving');
+  stopRecipeBatchLeaseHeartbeat(bulk);
+  await releaseRecipeBatchRecoveryLease(bulk.documentId, bulk.ownerToken);
+  if (state.bulk !== bulk) throw new Error('the batch changed before recovery could be handed off');
+  state.bulk = null;
+  handedOffRecipeBatchDocumentId = bulk.documentId;
+  setDocumentEditingBlocked(false);
+  renderBulkBar();
+  renderInspector();
+  showToast('The batch is saved and stopped. This tab is read-only until recovery finishes in the other tab.');
+  for (const requestId of bulk.recoveryHandoffRequestIds || []) {
+    recipeBatchCoordinationChannel?.postMessage({
+      type: 'RECOVERY_RELEASED', documentId: bulk.documentId, ownerToken: bulk.ownerToken, requestId
+    });
+  }
+}
+
+function requestRecipeBatchHandoff() {
+  const recovery = state.pendingRecipeRecovery;
+  if (!recovery || !recipeBatchCoordinationChannel) return false;
+  pendingRecipeStopRequestId ||= createId('recipe-recovery-request');
+  const requestId = pendingRecipeStopRequestId;
+  recipeStopRequestPending = true;
+  $('#recipe-recovery-stop-other').disabled = true;
+  $('#recipe-recovery-status').textContent = 'Asking the other tab to stop safely and save its edits…';
+  recipeBatchCoordinationChannel.postMessage({
+    type: 'STOP_AND_RECOVER', documentId: recovery.documentId, ownerToken: recovery.ownerToken, requestId
+  });
+  if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
+  recipeStopReplyTimer = window.setTimeout(() => {
+    recipeStopReplyTimer = 0;
+    if (pendingRecipeStopRequestId !== requestId) return;
+    recipeStopRequestPending = false;
+    $('#recipe-recovery-stop-other').disabled = false;
+    $('#recipe-recovery-status').textContent = 'No reply yet. Switch to the other tab and finish or close it. If it is running an older version, its lock expires within two minutes after it stops renewing. Your saved edits are safe.';
+  }, 8_000);
+  return true;
+}
+
+function clearRecipeRecoveryExpiryTimer() {
+  if (!recipeRecoveryExpiryTimer) return false;
+  window.clearTimeout(recipeRecoveryExpiryTimer);
+  recipeRecoveryExpiryTimer = 0;
+  return true;
+}
+
 function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
   const dialog = $('#recipe-recovery-dialog');
   if (!recovery) {
-    if (recipeRecoveryExpiryTimer) window.clearTimeout(recipeRecoveryExpiryTimer);
-    recipeRecoveryExpiryTimer = 0;
+    clearRecipeRecoveryExpiryTimer();
     if (dialog.open) dialog.close();
     return;
   }
   const leaseActive = Number.isFinite(recovery.leaseExpiresAt) && recovery.leaseExpiresAt > Date.now();
   const keepButton = $('#recipe-recovery-keep');
   const resumeButton = $('#recipe-recovery-resume');
+  const stopButton = $('#recipe-recovery-stop-other');
   $('#recipe-recovery-recipe').textContent = recovery.recipe.name || 'Image recipe';
   $('#recipe-recovery-copy').textContent = leaseActive
-    ? `Another tab still owns this ${recovery.recipe.name || 'image recipe'} batch. Keep and resume will unlock after its lease expires; saved work remains safe.`
+    ? recipeBatchCoordinationChannel
+      ? `Another tab is using this ${recovery.recipe.name || 'image recipe'} batch. You can stop it safely and recover here. Saved edits are kept.`
+      : `Another tab is using this ${recovery.recipe.name || 'image recipe'} batch. Switch to it and finish or close it. If it is running an older version, the lock expires within two minutes after it stops renewing. Saved edits are kept.`
     : `${recovery.targetIds.length} image layer${recovery.targetIds.length === 1 ? '' : 's'} were in this batch. Resume the saved recipe, or keep the image edits that were already saved.`;
   keepButton.disabled = leaseActive;
   resumeButton.disabled = leaseActive;
+  stopButton.hidden = !leaseActive || !recipeBatchCoordinationChannel;
+  stopButton.disabled = recipeStopRequestPending;
   if (!dialog.open) {
     $('#recipe-recovery-status').textContent = '';
     setDocumentEditingBlocked(true);
     dialog.showModal();
   }
-  if (recipeRecoveryExpiryTimer) window.clearTimeout(recipeRecoveryExpiryTimer);
+  clearRecipeRecoveryExpiryTimer();
   recipeRecoveryExpiryTimer = leaseActive
     ? window.setTimeout(async () => {
       recipeRecoveryExpiryTimer = 0;
       if (state.pendingRecipeRecovery !== recovery) return;
       const current = await loadRecipeBatchRecovery(recovery.documentId).catch(() => recovery);
       if (state.pendingRecipeRecovery !== recovery) return;
+      if (!current || current.ownerToken !== recovery.ownerToken) {
+        location.reload();
+        return;
+      }
+      if (current.leaseExpiresAt <= Date.now()) {
+        location.reload();
+        return;
+      }
       state.pendingRecipeRecovery = current;
-      if (!current) setDocumentEditingBlocked(false);
       renderRecipeRecoveryPrompt(current);
     }, Math.min(0x7fffffff, Math.max(100, recovery.leaseExpiresAt - Date.now() + 100)))
     : 0;
@@ -11673,13 +11845,19 @@ function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
 async function keepInterruptedRecipeChanges() {
   const recovery = state.pendingRecipeRecovery;
   if (!recovery) return false;
+  clearRecipeRecoveryExpiryTimer();
   const keepButton = $('#recipe-recovery-keep'); const resumeButton = $('#recipe-recovery-resume');
   keepButton.disabled = true; resumeButton.disabled = true;
   $('#recipe-recovery-status').textContent = 'Keeping the saved image edits…';
+  const ownerToken = createId('recipe-run');
+  let claimed = false;
   try {
-    const ownerToken = createId('recipe-run');
     await claimRecipeBatchRecovery({ ...recovery, ownerToken }, { expectedOwnerToken: recovery.ownerToken });
+    claimed = true;
     await deleteRecipeBatchRecovery(recovery.documentId, ownerToken);
+    recipeBatchCoordinationChannel?.postMessage({
+      type: 'RECOVERY_RESOLVED', documentId: recovery.documentId, ownerToken: recovery.ownerToken
+    });
     state.pendingRecipeRecovery = null;
     $('#recipe-recovery-dialog').close();
     setDocumentEditingBlocked(false);
@@ -11687,29 +11865,62 @@ async function keepInterruptedRecipeChanges() {
     return true;
   } catch (error) {
     $('#recipe-recovery-status').textContent = error.message || 'Could not clear the recovery record. Your saved edits are unchanged; try again.';
-    const leaseActive = error instanceof RecipeBatchRecoveryLeaseError && error.reason === 'active';
-    keepButton.disabled = leaseActive;
-    resumeButton.disabled = leaseActive;
-    if (leaseActive) {
-      state.pendingRecipeRecovery = await loadRecipeBatchRecovery(recovery.documentId).catch(() => recovery);
-      renderRecipeRecoveryPrompt();
+    if (claimed) await releaseRecipeBatchRecoveryLease(recovery.documentId, ownerToken).catch(() => {});
+    let current = recovery;
+    try { current = await loadRecipeBatchRecovery(recovery.documentId); } catch { /* keep the saved recovery visible if storage is temporarily unavailable */ }
+    if (!current) {
+      recipeBatchCoordinationChannel?.postMessage({
+        type: 'RECOVERY_RESOLVED', documentId: recovery.documentId, ownerToken: recovery.ownerToken
+      });
+      state.pendingRecipeRecovery = null;
+      $('#recipe-recovery-dialog').close();
+      setDocumentEditingBlocked(false);
+      if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+      return true;
     }
+    state.pendingRecipeRecovery = current;
+    renderRecipeRecoveryPrompt(current);
     return false;
   }
 }
 
 function resumeInterruptedRecipe() {
+  void resumeInterruptedRecipeSafely();
+  return true;
+}
+
+async function resumeInterruptedRecipeSafely() {
   const recovery = state.pendingRecipeRecovery;
   if (!recovery) return false;
   if (recovery.leaseExpiresAt > Date.now()) {
     renderRecipeRecoveryPrompt(recovery);
     return false;
   }
+  clearRecipeRecoveryExpiryTimer();
+  const keepButton = $('#recipe-recovery-keep'); const resumeButton = $('#recipe-recovery-resume');
+  keepButton.disabled = true; resumeButton.disabled = true;
+  $('#recipe-recovery-status').textContent = 'Claiming the saved recipe…';
   const started = startRecipe(structuredClone(recovery.recipe), recovery.targetIds, {
     concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY, pageId: recovery.pageId, recoveryOnFailure: recovery,
     expectedRecoveryOwnerToken: recovery.ownerToken
   });
-  if (!started) return false;
+  if (!started) {
+    renderRecipeRecoveryPrompt(recovery);
+    return false;
+  }
+  const bulk = state.bulk;
+  if (!bulk || bulk.recoveryOnFailure?.ownerToken !== recovery.ownerToken || !bulk.leaseClaimPromise) {
+    renderRecipeRecoveryPrompt(recovery);
+    return false;
+  }
+  await bulk.leaseClaimPromise;
+  if (state.bulk !== bulk || bulk.journalPending || bulk.ownershipLost) {
+    if (state.pendingRecipeRecovery) {
+      $('#recipe-recovery-status').textContent = 'The saved recipe is still protected. Resolve the current recovery notice before continuing.';
+      renderRecipeRecoveryPrompt();
+    }
+    return false;
+  }
   state.pendingRecipeRecovery = null;
   $('#recipe-recovery-dialog').close();
   setDocumentEditingBlocked(false);
@@ -11733,13 +11944,15 @@ function renderBulkBar() {
   const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0) - skipped);
   const lockedSkipped = (bulk.excludedLocked || 0) + (bulk.skippedLocked || 0);
   const drained = canDismissImageRecipeBatch(bulk);
-  const dismissible = drained && !bulk.savePending && !bulk.journalPending && !bulk.ownershipLost;
+  const dismissible = drained && !bulk.savePending && !bulk.journalPending && !bulk.ownershipLost && !bulk.recoveryHandoffPending;
   const normalTitle = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
-  $('#bulk-title').textContent = bulk.ownershipLost ? 'Recipe lease lost · reload to recover' : bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
+  $('#bulk-title').textContent = bulk.ownershipLost ? 'Recipe lease lost · reload to recover' : bulk.recoveryHandoffPending ? 'Stopping safely for recovery…' : bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
   const announcement = imageRecipeBatchAnnouncement(bulk);
   if (announcer.textContent !== announcement) announcer.textContent = announcement;
   $('#bulk-subtitle').textContent = bulk.ownershipLost
     ? 'Another tab owns this batch now. This tab stopped processing and will not write more recipe changes; reload after the other tab finishes.'
+    : bulk.recoveryHandoffPending
+      ? 'Another tab asked to recover this recipe. Stopping work, waiting for active images to finish, and saving your edits…'
     : bulk.saveError
     ? bulk.recoveryError ? 'The image edits are saved, but the recovery marker could not be cleared. Retry to finish safely.' : drained ? 'The edits remain in this tab. Retry the local save before closing this bar.' : 'A local save failed. The batch will drain before retry is offered.'
     : bulk.journalPending && !bulk.done
@@ -12246,7 +12459,7 @@ function startRecipe(recipe, targets, { concurrency = DEFAULT_IMAGE_RECIPE_CONCU
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
   const replacedBulk = replaceCompletedBatch ? state.bulk : null;
   state.bulk = {
-    recipe: structuredClone(recipe), pageId, targets: unique, nodeIndex, documentId: state.document.id, workspace: state.workspace, ownerToken, leaseExpiresAt: 0, leaseTimer: 0, ownershipLost: false, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
+    recipe: structuredClone(recipe), pageId, targets: unique, nodeIndex, documentId: state.document.id, workspace: state.workspace, ownerToken, leaseExpiresAt: 0, leaseTimer: 0, leaseClaimPromise: null, leaseRenewalPromise: null, ownershipLost: false, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
     previousEngineConcurrency: imageEngine.concurrency, concurrencyRestored: false,
     backgroundRemoval, imageExpansion, localAiRequired, localAiCpuSlots, localAiWaiting: 0, localAiStage: '',
     activeControllers: new Map(), createdAssetIds: new Set(), assetsCleanupStarted: false,
@@ -12262,7 +12475,7 @@ function startRecipe(recipe, targets, { concurrency = DEFAULT_IMAGE_RECIPE_CONCU
   const claimOptions = {};
   if (recoveryOnFailure) claimOptions.expectedOwnerToken = expectedRecoveryOwnerToken;
   else if (replacedBulk) claimOptions.replaceOwnerToken = replacedBulk.ownerToken;
-  void claimRecipeBatchRecovery({
+  bulk.leaseClaimPromise = claimRecipeBatchRecovery({
     documentId: state.document.id,
     ownerToken,
     recipe: bulk.recipe,
@@ -18722,6 +18935,7 @@ function trapMobilePanelTab(event) {
 }
 
 function initEvents() {
+  initializeRecipeBatchCoordination();
   initializeCollaborationQrHandoff({
     validateInvitation: invitationFromText,
     onGuestHandoff: ({ invitation, offer }) => {
@@ -19991,6 +20205,9 @@ function initEvents() {
     try {
       await deleteRecipeBatchRecovery(state.document.id, bulk.ownerToken);
       if (state.bulk !== bulk) return;
+      recipeBatchCoordinationChannel?.postMessage({
+        type: 'RECOVERY_RESOLVED', documentId: bulk.documentId, ownerToken: bulk.ownerToken
+      });
       state.bulk = null;
       renderBulkBar(); renderInspector();
     } catch (error) {
@@ -20006,6 +20223,8 @@ function initEvents() {
   recoveryDialog.addEventListener('cancel', event => event.preventDefault());
   $('#recipe-recovery-keep').addEventListener('click', () => { void keepInterruptedRecipeChanges(); });
   $('#recipe-recovery-resume').addEventListener('click', resumeInterruptedRecipe);
+  $('#recipe-recovery-stop-other').addEventListener('click', requestRecipeBatchHandoff);
+  $('#recipe-recovery-handoff-reload').addEventListener('click', () => location.reload());
   $('#toggle-rulers').addEventListener('click', event => {
     if (state.interaction?.kind?.startsWith('ruler-guide-')) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.showRulers = !state.showRulers;
@@ -20345,7 +20564,7 @@ async function boot() {
     if (updateCanvasViewportCamera()) renderer.invalidate();
   });
   canvasViewportObserver.observe(canvas);
-  window.addEventListener('beforeunload', () => { resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
+  window.addEventListener('beforeunload', () => { if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer); recipeBatchCoordinationChannel?.close(); resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();

@@ -5,6 +5,7 @@ import { workspaceEditingAccess } from '../src/workspace/editing-access.js';
 import { workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
 
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
 test('workspace onboarding describes only storage choices available on this browser', () => {
   const folder = workspaceOnboardingCopy({ folderPickerAvailable: true });
@@ -65,6 +66,24 @@ test('a deferred stable-link invitation opens after recipe recovery is resolved'
   const joinEnd = mainSource.indexOf('\nfunction toggleLayoutGuides', joinStart);
   assert.ok(joinStart >= 0 && joinEnd > joinStart);
   assert.match(mainSource.slice(joinStart, joinEnd), /if \(state\.workspaceOnboardingRequired \|\| state\.workspacePermissionNeeded \|\| state\.pendingRecipeRecovery\) return false/);
+});
+
+test('recipe recovery stays blocked until an expired batch lease is actually claimed', () => {
+  const resumeStart = mainSource.indexOf('function resumeInterruptedRecipe()');
+  const resumeEnd = mainSource.indexOf('\nfunction renderBulkBar', resumeStart);
+  assert.ok(resumeStart >= 0 && resumeEnd > resumeStart);
+  const resume = mainSource.slice(resumeStart, resumeEnd);
+  const claim = resume.indexOf('await bulk.leaseClaimPromise');
+  const clearRecovery = resume.indexOf('state.pendingRecipeRecovery = null');
+  const unblock = resume.indexOf('setDocumentEditingBlocked(false)');
+  assert.ok(claim >= 0 && clearRecovery > claim && unblock > claim,
+    'the recovery gate must remain active until the batch ownership claim succeeds');
+  assert.match(resume, /clearRecipeRecoveryExpiryTimer\(\)/,
+    'the expiry reload must not race the in-progress recovery claim');
+
+  const recoveryDialog = htmlSource.slice(htmlSource.indexOf('id="recipe-recovery-dialog"'), htmlSource.indexOf('</dialog>', htmlSource.indexOf('id="recipe-recovery-dialog"')));
+  assert.match(recoveryDialog, /id="recipe-recovery-stop-other"/,
+    'the active lease prompt needs a direct cross-tab recovery action');
 });
 
 test('browser-storage onboarding stays gated until the initial document save succeeds', () => {
