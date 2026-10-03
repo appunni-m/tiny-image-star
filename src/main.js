@@ -71,6 +71,7 @@ import { fontFamilyStack, itemizeLocalFontRuns } from './font-fallback.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { strokeDecorationTypes } from './stroke-decorations.js';
+import { defaultStrokeDashArray, MAX_STROKE_DASH_SEGMENTS, parseStrokeDashArray } from './stroke-style.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout, gridTrackLayout } from './layout-engine.js';
 import { addGridTrack, deleteGridTrack, gridTrackCount, gridTrackMoveRange, gridTrackResizeHandles, moveGridTrack, resizeGridTrack } from './grid-track-editing.js';
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
@@ -2294,7 +2295,8 @@ function strokeStackControls(node) {
         ${gradient ? '' : `<label class="stroke-field"><span>Color</span><input type="color" data-stroke-field="color" data-stroke-id="${id}" value="${escapeHtml(safeColor)}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`}
         <label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>
         <div class="slider-row stroke-opacity-row"><label for="stroke-opacity-${id}">Opacity</label><input id="stroke-opacity-${id}" type="range" min="0" max="100" step="1" value="${opacity}" data-stroke-field="opacity" data-stroke-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${opacity}%</output></div>
-        ${select('pattern', 'Pattern', stroke.pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}
+        ${select('pattern', 'Pattern', stroke.pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted'], ['custom', 'Custom']])}
+        ${stroke.pattern === 'custom' ? `<label class="stroke-field stroke-custom-dash-field"><span>Dash and gap lengths · px</span><input type="text" inputmode="decimal" data-stroke-field="dashArray" data-stroke-id="${id}" value="${stroke.dashArray.map(formatInspectorNumber).join(' ')}" aria-label="${name} custom dash and gap lengths in pixels"${node.locked ? ' disabled' : ''}/><small class="stroke-dash-error" data-stroke-dash-error hidden>Use 1–${MAX_STROKE_DASH_SEGMENTS} nonnegative lengths separated by spaces or commas; at least one must be positive.</small></label>` : ''}
         ${select('cap', 'Cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']], stroke.pattern === 'dotted')}
         ${select('join', 'Join', stroke.join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}
         <label class="stroke-field"><span>Miter limit</span><input type="number" data-stroke-field="miterLimit" data-stroke-id="${id}" min="1" max="1000" step="0.01" value="${formatInspectorNumber(stroke.miterLimit)}" aria-label="${name} miter limit"${node.locked ? ' disabled' : ''}/></label>
@@ -7795,7 +7797,7 @@ function recordGradientTrackChange(context) {
   const { node, fill, stroke } = context;
   if (stroke) {
     syncLegacyStrokeFields(node);
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
   } else if (fill) {
     syncLegacyFillFields(node);
     recordNodeComponentOverrides(node, ['fills', 'fillGradient']);
@@ -8011,6 +8013,17 @@ function updateStrokeInput(input) {
   if (!stroke) return;
   const field = input.dataset.strokeField;
   const index = strokes.indexOf(stroke);
+  const parsedDashArray = field === 'dashArray' ? parseStrokeDashArray(input.value) : null;
+  const dashError = field === 'dashArray' ? input.parentElement.querySelector('[data-stroke-dash-error]') : null;
+  if (field === 'dashArray' && !parsedDashArray) {
+    input.setAttribute('aria-invalid', 'true');
+    if (dashError) dashError.hidden = false;
+    return;
+  }
+  if (field === 'dashArray') {
+    input.removeAttribute('aria-invalid');
+    if (dashError) dashError.hidden = true;
+  }
   if (!state.controlEdit) { checkpoint('Edit stroke'); state.controlEdit = true; }
   if (field === 'paint') {
     if (input.value === 'solid') updateStroke(node, stroke.id, { gradient: null });
@@ -8050,14 +8063,21 @@ function updateStrokeInput(input) {
   else if (field === 'miterLimit' && Number.isFinite(Number(input.value))) updateStroke(node, stroke.id, { miterLimit: Number(input.value) });
   else if (field === 'cap' && ['butt', 'round', 'square'].includes(input.value)) updateStroke(node, stroke.id, { cap: input.value });
   else if (field === 'join' && ['miter', 'round', 'bevel'].includes(input.value)) updateStroke(node, stroke.id, { join: input.value });
-  else if (field === 'pattern' && ['solid', 'dashed', 'dotted'].includes(input.value)) {
-    updateStroke(node, stroke.id, input.value === 'dotted' ? { pattern: input.value, cap: 'round' } : { pattern: input.value });
+  else if (field === 'pattern' && ['solid', 'dashed', 'dotted', 'custom'].includes(input.value)) {
+    const width = Math.max(0, Number(stroke.width) || 0);
+    const dashArray = stroke.pattern === 'custom' && stroke.dashArray?.length
+      ? [...stroke.dashArray]
+      : defaultStrokeDashArray(width);
+    updateStroke(node, stroke.id, input.value === 'custom'
+      ? { pattern: 'custom', dashArray }
+      : input.value === 'dotted' ? { pattern: input.value, cap: 'round' } : { pattern: input.value });
     renderInspector();
-  } else if (field === 'startDecoration' && strokeDecorationTypes.includes(input.value)) updateStroke(node, stroke.id, { startDecoration: input.value });
+  } else if (field === 'dashArray') updateStroke(node, stroke.id, { pattern: 'custom', dashArray: parsedDashArray });
+  else if (field === 'startDecoration' && strokeDecorationTypes.includes(input.value)) updateStroke(node, stroke.id, { startDecoration: input.value });
   else if (field === 'endDecoration' && strokeDecorationTypes.includes(input.value)) updateStroke(node, stroke.id, { endDecoration: input.value });
   else return;
   syncLegacyStrokeFields(node);
-  recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+  recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
   const track = input.closest('.stroke-gradient-controls')?.querySelector('[data-gradient-stop-track]');
   if (track && stroke.gradient) syncGradientStopTrack(track, stroke.gradient);
   renderer.invalidate();
@@ -14376,7 +14396,7 @@ function pasteAppearanceToSelection() {
         for (const property of ['fill', 'fills', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId']) componentProperties.add(property);
       }
       if (changed.has('strokes')) {
-        for (const property of ['stroke', 'strokes', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId']) componentProperties.add(property);
+        for (const property of ['stroke', 'strokes', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId']) componentProperties.add(property);
       }
       if (changed.has('effects')) componentProperties.add('effects');
       if (changed.has('radii')) {
@@ -18177,7 +18197,7 @@ function applyInspectorAction(action, details = {}) {
       checkpoint('Remove stroke gradient stop');
       updateStroke(node, stroke.id, { gradient });
     }
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit']);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
   }
@@ -18258,7 +18278,7 @@ function applyInspectorAction(action, details = {}) {
     }
     if (hadPrimaryBinding && strokes[0] !== previousPrimary) detachPrimaryStrokeBinding(node, previousPrimary, previousPrimaryColor);
     syncLegacyStrokeFields(node);
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
   }

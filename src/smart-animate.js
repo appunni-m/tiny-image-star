@@ -16,7 +16,7 @@ const midpointProperties = [
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'affineTransform', 'points', 'innerRadius', 'vertexRadii',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
-  'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
+  'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
 ];
 
 const AFFINE_DETERMINANT_EPSILON = 1e-12;
@@ -373,6 +373,11 @@ function interpolateStrokeStack(fromNode, toNode, progress) {
     result.color = interpolateColor(start.color, stroke.color, progress) || result.color;
     for (const property of ['width', 'opacity', 'miterLimit']) {
       result[property] = start[property] + (stroke[property] - start[property]) * progress;
+    }
+    if (start.pattern === 'custom' && stroke.pattern === 'custom'
+      && Array.isArray(start.dashArray) && Array.isArray(stroke.dashArray)
+      && start.dashArray.length === stroke.dashArray.length) {
+      result.dashArray = start.dashArray.map((value, dashIndex) => value + (stroke.dashArray[dashIndex] - value) * progress);
     }
     return result;
   });

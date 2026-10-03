@@ -10,6 +10,7 @@ import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
+import { isValidStrokeDashArray } from './stroke-style.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidImageLibraryManifest } from './image-asset-library.js';
@@ -421,7 +422,7 @@ const textAlignments = new Set(['left', 'center', 'right', 'justify']);
 const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
 const strokeCaps = new Set(['butt', 'round', 'square']);
 const strokeJoins = new Set(['miter', 'round', 'bevel']);
-const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
+const strokePatterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
 const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
@@ -429,7 +430,7 @@ const frameScrollPositions = new Set(['scroll', 'fixed', 'sticky']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -3806,6 +3807,8 @@ export function validateDocument(document) {
         || (node.strokeCap != null && !strokeCaps.has(node.strokeCap))
         || (node.strokeJoin != null && !strokeJoins.has(node.strokeJoin))
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
+        || (node.strokeDashArray != null && !isValidStrokeDashArray(node.strokeDashArray))
+        || (node.strokePattern === 'custom' && !isValidStrokeDashArray(node.strokeDashArray))
         || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
         || (node.strokePattern === 'dotted' && node.strokeCap != null && node.strokeCap !== 'round')) throw new TypeError(`Invalid stroke style on layer ${node.name || node.id}.`);
       if (node.lineReverseY != null && (node.type !== 'line' || typeof node.lineReverseY !== 'boolean')) throw new TypeError(`Invalid line direction on layer ${node.name || node.id}.`);

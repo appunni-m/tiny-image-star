@@ -52,7 +52,7 @@ function networkRoundTripMetadata(node) {
     },
     paint: Object.fromEntries([
       'fill', 'fillOpacity', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap',
-      'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule'
+      'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule'
     ].filter(key => node[key] !== undefined).map(key => [key, node[key]]))
   };
   const serialized = JSON.stringify(payload);
@@ -392,12 +392,13 @@ function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 
   const patternValue = entry ? entry.pattern : node.strokePattern;
   const capValue = entry ? entry.cap : node.strokeCap;
   const joinValue = entry ? entry.join : node.strokeJoin;
-  const pattern = ['solid', 'dashed', 'dotted'].includes(patternValue) ? patternValue : 'solid';
+  const pattern = ['solid', 'dashed', 'dotted', 'custom'].includes(patternValue) ? patternValue : 'solid';
   const cap = pattern === 'dotted' ? 'round' : ['butt', 'round', 'square'].includes(capValue) ? capValue : 'butt';
   const join = ['miter', 'round', 'bevel'].includes(joinValue) ? joinValue : 'miter';
   const miterLimit = Number(entry ? entry.miterLimit : node.strokeMiterLimit ?? 10);
   if (!Number.isFinite(miterLimit) || miterLimit < 1 || miterLimit > 1000) throw new TypeError(`SVG export requires a valid stroke miter limit on layer ${node.name || node.id || '(unnamed)'}.`);
-  const dash = resolved !== 'none' ? strokeDashArray({ strokeWidth, strokePattern: pattern }) : [];
+  const customDash = entry?.dashArray ?? node.strokeDashArray;
+  const dash = resolved !== 'none' ? strokeDashArray({ strokeWidth, strokePattern: pattern, dashArray: customDash }) : [];
   const miter = resolved !== 'none' && join === 'miter' && miterLimit !== 4 ? ` stroke-miterlimit="${number(miterLimit)}"` : '';
   const opacity = Number(entry ? entry.opacity : node.strokeOpacity ?? 1);
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid stroke opacity on layer ${node.name || node.id || '(unnamed)'}.`);

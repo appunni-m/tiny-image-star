@@ -492,6 +492,26 @@ test('all supported Figma Paint blend modes map on both fill and stroke paints w
   assert.equal(imported.report.flattenedTypes.PAINT_BLEND || 0, 0);
 });
 
+test('imports exact custom Figma stroke dash arrays as editable local stroke settings', () => {
+  const page = { sessionID: 831, localID: 1 };
+  const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    node('RECTANGLE', 2, page, 'a', {
+      name: 'Custom dashed outline', strokeWeight: 2, strokeCap: 'SQUARE', strokeJoin: 'BEVEL',
+      dashPattern: [3, 5, 0, 2],
+      strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }]
+    })
+  ], images: new Map(), message: { blobs: [] } });
+  const layer = imported.document.pages[0].children[0];
+  assert.deepEqual(imported.report.warnings.filter(item => item.type === 'unsupported'), []);
+  assert.equal(layer.strokes[0].pattern, 'custom');
+  assert.deepEqual(layer.strokes[0].dashArray, [3, 5, 0, 2]);
+  assert.equal(layer.strokes[0].cap, 'square');
+  assert.equal(layer.strokes[0].join, 'bevel');
+  const restored = parseDocument(serializeDocument(imported.document)).pages[0].children[0];
+  assert.deepEqual(restored.strokes[0].dashArray, [3, 5, 0, 2]);
+});
+
 test('import review flags paint blends isolated by their layer or any ancestor', () => {
   const page = { sessionID: 83, localID: 1 };
   const opacityParent = { sessionID: 83, localID: 4 };

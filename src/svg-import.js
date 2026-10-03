@@ -3,6 +3,7 @@ import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
 import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
 import { isValidFontFeatureValues, parseFontFeatureSettings } from './font-features.js';
+import { normalizeStrokeDashArray } from './stroke-style.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -376,7 +377,7 @@ function importedNetwork(node, matrix, style, prefix, counter, metadataText) {
     || !payload.paint || typeof payload.paint !== 'object' || Array.isArray(payload.paint)) {
     fail('invalid-network-metadata', 'Tiny Image Star network metadata has an invalid version or graph structure.', node.tag);
   }
-  const allowedPaint = new Set(['fill', 'fillOpacity', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule']);
+  const allowedPaint = new Set(['fill', 'fillOpacity', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule']);
   if (Object.keys(payload.paint).some(key => !allowedPaint.has(key))) {
     fail('invalid-network-metadata', 'Tiny Image Star network metadata contains unsupported paint fields.', node.tag);
   }
@@ -1011,8 +1012,9 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       case 'stroke-dasharray': {
         if (value === 'none') { values.strokePattern = 'solid'; values.strokeDashArray = null; break; }
         const dash = value.split(/[\s,]+/).filter(Boolean).map(part => length(part, 'stroke dash length', node.tag));
-        if (!dash.length || dash.some(item => item < 0) || dash.every(item => item === 0)) fail('invalid-stroke', 'SVG stroke-dasharray must contain a positive dash length.', node.tag);
-        values.strokeDashArray = dash;
+        const normalized = normalizeStrokeDashArray(dash);
+        if (!normalized) fail('invalid-stroke', 'SVG stroke-dasharray must contain 1–16 finite, nonnegative lengths and at least one positive length.', node.tag);
+        values.strokeDashArray = normalized;
         break;
       }
       case 'stroke-miterlimit': {
@@ -1052,12 +1054,14 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     values.strokePattern = parentStyle.strokePattern;
   }
   if (values.strokeDashArray) {
-    const normalized = values.strokeDashArray.length % 2 ? [...values.strokeDashArray, ...values.strokeDashArray] : values.strokeDashArray;
     const unit = values.strokeWidth;
     const close = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-6;
-    if (normalized.length === 2 && close(normalized[0], unit * 4) && close(normalized[1], unit * 2)) values.strokePattern = 'dashed';
-    else if (normalized.length === 2 && close(normalized[0], 0) && close(normalized[1], unit * 2)) values.strokePattern = 'dotted';
-    else fail('unsupported-stroke-style', 'SVG custom dash arrays cannot be represented; use solid, 4:2 dashed, or round 0:2 dotted strokes.', node.tag);
+    const dash = values.strokeDashArray;
+    if (dash.length === 2 && close(dash[0], unit * 4) && close(dash[1], unit * 2)) {
+      values.strokePattern = 'dashed';
+    } else if (dash.length === 2 && close(dash[0], 0) && close(dash[1], unit * 2) && values.strokeCap === 'round') {
+      values.strokePattern = 'dotted';
+    } else values.strokePattern = 'custom';
   }
   for (const [property, styleKey] of [
     ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'], ['font-variation-settings', 'fontAxes'], ['font-feature-settings', 'fontFeatures'],
@@ -1710,6 +1714,9 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
     strokeNode.strokeCap = style.strokeCap;
     strokeNode.strokeJoin = style.strokeJoin;
     strokeNode.strokePattern = style.strokePattern;
+    if (style.strokePattern === 'custom' && style.strokeDashArray) {
+      strokeNode.strokeDashArray = style.strokeDashArray.map(value => value * (style.strokeWidth > 0 ? strokeWidth / style.strokeWidth : 1));
+    }
     strokeNode.strokeMiterLimit = style.strokeMiterLimit;
     group.children = [fillNode, strokeNode];
     return [group];
@@ -1722,6 +1729,9 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
   if (strokeVisible) {
     node.stroke = style.stroke; node.strokeWidth = strokeWidth; node.opacity *= style.strokeAlpha;
     node.strokeCap = style.strokeCap; node.strokeJoin = style.strokeJoin; node.strokePattern = style.strokePattern;
+    if (style.strokePattern === 'custom' && style.strokeDashArray) {
+      node.strokeDashArray = style.strokeDashArray.map(value => value * (style.strokeWidth > 0 ? strokeWidth / style.strokeWidth : 1));
+    }
     node.strokeMiterLimit = style.strokeMiterLimit;
   }
   return [node];
@@ -1979,6 +1989,9 @@ function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask sourc
     base.strokeCap = style.strokeCap;
     base.strokeJoin = style.strokeJoin;
     base.strokePattern = style.strokePattern;
+    if (style.strokePattern === 'custom' && style.strokeDashArray) {
+      base.strokeDashArray = style.strokeDashArray.map(value => value * (style.strokeWidth > 0 ? strokeWidth / style.strokeWidth : 1));
+    }
     base.strokeMiterLimit = style.strokeMiterLimit;
   }
   if (!vectorMask) {

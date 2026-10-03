@@ -2,12 +2,13 @@
 
 import { isValidGradientFill } from './fills.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { defaultStrokeDashArray, isValidStrokeDashArray, normalizeStrokeDashArray } from './stroke-style.js';
 
 export const MAX_STROKES_PER_NODE = 32;
 
 const caps = new Set(['butt', 'round', 'square']);
 const joins = new Set(['miter', 'round', 'bevel']);
-const patterns = new Set(['solid', 'dashed', 'dotted']);
+const patterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
 const endpointDecorations = new Set(['none', 'arrow', 'triangle']);
 const clone = value => structuredClone(value);
 const id = () => `stroke-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
@@ -23,6 +24,7 @@ function legacyStrokeForNode(node) {
     cap: node.strokeCap ?? (node.strokePattern === 'dotted' ? 'round' : 'butt'),
     join: node.strokeJoin ?? 'miter',
     pattern: node.strokePattern ?? 'solid',
+    ...(node.strokePattern === 'custom' && Array.isArray(node.strokeDashArray) ? { dashArray: clone(node.strokeDashArray) } : {}),
     miterLimit: node.strokeMiterLimit ?? 10,
     startDecoration: 'none', endDecoration: 'none'
   }];
@@ -46,12 +48,22 @@ export function ensureStrokeStack(node) {
 }
 
 export function createStroke(overrides = {}) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new TypeError('Stroke overrides must be an object.');
+  }
   const stroke = {
     id: id(), color: '#1e1e1e', width: 1, opacity: 1, visible: true,
     cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
     startDecoration: 'none', endDecoration: 'none', blendMode: 'normal',
     ...overrides
   };
+  const hasDashArray = Object.hasOwn(overrides, 'dashArray') && overrides.dashArray != null;
+  const normalizedDashArray = hasDashArray ? normalizeStrokeDashArray(overrides.dashArray) : null;
+  if (hasDashArray && !normalizedDashArray) throw new TypeError('A custom stroke dash array must contain finite, nonnegative dash and gap lengths.');
+  if (hasDashArray && !Object.hasOwn(overrides, 'pattern')) stroke.pattern = 'custom';
+  if (stroke.pattern === 'custom') stroke.dashArray = normalizedDashArray || defaultStrokeDashArray(stroke.width);
+  else delete stroke.dashArray;
+  if (stroke.pattern === 'dotted') stroke.cap = 'round';
   if (Object.hasOwn(stroke, 'gradient')) {
     if (stroke.gradient == null) delete stroke.gradient;
     else stroke.gradient = clone(stroke.gradient);
@@ -89,6 +101,16 @@ export function moveStroke(node, strokeId, direction) {
 }
 
 export function updateStroke(node, strokeId, changes = {}) {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    throw new TypeError('Stroke updates must be an object.');
+  }
+  const dashArraySpecified = Object.hasOwn(changes, 'dashArray');
+  const normalizedDashArray = dashArraySpecified && changes.dashArray != null
+    ? normalizeStrokeDashArray(changes.dashArray)
+    : null;
+  if (dashArraySpecified && changes.dashArray != null && !normalizedDashArray) {
+    throw new TypeError('A custom stroke dash array must contain finite, nonnegative dash and gap lengths.');
+  }
   const stroke = ensureStrokeStack(node).find(item => item.id === strokeId);
   if (!stroke) return null;
   if (Object.hasOwn(changes, 'visible') && typeof changes.visible === 'boolean') stroke.visible = changes.visible;
@@ -98,7 +120,25 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (Object.hasOwn(changes, 'width') && Number.isFinite(changes.width) && changes.width >= 0 && changes.width <= 100_000) stroke.width = changes.width;
   if (Object.hasOwn(changes, 'cap') && caps.has(changes.cap)) stroke.cap = changes.cap;
   if (Object.hasOwn(changes, 'join') && joins.has(changes.join)) stroke.join = changes.join;
-  if (Object.hasOwn(changes, 'pattern') && patterns.has(changes.pattern)) stroke.pattern = changes.pattern;
+  const patternSpecified = Object.hasOwn(changes, 'pattern') && patterns.has(changes.pattern);
+  if (patternSpecified) {
+    stroke.pattern = changes.pattern;
+    if (stroke.pattern === 'custom') {
+      if (dashArraySpecified) stroke.dashArray = normalizedDashArray || defaultStrokeDashArray(stroke.width);
+      else if (!isValidStrokeDashArray(stroke.dashArray)) stroke.dashArray = defaultStrokeDashArray(stroke.width);
+    } else delete stroke.dashArray;
+  } else if (dashArraySpecified) {
+    if (normalizedDashArray) {
+      stroke.pattern = 'custom';
+      stroke.dashArray = normalizedDashArray;
+    } else {
+      delete stroke.dashArray;
+      if (stroke.pattern === 'custom') stroke.pattern = 'solid';
+    }
+  } else if (stroke.pattern === 'custom' && !isValidStrokeDashArray(stroke.dashArray)) {
+    stroke.dashArray = defaultStrokeDashArray(stroke.width);
+  }
+  if (stroke.pattern === 'dotted') stroke.cap = 'round';
   if (Object.hasOwn(changes, 'miterLimit') && Number.isFinite(changes.miterLimit) && changes.miterLimit >= 1 && changes.miterLimit <= 1000) stroke.miterLimit = changes.miterLimit;
   if (Object.hasOwn(changes, 'startDecoration') && endpointDecorations.has(changes.startDecoration)) stroke.startDecoration = changes.startDecoration;
   if (Object.hasOwn(changes, 'endDecoration') && endpointDecorations.has(changes.endDecoration)) stroke.endDecoration = changes.endDecoration;
@@ -118,7 +158,7 @@ export function syncLegacyStrokeFields(node) {
     node.stroke = null;
     node.strokeWidth = 0;
     node.strokeOpacity = 1;
-    for (const property of ['strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId']) delete node[property];
+    for (const property of ['strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId']) delete node[property];
     if (node.variableBindings) {
       delete node.variableBindings.stroke;
       if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
@@ -134,6 +174,8 @@ export function syncLegacyStrokeFields(node) {
   node.strokeCap = primary.cap;
   node.strokeJoin = primary.join;
   node.strokePattern = primary.pattern;
+  if (primary.pattern === 'custom' && isValidStrokeDashArray(primary.dashArray)) node.strokeDashArray = [...primary.dashArray];
+  else delete node.strokeDashArray;
   node.strokeMiterLimit = primary.miterLimit;
   return node;
 }
@@ -161,6 +203,8 @@ export function isValidStroke(stroke) {
     && (!Object.hasOwn(stroke, 'blendMode') || isValidLayerBlendMode(stroke.blendMode))
     && typeof stroke.visible === 'boolean'
     && caps.has(stroke.cap) && joins.has(stroke.join) && patterns.has(stroke.pattern)
+    && (stroke.pattern !== 'custom' || isValidStrokeDashArray(stroke.dashArray))
+    && (!Object.hasOwn(stroke, 'dashArray') || isValidStrokeDashArray(stroke.dashArray))
     && Number.isFinite(stroke.miterLimit) && stroke.miterLimit >= 1 && stroke.miterLimit <= 1000
     && (stroke.pattern !== 'dotted' || stroke.cap === 'round')
     && (!Object.hasOwn(stroke, 'startDecoration') || endpointDecorations.has(stroke.startDecoration))

@@ -627,7 +627,7 @@ test('rejects SVG text features the native text model cannot represent', () => {
   importFailure(`<svg><text><![CDATA[A&B]]></text></svg>`, 'unsupported-text-feature');
 });
 
-test('imports editable SVG stroke caps, joins, and standard dash patterns', () => {
+test('imports editable SVG stroke caps, joins, and exact custom dash patterns', () => {
   const result = importSvgToLayers(`<svg><g stroke="#123456" stroke-width="2" stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="8 4">
     <path id="dashed" d="M0 0L20 0" fill="none"/>
     <path id="dotted" d="M0 10L20 10" fill="none" stroke-dasharray="0 4"/>
@@ -640,12 +640,23 @@ test('imports editable SVG stroke caps, joins, and standard dash patterns', () =
   const dotted = nodes.find(node => node.name === 'dotted');
   assert.equal(dotted.strokePattern, 'dotted');
   assert.equal(dotted.strokeCap, 'round');
-  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="3 5"/></svg>`, 'unsupported-stroke-style');
-  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="0 4"/></svg>`, 'unsupported-stroke-style');
+  const custom = allNodes(importSvgToLayers(`<svg>
+    <path id="uneven" d="M0 20L20 20" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="3 5"/>
+    <path id="invisible-dots" d="M0 30L20 30" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="0 4"/>
+  </svg>`).nodes);
+  assert.equal(custom.find(node => node.name === 'uneven').strokePattern, 'custom');
+  assert.deepEqual(custom.find(node => node.name === 'uneven').strokeDashArray, [3, 5]);
+  assert.equal(custom.find(node => node.name === 'invisible-dots').strokePattern, 'custom');
+  assert.deepEqual(custom.find(node => node.name === 'invisible-dots').strokeDashArray, [0, 4]);
+  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="0 0"/></svg>`, 'invalid-stroke');
+  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17"/></svg>`, 'invalid-stroke');
 });
 
-test('rechecks inherited SVG dash lengths against each element width and lets none clear them', () => {
-  importFailure(`<svg><g stroke="#123456" stroke-width="1" stroke-dasharray="4 2"><path d="M0 0L20 0" stroke-width="2"/></g></svg>`, 'unsupported-stroke-style');
+test('preserves inherited SVG dash lengths across child width changes and lets none clear them', () => {
+  const inherited = allNodes(importSvgToLayers(`<svg><g stroke="#123456" stroke-width="1" stroke-dasharray="4 2"><path id="child" d="M0 0L20 0" stroke-width="2"/></g></svg>`).nodes);
+  const inheritedStroke = inherited.find(node => node.name === 'child stroke');
+  assert.equal(inheritedStroke.strokePattern, 'custom');
+  assert.deepEqual(inheritedStroke.strokeDashArray, [4, 2]);
   const result = importSvgToLayers(`<svg><g stroke="#123456" stroke-width="1" stroke-dasharray="4 2">
     <path id="cleared" d="M0 0L20 0" stroke-width="2" stroke-dasharray="none"/>
     <path id="redeclared" d="M0 10L20 10" stroke-width="2" stroke-dasharray="8 4"/>

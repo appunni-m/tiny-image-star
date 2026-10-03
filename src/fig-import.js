@@ -13,6 +13,7 @@ import {
 } from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { normalizeStrokeDashArray } from './stroke-style.js';
 import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
 import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 
@@ -350,13 +351,20 @@ function mapStrokes(paints, node, report) {
   const joinValue = String(node.strokeJoin || '').toUpperCase();
   let cap = ({ ROUND: 'round', SQUARE: 'square', BUTT: 'butt' })[capValue] || 'butt';
   const join = ({ ROUND: 'round', BEVEL: 'bevel', MITER: 'miter' })[joinValue] || 'miter';
-  const dash = Array.isArray(node.dashPattern) ? node.dashPattern : [];
-  const pattern = dash.length ? (dash[0] === 0 ? 'dotted' : 'dashed') : 'solid';
+  const rawDash = Array.isArray(node.dashPattern) ? node.dashPattern : [];
+  const dash = rawDash.length ? normalizeStrokeDashArray(rawDash) : null;
+  const width = finite(node.strokeWeight, 1, 0, 100_000);
+  const close = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-6;
+  let pattern = 'solid';
+  let dashArray;
+  if (dash && dash.length === 2 && close(dash[0], width * 4) && close(dash[1], width * 2)) pattern = 'dashed';
+  else if (dash && dash.length === 2 && close(dash[0], 0) && close(dash[1], width * 2)) pattern = 'dotted';
+  else if (dash) { pattern = 'custom'; dashArray = dash; }
+  else if (rawDash.length) warn(report, 'unsupported', 'STROKE_PATTERN', node.name, 'The custom dash pattern was invalid; the imported stroke uses a solid pattern.');
   if (pattern === 'dotted') cap = 'round';
   if (paints.length && capValue && !['ROUND', 'SQUARE', 'BUTT'].includes(capValue)) warn(report, 'flattened', 'STROKE_CAP', node.name, 'Arrow and custom endpoint caps were reduced to a standard line cap.');
   if (paints.length && joinValue && !['ROUND', 'BEVEL', 'MITER'].includes(joinValue)) warn(report, 'flattened', 'STROKE_JOIN', node.name, 'This stroke join was reduced to a miter join.');
   if (node.strokeAlign && node.strokeAlign !== 'CENTER') warn(report, 'flattened', 'STROKE_ALIGNMENT', node.name, 'Inside and outside stroke alignment were centered.');
-  if (paints.length && dash.length) warn(report, 'flattened', 'STROKE_PATTERN', node.name, 'Custom dash lengths were reduced to a standard dashed or dotted stroke.');
   if (paints.length > 32) warn(report, 'unsupported', 'STROKE_STACK', node.name, 'Only the first 32 stroke paint layers were considered.');
   for (const paint of paints.slice(0, 32)) {
     if (!paint || paint.visible === false || paintOpacity(paint) <= 0) continue;
@@ -365,8 +373,9 @@ function mapStrokes(paints, node, report) {
       if (!mapped) continue;
       strokes.push({
         id: createId('stroke'), color: mapped.gradient.stops[0].color,
-        gradient: mapped.gradient, width: finite(node.strokeWeight, 1, 0, 100_000),
+        gradient: mapped.gradient, width,
         opacity: mapped.opacity, visible: true, cap, join, pattern,
+        ...(dashArray ? { dashArray: [...dashArray] } : {}),
         miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none',
         ...mappedPaintBlendMode(paint, report, node.name)
       });
@@ -380,8 +389,9 @@ function mapStrokes(paints, node, report) {
     const color = hexColor(paint.color);
     if (!color) continue;
     strokes.push({
-      id: createId('stroke'), color, width: finite(node.strokeWeight, 1, 0, 100_000),
+      id: createId('stroke'), color, width,
       opacity: paintOpacity(paint), visible: true, cap, join, pattern,
+      ...(dashArray ? { dashArray: [...dashArray] } : {}),
       miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none', ...blend
     });
   }
@@ -1550,7 +1560,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
 
 const componentOverrideProperties = [
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius',
   'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId',
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',

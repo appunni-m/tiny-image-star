@@ -343,6 +343,20 @@ test('SVG export preserves non-default stroke cap, join, and pattern styles', ()
   assert.doesNotMatch(exportNodeToSvg(svgDefault), /stroke-miterlimit=/);
 });
 
+test('custom dash lengths stay editable and round-trip exactly through SVG', () => {
+  const node = createNode('line', {
+    id: 'custom-line', width: 40, height: 0, stroke: '#123456', strokeWidth: 2,
+    strokeCap: 'square', strokePattern: 'custom', strokeDashArray: [3, 5, 0, 2]
+  });
+  const svg = exportNodeToSvg(node);
+  assert.match(svg, /stroke-width="2" stroke-linecap="square" stroke-miterlimit="10" stroke-dasharray="3 5 0 2"/);
+  const imported = importSvgToLayers(svg).nodes;
+  const roundTripped = findNestedLayer(imported, layer => layer.strokePattern === 'custom');
+  assert.equal(roundTripped.strokePattern, 'custom');
+  assert.deepEqual(roundTripped.strokeDashArray, [3, 5, 0, 2]);
+  assert.equal(roundTripped.strokeCap, 'square');
+});
+
 test('SVG export emits ordered stroke stack records with independent presentation and opacity', () => {
   const node = createNode('rectangle', { width: 40, height: 20, fill: '#ffffff', strokes: [
     { id: 'inner', color: '#123456', width: 12, opacity: .35, visible: true, cap: 'square', join: 'miter', pattern: 'dashed', miterLimit: 8 },

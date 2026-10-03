@@ -353,6 +353,19 @@ test('smart animation interpolates compatible ordered stroke items and midpoint-
   assert.deepEqual(stackAt(.5), incompatibleTarget.children[0].strokes, 'the full stack switches atomically at halfway');
 });
 
+test('smart animation interpolates custom stroke dash and gap lengths when their topology matches', () => {
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [
+    { id: 'custom', color: '#000000', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'custom', dashArray: [2, 4], miterLimit: 10 }
+  ] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [
+    { id: 'custom', color: '#ffffff', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'custom', dashArray: [6, 8], miterLimit: 10 }
+  ] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].strokes[0];
+  assert.deepEqual(at(.25).dashArray, [3, 5]);
+  assert.deepEqual(at(.5).dashArray, [4, 6]);
+  assert.deepEqual(at(1).dashArray, [6, 8]);
+});
+
 test('smart animation takes the shortest rotation arc and preserves exact frame and layer endpoints', () => {
   const from = createNode('frame', {
     rotation: 350,

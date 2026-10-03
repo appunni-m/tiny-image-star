@@ -163,7 +163,7 @@ function autoLayoutDeclarations(layout, children = []) {
 
 function strokePatternStyle(node) {
   const pattern = node.strokePattern ?? node.pattern;
-  return ['dashed', 'dotted'].includes(pattern) ? pattern : 'solid';
+  return ['dashed', 'dotted', 'custom'].includes(pattern) ? pattern : 'solid';
 }
 
 function resolvedStroke(document, node, stroke, index) {
@@ -176,7 +176,8 @@ function resolvedStroke(document, node, stroke, index) {
     cap: stroke.pattern === 'dotted' ? 'round' : stroke.cap,
     join: stroke.join,
     miterLimit: stroke.miterLimit,
-    pattern: strokePatternStyle(stroke)
+    pattern: strokePatternStyle(stroke),
+    ...(stroke.pattern === 'custom' && Array.isArray(stroke.dashArray) ? { dashArray: [...stroke.dashArray] } : {})
   };
 }
 
@@ -309,12 +310,13 @@ function cssForEntry(document, entry) {
     const primaryStroke = strokeLayers[0];
     if (node.type === 'line') {
       const stroke = primaryStroke?.visible ? cssColor(primaryStroke.color, primaryStroke.opacity) : null;
-      if (stroke && primaryStroke.width > 0) declarations.push(`border-top: ${number(primaryStroke.width)}px ${primaryStroke.pattern} ${stroke};`);
+      if (stroke && primaryStroke.width > 0) declarations.push(`border-top: ${number(primaryStroke.width)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
       declarations.push('/* Exact line geometry is retained in layer JSON. */');
     } else if (primaryStroke?.visible && primaryStroke.width > 0) {
       const stroke = cssColor(primaryStroke.color, primaryStroke.opacity);
-      if (stroke) declarations.push(`border: ${number(primaryStroke.width)}px ${primaryStroke.pattern} ${stroke};`);
+      if (stroke) declarations.push(`border: ${number(primaryStroke.width)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
     }
+    if (primaryStroke?.pattern === 'custom') declarations.push(`/* Custom stroke dash lengths ${primaryStroke.dashArray.join(' ')}px are preserved in layer JSON; CSS borders cannot reproduce custom dash arrays. */`);
     if (primaryStroke?.gradient) declarations.push('/* Linear/radial stroke gradient is preserved in layer JSON; this CSS border uses its first-stop color. */');
     if (primaryStroke?.visible && primaryStroke.width > 0
       && (primaryStroke.cap !== 'butt' || primaryStroke.join !== 'miter' || primaryStroke.miterLimit !== 10)) {
