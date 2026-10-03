@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, findNode, validateDocument } from '../src/model.js';
-import { canMoveLayerOneVisualRow, layerDropReorder, layerOrderShortcutDirection, moveLayerOneVisualRow, reorderLayerForDrop } from '../src/layer-order.js';
+import { canMoveLayerOneVisualRow, layerDropReorder, layerOrderShortcutDirection, layerTreeSections, moveLayerOneVisualRow, reorderLayerForDrop } from '../src/layer-order.js';
 
 test('keyboard layer-order shortcuts use Alt+ArrowUp and Alt+ArrowDown only', () => {
   assert.equal(layerOrderShortcutDirection({ key: 'ArrowUp', altKey: true }), 'up');
@@ -33,6 +33,59 @@ test('layer-row drops reorder siblings using the reversed visual stack order', (
   // Now the panel shows [Top, Bottom, Middle]. Put Middle below Top.
   assert.equal(reorderLayerForDrop(document, middle.id, top.id, 'after'), true);
   assert.deepEqual(document.pages[0].children.map(node => node.name), ['Bottom', 'Middle', 'Top']);
+  assert.equal(validateDocument(document), true);
+});
+
+test('scrolling frames show Fixed and Scrolls sections in paint-stack order', () => {
+  const fixedBottom = createNode('rectangle', { name: 'Fixed bottom', scrollPosition: 'fixed' });
+  const scrollBottom = createNode('rectangle', { name: 'Scroll bottom', scrollPosition: 'scroll' });
+  const fixedTop = createNode('rectangle', { name: 'Fixed top', fixedPositionWhenScrolling: true });
+  const scrollTop = createNode('rectangle', { name: 'Scroll top' });
+  const frame = {
+    type: 'frame', overflowBehavior: 'vertical',
+    children: [fixedBottom, scrollBottom, fixedTop, scrollTop]
+  };
+
+  assert.deepEqual(layerTreeSections(frame.children, frame), [
+    { label: 'Fixed', position: 'fixed', nodes: [fixedTop, fixedBottom] },
+    { label: 'Scrolls', position: 'scroll', nodes: [scrollTop, scrollBottom] }
+  ]);
+  assert.deepEqual(frame.children, [fixedBottom, scrollBottom, fixedTop, scrollTop],
+    'the Layers-panel grouping does not mutate saved document order');
+  assert.deepEqual(layerTreeSections(frame.children, { ...frame, overflowBehavior: 'none' }), [
+    { label: null, position: null, nodes: [...frame.children].reverse() }
+  ], 'ordinary frames keep the established reversed sibling order');
+});
+
+test('crossing Fixed and Scrolls sections updates scroll position and one-row moves follow the visible order', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { name: 'Scroller', overflowBehavior: 'vertical' });
+  const fixed = createNode('rectangle', { name: 'Fixed', scrollPosition: 'fixed' });
+  const scrollAbove = createNode('rectangle', { name: 'Scroll above', scrollPosition: 'scroll' });
+  const scrollTarget = createNode('rectangle', { name: 'Scroll target', scrollPosition: 'scroll' });
+  addNode(document, frame);
+  addNode(document, fixed, { parentId: frame.id });
+  addNode(document, scrollAbove, { parentId: frame.id });
+  addNode(document, scrollTarget, { parentId: frame.id });
+
+  assert.deepEqual(layerTreeSections(frame.children, frame).map(section => section.nodes.map(node => node.id)), [
+    [fixed.id], [scrollTarget.id, scrollAbove.id]
+  ]);
+  assert.equal(moveLayerOneVisualRow(document, scrollTarget.id, 'up'), true,
+    'the first scroll layer moves above the Fixed section when it moves up one visible row');
+  assert.equal(scrollTarget.scrollPosition, 'fixed');
+  assert.equal(scrollTarget.fixedPositionWhenScrolling, true);
+  assert.deepEqual(layerTreeSections(frame.children, frame).map(section => section.nodes.map(node => node.id)), [
+    [scrollTarget.id, fixed.id], [scrollAbove.id]
+  ]);
+
+  assert.equal(reorderLayerForDrop(document, scrollTarget.id, scrollAbove.id, 'before'), true,
+    'dropping a Fixed layer into Scrolls updates its position state');
+  assert.equal(scrollTarget.scrollPosition, 'scroll');
+  assert.equal(scrollTarget.fixedPositionWhenScrolling, false);
+  assert.deepEqual(layerTreeSections(frame.children, frame).map(section => section.nodes.map(node => node.id)), [
+    [fixed.id], [scrollTarget.id, scrollAbove.id]
+  ]);
   assert.equal(validateDocument(document), true);
 });
 

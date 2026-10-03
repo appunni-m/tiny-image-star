@@ -105,13 +105,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layer-row.is-drop-inside { outline: 2px solid #0d99ff; outline-offset: -2px; background: color-mix(in srgb, #0d99ff 12%, transparent); }
 .layer-row:hover { background: #f4f4f4; }
 .layer-row.is-selected { color: #137ed0; background: #e5f3ff; }
+.layer-position-section { min-height: 22px; display: flex; align-items: center; margin-top: 4px; padding: 0 8px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
 .layer-depth-marker { display: none; }
 .layer-chevron, .layer-chevron-placeholder { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; padding: 0; border-radius: 5px; color: #777; font-size: 15px; line-height: 1; touch-action: manipulation; }
 .layer-chevron:hover { background: var(--surface-hover, #eceff3); }
 .layer-chevron:focus-visible { outline: 2px solid #0d99ff; outline-offset: 1px; }
 .layer-icon { display: grid; place-items: center; width: 14px; height: 16px; flex: 0 0 14px; color: #777; }
 .layer-name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; font-size: 11px; }
-.layer-position-badge { flex: 0 0 auto; padding: 2px 5px; border: 1px solid #d7e7f5; border-radius: 999px; background: #eff7fd; color: #376b91; font-size: 8px; font-weight: 600; line-height: 1.1; }
 .layer-reorder-handle { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; padding: 0; border-radius: 5px; color: var(--muted, #777); background: transparent; font-size: 17px; line-height: 1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .layer-reorder-handle:hover, .layer-reorder-handle:active { color: var(--ink, #333); background: var(--surface-hover, #eceff3); }
 .layer-reorder-handle:active { cursor: grabbing; }
@@ -1603,7 +1603,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .prototype-help strong,
   :root[data-theme="dark"] .local-library-header,
   :root[data-theme="dark"] .layer-name { color: #e0e4eb; }
-  :root[data-theme="dark"] .layer-position-badge { border-color: #40556a; background: #263747; color: #a7d6ff; }
   :root[data-theme="dark"] .sidebar-tab.is-active::after,
   :root[data-theme="dark"] .inspector-tab.is-active::after { background: #38a8ff; }
   :root[data-theme="dark"] .page-row,

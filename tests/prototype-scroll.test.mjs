@@ -139,12 +139,21 @@ test('the Layers panel identifies fixed children with their owning scroll frame'
   const end = editorSource.indexOf('function section(', start);
   assert.ok(start >= 0 && end > start, 'the Layers panel must have a bounded renderer');
   const layerTree = editorSource.slice(start, end);
-  assert.match(layerTree, /fixedScrollLayerLabel\(node, parentFrame\)/,
-    'the label must be based on the owning frame, not merely a legacy node flag');
-  assert.match(layerTree, /class="layer-position-badge"/,
-    'the fixed status must be visible beside the layer name');
+  assert.match(layerTree, /layerTreeSections\(nodes, parentFrame\)/,
+    'the section grouping must be based on the owning frame');
+  assert.match(layerTree, /className = `layer-position-section/,
+    'the Fixed and Scrolls group headings must be visible in the Layers panel');
   assert.match(layerTree, /addRows\(node\.children, group, depth \+ 1, lockedInChain, node\)/,
     'nested layer rows must receive their actual parent frame');
+});
+
+test('Fixed/Scrolls layer moves persist position changes on component instances', () => {
+  assert.match(editorSource,
+    /previousScrollPosition = scrollPositionForNode\(node\)[\s\S]*?moveLayerOneVisualRow\(state\.document, nodeId, orderDirection\)[\s\S]*?recordNodeComponentOverrides\(node, \['scrollPosition', 'fixedPositionWhenScrolling'\]\)/,
+    'keyboard reordering must persist cross-section position changes as component overrides');
+  assert.match(editorSource,
+    /onChange: \(\{ nodeId, positionChanged \} = \{\}\) => \{[\s\S]*?recordNodeComponentOverrides\(node, \['scrollPosition', 'fixedPositionWhenScrolling'\]\)/,
+    'drag reordering must persist cross-section position changes as component overrides');
 });
 
 test('scroll-to recognizes direct and nested sticky targets at their current pinned positions', () => {

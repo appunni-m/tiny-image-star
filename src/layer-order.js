@@ -1,7 +1,36 @@
 import { findNode, reorderNode } from './model.js';
 import { canReparentLayer, reparentLayer } from './layer-reparent.js';
+import { fixedScrollLayerLabel, isScrollableFrame, scrollPositionForNode } from './prototype-scroll-position.js';
 
 const layerContainerTypes = new Set(['frame', 'section', 'group', 'boolean']);
+
+/** Return the visible sibling sections used by the Layers panel. */
+export function layerTreeSections(siblings, parentFrame = null) {
+  const nodes = Array.isArray(siblings) ? siblings : [];
+  const fixed = isScrollableFrame(parentFrame)
+    ? nodes.filter(node => fixedScrollLayerLabel(node, parentFrame) === 'Fixed')
+    : [];
+  if (!fixed.length) return [{ label: null, position: null, nodes: [...nodes].reverse() }];
+  const fixedIds = new Set(fixed.map(node => node.id));
+  return [
+    { label: 'Fixed', position: 'fixed', nodes: fixed.reverse() },
+    { label: 'Scrolls', position: 'scroll', nodes: nodes.filter(node => !fixedIds.has(node.id)).reverse() }
+  ];
+}
+
+function displayedSiblings(siblings, parentFrame) {
+  return layerTreeSections(siblings, parentFrame).flatMap(section => section.nodes);
+}
+
+function canBeFixedPositionWhenScrolling(node, parentFrame) {
+  return isScrollableFrame(parentFrame)
+    && (!parentFrame.autoLayout || node?.layoutPositioning === 'absolute');
+}
+
+function setFixedPosition(node, fixed) {
+  node.scrollPosition = fixed ? 'fixed' : 'scroll';
+  node.fixedPositionWhenScrolling = fixed;
+}
 
 /** Translate a visual layer-row drop into a final sibling index.
  * Layer rows display sibling arrays in reverse paint order, so dropping above
@@ -31,6 +60,10 @@ export function layerDropReorder(document, sourceId, targetId, position, pageId 
   if (sourceParentId === parentId) {
     const siblings = source.parent?.children || document.pages.find(page => page.id === pageId)?.children;
     if (!siblings) return null;
+    if (position !== 'inside' && isScrollableFrame(source.parent)) {
+      const targetIsFixed = fixedScrollLayerLabel(target.node, source.parent) === 'Fixed';
+      if (targetIsFixed && !canBeFixedPositionWhenScrolling(source.node, source.parent)) return null;
+    }
     const index = Math.max(0, Math.min(boundary - (source.index < boundary ? 1 : 0), siblings.length - 1));
     if (position !== 'inside') {
       const firstCrossedIndex = Math.min(source.index, target.index) + 1;
@@ -47,9 +80,18 @@ export function layerDropReorder(document, sourceId, targetId, position, pageId 
 export function reorderLayerForDrop(document, sourceId, targetId, position, pageId = document.activePageId) {
   const operation = layerDropReorder(document, sourceId, targetId, position, pageId);
   if (!operation) return false;
-  return operation.reparent
-    ? reparentLayer(document, operation.nodeId, operation)
-    : reorderNode(document, operation.nodeId, operation.index, operation.pageId);
+  if (operation.reparent) return reparentLayer(document, operation.nodeId, operation);
+  const source = findNode(document, sourceId, pageId);
+  const target = findNode(document, targetId, pageId);
+  const parentFrame = target?.parent;
+  const sameScrollingParent = position !== 'inside' && source?.parent === parentFrame && isScrollableFrame(parentFrame);
+  const targetIsFixed = sameScrollingParent && fixedScrollLayerLabel(target.node, parentFrame) === 'Fixed';
+  const sourceWasFixed = sameScrollingParent
+    && fixedScrollLayerLabel(source.node, parentFrame) === 'Fixed';
+  const changesFixedSection = sameScrollingParent && sourceWasFixed !== targetIsFixed;
+  if (!reorderNode(document, operation.nodeId, operation.index, operation.pageId)) return false;
+  if (changesFixedSection && source?.node) setFixedPosition(source.node, targetIsFixed);
+  return true;
 }
 
 /** Whether a layer can move by one visible row within its current sibling list. */
@@ -59,8 +101,12 @@ export function canMoveLayerOneVisualRow(document, nodeId, direction, pageId = d
   if (!entry || entry.node.locked || entry.parents.some(parent => parent.locked)) return false;
   const siblings = entry.parent?.children || document.pages.find(page => page.id === pageId)?.children;
   if (!siblings) return false;
-  const neighbor = siblings[entry.index + (direction === 'up' ? 1 : -1)];
-  return Boolean(neighbor && !neighbor.locked);
+  const ordered = displayedSiblings(siblings, entry.parent);
+  const visualIndex = ordered.findIndex(node => node.id === nodeId);
+  const neighbor = ordered[visualIndex + (direction === 'up' ? -1 : 1)];
+  if (!neighbor || neighbor.locked) return false;
+  return fixedScrollLayerLabel(neighbor, entry.parent) !== 'Fixed'
+    || canBeFixedPositionWhenScrolling(entry.node, entry.parent);
 }
 
 /** Move a layer by one visible row within its current sibling list.
@@ -72,8 +118,10 @@ export function moveLayerOneVisualRow(document, nodeId, direction, pageId = docu
   if (!canMoveLayerOneVisualRow(document, nodeId, direction, pageId)) return false;
   const entry = findNode(document, nodeId, pageId);
   const siblings = entry.parent?.children || document.pages.find(page => page.id === pageId)?.children;
-  const neighborIndex = entry.index + (direction === 'up' ? 1 : -1);
-  return reorderNode(document, nodeId, neighborIndex, pageId);
+  const ordered = displayedSiblings(siblings, entry.parent);
+  const visualIndex = ordered.findIndex(node => node.id === nodeId);
+  const neighbor = ordered[visualIndex + (direction === 'up' ? -1 : 1)];
+  return reorderLayerForDrop(document, nodeId, neighbor.id, direction === 'up' ? 'before' : 'after', pageId);
 }
 
 /** Map the documented keyboard shortcut to its visual direction. */
@@ -184,9 +232,11 @@ export function installLayerReorder(list, {
     const document = getDocument();
     const operation = layerDropReorder(document, dragSourceId, targetId, position, pageId);
     if (!operation) return false;
+    const beforePosition = scrollPositionForNode(findNode(document, dragSourceId, pageId)?.node);
     beforeChange();
     if (!reorderLayerForDrop(document, dragSourceId, targetId, position, pageId)) return false;
-    onChange();
+    const afterPosition = scrollPositionForNode(findNode(document, dragSourceId, pageId)?.node);
+    onChange({ nodeId: dragSourceId, positionChanged: beforePosition !== afterPosition });
     return true;
   };
   const targetRowAtPoint = (x, y, fallbackTarget = null) => {
