@@ -247,8 +247,12 @@ export function completeImageRecipeBatchIfDrained(batch, now) {
 export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, canceled = false, targetId = null, now } = {}) {
   if (canceled) return false;
   batch.completed += 1;
-  if (Number.isFinite(batch.activeSince) && !batch.paused) batch.timingCompletions = (Number(batch.timingCompletions) || 0) + 1;
-  if (Number.isFinite(batch.activeSince) && !batch.paused) {
+  // Skipped targets never enter the image pipeline. Counting them as image
+  // throughput can inflate both the live rate and ETA when a large selection
+  // contains deleted, unavailable, or otherwise ineligible layers.
+  const timedCompletion = !skipped && Number.isFinite(batch.activeSince) && !batch.paused;
+  if (timedCompletion) batch.timingCompletions = (Number(batch.timingCompletions) || 0) + 1;
+  if (timedCompletion) {
     batch.timingCompletionTimes ||= [];
     const elapsedMs = Math.max(
       elapsedActiveMilliseconds(batch, now),

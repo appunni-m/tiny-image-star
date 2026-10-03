@@ -5,26 +5,7 @@ import {
 } from '../model.js';
 import { applyHostTypedOperation } from './host-operation-engine.js';
 import { COLLABORATION_PROTOCOL_VERSION, validateCollaborationMessage } from './protocol.js';
-
-// Keep in sync with the host operation engine's explicit SetProperty allowlist.
-// This planner intentionally emits only whole-property replacements.
-const SET_PROPERTY_ROOTS = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked',
-  'blendMode', 'fill', 'fills', 'fillOpacity', 'fillStyleId', 'stroke', 'strokeWidth',
-  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit',
-  'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'maskSourceId', 'effects',
-  'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
-  'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
-  'minHeight', 'maxHeight', 'gridCell', 'fillGradient', 'imageFill', 'fillVariableId',
-  'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
-  'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
-  'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'fixedPositionWhenScrolling', 'scrollPosition', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
-  'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines',
-  'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
-  'sourceWidth', 'sourceHeight'
-]);
+import { isCollaborationSetPropertyRoot } from './set-property-roots.js';
 
 const MAX_PLANNED_OPERATIONS = 128;
 
@@ -164,8 +145,7 @@ function generatePropertyOperations(entries, working, target) {
     for (const property of keys) {
       const hasCurrent = Object.hasOwn(current, property);
       const hasWanted = Object.hasOwn(wanted, property);
-      const addsOptionalField = !hasCurrent && hasWanted
-        && ['textTruncation', 'maxLines', 'fixedPositionWhenScrolling', 'scrollPosition'].includes(property);
+      const addsOptionalField = !hasCurrent && hasWanted;
       if (hasCurrent !== hasWanted && property !== 'fontAxes' && property !== 'fontFeatures' && !addsOptionalField) {
         throw new Error('A property removal cannot be represented by the host protocol.');
       }
@@ -176,7 +156,7 @@ function generatePropertyOperations(entries, working, target) {
           type: 'ReplaceText', pageId: targetNodes.get(id).pageId, nodeId: id, text: wanted.text
         }, working);
       } else {
-        if (!SET_PROPERTY_ROOTS.has(property)) throw new Error(`Host SetProperty does not support ${property}.`);
+        if (!isCollaborationSetPropertyRoot(property)) throw new Error(`Host SetProperty does not support ${property}.`);
         emitOperation(entries, {
           type: 'SetProperty', pageId: targetNodes.get(id).pageId, targetId: id,
           property, value: hasWanted ? clone(wanted[property]) : null

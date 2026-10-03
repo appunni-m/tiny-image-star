@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode, findNode, moveNode, parseDocument, removeNode, updateNode, validateDocument } from '../src/model.js';
+import { readFile } from 'node:fs/promises';
+import { addNode, createDocument, createMaskGroup, createNode, findNode, moveNode, parseDocument, removeNode, updateNode, validateDocument } from '../src/model.js';
 import { createHostOperationEngine } from '../src/collaboration/host-operation-engine.js';
 import { planGuestOperationSnapshots } from '../src/collaboration/guest-operation-planner.js';
+import { isCollaborationSetPropertyRoot } from '../src/collaboration/set-property-roots.js';
 import { validateCollaborationMessage } from '../src/collaboration/protocol.js';
 import { addStroke, createStroke, updateStroke } from '../src/strokes.js';
 
@@ -20,6 +22,12 @@ function fixture() {
   validateDocument(document);
   return { document, pageId };
 }
+
+test('every literal inspector property root can be planned for a shared design', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const roots = new Set([...source.matchAll(/data-prop="([a-z][A-Za-z0-9]*)"/g)].map(match => match[1]));
+  assert.deepEqual([...roots].filter(property => !isCollaborationSetPropertyRoot(property)), []);
+});
 
 async function assertPlanMatchesHost(before, after, expectedTypes) {
   const plan = planGuestOperationSnapshots(before, after);
@@ -146,6 +154,36 @@ test('plans fixed-position scroll behavior as a validated collaborative property
   assert.equal(plan[0].operation.targetId, 'rectangle-a');
   assert.equal(plan[0].operation.property, 'fixedPositionWhenScrolling');
   assert.equal(plan[0].operation.value, true);
+});
+
+test('plans optional inspector fields and newer editor properties through the host whitelist', async () => {
+  const { document, pageId } = fixture();
+  const maskGroup = createMaskGroup(document, ['rectangle-a', 'ellipse-a'], pageId, 'alpha');
+  const image = createNode('image', {
+    id: 'image-a', assetId: 'asset-image-a', width: 80, height: 60,
+    sourceWidth: 640, sourceHeight: 480, fit: 'cover'
+  });
+  const star = createNode('star', { id: 'star-a', width: 100, height: 100 });
+  addNode(document, image, { pageId });
+  addNode(document, star, { pageId });
+  validateDocument(document);
+
+  const after = structuredClone(document);
+  findNode(after, 'frame-a', pageId).node.overflowBehavior = 'vertical';
+  findNode(after, 'text-a', pageId).node.lineHeight = 24;
+  findNode(after, 'text-a', pageId).node.lineHeightUnit = 'pixels';
+  findNode(after, 'rectangle-a', pageId).node.cornerSmoothing = 0.6;
+  findNode(after, maskGroup.id, pageId).node.maskMode = 'vector';
+  findNode(after, image.id, pageId).node.fit = 'tile';
+  findNode(after, image.id, pageId).node.scalingFactor = 1.25;
+  findNode(after, star.id, pageId).node.vertexRadii = Array(10).fill(4);
+  validateDocument(after);
+
+  const plan = await assertPlanMatchesHost(document, after, Array(8).fill('SetProperty'));
+  const properties = plan.map(entry => entry.operation.property);
+  for (const property of ['overflowBehavior', 'lineHeight', 'lineHeightUnit', 'cornerSmoothing', 'maskMode', 'fit', 'scalingFactor', 'vertexRadii']) {
+    assert.ok(properties.includes(property), `the guest planner should emit ${property}`);
+  }
 });
 
 test('plans custom stroke dash edits through the same host-validated property path', async () => {

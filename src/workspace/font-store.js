@@ -50,7 +50,7 @@ async function fontDirectories(workspace, designId, create = false) {
   let fonts;
   try { fonts = await design.getDirectoryHandle('fonts', { create }); }
   catch (error) {
-    if (notFound(error)) fail('FONT_NOT_FOUND', 'The font does not exist in this design.', error);
+    if (notFound(error)) fail('FONT_NOT_FOUND', 'This font is missing from the design folder. Restore it from this device or reinstall it before saving.', error);
     fail('FONT_DIRECTORY_FAILED', 'Could not open the design font directory.', error);
   }
   try {
@@ -229,6 +229,21 @@ export async function readWorkspaceFontAsset(workspace, designId, fontId, { cryp
   designId = assertId(designId, 'design ID'); fontId = assertId(fontId, 'font ID');
   assertWorkspace(workspace); assertCrypto(crypto);
   return readVerified(workspace, designId, fontId, crypto);
+}
+
+/** Restore a missing design-local font from this device's validated font library, then verify the saved copy. */
+export async function readWorkspaceFontAssetOrRestore(workspace, designId, fontId, {
+  crypto = globalThis.crypto, locks = globalThis.navigator?.locks, loadFallback
+} = {}) {
+  try { return await readWorkspaceFontAsset(workspace, designId, fontId, { crypto }); }
+  catch (error) {
+    if (error?.code !== 'FONT_NOT_FOUND' || typeof loadFallback !== 'function') throw error;
+    const fallback = await loadFallback(fontId);
+    if (!fallback) throw error;
+    if (fallback.id !== fontId) fail('FONT_FALLBACK_INVALID', 'The device font library returned a different font identity.');
+    await saveWorkspaceFontAsset(workspace, designId, fallback, { crypto, locks });
+    return readWorkspaceFontAsset(workspace, designId, fontId, { crypto });
+  }
 }
 
 /** Lists and verifies every font registered in a design. */

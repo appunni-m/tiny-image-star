@@ -103,6 +103,198 @@ export function vectorPathContours(node) {
   ];
 }
 
+function finitePathPoint(point) {
+  return Boolean(point && Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function pathCubic(points, index, width, height) {
+  const start = points[index];
+  const end = points[(index + 1) % points.length];
+  if (!start || !end || !finitePathPoint(start) || !finitePathPoint(end)
+    || (start.out != null && !finitePathPoint(start.out))
+    || (end.in != null && !finitePathPoint(end.in))) return null;
+  const p0 = { x: start.x * width, y: start.y * height };
+  const p3 = { x: end.x * width, y: end.y * height };
+  const out = start.out || { x: 0, y: 0 };
+  const incoming = end.in || { x: 0, y: 0 };
+  const p1 = { x: p0.x + out.x * width, y: p0.y + out.y * height };
+  const p2 = { x: p3.x + incoming.x * width, y: p3.y + incoming.y * height };
+  if (![p0, p1, p2, p3].every(finitePathPoint)) return null;
+  return { p0, p1, p2, p3 };
+}
+
+function cubicPointAt(segment, t) {
+  const u = 1 - t;
+  return {
+    x: u ** 3 * segment.p0.x + 3 * u ** 2 * t * segment.p1.x + 3 * u * t ** 2 * segment.p2.x + t ** 3 * segment.p3.x,
+    y: u ** 3 * segment.p0.y + 3 * u ** 2 * t * segment.p1.y + 3 * u * t ** 2 * segment.p2.y + t ** 3 * segment.p3.y
+  };
+}
+
+function unitPathTangent(vector) {
+  const length = Math.hypot(vector.x, vector.y);
+  return Number.isFinite(length) && length > 1e-9 ? { x: vector.x / length, y: vector.y / length } : null;
+}
+
+function deletionParameterWeights(points, segmentIndexes, width, height, fallback) {
+  const logWeights = [0];
+  for (let index = 1; index < segmentIndexes.length; index += 1) {
+    const join = points[segmentIndexes[index]];
+    const incoming = { x: (Number(join?.in?.x) || 0) * width, y: (Number(join?.in?.y) || 0) * height };
+    const outgoing = { x: (Number(join?.out?.x) || 0) * width, y: (Number(join?.out?.y) || 0) * height };
+    const incomingLength = Math.hypot(incoming.x, incoming.y);
+    const outgoingLength = Math.hypot(outgoing.x, outgoing.y);
+    if (!(incomingLength > 1e-9) || !(outgoingLength > 1e-9)) return fallback;
+    const dot = incoming.x * outgoing.x + incoming.y * outgoing.y;
+    const cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
+    if (dot >= -incomingLength * outgoingLength * .95
+      || Math.abs(cross) > incomingLength * outgoingLength * .32) return fallback;
+    logWeights.push(logWeights.at(-1) + Math.log(outgoingLength / incomingLength));
+  }
+  const maximum = logWeights.reduce((current, value) => Math.max(current, value), -Infinity);
+  const weights = logWeights.map(value => Math.exp(Math.max(-700, value - maximum)));
+  const sum = weights.reduce((total, value) => total + value, 0);
+  return Number.isFinite(sum) && sum > 0 ? weights.map(value => value / sum) : fallback;
+}
+
+/**
+ * Fit one cubic to the span between surviving anchors. The authored endpoint
+ * positions and tangent directions stay fixed; least squares chooses the
+ * handle lengths. Explicitly constrained endpoint modes are left untouched.
+ */
+function fitPathDeletionJoin(points, segmentIndexes, width, height) {
+  const segments = segmentIndexes.map(index => pathCubic(points, index, width, height));
+  if (!segments.length || segments.some(segment => !segment)) return null;
+  const startPoint = points[segmentIndexes[0]];
+  const endPoint = points[(segmentIndexes.at(-1) + 1) % points.length];
+  if ((startPoint.mode != null && startPoint.mode !== 'corner')
+    || (endPoint.mode != null && endPoint.mode !== 'corner')) return null;
+  if (!segments.some(({ p0, p1, p2, p3 }) =>
+    Math.hypot(p1.x - p0.x, p1.y - p0.y) > 1e-9 || Math.hypot(p3.x - p2.x, p3.y - p2.y) > 1e-9)) return null;
+
+  const samplesPerSegment = 24;
+  const samples = segments.map(segment => Array.from({ length: samplesPerSegment + 1 }, (_, index) => cubicPointAt(segment, index / samplesPerSegment)));
+  const lengths = samples.map(segmentSamples => segmentSamples.slice(1).reduce((sum, point, index) =>
+    sum + Math.hypot(point.x - segmentSamples[index].x, point.y - segmentSamples[index].y), 0));
+  const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+  if (!Number.isFinite(totalLength) || totalLength <= 1e-9) return null;
+  const weights = deletionParameterWeights(points, segmentIndexes, width, height,
+    lengths.map(length => length / totalLength));
+
+  const first = segments[0];
+  const last = segments.at(-1);
+  const startTangent = unitPathTangent({ x: first.p1.x - first.p0.x, y: first.p1.y - first.p0.y })
+    || unitPathTangent({ x: first.p3.x - first.p0.x, y: first.p3.y - first.p0.y });
+  const endTangent = unitPathTangent({ x: last.p3.x - last.p2.x, y: last.p3.y - last.p2.y })
+    || unitPathTangent({ x: last.p3.x - last.p0.x, y: last.p3.y - last.p0.y });
+  if (!startTangent || !endTangent) return null;
+
+  let aa = 0; let ab = 0; let bb = 0; let ar = 0; let br = 0;
+  const { p0 } = first;
+  const { p3 } = last;
+  let precedingWeight = 0;
+  for (const [segmentIndex, segmentSamples] of samples.entries()) {
+    const segmentWeight = weights[segmentIndex];
+    for (let index = 0; index <= samplesPerSegment; index += 1) {
+      const point = segmentSamples[index];
+      const t = Math.max(0, Math.min(1, precedingWeight + segmentWeight * index / samplesPerSegment));
+      const u = 1 - t;
+      const startWeight = u ** 3 + 3 * u ** 2 * t;
+      const endWeight = 3 * u * t ** 2 + t ** 3;
+      const a = 3 * u ** 2 * t;
+      const b = -3 * u * t ** 2;
+      const residualX = point.x - startWeight * p0.x - endWeight * p3.x;
+      const residualY = point.y - startWeight * p0.y - endWeight * p3.y;
+      aa += a * a;
+      ab += a * b * (startTangent.x * endTangent.x + startTangent.y * endTangent.y);
+      bb += b * b;
+      ar += a * (residualX * startTangent.x + residualY * startTangent.y);
+      br += b * (residualX * endTangent.x + residualY * endTangent.y);
+    }
+    precedingWeight += segmentWeight;
+  }
+  const determinant = aa * bb - ab * ab;
+  if (!Number.isFinite(determinant) || determinant <= Math.max(1e-20, aa * bb * 1e-12)) return null;
+  const startHandleLength = (ar * bb - br * ab) / determinant;
+  const endHandleLength = (br * aa - ar * ab) / determinant;
+  if (![startHandleLength, endHandleLength].every(Number.isFinite)) return null;
+  const maxHandleLength = Math.max(1, totalLength) * 1_000;
+  const alpha = Math.max(0, Math.min(maxHandleLength, startHandleLength));
+  const beta = Math.max(0, Math.min(maxHandleLength, endHandleLength));
+  return {
+    startPoint, endPoint,
+    startOut: { x: alpha * startTangent.x / width, y: alpha * startTangent.y / height },
+    endIn: { x: -beta * endTangent.x / width, y: -beta * endTangent.y / height }
+  };
+}
+
+function pathDeletionJoins(points, closed, indexes, width, height) {
+  const removed = new Set(indexes);
+  const kept = points.map((_, index) => index).filter(index => !removed.has(index));
+  const joins = [];
+  if (closed) {
+    for (let position = 0; position < kept.length; position += 1) {
+      const startIndex = kept[position];
+      const endIndex = kept[(position + 1) % kept.length];
+      const steps = (endIndex - startIndex + points.length) % points.length;
+      if (steps <= 1) continue;
+      const segments = Array.from({ length: steps }, (_, offset) => (startIndex + offset) % points.length);
+      const fitted = fitPathDeletionJoin(points, segments, width, height);
+      if (fitted) joins.push(fitted);
+    }
+  } else {
+    for (let position = 0; position + 1 < kept.length; position += 1) {
+      const startIndex = kept[position];
+      const endIndex = kept[position + 1];
+      if (endIndex - startIndex <= 1) continue;
+      const segments = Array.from({ length: endIndex - startIndex }, (_, offset) => startIndex + offset);
+      const fitted = fitPathDeletionJoin(points, segments, width, height);
+      if (fitted) joins.push(fitted);
+    }
+  }
+  return joins;
+}
+
+/** Delete anchors across contours atomically and fit curved spans where possible. */
+export function removeVectorPathPoints(node, selections, { dryRun = false } = {}) {
+  if (!node || !Array.isArray(selections) || !selections.length) return false;
+  const contours = vectorPathContours(node);
+  const groups = new Map();
+  for (const selection of selections) {
+    const contourIndex = selection?.contourIndex;
+    const indexes = selection?.indexes;
+    const contour = contours[contourIndex];
+    if (!Number.isInteger(contourIndex) || contourIndex < 0 || !contour
+      || !Array.isArray(indexes) || !indexes.length) return false;
+    const group = groups.get(contourIndex) || { points: contour.points, indexes: [] };
+    if (group.points !== contour.points) return false;
+    group.indexes.push(...indexes);
+    groups.set(contourIndex, group);
+  }
+  for (const { points, indexes } of groups.values()) {
+    if (!Array.isArray(points) || new Set(indexes).size !== indexes.length
+      || indexes.some(index => !Number.isInteger(index) || index < 0 || index >= points.length
+        || !finitePoint(points[index]) || (points[index].in != null && !finitePoint(points[index].in))
+        || (points[index].out != null && !finitePoint(points[index].out)))
+      || points.length - indexes.length < 2) return false;
+  }
+  const width = Number.isFinite(node.width) && node.width > 0 ? node.width : 1;
+  const height = Number.isFinite(node.height) && node.height > 0 ? node.height : 1;
+  const joins = [...groups.entries()].flatMap(([contourIndex, group]) => pathDeletionJoins(
+    group.points, contours[contourIndex].closed, group.indexes, width, height
+  ));
+  const removals = [...groups.entries()].flatMap(([contourIndex, group]) =>
+    group.indexes.map(index => ({ contourIndex, index, points: group.points }))
+  ).sort((left, right) => right.contourIndex - left.contourIndex || right.index - left.index);
+  if (dryRun) return removals.length;
+  for (const removal of removals) removal.points.splice(removal.index, 1);
+  for (const join of joins) {
+    join.startPoint.out = join.startOut;
+    join.endPoint.in = join.endIn;
+  }
+  return removals.length;
+}
+
 /** Reverse a contour's direction while keeping every cubic segment unchanged. */
 export function reverseVectorPathContour(node, contourIndex = 0) {
   if (!node || !Number.isInteger(contourIndex) || contourIndex < 0) return false;
@@ -431,7 +623,8 @@ export function insertVectorNodePoint(node, segmentIndex, t = .5, origin = { x: 
 export function removeVectorNodePoint(node, index, contourIndex = 0) {
   const points = contourAt(node, contourIndex)?.points;
   if (!Array.isArray(points) || points.length <= 2 || !Number.isInteger(index) || index < 0 || index >= points.length) return null;
-  return points.splice(index, 1)[0];
+  const removed = points[index];
+  return removeVectorPathPoints(node, [{ contourIndex, indexes: [index] }]) ? removed : null;
 }
 
 /** Find the longest path segment for one-tap point insertion on touch devices. */

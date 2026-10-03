@@ -175,3 +175,12 @@ test('phone floating controls clear device cutouts and primary actions keep 44px
   assert.ok(landscapeStart > start, 'landscape bulk-bar clearance must override the portrait offset');
   assert.match(enclosingRuleBlock(landscapeStart).content, /\.bulk-bar\s*\{[^}]*bottom:\s*calc\(66px \+ max\(env\(safe-area-inset-bottom\), 8px\)\)/);
 });
+
+test('the mobile main menu keeps a full-width 44px hit target on narrow phones', () => {
+  const marker = '@media (max-width: 820px) {';
+  const mobileStart = stylesheet.lastIndexOf(marker);
+  assert.notEqual(mobileStart, -1, 'expected final mobile safe-area and touch-target rules');
+  const mobile = enclosingRuleBlock(mobileStart).content;
+  assert.match(mobile, /\.topbar #main-menu-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*min-height:\s*44px[^}]*flex:\s*0 0 44px/,
+    'the main menu must remain easy to open even when the brand mark is compacted for a narrow viewport');
+});

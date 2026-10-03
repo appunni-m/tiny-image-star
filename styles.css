@@ -2818,6 +2818,13 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     min-width: 44px;
     min-height: 44px;
   }
+  .topbar #main-menu-button {
+    box-sizing: border-box;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+  }
   .present-button,
   .topbar #share-button,
   .canvas-top-actions .canvas-action-button { box-sizing: border-box; }

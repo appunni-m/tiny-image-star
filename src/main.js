@@ -58,7 +58,7 @@ import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, delet
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
 import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
 import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
-import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
+import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, readWorkspaceFontAssetOrRestore, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
 import { workspaceEditingAccess } from './workspace/editing-access.js';
 import { workspaceOnboardingCopy } from './workspace/onboarding-copy.js';
@@ -1157,7 +1157,7 @@ async function listActiveFontAssets() {
 
 async function loadActiveFontAsset(fontId) {
   if (!state.workspace) return loadFontAsset(fontId);
-  const saved = await readWorkspaceFontAsset(state.workspace, state.document.id, fontId);
+  const saved = await readWorkspaceFontAssetOrRestore(state.workspace, state.document.id, fontId, { loadFallback: loadFontAsset });
   return validateLocalFontAsset({ ...saved.metadata, bytes: saved.bytes });
 }
 

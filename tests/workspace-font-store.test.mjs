@@ -5,7 +5,7 @@ import { addNode, createDocument, createNode } from '../src/model.js';
 import { createWorkspace } from '../src/workspace/workspace-store.js';
 import { commitDesign, createDesign, openDesign } from '../src/workspace/design-store.js';
 import {
-  deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset
+  deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, readWorkspaceFontAssetOrRestore, saveWorkspaceFontAsset
 } from '../src/workspace/font-store.js';
 import { MAX_LOCAL_FONT_BYTES } from '../src/font-assets.js';
 
@@ -104,6 +104,42 @@ test('listing local fonts treats a design with no fonts directory as an empty ca
   assert.equal(design.children.has('fonts'), false);
   assert.deepEqual(await listWorkspaceFontAssets(workspace, designId, { crypto: webcrypto }), []);
   assert.equal(design.children.has('fonts'), false, 'listing does not create folders as a side effect');
+});
+
+test('a missing design font is restored and verified from the local font library', async () => {
+  const { workspace, designId } = await fixture();
+  const source = font('restored-font', Uint8Array.from([0, 1, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1]));
+  let fallbackReads = 0;
+  const restored = await readWorkspaceFontAssetOrRestore(workspace, designId, source.id, {
+    ...options,
+    loadFallback: async id => {
+      fallbackReads += 1;
+      assert.equal(id, source.id);
+      return source;
+    }
+  });
+  assert.equal(fallbackReads, 1);
+  assert.deepEqual(restored.bytes, source.bytes);
+  assert.equal(restored.metadata.id, source.id);
+  assert.deepEqual((await listWorkspaceFontAssets(workspace, designId, options)).map(item => item.metadata.id), [source.id]);
+});
+
+test('font restore does not hide missing local data or integrity errors', async () => {
+  const { workspace, designId } = await fixture();
+  await assert.rejects(readWorkspaceFontAssetOrRestore(workspace, designId, 'missing-font', {
+    ...options, loadFallback: async () => null
+  }), error => error.code === 'FONT_NOT_FOUND' && /restore it from this device or reinstall it/i.test(error.message));
+
+  const source = font('corrupt-font');
+  const saved = await saveWorkspaceFontAsset(workspace, designId, source, options);
+  const design = await workspace.getDesignDirectoryHandle(designId);
+  const blobs = await (await design.getDirectoryHandle('fonts')).getDirectoryHandle('blobs');
+  (await blobs.getFileHandle(saved.contentHash)).bytes[0] ^= 1;
+  let fallbackReads = 0;
+  await assert.rejects(readWorkspaceFontAssetOrRestore(workspace, designId, source.id, {
+    ...options, loadFallback: async () => { fallbackReads += 1; return source; }
+  }), error => error.code === 'FONT_CONTENT_CORRUPT');
+  assert.equal(fallbackReads, 0, 'corruption is not repaired from an unrelated fallback copy');
 });
 
 test('font asset writes fail closed after workspace design deletion is marked', async () => {

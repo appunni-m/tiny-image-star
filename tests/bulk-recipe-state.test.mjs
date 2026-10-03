@@ -309,7 +309,7 @@ test('high-rate batch timing keeps a bounded rolling window without rescanning p
     'the stored rate history stays near twice the five-second window even after tens of thousands of results');
 });
 
-test('throughput counts terminal success, failure, superseded, and skipped targets but excludes cancellation', () => {
+test('throughput excludes skipped and canceled targets while counting completed image attempts', () => {
   const batch = { targets: ['a', 'b', 'c', 'd', 'e'], completed: 0, inflight: 0, next: 5, paused: false, cancelled: false, done: false };
   startImageRecipeBatchClock(batch, 0);
   recordImageRecipeBatchTarget(batch, { now: 100 });
@@ -320,11 +320,33 @@ test('throughput counts terminal success, failure, superseded, and skipped targe
 
   assert.deepEqual(imageRecipeBatchTiming(batch, 2000), {
     elapsedMs: 2000,
-    imagesPerSecond: 2,
-    recentImagesPerSecond: 2,
+    imagesPerSecond: 1.5,
+    recentImagesPerSecond: 1.5,
     remaining: 1,
-    etaSeconds: 0.5
+    etaSeconds: 2 / 3
   });
+});
+
+test('a wave of unavailable targets cannot make the remaining recipe batch ETA look instant', () => {
+  const targets = Array.from({ length: 100 }, (_, index) => `image-${index}`);
+  const batch = { targets, completed: 0, inflight: 1, next: 100, paused: false, cancelled: false, done: false };
+  startImageRecipeBatchClock(batch, 0);
+  for (let index = 0; index < 99; index += 1) {
+    recordImageRecipeBatchTarget(batch, { skipped: true, now: index + 1 });
+  }
+  const afterSkips = imageRecipeBatchTiming(batch, 1000);
+  assert.equal(afterSkips.imagesPerSecond, 0,
+    'unavailable layers are progress outcomes, not processed image throughput');
+  assert.equal(afterSkips.remaining, 1);
+  assert.equal(afterSkips.etaSeconds, null,
+    'the UI must wait for an actual image attempt before predicting completion');
+
+  recordImageRecipeBatchTarget(batch, { now: 2000 });
+  const afterImage = imageRecipeBatchTiming(batch, 2000);
+  assert.equal(afterImage.imagesPerSecond, 0.5,
+    'once the remaining image is processed, skipped layers remain excluded from rate');
+  assert.equal(afterImage.recentImagesPerSecond, 0.5);
+  assert.equal(afterImage.etaSeconds, null, 'a drained batch has no remaining work to estimate');
 });
 
 test('pausing freezes both elapsed time and throughput additions until the batch resumes', () => {

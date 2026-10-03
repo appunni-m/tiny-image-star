@@ -4,8 +4,27 @@ import {
   normalizeVectorAnchorSelection, removeVectorPathAnchors, setVectorPathAnchorTranslation,
   toggleVectorAnchorSelection, vectorAnchorKey
 } from '../src/vector-anchor-selection.js';
+import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const anchor = (index, contourIndex = 0, nodeId = 'path-1') => ({ nodeId, contourIndex, index });
+
+function cubicPoint([start, control1, control2, end], t) {
+  const u = 1 - t;
+  return {
+    x: u ** 3 * start.x + 3 * u ** 2 * t * control1.x + 3 * u * t ** 2 * control2.x + t ** 3 * end.x,
+    y: u ** 3 * start.y + 3 * u ** 2 * t * control1.y + 3 * u * t ** 2 * control2.y + t ** 3 * end.y
+  };
+}
+
+function splitCubicFixture(closed = false) {
+  const points = [
+    { x: 0, y: 0, in: { x: 0, y: 0 }, out: { x: 0, y: .5 } },
+    { x: .5, y: .75, in: { x: -.25, y: 0 }, out: { x: .25, y: 0 } },
+    { x: 1, y: 0, in: { x: 0, y: .5 }, out: { x: 0, y: 0 } }
+  ];
+  if (closed) points.push({ x: .4, y: -.1, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } });
+  return { id: 'path-1', type: 'path', x: 0, y: 0, width: 100, height: 100, closed, points };
+}
 
 test('path anchor selection toggles by path, contour, and point identity without duplicates', () => {
   const selected = [anchor(0), anchor(0)];
@@ -66,6 +85,55 @@ test('multi-anchor delete preflights each contour and removes points in descendi
   assert.equal(removeVectorPathAnchors(node, [anchor(1), anchor(1, 1)]), 2);
   assert.deepEqual(node.points, [{ x: .1, y: .1 }, { x: .5, y: .5 }, { x: .8, y: .8 }]);
   assert.deepEqual(node.subpaths[0].points, [{ x: .1, y: .8 }, { x: .9, y: .8 }]);
+});
+
+test('deleting a curved interior anchor fits a replacement cubic without changing its contour', () => {
+  const node = splitCubicFixture();
+  const original = structuredClone(node);
+  const sourceCurve = [
+    { x: 0, y: 0 }, { x: 0, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 0 }
+  ];
+  assert.equal(removeVectorPathAnchors(node, [anchor(1)], { dryRun: true }), 1);
+  assert.deepEqual(node, original, 'preflight leaves authored controls unchanged');
+  assert.equal(removeVectorPathAnchors(node, [anchor(1)]), 1);
+  assert.equal(node.points.length, 2);
+
+  let maximumError = 0;
+  for (let sample = 0; sample <= 100; sample += 1) {
+    const t = sample / 100;
+    const expected = cubicPoint(sourceCurve, t);
+    const actual = vectorSegmentPoint(node, 0, t, { x: 0, y: 0 });
+    maximumError = Math.max(maximumError, Math.hypot(actual.x - expected.x, actual.y - expected.y));
+  }
+  assert.ok(maximumError < .01, `fitted cubic should preserve the split source curve (max error ${maximumError})`);
+});
+
+test('deleting a closed contour anchor fits the replacement across the closing seam', () => {
+  const node = splitCubicFixture(true);
+  // Put the split cubic across the closed path seam: old point 3 -> 0 -> 1.
+  const [start, middle, end, extra] = node.points;
+  node.points = [middle, end, extra, start];
+  const sourceCurve = [
+    { x: 0, y: 0 }, { x: 0, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 0 }
+  ];
+  assert.equal(removeVectorPathAnchors(node, [anchor(0)]), 1);
+  assert.equal(node.points.length, 3);
+  let maximumError = 0;
+  for (let sample = 0; sample <= 100; sample += 1) {
+    const t = sample / 100;
+    const expected = cubicPoint(sourceCurve, t);
+    const actual = vectorSegmentPoint(node, 2, t, { x: 0, y: 0 });
+    maximumError = Math.max(maximumError, Math.hypot(actual.x - expected.x, actual.y - expected.y));
+  }
+  assert.ok(maximumError < .01, `closed-seam fit should preserve the source curve (max error ${maximumError})`);
+});
+
+test('curved deletion keeps constrained endpoint handles intact', () => {
+  const node = splitCubicFixture();
+  node.points[0].mode = 'symmetric';
+  const originalStart = structuredClone(node.points[0]);
+  assert.equal(removeVectorPathAnchors(node, [anchor(1)]), 1);
+  assert.deepEqual(node.points[0], originalStart, 'a constrained survivor keeps its authored paired handles');
 });
 
 test('multi-anchor delete leaves the document unchanged if any contour would be destroyed', () => {

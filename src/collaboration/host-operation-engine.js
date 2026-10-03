@@ -9,6 +9,7 @@ import {
   validateDocument
 } from '../model.js';
 import { COLLABORATION_PROTOCOL_VERSION, validateCollaborationMessage } from './protocol.js';
+import { isCollaborationSetPropertyRoot } from './set-property-roots.js';
 
 const PROTOCOL_VERSION = COLLABORATION_PROTOCOL_VERSION;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -30,26 +31,6 @@ const SHA256_K = [
   0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
-
-// Keep this list intentionally explicit. Operations may change a layer's
-// editable data, but cannot replace its identity, hierarchy, page, or type.
-const NODE_PROPERTIES = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked',
-  'blendMode', 'fill', 'fills', 'fillOpacity', 'fillStyleId', 'stroke', 'strokeWidth',
-  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit',
-  'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'maskSourceId', 'effects',
-  'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
-  'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
-  'minHeight', 'maxHeight', 'gridCell', 'fillGradient', 'imageFill', 'fillVariableId',
-  'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
-  'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',
-  'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
-  'interactions', 'fixedPositionWhenScrolling', 'scrollPosition', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
-  'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
-  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'fileName',
-  'sourceWidth', 'sourceHeight'
-]);
 
 function clone(value) {
   return structuredClone(value);
@@ -92,12 +73,13 @@ function sameAssetManifest(left, right) {
 }
 
 function operationPropertyIsAllowed(path) {
-  if (NODE_PROPERTIES.has(path)) return true;
+  if (isCollaborationSetPropertyRoot(path)) return true;
   // A few properties are frequently edited as individual nested values. The
   // rest of each object remains replaceable only through its whitelisted root.
   const safeSegment = '[A-Za-z][A-Za-z0-9_-]*';
   const safeIndex = '(?:0|[1-9][0-9]{0,5})';
   return new RegExp(`^(?:autoLayout|constraints|cornerRadii|adjustments|transforms|imageFill|gridCell)\\.${safeSegment}(?:\\.${safeSegment}){0,3}$`).test(path)
+    || new RegExp(`^vertexRadii\\.${safeIndex}$`).test(path)
     || new RegExp(`^(?:fills|strokes)\\.${safeIndex}\\.${safeSegment}(?:\\.${safeSegment}){0,2}$`).test(path);
 }
 

@@ -1,3 +1,5 @@
+import { removeVectorPathPoints } from './vector-path.js';
+
 function validAnchor(anchor) {
   return Boolean(anchor && typeof anchor.nodeId === 'string' && anchor.nodeId.length
     && Number.isInteger(anchor.contourIndex) && anchor.contourIndex >= 0
@@ -75,10 +77,7 @@ export function removeVectorPathAnchors(node, anchors, { dryRun = false } = {}) 
   for (const { points, indexes } of groups.values()) {
     if (points.length - indexes.length < 2) return false;
   }
-  const removals = [...groups.entries()].flatMap(([contourIndex, group]) =>
-    group.indexes.map(index => ({ contourIndex, index, points: group.points }))
-  ).sort((left, right) => right.contourIndex - left.contourIndex || right.index - left.index);
-  if (dryRun) return removals.length;
-  for (const removal of removals) removal.points.splice(removal.index, 1);
-  return removals.length;
+  return removeVectorPathPoints(node, [...groups.entries()].map(([contourIndex, group]) => ({
+    contourIndex, indexes: group.indexes
+  })), { dryRun });
 }

@@ -513,3 +513,27 @@ test('closed path insertion splits the closing edge and point deletion preserves
   assert.equal(removeVectorNodePoint(node, 0), null);
   assert.equal(node.points.length, 2);
 });
+
+test('single-anchor deletion fits a replacement cubic to preserve the removed curve span', () => {
+  const node = createNode('path', {
+    x: 0, y: 0, width: 100, height: 100, closed: false,
+    points: [
+      { x: 0, y: 0, in: { x: 0, y: 0 }, out: { x: 0, y: .5 } },
+      { x: .5, y: .75, in: { x: -.25, y: 0 }, out: { x: .25, y: 0 } },
+      { x: 1, y: 0, in: { x: 0, y: .5 }, out: { x: 0, y: 0 } }
+    ]
+  });
+  const sourceCurve = [
+    { x: 0, y: 0 }, { x: 0, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 0 }
+  ];
+  const removed = removeVectorNodePoint(node, 1);
+  assert.equal(removed.x, .5);
+  assert.equal(node.points.length, 2);
+  for (let sample = 0; sample <= 100; sample += 1) {
+    const t = sample / 100;
+    const expected = cubicPoint(sourceCurve, t);
+    const actual = vectorSegmentPoint(node, 0, t, { x: 0, y: 0 });
+    assert.ok(Math.hypot(actual.x - expected.x, actual.y - expected.y) < .01,
+      `single deletion should retain the source curve at t=${t}`);
+  }
+});
