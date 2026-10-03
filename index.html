@@ -59,7 +59,7 @@
             <div class="section-heading local-component-library-heading" role="heading" aria-level="3"><span>Component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
             <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
             <div class="section-heading" role="heading" aria-level="3"><span>Variables</span><div class="heading-actions"><button class="asset-section-action" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">Import</button><button class="asset-section-action" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">Export</button><button class="tiny-icon-button" id="add-variable-collection" type="button" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
-            <div class="image-properties-note token-interop-note">Stored on this device. Tiny Image Star files keep all modes; DTCG exports use the default mode.</div>
+            <div class="image-properties-note token-interop-note">Stored locally · DTCG exports use the default mode.</div>
             <div id="variable-collections-list" class="variable-collections-list"></div>
             <input id="design-token-file-input" type="file" accept="application/json,.json" hidden />
             <div class="section-heading" role="heading" aria-level="3"><span>Color styles</span></div>
@@ -67,9 +67,8 @@
             <div class="section-heading" role="heading" aria-level="3"><span>Text styles</span></div>
             <div id="text-styles-list" class="text-styles-list"></div>
             <div class="section-heading local-fonts-heading" role="heading" aria-level="3"><span>Local fonts</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
-            <div class="image-properties-note local-fonts-note">Font files stay on this device and travel with exported .flocal designs.</div>
+            <div class="image-properties-note local-fonts-note">Stored on this device · included in .flocal files.</div>
             <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
-            <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
           </section>
           <div class="sidebar-footer"><span class="device-icon" aria-hidden="true">◉</span><span id="storage-mode-label" aria-live="polite">Browser storage</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
         </aside>
@@ -124,6 +123,7 @@
           </div>
           <div class="bottom-toolbar" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Design tools. Use the arrow keys to move between tools, then Enter or Space to select.">
             <button class="tool-button is-selected" data-tool="select" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button" data-tool="scale" aria-pressed="false" tabindex="-1" title="Scale (K) · scale layers, strokes, effects, and text together" aria-label="Scale layers and their appearance"><span data-icon="scale"></span><kbd>K</kbd></button>
             <button class="tool-button" data-tool="lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
             <button class="tool-button" data-tool="frame" aria-pressed="false" tabindex="-1" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
             <button class="tool-button" data-tool="slice" aria-pressed="false" tabindex="-1" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
@@ -407,6 +407,7 @@
         <canvas id="present-backdrop-canvas" aria-hidden="true"></canvas>
         <canvas id="present-overlay-canvas" aria-hidden="true"></canvas>
         <canvas id="present-transition-canvas" aria-hidden="true"></canvas>
+        <canvas id="present-matching-canvas" aria-hidden="true"></canvas>
         <div class="presentation-toolbar">
           <button class="presentation-control" id="present-back" type="button" aria-label="Back to previous frame" title="Back" disabled>←</button>
           <button class="presentation-control" id="present-restart" type="button" aria-label="Restart presentation" title="Restart at the selected flow">↻</button>

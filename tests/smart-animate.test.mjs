@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, bindVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, getNodePropertyValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
-import { interpolateSmartFrame } from '../src/smart-animate.js';
+import { interpolateSmartFrame, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from '../src/smart-animate.js';
 import { easePrototypeProgress } from '../src/prototype-easing.js';
 
 test('back and spring easing preserve bounded layer presence while spatial geometry anticipates and overshoots', () => {
@@ -124,8 +124,46 @@ test('smart animation switches a child fixed-position flag at the scroll-mode mi
   });
   const at = progress => interpolateSmartFrame(from, to, progress).children[0].fixedPositionWhenScrolling;
 
-  assert.equal(at(0.499), false, 'the source child stays attached to scrolling content before halfway');
-  assert.equal(at(0.5), true, 'the fixed layer becomes stationary atomically at halfway');
+  assert.equal(at(.499), false, 'the source child stays attached to scrolling content before halfway');
+  assert.equal(at(.5), true, 'the fixed layer becomes stationary atomically at halfway');
+});
+
+test('Smart Animate matching layers holds fixed matches at their source snapshot until the destination endpoint', () => {
+  const from = createNode('frame', {
+    overflowBehavior: 'vertical',
+    children: [createNode('rectangle', { name: 'Pinned badge', x: 16, fixedPositionWhenScrolling: true })]
+  });
+  const to = createNode('frame', {
+    overflowBehavior: 'vertical',
+    children: [createNode('rectangle', { name: 'Pinned badge', x: 96, fill: '#ff0000', fixedPositionWhenScrolling: false })]
+  });
+  const at = progress => splitSmartFrameMatches(from, to, progress).matches[0].node;
+
+  assert.deepEqual([at(.25).x, at(.25).fixedPositionWhenScrolling, at(.25).fill], [16, true, '#767676']);
+  assert.deepEqual([at(.999).x, at(.999).fixedPositionWhenScrolling, at(.999).fill], [16, true, '#767676']);
+  assert.deepEqual([at(1).x, at(1).fixedPositionWhenScrolling, at(1).fill], [96, false, '#ff0000']);
+});
+
+test('Smart Animate fades unmatched fixed layers separately from the main transition frames', () => {
+  const from = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Source pin', x: 10, fixedPositionWhenScrolling: true }),
+    createNode('rectangle', { name: 'Source content', x: 20 })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Destination pin', x: 90, fixedPositionWhenScrolling: true }),
+    createNode('rectangle', { name: 'Destination content', x: 100 })
+  ] });
+
+  const split = splitSmartFrameMatches(from, to, .25);
+  assert.equal(split.matchCount, 0);
+  assert.equal(split.fixedLayerCount, 2);
+  assert.deepEqual(split.sourceFrame.children.map(node => node.name), ['Source content']);
+  assert.deepEqual(split.destinationFrame.children.map(node => node.name), ['Destination content']);
+  assert.deepEqual(split.matchingFrame.children.map(node => [node.name, node.opacity]), [
+    ['Source pin', .75], ['Destination pin', .25]
+  ]);
+  assert.deepEqual(splitSmartFrameMatches(from, to, 0).matchingFrame.children.map(node => node.name), ['Source pin']);
+  assert.deepEqual(splitSmartFrameMatches(from, to, 1).matchingFrame.children.map(node => node.name), ['Destination pin']);
 });
 
 test('smart animation interpolates imported affine scale and shear without changing authored endpoints', () => {
@@ -1855,4 +1893,272 @@ test('smart animation rejects non-frame endpoints and clamps its progress', () =
   assert.throws(() => interpolateSmartFrame(createNode('rectangle'), to, 0.5), /requires two frames/);
   assert.equal(interpolateSmartFrame(from, to, -2).children[0].x, 0);
   assert.equal(interpolateSmartFrame(from, to, 2).children[0].x, 100);
+});
+
+test('Smart Animate split keeps reordered duplicate-name matches intact in destination order', () => {
+  const from = createNode('frame', {
+    name: 'Source', width: 100, height: 80, fill: '#111111', stroke: '#222222',
+    fills: [{ id: 'frame-fill', type: 'solid', color: '#111111', visible: true, opacity: 1 }],
+    effects: [{ id: 'frame-shadow', type: 'drop-shadow' }],
+    children: [
+      createNode('rectangle', { name: 'Duplicate', x: 0, width: 20, fixedPositionWhenScrolling: true }),
+      createNode('rectangle', { name: 'Duplicate', x: 100, width: 40 }),
+      createNode('ellipse', { name: 'Reordered', x: 200 })
+    ]
+  });
+  const to = createNode('frame', {
+    name: 'Destination', width: 200, height: 160, fill: '#eeeeee', stroke: '#dddddd',
+    fills: [{ id: 'frame-fill-end', type: 'solid', color: '#eeeeee', visible: true, opacity: 1 }],
+    effects: [{ id: 'frame-shadow-end', type: 'drop-shadow' }],
+    children: [
+      createNode('ellipse', { name: 'Reordered', x: 300 }),
+      createNode('rectangle', { name: 'Duplicate', x: 200, width: 40, fixedPositionWhenScrolling: false }),
+      createNode('rectangle', { name: 'Duplicate', x: 400, width: 80 })
+    ]
+  });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const split = splitSmartFrameMatches(from, to, .5);
+  assert.equal(split.matchCount, 3);
+  assert.deepEqual(split.matches.map(({ sourceIndex, destinationIndex }) => [sourceIndex, destinationIndex]), [
+    [2, 0], [0, 1], [1, 2]
+  ], 'same-name duplicates pair by their type/name occurrence while reordered destinations define result order');
+  assert.deepEqual(split.matches.map(({ node }) => node.x), [250, 0, 250],
+    'a fixed-position match stays at its source geometry through the transition');
+  assert.deepEqual(split.sourceFrame.children, []);
+  assert.deepEqual(split.destinationFrame.children, []);
+  assert.deepEqual(split.matchingFrame.children.map(node => node.name), ['Reordered', 'Duplicate', 'Duplicate']);
+  assert.equal(split.matchingFrame.width, 150, 'the matching render shell keeps interpolated frame geometry');
+  for (const frame of [split.sourceFrame, split.destinationFrame, split.matchingFrame]) {
+    for (const property of ['fill', 'fills', 'stroke', 'effects']) {
+      assert.equal(Object.hasOwn(frame, property), false, `transparent frame shell omits ${property}`);
+    }
+  }
+  assert.equal(split.matches[1].node.fixedPositionWhenScrolling, true,
+    'a fixed-position match stays on its source snapshot until the endpoint');
+  assert.deepEqual(from, originalFrom, 'the source frame and nested subtrees remain unchanged');
+  assert.deepEqual(to, originalTo, 'the destination frame and nested subtrees remain unchanged');
+  split.matchingFrame.children[0].x = -99;
+  assert.equal(split.matches[0].node.x, 250, 'the matching render shell is detached from match records');
+  assert.deepEqual(from, originalFrom, 'mutating returned results cannot affect source endpoints');
+  assert.deepEqual(to, originalTo, 'mutating returned results cannot affect destination endpoints');
+});
+
+test('Smart Animate split rejects incompatible kinds, image assets, and path or network topology', () => {
+  const sourceNetwork = {
+    vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: 1, y: 0 }],
+    edges: [{ id: 'e1', from: 'v1', to: 'v2' }], faces: []
+  };
+  const destinationNetwork = {
+    vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: 1, y: 0 }, { id: 'v3', x: 2, y: 0 }],
+    edges: [{ id: 'e1', from: 'v1', to: 'v3' }], faces: []
+  };
+  const from = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Kind', x: 1 }),
+    createNode('image', { name: 'Asset', assetId: 'photo-a', x: 2 }),
+    createNode('path', { name: 'Path topology', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], closed: false }),
+    createNode('network', { name: 'Network topology', ...sourceNetwork })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('ellipse', { name: 'Kind', x: 11 }),
+    createNode('image', { name: 'Asset', assetId: 'photo-b', x: 12 }),
+    createNode('path', { name: 'Path topology', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }], closed: false }),
+    createNode('network', { name: 'Network topology', ...destinationNetwork })
+  ] });
+
+  const split = splitSmartFrameMatches(from, to, .5);
+  assert.equal(split.matchCount, 0, 'type, image identity, path topology, and graph topology must satisfy canMatch');
+  assert.deepEqual(split.matches, []);
+  assert.equal(split.sourceFrame.children.length, 4);
+  assert.equal(split.destinationFrame.children.length, 4);
+  assert.deepEqual(split.matchingFrame.children, []);
+});
+
+test('Smart Animate split returns empty matching output when sibling identity does not match', () => {
+  const from = createNode('frame', {
+    fill: '#000000', fills: [{ id: 'source', type: 'solid', color: '#000000', visible: true, opacity: 1 }],
+    children: [createNode('rectangle', { name: 'Source only', x: 10 })]
+  });
+  const to = createNode('frame', {
+    fill: '#ffffff', fills: [{ id: 'target', type: 'solid', color: '#ffffff', visible: true, opacity: 1 }],
+    children: [createNode('rectangle', { name: 'Destination only', x: 90 })]
+  });
+
+  const split = splitSmartFrameMatches(from, to, .4);
+  assert.equal(split.matchCount, 0);
+  assert.deepEqual(split.matches, []);
+  assert.equal(split.sourceFrame.children[0].name, 'Source only');
+  assert.equal(split.destinationFrame.children[0].name, 'Destination only');
+  assert.deepEqual(split.matchingFrame.children, []);
+  assert.equal(Object.hasOwn(split.matchingFrame, 'fill'), false);
+  assert.equal(Object.hasOwn(split.matchingFrame, 'fills'), false);
+});
+
+test('Smart Animate matching compositor follows simple destination layer-order boundaries', () => {
+  const frame = children => createNode('frame', { children });
+  const source = frame([createNode('rectangle', { name: 'Matched' }), createNode('ellipse', { name: 'Source only' })]);
+  const matchAtBottom = frame([createNode('rectangle', { name: 'Matched' }), createNode('ellipse', { name: 'Destination only' })]);
+  const matchAtTop = frame([createNode('ellipse', { name: 'Destination only' }), createNode('rectangle', { name: 'Matched' })]);
+
+  assert.equal(splitSmartFrameMatches(source, matchAtBottom, .5).matchingStacking, 'below-destination');
+  assert.equal(splitSmartFrameMatches(source, matchAtTop, .5).matchingStacking, 'above-destination');
+});
+
+test('Smart Animate split exposes interleaved root stacking across reordered matched and unmatched layers', () => {
+  const frame = children => createNode('frame', { children });
+  const source = frame([
+    createNode('rectangle', { name: 'A', x: 0 }),
+    createNode('ellipse', { name: 'Exit before B', x: 10 }),
+    createNode('rectangle', { name: 'B', x: 20 }),
+    createNode('ellipse', { name: 'Exit before C', x: 30 }),
+    createNode('rectangle', { name: 'C', x: 40 }),
+    createNode('ellipse', { name: 'Trailing exit', x: 50 })
+  ]);
+  const destination = frame([
+    createNode('ellipse', { name: 'Entering top', x: 60 }),
+    createNode('rectangle', { name: 'C', x: 70 }),
+    createNode('ellipse', { name: 'Entering after C', x: 80 }),
+    createNode('rectangle', { name: 'A', x: 90 }),
+    createNode('ellipse', { name: 'Entering after A', x: 100 }),
+    createNode('rectangle', { name: 'B', x: 110 }),
+    createNode('ellipse', { name: 'Entering bottom', x: 120 })
+  ]);
+  const sourceBefore = structuredClone(source);
+  const destinationBefore = structuredClone(destination);
+
+  const split = splitSmartFrameMatches(source, destination, .25);
+  assert.deepEqual(split.stackingOrder.map(({ kind, node }) => [kind, node.name]), [
+    ['destination', 'Entering top'],
+    ['source', 'Exit before C'],
+    ['matched', 'C'],
+    ['source', 'Trailing exit'],
+    ['destination', 'Entering after C'],
+    ['matched', 'A'],
+    ['destination', 'Entering after A'],
+    ['source', 'Exit before B'],
+    ['matched', 'B'],
+    ['destination', 'Entering bottom']
+  ], 'entering roots follow destination order while outgoing roots keep their source-relative anchors');
+  assert.deepEqual(split.stackingOrder.map(({ sourceIndex, destinationIndex }) => [sourceIndex, destinationIndex]), [
+    [null, 0], [3, null], [4, 1], [5, null], [null, 2], [0, 3], [null, 4], [1, null], [2, 5], [null, 6]
+  ]);
+  assert.deepEqual(split.stackingOrder.map(({ node }) => node.opacity), [
+    .25, .75, 1, .75, .25, 1, .25, .75, 1, .25
+  ], 'the order plan contains the same interpolated/fading root snapshots as full-frame Smart Animate');
+
+  const atSource = splitSmartFrameMatches(source, destination, 0);
+  assert.deepEqual(atSource.stackingOrder.map(({ kind, node }) => [kind, node.name]), [
+    ['matched', 'A'], ['source', 'Exit before B'], ['matched', 'B'], ['source', 'Exit before C'],
+    ['matched', 'C'], ['source', 'Trailing exit']
+  ], 'the source endpoint restores its complete authored child order');
+  const atDestination = splitSmartFrameMatches(source, destination, 1);
+  assert.deepEqual(atDestination.stackingOrder.map(({ kind, node }) => [kind, node.name]), [
+    ['destination', 'Entering top'], ['matched', 'C'], ['destination', 'Entering after C'],
+    ['matched', 'A'], ['destination', 'Entering after A'], ['matched', 'B'], ['destination', 'Entering bottom']
+  ], 'the destination endpoint restores its complete authored child order');
+  assert.deepEqual(source, sourceBefore, 'constructing and mutating a returned order does not alter source input');
+  assert.deepEqual(destination, destinationBefore, 'constructing and mutating a returned order does not alter destination input');
+  split.stackingOrder[0].node.name = 'mutated result';
+  assert.deepEqual(source, sourceBefore);
+  assert.deepEqual(destination, destinationBefore);
+  assert.notEqual(split.stackingOrder[2].node, split.matches.find(match => match.destinationIndex === 1).node,
+    'the ordered snapshot is detached from the separately returned match record');
+});
+
+test('Smart Animate presentation paint plan interleaves outgoing, matched, and entering roots', () => {
+  const frame = children => createNode('frame', { width: 300, height: 200, children });
+  const source = frame([
+    createNode('rectangle', { name: 'A', x: 0 }),
+    createNode('ellipse', { name: 'Leaving', x: 10 }),
+    createNode('rectangle', { name: 'B', x: 20 })
+  ]);
+  const destination = frame([
+    createNode('ellipse', { name: 'Entering top', x: 30 }),
+    createNode('rectangle', { name: 'B', x: 40 }),
+    createNode('ellipse', { name: 'Entering middle', x: 50 }),
+    createNode('rectangle', { name: 'A', x: 60 }),
+    createNode('ellipse', { name: 'Entering bottom', x: 70 })
+  ]);
+  const motion = { x: 120, y: -40, opacity: .35 };
+  const outgoingMotion = { x: -120, y: 40, opacity: .65 };
+  const split = splitSmartFrameMatches(source, destination, .25);
+  const plan = smartAnimatePresentationPaintPlan(split, destination, motion, .25, outgoingMotion);
+
+  assert.deepEqual(plan.map(entry => [entry.kind, entry.node.name]), [
+    ['destination', 'Entering top'],
+    ['source', 'Leaving'],
+    ['matched', 'B'],
+    ['destination', 'Entering middle'],
+    ['matched', 'A'],
+    ['destination', 'Entering bottom']
+  ]);
+  assert.deepEqual(plan.filter(entry => entry.kind === 'destination').map(entry => entry.transitionMotion), [motion, motion, motion]);
+  assert.deepEqual(plan.filter(entry => entry.kind === 'source').map(entry => entry.transitionMotion), [outgoingMotion]);
+  assert.ok(plan.filter(entry => entry.kind === 'matched').every(entry => entry.transitionMotion === null));
+  assert.ok(plan.filter(entry => entry.kind === 'destination').every(entry => entry.frameTransform));
+  assert.ok(plan.filter(entry => entry.kind === 'source').every(entry => entry.frameTransform));
+  assert.ok(plan.filter(entry => entry.kind === 'matched').every(entry => entry.clipFrame.id === split.matchingFrame.id));
+  assert.ok(plan.filter(entry => entry.kind === 'destination').every(entry => entry.clipFrame.id === split.destinationFrame.id));
+  assert.ok(plan.filter(entry => entry.kind === 'source').every(entry => entry.clipFrame.id === split.sourceFrame.id));
+});
+
+test('Smart Animate paint plan includes source-endpoint entering roots and fades unmatched fixed roots independently', () => {
+  const source = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Pinned source', fixedPositionWhenScrolling: true }),
+    createNode('rectangle', { name: 'Shared' })
+  ] });
+  const destination = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Shared' }),
+    createNode('ellipse', { name: 'Pinned destination', fixedPositionWhenScrolling: true, opacity: .8 }),
+    createNode('ellipse', { name: 'Entering' })
+  ] });
+
+  const atStart = splitSmartFrameMatches(source, destination, 0);
+  const startPlan = smartAnimatePresentationPaintPlan(atStart, destination, { x: 200, y: 0, opacity: 1 }, 0);
+  assert.deepEqual(startPlan.map(entry => [entry.kind, entry.node.name]), [
+    ['fixed-source', 'Pinned source'],
+    ['matched', 'Shared'],
+    ['fixed-destination', 'Pinned destination'],
+    ['destination', 'Entering']
+  ]);
+  assert.equal(startPlan.find(entry => entry.kind === 'fixed-destination').node.opacity, 0,
+    'fixed destination roots enter through their own dissolve instead of the frame transition');
+  assert.equal(startPlan.find(entry => entry.kind === 'destination').transitionMotion.opacity, 1);
+
+  const atMiddle = splitSmartFrameMatches(source, destination, .5);
+  const middlePlan = smartAnimatePresentationPaintPlan(atMiddle, destination, null, .5);
+  assert.equal(middlePlan.find(entry => entry.kind === 'fixed-destination').node.opacity, .4);
+  assert.equal(middlePlan.find(entry => entry.kind === 'destination').transitionMotion, null);
+});
+
+test('Smart Animate split interpolates nested transforms and clipping without dropping runtime metadata', () => {
+  const from = createNode('frame', { children: [createNode('frame', {
+    name: 'Nested group', x: 0, width: 100, clip: false, overflowBehavior: 'none',
+    affineTransform: { a: 1, b: 0, c: 0, d: 1 },
+    children: [createNode('frame', {
+      name: 'Viewport', x: 10, width: 60, clip: true,
+      children: [createNode('rectangle', { name: 'Fixed item', x: 20, fixedPositionWhenScrolling: true })]
+    })]
+  })] });
+  const to = createNode('frame', { children: [createNode('frame', {
+    name: 'Nested group', x: 100, width: 200, clip: true, overflowBehavior: 'vertical',
+    affineTransform: { a: 2, b: 0, c: 0, d: 2 },
+    children: [createNode('frame', {
+      name: 'Viewport', x: 30, width: 100, clip: false,
+      children: [createNode('rectangle', { name: 'Fixed item', x: 60, fixedPositionWhenScrolling: false })]
+    })]
+  })] });
+
+  const split = splitSmartFrameMatches(from, to, .25);
+  assert.equal(split.matchCount, 1);
+  const group = split.matches[0].node;
+  assert.deepEqual([group.x, group.width], [25, 125]);
+  assert.ok(group.affineTransform && Object.values(group.affineTransform).every(Number.isFinite));
+  assert.equal(group.children.length, 1, 'the direct-child match retains its nested subtree');
+  assert.equal(group.children[0].children.length, 1, 'deeper clipping contents remain present');
+  assert.equal(group.clip, false, 'frame clipping remains on the same source-side categorical snapshot');
+  assert.equal(group.children[0].clip, true, 'nested viewport clipping is retained');
+  assert.equal(group.children[0].children[0].fixedPositionWhenScrolling, true,
+    'fixed-position metadata remains available to the runtime');
 });

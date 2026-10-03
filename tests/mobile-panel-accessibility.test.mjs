@@ -75,3 +75,23 @@ test('phone properties use a bottom sheet and leave the live canvas preview visi
   assert.match(smoke, /canvas behind an open phone panel should be removed from keyboard and screen-reader navigation/,
     'the visible preview must remain non-interactive while the properties sheet is open');
 });
+
+test('inspector content stays inside the sidebar without horizontal page overflow', () => {
+  assert.match(stylesheet, /\.right-panel\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow:\s*hidden/);
+  assert.match(stylesheet, /\.inspector-content\s*\{[^}]*box-sizing:\s*border-box[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/);
+  assert.match(stylesheet, /\.inspector-content\s*>\s*\*\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+  assert.match(stylesheet, /\.inspect-code-card pre\s*\{[^}]*box-sizing:\s*border-box[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+});
+
+test('descriptive numeric-field labels stay within their input instead of spilling into adjacent controls', () => {
+  assert.match(source, /function propertyFieldLabelClass\(label\)\s*\{\s*return String\(label\)\.trim\(\)\.length > 2 \? ' property-field--descriptive' : '';/);
+  assert.match(source, /property-field\$\{propertyFieldLabelClass\(label\)\}[\s\S]*?<label title="\$\{escapeHtml\(label\)\}">/,
+    'numeric inspector fields should mark longer visible labels for their responsive layout');
+  assert.equal((source.match(/property-field\$\{propertyFieldLabelClass\(label\)\}/g) || []).length, 2,
+    'single and multi-selection numeric controls should use the same bounded label layout');
+  assert.match(source, /numberField\('Horizontal gap'/,
+    'the regression case must retain its real long inspector label');
+  assert.match(stylesheet, /\.property-field label\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
+  assert.match(stylesheet, /\.property-field--descriptive label\s*\{[^}]*max-width:\s*52%[^}]*flex:\s*0 1 auto/);
+  assert.match(stylesheet, /\.property-field--descriptive input\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 0/);
+});

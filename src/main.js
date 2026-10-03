@@ -76,7 +76,7 @@ import { defaultStrokeDashArray, MAX_STROKE_DASH_SEGMENTS, parseStrokeDashArray 
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout, gridTrackLayout } from './layout-engine.js';
 import { addGridTrack, deleteGridTrack, gridTrackCount, gridTrackMoveRange, gridTrackResizeHandles, moveGridTrack, resizeGridTrack } from './grid-track-editing.js';
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
-import { interpolateSmartFrame } from './smart-animate.js';
+import { interpolateSmartFrame, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg, getPageContentBounds } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
@@ -117,6 +117,7 @@ import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js'
 import { createTextPathGeometry } from './text-on-path.js';
 import { normalizeVectorAnchorSelection, removeVectorPathAnchors, setVectorPathAnchorTranslation, toggleVectorAnchorSelection, vectorAnchorKey } from './vector-anchor-selection.js';
 import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from './group-transform.js';
+import { ANCHOR_COORDINATES, planScaleTransform } from './scale-transform.js';
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
@@ -170,7 +171,7 @@ const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
 ]);
 const state = {
   shapeBuilder: null,
-  document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
+  document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', scaleAnchor: 'center', scaleMultiplier: 1, zoom: 1, panX: 0, panY: 0,
   fontShaper: new LocalFontShapingClient({ onReady: () => renderer?.invalidate() }), shapeLocalTextRun,
   fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
   gradientGeometryTarget: null,
@@ -181,6 +182,7 @@ const state = {
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
+  scaleEditBase: null,
   workspace: null, workspaceHandle: null, workspaceHead: null, workspacePermissionNeeded: false, workspaceOnboardingRequired: false,
   workspaceVerifiedImageIds: new Map(), workspaceVerifiedFontIds: new Map(),
   liveCollaboration: null, liveReplicaHead: null, liveReplicaDesignId: null, remotePresence: new Map(),
@@ -193,7 +195,7 @@ const state = {
   pendingVariableDialog: null, pendingCommentAnchor: null, pendingCommentText: '', activeCommentId: null, commentPlacementArmed: false, commentSelectionCycle: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeProgramEditingActionId: null, prototypeProgramBranchStack: [], prototypeDestinationId: null,
-  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
+  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeSmartAnimateMatchingLayers: false, prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
@@ -266,9 +268,11 @@ let presentRenderer = null;
 let presentBackdropRenderer = null;
 let presentRenderState = null;
 let presentOverlayRenderer = null;
+let presentMatchingRenderer = null;
 let presentUnderlayRenderState = null;
 let presentBackdropRenderState = null;
 let presentOverlayRenderState = null;
+let presentMatchingRenderState = null;
 let presentRuntimeDocument = null;
 let presentationPointerGesture = null;
 const presentationDragThreshold = 7;
@@ -489,9 +493,7 @@ function renderLocalFontAssets() {
   list.replaceChildren();
   const fonts = [...state.fontAssets.values()];
   if (!fonts.length) {
-    const empty = document.createElement('div'); empty.className = 'local-fonts-empty';
-    empty.textContent = 'Add a font file to use it in text layers and portable design files.';
-    list.append(empty);
+    list.append(createAssetEmptyState('local-fonts-empty', 'Aa', 'No local fonts added yet.'));
   }
   for (const font of fonts) {
     const row = document.createElement('div'); row.className = 'local-font-row'; row.dataset.fontAssetId = font.id;
@@ -1533,6 +1535,11 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true, source
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
   const nextSelectedIds = [...new Set(valid)];
+  if (previousSelectedIds.length !== nextSelectedIds.length
+    || previousSelectedIds.some((id, index) => id !== nextSelectedIds[index])) {
+    state.scaleMultiplier = 1;
+    state.scaleEditBase = null;
+  }
   if (state.shapeBuilder && (nextSelectedIds.length !== state.shapeBuilder.sourceIds.length
     || state.shapeBuilder.sourceIds.some(id => !nextSelectedIds.includes(id)))) exitShapeBuilderMode();
   if (state.imageEraseMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
@@ -1691,21 +1698,23 @@ function installDesignToolTooltips() {
     const description = button.getAttribute('title');
     const label = (button.getAttribute('aria-label') || description || 'Design tool').split(/\s[·•]\s/)[0].trim();
     const shortcut = description?.match(/\(([^)]+)\)/)?.[1] || button.querySelector('kbd')?.textContent.trim();
-    button.dataset.tooltipText = shortcut ? `${label} · ${shortcut}` : label;
+    button.dataset.tooltipText = description || (shortcut ? `${label} · ${shortcut}` : label);
     if (description && !button.hasAttribute('aria-description')) button.setAttribute('aria-description', description);
     button.removeAttribute('title');
   };
   toolbar.querySelectorAll('.tool-button').forEach(prepareButton);
 
-  toolbar.addEventListener('pointerover', event => {
-    if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
+  const scheduleHoverTooltip = event => {
+    if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
+    if (window.matchMedia && !window.matchMedia('(hover: hover)').matches) return;
     const button = event.target.closest?.('.tool-button');
     if (!button || !toolbar.contains(button) || button.contains(event.relatedTarget)) return;
+    if (hoveredButton === button && (timer || activeButton === button)) return;
     hoveredButton = button;
     clearTimeout(timer);
-    timer = setTimeout(() => show(button), 350);
-  });
-  toolbar.addEventListener('pointerout', event => {
+    timer = setTimeout(() => show(button), 250);
+  };
+  const finishHoverTooltip = event => {
     const button = event.target.closest?.('.tool-button');
     if (!button || button.contains(event.relatedTarget)) return;
     if (hoveredButton === button) {
@@ -1713,8 +1722,12 @@ function installDesignToolTooltips() {
       clearTimeout(timer);
       timer = null;
     }
-    if (activeButton === button && document.activeElement !== button) hide();
-  });
+    if (activeButton === button && document.activeElement !== button && !hoveredButton) hide();
+  };
+  toolbar.addEventListener('pointerover', scheduleHoverTooltip);
+  toolbar.addEventListener('mouseover', scheduleHoverTooltip);
+  toolbar.addEventListener('pointerout', finishHoverTooltip);
+  toolbar.addEventListener('mouseout', finishHoverTooltip);
   toolbar.addEventListener('focusin', event => {
     const button = event.target.closest?.('.tool-button');
     if (button && toolbar.contains(button)) show(button);
@@ -1986,12 +1999,15 @@ function renderLayers() {
 function section(title, body, iconName = null) {
   return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
 }
+function propertyFieldLabelClass(label) {
+  return String(label).trim().length > 2 ? ' property-field--descriptive' : '';
+}
 function numberField(label, prop, value, step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, ariaLabel = label) {
-  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${formatInspectorNumber(value)}" aria-label="${ariaLabel}" /></div>`;
+  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${formatInspectorNumber(value)}" aria-label="${escapeHtml(ariaLabel)}" /></div>`;
 }
 function selectionNumberField(label, property, value, { step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, mixed = false } = {}) {
   const shownValue = !mixed && Number.isFinite(value) ? ` value="${formatInspectorNumber(value)}"` : '';
-  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
+  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
 }
 function optionalNumberField(label, prop, value, { min = 0, max = null, step = '0.01', disabled = false } = {}) {
   return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="${min}"${max == null ? '' : ` max="${max}"`} step="${step}" value="${Number.isFinite(value) ? formatInspectorNumber(value) : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"${disabled ? ' disabled' : ''}/></label>`;
@@ -3349,6 +3365,9 @@ function prototypeInteractionActionOptions() {
   return {
     action: state.prototypeAction,
     transition: state.prototypeTransition,
+    ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+      ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
+      : {}),
     easing: state.prototypeEasing,
     easingBezier: state.prototypeEasingBezier,
     duration: state.prototypeDuration,
@@ -3373,6 +3392,11 @@ function prototypeInteractionActionOptions() {
   };
 }
 
+function canSmartAnimateMatchingLayers(action, transition) {
+  return action === 'navigate' && typeof transition === 'string'
+    && !['instant', 'smart-animate', 'scroll'].includes(transition);
+}
+
 function configuredPrototypeProgramAction(sourceId, destinationId, destinationPageId) {
   const candidate = structuredClone(state.document);
   const source = findNode(candidate, sourceId)?.node;
@@ -3393,6 +3417,8 @@ function loadPrototypeActionIntoComposer(interaction, action) {
   state.prototypeTrigger = interaction.trigger;
   state.prototypeDestinationId = action.destinationId || null;
   state.prototypeTransition = action.transition || 'instant';
+  state.prototypeSmartAnimateMatchingLayers = canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+    && action.smartAnimateMatchingLayers === true;
   state.prototypeEasing = action.easing || 'ease-in-out';
   state.prototypeEasingBezier = action.easingBezier ? [...action.easingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
   state.prototypeDuration = Number.isFinite(action.duration) ? action.duration : 300;
@@ -3580,6 +3606,9 @@ function prototypeInspector() {
   }).join('');
   const durationControl = state.prototypeTransition === 'instant' ? ''
     : `<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="10000" step="1" value="${state.prototypeDuration}" aria-label="Transition duration in milliseconds" /></label>`;
+  const smartAnimateMatchingControl = canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+    ? `<label><span>Smart Animate matching layers</span><input id="prototype-smart-animate-matching-layers" type="checkbox"${state.prototypeSmartAnimateMatchingLayers ? ' checked' : ''}/></label><small class="prototype-hint">Matching layers animate between frames; other layers use the selected transition.</small>`
+    : '';
   const easingOptions = [
     ['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'],
     ['ease-in-back', 'Ease in · back'], ['ease-out-back', 'Ease out · back'], ['ease-in-out-back', 'Ease in and out · back'],
@@ -3671,7 +3700,7 @@ function prototypeInspector() {
   const actionButtonLabel = state.prototypeProgramEditingActionId ? 'Save selected action' : editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
   const actionProgramControls = prototypeProgramEditor(editingInteraction);
   const composerTarget = state.prototypeProgramEditingActionId ? 'Selected sequence action' : editingInteraction ? 'Interaction action' : 'New interaction action';
-  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${smartAnimateMatchingControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `${scrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -4094,6 +4123,10 @@ function renderInspector() {
     return;
   }
   const entries = selectedEntries();
+  if (state.tool === 'scale') {
+    content.innerHTML = scaleToolInspector(entries);
+    return;
+  }
   if (!entries.length) {
     const page = activePage();
     content.innerHTML = `<div class="inspector-empty"><div class="empty-layer-icon">✣</div><strong>Nothing selected</strong><span>Choose a layer or create something on the canvas. Everything is saved locally as you work.</span></div>${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><button class="add-fill" data-action="create-frame">＋ Create a frame</button>`)}`;
@@ -4253,14 +4286,46 @@ function renderInspector() {
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
 }
 
+function scaleToolInspector(entries) {
+  if (!entries.length) return `<div class="inspector-empty"><div class="empty-layer-icon">↗</div><strong>Scale tool</strong><span>Select a layer or a group of layers, then drag a corner or enter a scale value.</span></div>`;
+  let plan;
+  try {
+    plan = planScaleTransform(transformEntriesForSelection(), 1, state.scaleAnchor);
+  } catch (error) {
+    return section('Scale', `<div class="image-properties-note">${escapeHtml(error.message)}</div>`);
+  }
+  const bounds = plan.bounds;
+  if (!bounds) return section('Scale', '<div class="image-properties-note">Unlock a layer to scale it.</div>');
+  const disabled = plan.patches.length === 0 || isImageRecipeBatchActive(state.bulk);
+  const anchors = Object.entries(ANCHOR_COORDINATES).map(([name, [x, y]]) => {
+    const label = name.replace('-', ' ');
+    return `<button class="scale-anchor-point${state.scaleAnchor === name ? ' is-selected' : ''}" type="button" data-scale-anchor="${name}" aria-label="Scale anchor ${label}" title="${label}" aria-pressed="${state.scaleAnchor === name}" style="--anchor-x:${x * 100}%;--anchor-y:${y * 100}%"${disabled ? ' disabled' : ''}></button>`;
+  }).join('');
+  const field = (label, value, key) => `<label class="property-field"><span class="field-caption">${label}</span><input type="number" inputmode="decimal" min="0.01" max="100000" step="0.01" value="${formatInspectorNumber(value)}" data-scale-field="${key}" aria-label="Scale ${label.toLowerCase()}"${disabled ? ' disabled' : ''}/></label>`;
+  return `${section('Scale', `<div class="scale-anchor-grid" role="group" aria-label="Scale anchor">${anchors}</div><div class="property-grid">${field('Scale · %', state.scaleMultiplier * 100, 'factor')}${field('W', bounds.width, 'width')}${field('H', bounds.height, 'height')}</div><div class="image-properties-note">Scale changes layer geometry, strokes, effects, and text together. Layout-managed children become absolute so their scaled positions are preserved.${plan.excludedIds.length ? ` ${plan.excludedIds.length} locked or component-contained layer${plan.excludedIds.length === 1 ? ' is' : 's are'} protected.` : ''}</div>`)}`;
+}
+
+function createAssetEmptyState(className, iconLabel, messageText) {
+  const empty = document.createElement('div');
+  empty.className = className;
+  const icon = document.createElement('span');
+  icon.className = 'asset-empty-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = iconLabel;
+  const message = document.createElement('span');
+  message.className = 'asset-empty-copy';
+  message.textContent = messageText;
+  empty.append(icon, message);
+  return empty;
+}
+
 function renderLocalComponentLibraries() {
   const list = $('#component-library-list');
   if (!list) return;
   list.replaceChildren();
   const selectedMaster = selectedNodes().length === 1 && selectedNodes()[0].isComponent;
   if (!(state.componentLibraries || []).length) {
-    const empty = document.createElement('div'); empty.className = 'components-empty local-library-empty';
-    empty.textContent = 'Save a component here to reuse it in any design on this device.';
+    const empty = createAssetEmptyState('components-empty local-library-empty', '◇', 'Save a component here to reuse it in any design on this device.');
     list.append(empty);
     return;
   }
@@ -4279,9 +4344,7 @@ function renderLocalComponentLibraries() {
     const components = library.components.map(component => ({ component, publication: component.versions.at(-1) }))
       .filter(entry => entry.publication);
     if (!components.length) {
-      const emptyLibrary = document.createElement('div'); emptyLibrary.className = 'local-library-empty';
-      emptyLibrary.textContent = 'Publish a component from this design to get started.';
-      entries.append(emptyLibrary);
+      entries.append(createAssetEmptyState('local-library-empty', '◇', 'Publish a component from this design to get started.'));
     }
     for (const { component, publication } of components) {
       const place = document.createElement('button'); place.type = 'button'; place.className = 'local-library-component';
@@ -4364,7 +4427,15 @@ function renderAssetsTab() {
   state.assetThumbnailImages.clear();
   const placedImages = $('#placed-image-assets');
   placedImages.replaceChildren();
-  for (const node of imageNodes()) {
+  const pageImages = imageNodes();
+  if (!pageImages.length) {
+    const empty = document.createElement('div'); empty.className = 'placed-image-assets-empty';
+    const icon = document.createElement('span'); icon.setAttribute('aria-hidden', 'true'); icon.textContent = '▧';
+    const message = document.createElement('span'); message.textContent = 'No images placed on this page';
+    empty.append(icon, message);
+    placedImages.append(empty);
+  }
+  for (const node of pageImages) {
     const asset = state.assets.get(node.assetId);
     const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
     const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
@@ -4389,7 +4460,7 @@ function renderAssetsTab() {
   const exportTokens = $('#export-design-tokens');
   if (exportTokens) exportTokens.disabled = !(state.document.variables || []).length;
   if (!collections.length) {
-    const empty = document.createElement('div'); empty.className = 'variables-empty'; empty.textContent = 'Create typed variables, aliases, and theme modes for this design.'; variableCollections.append(empty);
+    variableCollections.append(createAssetEmptyState('variables-empty', '◈', 'Create typed variables, aliases, and theme modes for this design.'));
   }
   for (const collection of collections) {
     const card = document.createElement('section'); card.className = 'variable-collection-card';
@@ -4461,7 +4532,7 @@ function renderAssetsTab() {
   const componentSetItems = state.document.componentSets || [];
   const groupedComponentIds = new Set(componentSetItems.flatMap(set => set.componentIds));
   if (!componentItems.length) {
-    const empty = document.createElement('div'); empty.className = 'components-empty'; empty.textContent = 'Create a component from any layer.'; components.append(empty);
+    components.append(createAssetEmptyState('components-empty', '◇', 'Create a component from any layer.'));
   }
   for (const set of componentSetItems) {
     const wrapper = document.createElement('div');
@@ -4481,7 +4552,7 @@ function renderAssetsTab() {
   const styles = $('#color-styles-list'); styles.replaceChildren();
   const colorStyles = state.document.colorStyles || [];
   if (!colorStyles.length) {
-    const empty = document.createElement('div'); empty.className = 'color-styles-empty'; empty.textContent = 'Create styles from a solid Fill or Text color.'; styles.append(empty);
+    styles.append(createAssetEmptyState('color-styles-empty', '◉', 'Create styles from a solid Fill or Text color.'));
   }
   for (const style of colorStyles) {
     const row = document.createElement('div'); row.className = 'color-style-row';
@@ -4498,7 +4569,7 @@ function renderAssetsTab() {
   const textStyles = $('#text-styles-list'); textStyles.replaceChildren();
   const typographyStyles = state.document.typographyStyles || [];
   if (!typographyStyles.length) {
-    const empty = document.createElement('div'); empty.className = 'typography-styles-empty'; empty.textContent = 'Save typography from a text layer to reuse it here.'; textStyles.append(empty);
+    textStyles.append(createAssetEmptyState('typography-styles-empty', 'Tt', 'Save typography from a text layer to reuse it here.'));
   } else {
     const hint = document.createElement('div'); hint.className = 'typography-styles-hint'; hint.textContent = 'Applying links supported typography settings. Updates reach linked text; color, alignment, and resizing stay local.'; textStyles.append(hint);
   }
@@ -5387,6 +5458,38 @@ function resizeHandleAt(event) {
   if (hit.kind === 'rotate') return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
   return { kind: 'resize', name: hit.name, node, entry, geometry, ancestors };
 }
+function scaleHandleAt(event) {
+  const entries = transformEntriesForSelection();
+  if (!entries.length) return null;
+  let plan;
+  try { plan = planScaleTransform(entries, 1, state.scaleAnchor); }
+  catch { return null; }
+  if (!plan.bounds || !plan.patches.length) return null;
+  const handles = selectionGroupHandles(plan.bounds);
+  const hit = nearestScreenHandle({ x: event.clientX, y: event.clientY },
+    Object.entries(handles.resize).map(([name, point]) => ({ kind: 'scale', name, point: worldToScreen(point, canvas, state) })),
+    event.pointerType === 'touch' ? 22 : event.pointerType === 'pen' ? 14 : 8);
+  if (!hit) return null;
+  const anchor = scaleAnchorPoint(plan.bounds, state.scaleAnchor);
+  const start = handles.resize[hit.name];
+  if (checkPointDistance(start, anchor) < 1e-8) return null;
+  return { entries: entries.map(entry => ({ ...entry, node: structuredClone(entry.node), ancestors: structuredClone(entry.ancestors) })),
+    bounds: plan.bounds, anchor, start, handle: hit.name };
+}
+
+function scaleAnchorPoint(bounds, name) {
+  const [x, y] = ANCHOR_COORDINATES[name] || ANCHOR_COORDINATES.center;
+  return { x: bounds.x + bounds.width * x, y: bounds.y + bounds.height * y };
+}
+
+function scaleFactorFromPointer(anchor, start, pointer) {
+  const dx = start.x - anchor.x;
+  const dy = start.y - anchor.y;
+  const denominator = dx * dx + dy * dy;
+  if (denominator <= 1e-12) return 1;
+  const factor = ((pointer.x - anchor.x) * dx + (pointer.y - anchor.y) * dy) / denominator;
+  return Math.max(.01, Math.min(100, factor));
+}
 function starControlHandleAt(event) {
   if (state.tool !== 'select' || state.selectedIds.length !== 1 || state.imageCropMode
     || state.layerSelectionMode || state.documentTransitioning || state.presenting || isLiveHostViewOnly()
@@ -5785,6 +5888,20 @@ function onCanvasPointerDown(event) {
       // A second touch turns an unfinished empty-canvas comment tap into
       // navigation instead of unexpectedly opening the comment composer.
       state.interaction = null;
+    } else if (interruptedInteraction?.kind === 'scale') {
+      // A second finger takes over navigation; roll back the in-progress scale
+      // so a partial transform is never committed by gesture handoff.
+      const firstPointer = [...state.pointerMap.entries()].find(([pointerId]) => pointerId !== event.pointerId);
+      const snapshot = history.cancelTransaction(interruptedInteraction.historyTransaction);
+      if (snapshot) {
+        state.document = snapshot;
+        state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
+      }
+      state.interaction = null;
+      state.pointerMap.clear();
+      if (firstPointer) state.pointerMap.set(firstPointer[0], firstPointer[1]);
+      state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
+      renderer.invalidate();
     } else if (shouldCancelShapeBuilderOnPinch(interruptedInteraction)) {
       // A second finger navigates the canvas; it must never commit the
       // in-progress region selection as an accidental Shape Builder edit.
@@ -5911,6 +6028,22 @@ function onCanvasPointerDown(event) {
   if (state.imageCropMode) { beginImageCropInteraction(event, world); return; }
   if (state.imageEraseMode && event.button === 0) { beginImageEraseStroke(event, world); return; }
   if (state.objectIsolationMode && event.button === 0) { beginObjectIsolationStroke(event, world); return; }
+  if (state.tool === 'scale' && event.button === 0) {
+    const handle = scaleHandleAt(event);
+    if (handle) {
+      state.interaction = {
+        kind: 'scale', pointerId: event.pointerId, ...handle, changed: false,
+        historyTransaction: beginCanvasHistoryTransaction('Scale layers')
+      };
+    } else {
+      const hit = hitTestPage(activePage(), world,
+        (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
+        state.document, null, state.zoom, { allowAnyClippedNodes: true });
+      setSelection(hit ? [hit.id] : []);
+    }
+    event.preventDefault();
+    return;
+  }
   if (state.tool === 'lasso') {
     const additive = event.shiftKey || (event.pointerType !== 'mouse' && state.selectedIds.length > 0);
     state.interaction = { kind: 'lasso', pointerId: event.pointerId, points: [world], additive };
@@ -6032,6 +6165,9 @@ function onCanvasPointerDown(event) {
         trigger: state.prototypeTrigger,
         delay: state.prototypeDelay,
         transition: state.prototypeTransition,
+        ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+          ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
+          : {}),
         easing: state.prototypeEasing,
         easingBezier: state.prototypeEasingBezier,
         duration: state.prototypeDuration,
@@ -6321,6 +6457,23 @@ function onCanvasPointerMove(event) {
       && Math.hypot(event.clientX - interaction.startClient.x, event.clientY - interaction.startClient.y) > 8) {
       interaction.moved = true;
     }
+    return;
+  }
+  if (interaction.kind === 'scale') {
+    if (interaction.pointerId !== event.pointerId) return;
+    const world = screenToWorld(event, canvas, state);
+    const factor = scaleFactorFromPointer(interaction.anchor, interaction.start, world);
+    try {
+      const plan = planScaleTransform(interaction.entries, factor, state.scaleAnchor);
+      applyScalePlan(plan, { recordOverrides: false });
+      interaction.factor = factor;
+      interaction.changed = Math.abs(factor - 1) > 1e-8;
+      state.scaleMultiplier = factor;
+      $('#position-status').textContent = `${formatInspectorNumber(factor * 100)}% · ${interaction.entries.length} layers`;
+    } catch (error) {
+      showToast(error.message || 'Could not scale the selection.');
+    }
+    event.preventDefault();
     return;
   }
   if (interaction.kind === 'comment-selection-tap') {
@@ -6686,6 +6839,28 @@ function onCanvasPointerUp(event) {
   if (event.pointerType === 'touch') queueLivePresenceSync(undefined, { clearCursor: true });
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'scale') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (!interaction.changed) {
+      history.cancelTransaction(interaction.historyTransaction);
+      state.interaction = null;
+      renderInspector(); renderer.invalidate();
+      return;
+    }
+    if (!commitCanvasHistoryTransaction(interaction)) {
+      state.interaction = null; renderInspector(); renderer.invalidate(); return;
+    }
+    try {
+      const plan = planScaleTransform(interaction.entries, interaction.factor, state.scaleAnchor);
+      for (const patch of plan.patches) {
+        const node = findNode(state.document, patch.id)?.node;
+        if (node) recordNodeComponentOverrides(node, Object.keys(patch).filter(property => property !== 'id'));
+      }
+    } catch (error) { showToast(error.message || 'Scale completed with limited component overrides.'); }
+    state.interaction = null;
+    renderLayers(); renderInspector(); queueSave(); renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'star-control') {
     if (interaction.pointerId !== event.pointerId) return;
     state.interaction = null;
@@ -10718,6 +10893,7 @@ function applyImageTransformAction(node, targetName, action, direction, fillId =
 
 function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
+  if (event.target.closest('[data-scale-field]') && updateScaleInspectorInput(event.target.closest('[data-scale-field]'))) return;
   const selected = selectedNodes();
   if (!input || !selected.length) return;
   if (selected.length === 1 && selected[0].type === 'slice' && ['width', 'height'].includes(input.dataset.prop)) {
@@ -10968,6 +11144,54 @@ function updateInspectorInput(event) {
   renderer.invalidate();
 }
 
+function applyScalePlan(plan, { recordOverrides = true } = {}) {
+  for (const patch of plan.patches) {
+    const node = findNode(state.document, patch.id)?.node;
+    if (!node) throw new Error(`Layer ${patch.id} changed before scaling could be applied.`);
+  }
+  for (const patch of plan.patches) {
+    const node = findNode(state.document, patch.id).node;
+    const properties = Object.keys(patch).filter(property => property !== 'id');
+    for (const property of properties) node[property] = patch[property];
+    if (recordOverrides) recordNodeComponentOverrides(node, properties);
+  }
+  renderer.invalidate();
+}
+
+function updateScaleInspectorInput(input) {
+  if (!input || isImageRecipeBatchActive(state.bulk) || !input.value.trim()) return Boolean(input);
+  const field = input.dataset.scaleField;
+  if (!['factor', 'width', 'height'].includes(field)) return false;
+  const entered = Number(input.value);
+  if (!Number.isFinite(entered) || entered <= 0) return true;
+  const entries = state.scaleEditBase || transformEntriesForSelection().map(entry => ({
+    ...entry, node: structuredClone(entry.node), ancestors: structuredClone(entry.ancestors)
+  }));
+  if (!state.scaleEditBase) state.scaleEditBase = entries;
+  try {
+    const baseline = planScaleTransform(entries, 1, state.scaleAnchor);
+    if (!baseline.bounds || !baseline.patches.length) return true;
+    const factor = field === 'factor' ? entered / 100
+      : entered / baseline.bounds[field];
+    const plan = planScaleTransform(entries, factor, state.scaleAnchor);
+    if (!state.controlEdit) { checkpoint('Scale selection'); state.controlEdit = true; }
+    applyScalePlan(plan);
+    state.scaleMultiplier = factor;
+    const widthInput = $('#inspector-content [data-scale-field="width"]');
+    const heightInput = $('#inspector-content [data-scale-field="height"]');
+    const factorInput = $('#inspector-content [data-scale-field="factor"]');
+    if (widthInput && field !== 'width') widthInput.value = formatInspectorNumber(baseline.bounds.width * factor);
+    if (heightInput && field !== 'height') heightInput.value = formatInspectorNumber(baseline.bounds.height * factor);
+    if (factorInput && field !== 'factor') factorInput.value = formatInspectorNumber(factor * 100);
+    queueSave();
+  } catch (error) {
+    showToast(error.message || 'Could not scale the selection.');
+    input.value = input.dataset.lastValidValue || input.value;
+  }
+  input.dataset.lastValidValue = input.value;
+  return true;
+}
+
 function updateNetworkFaceInput(input) {
   const node = selectedNodes().length === 1 && selectedNodes()[0].type === 'network' ? selectedNodes()[0] : null;
   const face = node?.faces?.find(item => item.id === input.dataset.networkFaceFill || item.id === input.dataset.networkFaceOpacity);
@@ -11007,7 +11231,7 @@ function finishInspectorInput() {
   if (gradientStopDrag) return;
   if (!state.controlEdit) return;
   clearTimeout(state.statusTimer);
-  state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
+  state.statusTimer = setTimeout(() => { state.controlEdit = false; state.scaleEditBase = null; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
 }
 function scheduleEditedImagePreviews(nodes) {
   const visible = visibleImagePreviewKeys();
@@ -15543,16 +15767,44 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   const resolveTransitionRadius = node => node.variableBindings?.radius
     ? resolveVariableValueWithModeOverrides(runtimeDocument, node.variableBindings.radius, state.presenting.variableModes || {}, node)
     : node.radius;
+  const interpolationOptions = {
+    resolveRadius: resolveTransitionRadius,
+    resolveImageTransition: resolveSmartAnimateImageTransition,
+    allowOvershoot: true
+  };
+  const smartMatchingInProgress = interaction?.smartAnimateMatchingLayers === true
+    && previousFrame && Number.isFinite(progress);
+  const matchingSplit = smartMatchingInProgress
+    ? splitSmartFrameMatches(previousFrame, target.node, progress, interpolationOptions)
+    : null;
+  const hasMatchingLayers = Boolean(matchingSplit && (matchingSplit.matchCount > 0 || matchingSplit.fixedLayerCount > 0));
+  const rect = $('#present-canvas').getBoundingClientRect();
+  const width = Math.max(1, rect.width); const height = Math.max(1, rect.height);
+  const matchingTransition = matchingSplit && interaction
+    ? prototypeTransitionMotion(interaction.transition, width, height, progress)
+    : null;
+  const matchingTransitionMotion = matchingTransition?.incoming || null;
+  const outgoingTransitionMotion = matchingTransition?.outgoing || null;
+  const presentationLayerPlan = hasMatchingLayers
+    ? smartAnimatePresentationPaintPlan(matchingSplit, target.node, matchingTransitionMotion, progress, outgoingTransitionMotion)
+    : null;
   const displayFrame = applySessionVariableModes(previousFrame && Number.isFinite(progress)
+    && interaction?.transition === 'smart-animate'
     ? interpolateSmartFrame(previousFrame, target.node, progress, {
-      resolveRadius: resolveTransitionRadius,
-      resolveImageTransition: resolveSmartAnimateImageTransition,
-      allowOvershoot: true
+      ...interpolationOptions
     })
     : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
+  const incomingBaseFrame = matchingSplit
+    ? presentationLayerPlan
+      ? applySessionVariableModes({ ...structuredClone(matchingSplit.matchingFrame), x: 0, y: 0, children: presentationLayerPlan.map(entry => entry.node) })
+      : applySessionVariableModes({ ...matchingSplit.destinationFrame, x: 0, y: 0 })
+    : displayFrame;
+  const matchingDisplayFrame = matchingSplit && !presentationLayerPlan
+    ? applySessionVariableModes({ ...structuredClone(matchingSplit.matchingFrame), x: 0, y: 0 })
+    : null;
   const sceneChildren = [displayFrame];
-  const underlayChildren = [displayFrame];
+  const underlayChildren = [incomingBaseFrame];
   const backdropChildren = [];
   const overlayChildren = [];
   const sceneDocument = children => ({
@@ -15596,18 +15848,28 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   presentRenderState.previewVersions = state.previewVersions;
   presentRenderState.previewSignatures = state.previewSignatures;
   presentRenderState.imageStatus = state.imageStatus;
-  const rect = $('#present-canvas').getBoundingClientRect();
-  const width = Math.max(1, rect.width); const height = Math.max(1, rect.height);
   const margin = Math.min(72, Math.max(24, Math.min(width, height) * .08));
   presentRenderState.zoom = Math.max(.05, Math.min(1.25, (width - margin * 2) / Math.max(1, displayFrame.width), (height - margin * 2) / Math.max(1, displayFrame.height)));
   presentRenderState.panX = (width - displayFrame.width * presentRenderState.zoom) / 2;
   presentRenderState.panY = (height - displayFrame.height * presentRenderState.zoom) / 2;
-  presentUnderlayRenderState = { ...presentRenderState, document: sceneDocument(underlayChildren) };
+  presentUnderlayRenderState = {
+    ...presentRenderState,
+    document: sceneDocument(underlayChildren),
+    presentationLayerPlan: presentationLayerPlan ? { frameId: incomingBaseFrame.id, entries: presentationLayerPlan } : null
+  };
   presentBackdropRenderState = { ...presentRenderState, document: sceneDocument(backdropChildren) };
   presentOverlayRenderState = { ...presentRenderState, document: sceneDocument(overlayChildren) };
+  presentMatchingRenderState = { ...presentRenderState, document: sceneDocument(matchingDisplayFrame ? [matchingDisplayFrame] : []) };
   $('#present-title').textContent = target.node.name;
   $('#present-back').disabled = state.presenting.stack.length === 0 && state.presenting.overlays.length === 0;
   $('#present-dialog').dataset.frameId = state.presenting.frameId;
+  if (hasMatchingLayers) {
+    $('#present-dialog').dataset.matchingStacking = matchingSplit.matchingStacking;
+    $('#present-dialog').dataset.matchingComposite = 'true';
+  } else {
+    delete $('#present-dialog').dataset.matchingStacking;
+    delete $('#present-dialog').dataset.matchingComposite;
+  }
   $('#present-dialog').dataset.overlayDepth = String(state.presenting.overlays.length);
   $('#present-dialog').dataset.navigationDepth = String(state.presenting.stack.length);
   const scrollOffset = getPresentationScrollOffset(presentRenderState, displayFrame);
@@ -15617,7 +15879,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   if (isSmartAnimating) {
     $('#present-dialog').dataset.smartAnimating = 'true';
     $('#present-dialog').dataset.smartProgress = String(progress);
-    $('#present-dialog').dataset.smartTarget = previousOverlayFrame ? 'overlay' : 'frame';
+    $('#present-dialog').dataset.smartTarget = matchingSplit ? 'matching-layers' : previousOverlayFrame ? 'overlay' : 'frame';
   } else {
     delete $('#present-dialog').dataset.smartAnimating;
     delete $('#present-dialog').dataset.smartProgress;
@@ -15641,6 +15903,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   presentRenderer?.invalidate();
   presentBackdropRenderer?.invalidate();
   presentOverlayRenderer?.invalidate();
+  presentMatchingRenderer?.invalidate();
 }
 
 function cancelPresentationAnimation() {
@@ -15668,6 +15931,12 @@ function cancelPresentationAnimation() {
     backdropCanvas.style.transform = 'translate3d(0, 0, 0)';
     backdropCanvas.style.zIndex = '';
   }
+  const matchingCanvas = $('#present-matching-canvas');
+  if (matchingCanvas) {
+    matchingCanvas.style.opacity = '1';
+    matchingCanvas.style.transform = 'translate3d(0, 0, 0)';
+    matchingCanvas.style.zIndex = '';
+  }
   const transitionCanvas = $('#present-transition-canvas');
   if (transitionCanvas) {
     transitionCanvas.style.display = 'none';
@@ -15684,16 +15953,28 @@ function cancelPresentationAnimation() {
     delete dialog.dataset.overlayAnimating;
     delete dialog.dataset.overlayTransition;
     delete dialog.dataset.overlayProgress;
+    delete dialog.dataset.matchingStacking;
+    delete dialog.dataset.matchingComposite;
   }
 }
 
 const maxPresentationSnapshotPixels = 8_388_608;
 
-function capturePresentationSnapshot() {
+function capturePresentationSnapshot(frameOverride = null) {
   const source = $('#present-canvas');
   const snapshot = $('#present-transition-canvas');
   const rect = source?.getBoundingClientRect();
   if (!source || !snapshot || !presentRenderer || !rect?.width || !rect?.height) return null;
+  const previousUnderlayState = presentUnderlayRenderState;
+  if (frameOverride && previousUnderlayState?.document) {
+    const filteredDocument = structuredClone(previousUnderlayState.document);
+    const page = filteredDocument.pages?.[0];
+    const frameIndex = page?.children?.findIndex(child => child.type === 'frame') ?? -1;
+    if (frameIndex >= 0) {
+      page.children[frameIndex] = structuredClone(frameOverride);
+      presentUnderlayRenderState = { ...previousUnderlayState, document: filteredDocument };
+    }
+  }
   try {
     // Commit the current visible frame before the session is changed. Calling
     // draw directly avoids a second renderer and captures live local previews.
@@ -15733,6 +16014,8 @@ function capturePresentationSnapshot() {
     snapshot.width = 1;
     snapshot.height = 1;
     return null;
+  } finally {
+    if (previousUnderlayState) presentUnderlayRenderState = previousUnderlayState;
   }
 }
 
@@ -15775,11 +16058,15 @@ function setPresentationTransitionMotion(interaction, width, height, progress) {
   const incomingBackdrop = $('#present-backdrop-canvas');
   const incomingOverlay = $('#present-overlay-canvas');
   const outgoing = $('#present-transition-canvas');
+  const matching = $('#present-matching-canvas');
   const setLayerMotion = (element, layerMotion) => {
     element.style.transform = `translate3d(${layerMotion.x}px, ${layerMotion.y}px, 0)`;
     element.style.opacity = String(layerMotion.opacity);
   };
-  setLayerMotion(incoming, motion.incoming);
+  const incomingMotion = $('#present-dialog').dataset.matchingComposite === 'true'
+    ? { x: 0, y: 0, opacity: 1 }
+    : motion.incoming;
+  setLayerMotion(incoming, incomingMotion);
   setLayerMotion(incomingBackdrop, motion.incoming);
   setLayerMotion(incomingOverlay, motion.incoming);
   setLayerMotion(outgoing, motion.outgoing);
@@ -15794,9 +16081,13 @@ function setPresentationTransitionMotion(interaction, width, height, progress) {
     incomingOverlay.style.zIndex = '2';
     outgoing.style.zIndex = '3';
   }
+  const matchingBelowDestination = $('#present-dialog').dataset.matchingStacking === 'below-destination';
+  matching.style.zIndex = matchingBelowDestination
+    ? (motion.front === 'incoming' ? '0' : '1')
+    : '3';
 }
 
-function animatePresentationTransition(snapshotSize, interaction) {
+function animatePresentationTransition(snapshotSize, interaction, matchingFromFrame = null) {
   const duration = Math.max(0, Number(interaction.duration) || 0);
   const dialog = $('#present-dialog');
   const canvasElement = $('#present-canvas');
@@ -15810,13 +16101,14 @@ function animatePresentationTransition(snapshotSize, interaction) {
   dialog.dataset.transitionType = interaction.transition;
   dialog.style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction.easing || 'ease-in-out', interaction.easingBezier));
   setPresentationTransitionMotion(interaction, width, height, 0);
-  for (const renderer of [presentRenderer, presentBackdropRenderer, presentOverlayRenderer]) if (renderer?.frame) {
-    cancelAnimationFrame(renderer.frame);
-    renderer.frame = 0;
-  }
-  presentRenderer?.draw();
-  presentBackdropRenderer?.draw();
-  presentOverlayRenderer?.draw();
+  const drawTransitionSample = progress => {
+    if (matchingFromFrame) renderPresentationFrame(interaction, matchingFromFrame, progress);
+    for (const renderer of [presentRenderer, presentBackdropRenderer, presentOverlayRenderer, presentMatchingRenderer]) {
+      if (renderer?.frame) { cancelAnimationFrame(renderer.frame); renderer.frame = 0; }
+      renderer?.draw();
+    }
+  };
+  drawTransitionSample(0);
   // Force the start geometry to be painted before any layer advances.
   void canvasElement.getBoundingClientRect();
   requestPresentationTransitionFrame(() => {
@@ -15831,12 +16123,20 @@ function animatePresentationTransition(snapshotSize, interaction) {
         }
         const linear = Math.min(1, Math.max(0, (now - startTime) / duration));
         const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
+        if (matchingFromFrame) drawTransitionSample(eased);
         setPresentationTransitionMotion(interaction, width, height, eased);
         if (linear < 1) presentationAnimationFrame = requestAnimationFrame(animate);
         else {
           presentationAnimationFrame = 0;
           if (token !== presentationTransitionToken) return;
           cancelPresentationAnimation();
+          if (matchingFromFrame) {
+            renderPresentationFrame();
+            for (const renderer of [presentRenderer, presentBackdropRenderer, presentOverlayRenderer, presentMatchingRenderer]) {
+              if (renderer?.frame) { cancelAnimationFrame(renderer.frame); renderer.frame = 0; }
+              renderer?.draw();
+            }
+          }
           schedulePresentationDelay();
         }
       };
@@ -16020,6 +16320,7 @@ function startPresentation(selectedId = null) {
     if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentUnderlayRenderState);
     if (!presentBackdropRenderer) presentBackdropRenderer = new SceneRenderer($('#present-backdrop-canvas'), () => presentBackdropRenderState, null, { transparent: true });
     if (!presentOverlayRenderer) presentOverlayRenderer = new SceneRenderer($('#present-overlay-canvas'), () => presentOverlayRenderState, null, { transparent: true });
+    if (!presentMatchingRenderer) presentMatchingRenderer = new SceneRenderer($('#present-matching-canvas'), () => presentMatchingRenderState, null, { transparent: true });
     renderPresentationFrame();
     schedulePresentationDelay();
   });
@@ -16094,10 +16395,28 @@ function navigatePresentation(interaction) {
   const runtimeDocument = presentRuntimeDocument || state.document;
   const isSmartAnimate = interaction.transition === 'smart-animate';
   const currentOverlay = state.presenting.overlays?.at(-1) || null;
-  const source = isSmartAnimate && (interaction.action === 'navigate' || (interaction.action === 'swap-overlay' && !currentOverlay))
+  const frameAction = interaction.action === 'navigate'
+    || (interaction.action === 'swap-overlay' && !currentOverlay)
+    || (interaction.action === 'back' && !currentOverlay);
+  const wantsMatchingLayers = interaction.smartAnimateMatchingLayers === true
+    && interaction.action === 'navigate' && frameAction && !currentOverlay;
+  const source = (isSmartAnimate || wantsMatchingLayers) && (interaction.action === 'navigate' || (interaction.action === 'swap-overlay' && !currentOverlay))
     ? findNode(runtimeDocument, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
   const previousFrame = source ? structuredClone(source) : null;
+  const destination = wantsMatchingLayers
+    ? (findNode(runtimeDocument, interaction.destinationId, interaction.destinationPageId)
+      || findNodeAcrossPages(runtimeDocument, interaction.destinationId))
+    : null;
+  const matchingSplit = previousFrame && destination?.node?.type === 'frame'
+    ? splitSmartFrameMatches(previousFrame, destination.node, 0)
+    : null;
+  const matchingLayerTransition = Boolean(wantsMatchingLayers
+    && (matchingSplit?.matchCount > 0 || matchingSplit?.fixedLayerCount > 0));
+  if (matchingLayerTransition) {
+    $('#present-dialog').dataset.matchingStacking = matchingSplit.matchingStacking;
+    $('#present-dialog').dataset.matchingComposite = 'true';
+  }
   const previousOverlaySource = isSmartAnimate && currentOverlay
     ? findNode(runtimeDocument, currentOverlay.frameId, currentOverlay.pageId)?.node
       || findNodeAcrossPages(runtimeDocument, currentOverlay.frameId)?.node
@@ -16119,13 +16438,21 @@ function navigatePresentation(interaction) {
     && overlayTransition.transition !== 'instant' && overlayTransition.transition !== 'smart-animate'
     ? capturePresentationOverlaySnapshot()
     : null;
-  const frameAction = interaction.action === 'navigate'
-    || (interaction.action === 'swap-overlay' && !currentOverlay)
-    || (interaction.action === 'back' && !currentOverlay);
-  const snapshotEligible = Number(interaction.duration) > 0
+  const snapshotEligible = !matchingLayerTransition && Number(interaction.duration) > 0
     && !['instant', 'smart-animate', 'scroll'].includes(interaction.transition)
     && frameAction;
-  const outgoingSnapshot = snapshotEligible ? capturePresentationSnapshot() : null;
+  const outgoingSnapshot = snapshotEligible
+    ? capturePresentationSnapshot(matchingLayerTransition
+      ? { ...matchingSplit.sourceFrame, x: 0, y: 0 }
+      : null)
+    : null;
+  const matchingCompositeSize = matchingLayerTransition
+    ? (() => {
+      const rect = $('#present-canvas').getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 ? { width: rect.width, height: rect.height } : null;
+    })()
+    : null;
+  const transitionSize = outgoingSnapshot || matchingCompositeSize;
   const result = applyPrototypeInteraction(runtimeDocument, state.presenting, interaction);
   if (!result) {
     cancelPresentationAnimation();
@@ -16181,8 +16508,17 @@ function navigatePresentation(interaction) {
     return;
   }
   if (result === 'navigated' && previousFrame) {
-    animateSmartTransition(previousFrame, interaction);
-    return;
+    if (isSmartAnimate) {
+      animateSmartTransition(previousFrame, interaction);
+      return;
+    }
+    if (matchingLayerTransition) {
+      if (animatePresentationTransition(transitionSize, interaction, previousFrame)) return;
+      renderPresentationFrame();
+      cancelPresentationAnimation();
+      schedulePresentationDelay();
+      return;
+    }
   }
   if (result === 'overlay-swapped' && previousOverlayFrame) {
     animateSmartTransition(previousOverlayFrame, interaction, { target: 'overlay' });
@@ -19140,6 +19476,9 @@ function applyInspectorAction(action, details = {}) {
         const updateOptions = {
           action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
           transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
+          ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+            ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
+            : {}),
           condition: programActionEdit ? sourceInteraction?.condition || null : condition,
           url: $('#prototype-url')?.value ?? state.prototypeUrl,
           ...variablePayload,
@@ -19193,6 +19532,9 @@ function applyInspectorAction(action, details = {}) {
         addPrototypeInteraction(updatedDocument, node.id, null, {
           action: state.prototypeAction, trigger: state.prototypeTrigger,
           transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
+          ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
+            ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
+            : {}),
           condition, ...variablePayload,
           url: state.prototypeUrl,
           collectionId: selectedCollection?.id,
@@ -20146,6 +20488,7 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.matches('[data-scale-field]')) { finishInspectorInput(); return; }
     const networkVertexRadius = event.target.closest('[data-network-vertex-radius]');
     if (networkVertexRadius) {
       updateNetworkVertexCornerRadiusInput(networkVertexRadius);
@@ -20314,6 +20657,7 @@ function initEvents() {
       if (!['navigate', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'scroll-to') state.prototypeTransition = 'scroll';
       else if (previousAction === 'scroll-to' && state.prototypeTransition === 'scroll') state.prototypeTransition = 'instant';
+      if (!canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)) state.prototypeSmartAnimateMatchingLayers = false;
       if (state.prototypeAction === 'set-variable-mode') {
         const collection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
         state.prototypeVariableCollectionId = collection?.id || null;
@@ -20342,7 +20686,12 @@ function initEvents() {
     if (event.target.id === 'prototype-scroll-alignment') state.prototypeScrollAlignment = event.target.value;
     if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
-    if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
+    if (event.target.id === 'prototype-transition') {
+      state.prototypeTransition = event.target.value;
+      if (!canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)) state.prototypeSmartAnimateMatchingLayers = false;
+      renderInspector();
+    }
+    if (event.target.id === 'prototype-smart-animate-matching-layers') state.prototypeSmartAnimateMatchingLayers = event.target.checked;
     if (event.target.id === 'prototype-easing') { state.prototypeEasing = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
     if (event.target.id === 'prototype-delay') state.prototypeDelay = Number(event.target.value);
@@ -20381,6 +20730,12 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => {
+    const scaleAnchor = event.target.closest('[data-scale-anchor]');
+    if (scaleAnchor) {
+      state.scaleAnchor = scaleAnchor.dataset.scaleAnchor;
+      renderInspector();
+      return;
+    }
     const motionAction = event.target.closest('[data-motion-action]');
     if (motionAction) { handleMotionAction(motionAction); return; }
     const gradientHandle = event.target.closest('[data-gradient-stop-handle]');
@@ -20720,12 +21075,14 @@ function initEvents() {
     presentRenderer?.destroy(); presentRenderer = null;
     presentBackdropRenderer?.destroy(); presentBackdropRenderer = null;
     presentOverlayRenderer?.destroy(); presentOverlayRenderer = null;
-    presentRenderState = null; presentUnderlayRenderState = null; presentBackdropRenderState = null; presentOverlayRenderState = null;
+    presentMatchingRenderer?.destroy(); presentMatchingRenderer = null;
+    presentRenderState = null; presentUnderlayRenderState = null; presentBackdropRenderState = null; presentOverlayRenderState = null; presentMatchingRenderState = null;
     presentRuntimeDocument = null; state.presenting = null;
     $('#present-canvas').style.removeProperty('touch-action');
     $('#present-scene').style.opacity = '1'; $('#present-scene').style.transform = 'translate3d(0, 0, 0)'; $('#present-scene').style.zIndex = '';
     $('#present-backdrop-canvas').style.opacity = '1'; $('#present-backdrop-canvas').style.transform = 'translate3d(0, 0, 0)'; $('#present-backdrop-canvas').style.zIndex = '';
     $('#present-overlay-canvas').style.opacity = '1'; $('#present-overlay-canvas').style.transform = 'translate3d(0, 0, 0)'; $('#present-overlay-canvas').style.zIndex = '';
+    $('#present-matching-canvas').style.opacity = '1'; $('#present-matching-canvas').style.transform = 'translate3d(0, 0, 0)'; $('#present-matching-canvas').style.zIndex = '';
   });
   $('#present-canvas').addEventListener('pointerdown', handlePresentationPointerDown);
   $('#present-canvas').addEventListener('pointerup', handlePresentationPointerUp);
@@ -21066,7 +21423,7 @@ function onKeyDown(event) {
   if (key === 'escape') { closeMenu(); setSelection([]); return; }
   if (event.shiftKey && !mod && key === 's' && !event.altKey) { event.preventDefault(); setTool('section'); return; }
   if (event.shiftKey && mod && key === 'k' && !event.altKey) { event.preventDefault(); chooseImageFiles(); return; }
-  const tools = { v: 'select', h: 'hand', f: 'frame', s: 'slice', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment', i: 'eyedropper', q: 'lasso' };
+  const tools = { v: 'select', k: 'scale', h: 'hand', f: 'frame', s: 'slice', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment', i: 'eyedropper', q: 'lasso' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;
   if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key) && selectedNodes().length) {

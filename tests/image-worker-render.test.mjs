@@ -180,6 +180,30 @@ test('oversized previews always decode the full original and remain ephemeral wh
       assert.equal(third.sourceRetained, false);
       assert.deepEqual(third.bytes, expectedThird.bytes,
         'a preview after export still derives from the original rather than an earlier result');
+
+      const retainedConfigured = waitFor(message => message.type === 'cache-configured' && message.generation === 2);
+      selfMock.onmessage({ data: { type: 'configure-cache', generation: 2, pixelBudget: 8 } });
+      await retainedConfigured;
+      const retainedFirstResult = waitForRender(5);
+      selfMock.onmessage({ data: {
+        type: 'render', requestId: 5, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
+        adjustments: { invert: true }, transforms: {}, previewMaxDimension: 8, outputMode: 'preview',
+      } });
+      const retainedFirst = await retainedFirstResult;
+      assert.equal(retainedFirst.sourceRetained, true, 'the in-budget decoded original stays cached between edits');
+
+      const retainedSecondResult = waitForRender(6);
+      selfMock.onmessage({ data: {
+        type: 'render', requestId: 6, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
+        adjustments: { brightness: 18 }, transforms: {}, previewMaxDimension: 8, outputMode: 'preview',
+      } });
+      const retainedSecond = await retainedSecondResult;
+      const expectedRetainedSecond = renderImage(expectedOriginal, { brightness: 18 }, {}, pillow, { previewMaxDimension: 8 });
+      assert.equal(retainedSecond.sourceRetained, true);
+      assert.deepEqual(retainedSecond.bytes, expectedRetainedSecond.bytes,
+        'an edit after a retained preview is rendered from the cached original, not the previous preview');
+      assert.notDeepEqual(retainedSecond.bytes, retainedFirst.bytes,
+        'the independent second recipe replaces the first preview instead of compounding it');
       assert.deepEqual([...sourceBytes], [...fourByTwoBmp()], 'worker processing leaves the editor-owned original bytes attached and unchanged');
     } finally { expectedOriginal.free(); reducedSource.free(); }
   } finally {

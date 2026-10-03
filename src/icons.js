@@ -1,5 +1,6 @@
 const paths = {
   cursor: '<path d="M5 3.5 19 13l-6.2 1.2L10 20 5 3.5Z"/><path d="m12.8 14.1 3.1 5.1"/>',
+  scale: '<path d="M4 8V4h4M20 16v4h-4M4 4l6 6m10 10-6-6"/><path d="M9 4h7a4 4 0 0 1 4 4v1M15 20H8a4 4 0 0 1-4-4v-1"/>',
   lasso: '<path d="M19.4 12.3c0 4.5-3.1 7.7-7.4 7.7s-7.4-3.2-7.4-7.7S7.7 4 12 4s7.4 3.2 7.4 7.7Z"/><path d="M12 20v1.2a1.8 1.8 0 0 0 3.6 0V20"/>',
   frame: '<rect x="3.5" y="4" width="17" height="16" rx="1.5"/><path d="M7 7h4v4H7z"/>',
   section: '<path d="M4 6.5h16M4 17.5h16"/><path d="M6 7v10m12-10v10"/>',

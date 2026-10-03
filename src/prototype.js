@@ -91,7 +91,8 @@ const legacyActionFields = [
   'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
-  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment'
+  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
+  'smartAnimateMatchingLayers'
 ];
 
 /** View a legacy one-action interaction as v2 without rewriting saved data. */
@@ -332,6 +333,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   valueExpression = null,
   scrollTargetId,
   scrollAlignment = 'nearest',
+  smartAnimateMatchingLayers,
   condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
@@ -347,6 +349,11 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (!isValidPrototypeEasing(easing, normalizedEasingBezier)) throw new TypeError('Unsupported prototype easing settings.');
   if (transition === 'smart-animate' && !['navigate', 'swap-overlay'].includes(action)) {
     throw new TypeError('Smart animate can only be used for frame navigation or swap-overlay actions.');
+  }
+  if (smartAnimateMatchingLayers !== undefined
+    && (typeof smartAnimateMatchingLayers !== 'boolean' || action !== 'navigate'
+      || ['smart-animate', 'instant', 'scroll'].includes(transition))) {
+    throw new TypeError('Smart animate matching layers is only available as a boolean on timed navigation transitions other than Smart Animate.');
   }
   if (transition === 'scroll' && action !== 'scroll-to') throw new TypeError('Scroll transitions can only be used with scroll-to actions.');
   if (action === 'scroll-to' && transition !== 'scroll' && transition !== 'instant') throw new TypeError('Scroll-to actions support only instant or scroll transitions.');
@@ -430,6 +437,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     if (normalizedEasingBezier) existing.easingBezier = normalizedEasingBezier;
     else delete existing.easingBezier;
     existing.duration = Math.max(0, Math.min(10_000, Number(duration) || 0));
+    if (smartAnimateMatchingLayers !== undefined) existing.smartAnimateMatchingLayers = smartAnimateMatchingLayers;
+    else delete existing.smartAnimateMatchingLayers;
     if (action === 'open-overlay') {
       existing.overlayPosition = overlayPosition;
       existing.overlayOutsideClick = Boolean(overlayOutsideClick);
@@ -466,6 +475,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     easing,
     duration: Math.max(0, Math.min(10_000, Number(duration) || 0))
   };
+  if (smartAnimateMatchingLayers !== undefined) interaction.smartAnimateMatchingLayers = smartAnimateMatchingLayers;
   if (normalizedEasingBezier) interaction.easingBezier = normalizedEasingBezier;
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });

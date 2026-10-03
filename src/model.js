@@ -354,6 +354,9 @@ function hasInvalidPrototypeInteractions(interactions, document) {
     if (item.transition === 'smart-animate' && !['navigate', 'swap-overlay'].includes(item.action)) return true;
     if (item.transition === 'scroll' && item.action !== 'scroll-to') return true;
     if (item.action === 'scroll-to' && item.transition != null && !['instant', 'scroll'].includes(item.transition)) return true;
+    if (Object.hasOwn(item, 'smartAnimateMatchingLayers')
+      && (typeof item.smartAnimateMatchingLayers !== 'boolean'
+        || item.action !== 'navigate' || ['smart-animate', 'instant', 'scroll'].includes(item.transition))) return true;
     if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 10_000)) return true;
     if (item.trigger === 'after-delay'
       ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
@@ -375,7 +378,8 @@ const prototypeActionProgramActionFields = new Set([
   'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
-  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment'
+  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
+  'smartAnimateMatchingLayers'
 ]);
 
 function invalidPrototypeCondition(condition, document) {

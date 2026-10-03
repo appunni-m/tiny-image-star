@@ -16,6 +16,7 @@ import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 import { selectionBounds } from './group-transform.js';
+import { planScaleTransform } from './scale-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
@@ -47,6 +48,29 @@ function remotePresenceColor(actorId) {
   let hash = 2166136261;
   for (const char of String(actorId || '')) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
   return `hsl(${(hash >>> 0) % 360} 78% 38%)`;
+}
+
+export function canvasLocalOffsetForScreenTranslation(transform, scaleX, scaleY, offsetX, offsetY) {
+  if (!transform || ![transform.a, transform.b, transform.c, transform.d, scaleX, scaleY, offsetX, offsetY].every(Number.isFinite)) return null;
+  const determinant = transform.a * transform.d - transform.b * transform.c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) <= 1e-12) return null;
+  const screenX = offsetX * scaleX;
+  const screenY = offsetY * scaleY;
+  return {
+    x: (transform.d * screenX - transform.c * screenY) / determinant,
+    y: (-transform.b * screenX + transform.a * screenY) / determinant
+  };
+}
+
+function translateContextByScreenPixels(ctx, canvas, x, y, zoom) {
+  if ((!x && !y) || typeof ctx.translate !== 'function') return;
+  const transform = ctx.getTransform?.();
+  const rect = canvas?.getBoundingClientRect?.();
+  const scaleX = rect?.width > 0 ? canvas.width / rect.width : 1;
+  const scaleY = rect?.height > 0 ? canvas.height / rect.height : 1;
+  const localOffset = canvasLocalOffsetForScreenTranslation(transform, scaleX, scaleY, x, y);
+  if (localOffset) ctx.translate(localOffset.x, localOffset.y);
+  else ctx.translate(x / Math.max(.08, zoom || 1), y / Math.max(.08, zoom || 1));
 }
 
 function cachedFontOutlinePath(data) {
@@ -1904,24 +1928,63 @@ export class SceneRenderer {
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
     if (node.children?.length) {
-      clipNodeContents(ctx, node, x, y, radius);
-      const scrollOffset = applyPresentationScrollOffset(ctx, state, node);
-      const presentationAncestors = renderOptions.presentationAncestors || [];
-      const stickyScrollContext = scrollContextForChildren(node, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
-      const childRenderOptions = renderOptionsForChildren(renderOptions, node, stickyScrollContext);
-      for (const child of presentationChildrenInPaintOrder(node)) {
-        const childGeometry = { ...child, ...getNodeGeometry(document, child) };
-        const effectiveOffset = scrollOffsetForPresentationChild(
-          node, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
-        );
-        const compensationX = scrollOffset.x - effectiveOffset.x;
-        const compensationY = scrollOffset.y - effectiveOffset.y;
-        if (compensationX || compensationY) {
+      const paintPlan = state.presentationLayerPlan?.frameId === node.id
+        ? state.presentationLayerPlan.entries
+        : null;
+      if (Array.isArray(paintPlan)) {
+        const entryByNode = new Map(paintPlan.map(entry => [entry.node, entry]));
+        const presentationAncestors = renderOptions.presentationAncestors || [];
+        for (const child of presentationChildrenInPaintOrder(node)) {
+          const entry = entryByNode.get(child);
+          if (!entry) continue;
+          const parentFrame = entry.clipFrame || node;
+          const childGeometry = { ...child, ...getNodeGeometry(document, child) };
           ctx.save();
-          ctx.translate(compensationX, compensationY);
+          if (entry.frameTransform) {
+            const transform = entry.frameTransform;
+            ctx.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+          }
+          if (entry.transitionMotion) {
+            const opacity = Number.isFinite(entry.transitionMotion.opacity)
+              ? Math.max(0, Math.min(1, entry.transitionMotion.opacity))
+              : 1;
+            ctx.globalAlpha = (Number.isFinite(ctx.globalAlpha) ? ctx.globalAlpha : 1) * opacity;
+            translateContextByScreenPixels(ctx, this.canvas, entry.transitionMotion.x || 0, entry.transitionMotion.y || 0, state.zoom);
+          }
+          const clipRadius = parentFrame.cornerRadii || getNodePropertyValue(document, parentFrame, 'radius') || 0;
+          clipNodeContents(ctx, parentFrame, x, y, clipRadius, parentFrame.cornerSmoothing || 0);
+          const scrollOffset = applyPresentationScrollOffset(ctx, state, parentFrame);
+          const stickyScrollContext = scrollContextForChildren(parentFrame, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
+          const childRenderOptions = renderOptionsForChildren(renderOptions, parentFrame, stickyScrollContext);
+          const effectiveOffset = scrollOffsetForPresentationChild(
+            parentFrame, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
+          );
+          const compensationX = scrollOffset.x - effectiveOffset.x;
+          const compensationY = scrollOffset.y - effectiveOffset.y;
+          if (compensationX || compensationY) ctx.translate(compensationX, compensationY);
           this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
           ctx.restore();
-        } else this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
+        }
+      } else {
+        clipNodeContents(ctx, node, x, y, radius);
+        const scrollOffset = applyPresentationScrollOffset(ctx, state, node);
+        const presentationAncestors = renderOptions.presentationAncestors || [];
+        const stickyScrollContext = scrollContextForChildren(node, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
+        const childRenderOptions = renderOptionsForChildren(renderOptions, node, stickyScrollContext);
+        for (const child of presentationChildrenInPaintOrder(node)) {
+          const childGeometry = { ...child, ...getNodeGeometry(document, child) };
+          const effectiveOffset = scrollOffsetForPresentationChild(
+            node, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
+          );
+          const compensationX = scrollOffset.x - effectiveOffset.x;
+          const compensationY = scrollOffset.y - effectiveOffset.y;
+          if (compensationX || compensationY) {
+            ctx.save();
+            ctx.translate(compensationX, compensationY);
+            this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
+            ctx.restore();
+          } else this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
+        }
       }
     }
     if (node.type === 'frame' && !node.children.length && !draft && renderOptions.showEmptyFrameHint !== false) {
@@ -2931,7 +2994,26 @@ export class SceneRenderer {
       && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
     const cropTargetId = state.imageCropMode ? state.imageCropOverlay?.nodeId : null;
     const cropTargetIsRoot = cropTargetId && roots.some(entry => entry.node.id === cropTargetId);
-    if (roots.length > 1 && groupTransformAllowed && !cropTargetIsRoot) {
+    let scalePlan = null;
+    if (state.tool === 'scale' && roots.length && !cropTargetIsRoot) {
+      try { scalePlan = planScaleTransform(roots, 1, state.scaleAnchor); } catch { scalePlan = null; }
+    }
+    if (scalePlan?.bounds && scalePlan.patches.length) {
+      const bounds = scalePlan.bounds;
+      const handles = selectionGroupHandles(bounds, { rotateOffset: 0 });
+      ctx.beginPath(); ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height); ctx.stroke();
+      for (const point of Object.values(handles.resize)) {
+        ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
+      }
+      const anchorCoordinates = {
+        'top-left': [0, 0], top: [.5, 0], 'top-right': [1, 0],
+        left: [0, .5], center: [.5, .5], right: [1, .5],
+        'bottom-left': [0, 1], bottom: [.5, 1], 'bottom-right': [1, 1]
+      }[state.scaleAnchor] || [.5, .5];
+      const anchor = { x: bounds.x + bounds.width * anchorCoordinates[0], y: bounds.y + bounds.height * anchorCoordinates[1] };
+      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 4 / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = BLUE; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5 / zoom; ctx.stroke();
+    } else if (roots.length > 1 && groupTransformAllowed && !cropTargetIsRoot) {
       const bounds = selectionBounds(roots);
       const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / zoom });
       const north = handles.resize.n;

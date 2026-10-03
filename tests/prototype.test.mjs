@@ -631,6 +631,80 @@ test('prototype custom Bézier and spring easings validate and round-trip per in
   assert.throws(() => validateDocument(unexpectedCurve), /Invalid prototype interactions/);
 });
 
+test('smart animate matching layers is optional for timed navigation transitions and round-trips in legacy and v2 actions', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Open details' });
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Details' });
+  home.children.push(source);
+  addNode(document, home);
+  addNode(document, destination);
+
+  const legacy = addPrototypeInteraction(document, source.id, destination.id, { transition: 'smart-animate' });
+  assert.equal(Object.hasOwn(legacy, 'smartAnimateMatchingLayers'), false,
+    'omitting the option preserves legacy Smart Animate behavior');
+  assert.equal(Object.hasOwn(prototypeActionProgram(legacy).steps[0], 'smartAnimateMatchingLayers'), false,
+    'virtual v2 migration does not invent the optional flag');
+  const legacyReload = parseDocument(serializeDocument(document));
+  assert.equal(Object.hasOwn(findNode(legacyReload, source.id).node.interactions[0], 'smartAnimateMatchingLayers'), false,
+    'older interactions reload without gaining a default flag');
+
+  const matching = addPrototypeInteraction(document, source.id, destination.id, {
+    trigger: 'on-press', transition: 'push-right', smartAnimateMatchingLayers: true
+  });
+  assert.equal(matching.smartAnimateMatchingLayers, true);
+  assert.equal(prototypeActionProgram(matching).steps[0].smartAnimateMatchingLayers, true,
+    'legacy interaction fields are represented in the action program');
+
+  matching.actionProgram = {
+    version: 2,
+    steps: [{
+      type: 'action', actionId: 'navigate-matching', action: 'navigate',
+      destinationId: destination.id, destinationPageId: document.activePageId,
+      transition: 'push-right', smartAnimateMatchingLayers: false
+    }]
+  };
+  const reloaded = parseDocument(serializeDocument(document));
+  const restored = findNode(reloaded, source.id).node.interactions.find(item => item.id === matching.id);
+  assert.equal(restored.smartAnimateMatchingLayers, true, 'the interaction option survives document reload');
+  assert.equal(restored.actionProgram.steps[0].smartAnimateMatchingLayers, false,
+    'an action-specific option survives document reload');
+  assert.equal(validateDocument(reloaded), true);
+
+  for (const options of [
+    { smartAnimateMatchingLayers: 'yes', transition: 'push-right' },
+    { smartAnimateMatchingLayers: null, transition: 'push-right' },
+    { smartAnimateMatchingLayers: true, transition: 'instant' },
+    { smartAnimateMatchingLayers: true, transition: 'smart-animate' },
+    { smartAnimateMatchingLayers: true, action: 'swap-overlay', transition: 'push-right' }
+  ]) {
+    assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, options),
+      /matching layers is only available/);
+  }
+  for (const mutate of [
+    interaction => { interaction.smartAnimateMatchingLayers = 1; },
+    interaction => { interaction.smartAnimateMatchingLayers = null; },
+    interaction => { interaction.action = 'swap-overlay'; },
+    interaction => { interaction.transition = 'instant'; }
+  ]) {
+    const invalid = structuredClone(document);
+    const candidate = findNode(invalid, source.id).node.interactions.find(item => item.id === legacy.id);
+    candidate.smartAnimateMatchingLayers = true;
+    mutate(candidate);
+    assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  }
+  for (const mutate of [
+    step => { step.smartAnimateMatchingLayers = 'yes'; },
+    step => { step.action = 'swap-overlay'; },
+    step => { step.transition = 'smart-animate'; }
+  ]) {
+    const invalid = structuredClone(document);
+    const candidate = findNode(invalid, source.id).node.interactions.find(item => item.id === matching.id);
+    mutate(candidate.actionProgram.steps[0]);
+    assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  }
+});
+
 test('prototype start point and frame hit-testing prefer a nested frame', () => {
   const document = createDocument();
   const outer = createNode('frame', { x: 10, y: 20, width: 400, height: 500 });

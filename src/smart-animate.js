@@ -4,6 +4,7 @@ import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
 import { isValidStrokeStack, strokeSideNames, strokeSideWidths } from './strokes.js';
 import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { defaultImageAdjustments, isValidImageFill } from './image-fills.js';
+import { invertAffine, multiplyAffine, nodeToParentTransform } from './transform-geometry.js';
 
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'cornerSmoothing', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
@@ -697,6 +698,32 @@ function siblingKeys(nodes) {
   });
 }
 
+function matchSiblingNodes(fromChildren, toChildren) {
+  const fromKeys = siblingKeys(fromChildren);
+  const toKeys = siblingKeys(toChildren);
+  const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
+  const matchesBySourceIndex = new Map();
+  const matchesByDestinationIndex = new Map();
+  const matchedSourceIndexes = new Set();
+
+  for (let destinationIndex = 0; destinationIndex < toChildren.length; destinationIndex += 1) {
+    const destination = toChildren[destinationIndex];
+    const source = sourceByKey.get(toKeys[destinationIndex]);
+    if (!source || !canMatch(source.node, destination)) continue;
+    const match = {
+      source: source.node,
+      destination,
+      sourceIndex: source.index,
+      destinationIndex
+    };
+    matchesBySourceIndex.set(source.index, match);
+    matchesByDestinationIndex.set(destinationIndex, match);
+    matchedSourceIndexes.add(source.index);
+  }
+
+  return { matchesBySourceIndex, matchesByDestinationIndex, matchedSourceIndexes };
+}
+
 function layerOpacity(node) {
   return Number.isFinite(node.opacity) ? Math.max(0, Math.min(1, node.opacity)) : 1;
 }
@@ -760,7 +787,14 @@ function fadeLayer(node, progress, entering) {
   return copy;
 }
 
-function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null) {
+function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false) {
+  // Figma keeps fixed-position layers anchored to their source position for
+  // the duration of Smart Animate Matching Layers. The destination snapshot
+  // takes over only at the exact endpoint, including when the fixed flag
+  // changes sides. Standalone Smart Animate keeps its established behavior.
+  if (preserveFixedLayers && (from.fixedPositionWhenScrolling === true || to.fixedPositionWhenScrolling === true) && progress < 1) {
+    return structuredClone(from);
+  }
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
   if (from.type === 'image' && to.type === 'image') {
@@ -879,7 +913,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
     copy.edges = network.edges;
     copy.faces = network.faces;
   }
-  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius, geometryProgress);
+  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers);
   return copy;
 }
 
@@ -948,33 +982,28 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null) {
-  const fromKeys = siblingKeys(fromChildren);
-  const toKeys = siblingKeys(toChildren);
-  const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
-  const destinationByKey = new Map(toChildren.map((node, index) => [toKeys[index], { node, index }]));
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false) {
+  const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
 
   // Back and spring easings can briefly leave [0, 1]. Keep layer presence and
   // order on the corresponding endpoint while matched geometry anticipates or
   // overshoots; zero-opacity entering layers can still affect masks and picks.
   if (progress === 0 || progress === 1) {
     const endpointChildren = progress === 0 ? fromChildren : toChildren;
-    const endpointKeys = progress === 0 ? fromKeys : toKeys;
     return endpointChildren.map((node, index) => {
-      const source = sourceByKey.get(endpointKeys[index])?.node;
-      const destination = destinationByKey.get(endpointKeys[index])?.node;
-      return source && destination && canMatch(source, destination)
-        ? interpolateLayer(source, destination, progress, resolveRadius, geometryProgress, resolveImageTransition)
+      const match = progress === 0
+        ? siblingMatches.matchesBySourceIndex.get(index)
+        : siblingMatches.matchesByDestinationIndex.get(index);
+      return match
+        ? interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers)
         : structuredClone(node);
     });
   }
 
-  const matchedSourceIndexes = new Set();
   const destination = toChildren.map((node, index) => {
-    const match = sourceByKey.get(toKeys[index]);
-    if (match && canMatch(match.node, node)) {
-      matchedSourceIndexes.add(match.index);
-      return { node: interpolateLayer(match.node, node, progress, resolveRadius, geometryProgress, resolveImageTransition), sourceIndex: match.index };
+    const match = siblingMatches.matchesByDestinationIndex.get(index);
+    if (match) {
+      return { node: interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers), sourceIndex: match.sourceIndex };
     }
     return { node: fadeLayer(node, progress, true), sourceIndex: null };
   });
@@ -983,18 +1012,18 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
   let nearest = -1;
   for (let index = fromChildren.length - 1; index >= 0; index -= 1) {
     nextMatched[index] = nearest;
-    if (matchedSourceIndexes.has(index)) nearest = index;
+    if (siblingMatches.matchedSourceIndexes.has(index)) nearest = index;
   }
   nearest = -1;
   for (let index = 0; index < fromChildren.length; index += 1) {
     previousMatched[index] = nearest;
-    if (matchedSourceIndexes.has(index)) nearest = index;
+    if (siblingMatches.matchedSourceIndexes.has(index)) nearest = index;
   }
   const beforeMatched = new Map();
   const afterMatched = new Map();
   const unanchored = [];
   for (let index = 0; index < fromChildren.length; index += 1) {
-    if (matchedSourceIndexes.has(index)) continue;
+    if (siblingMatches.matchedSourceIndexes.has(index)) continue;
 
     // Exiting layers should keep their source stack position relative to the
     // nearest surviving sibling. Destination order remains authoritative for
@@ -1053,27 +1082,34 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
   return result.map(entry => entry.node);
 }
 
-export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
-  if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
+function normalizeSmartProgress(progress, options) {
   const requestedProgress = Number.isFinite(Number(progress)) ? Number(progress) : 0;
   const amount = Math.max(0, Math.min(1, requestedProgress));
   const allowOvershoot = options?.allowOvershoot === true;
-  // The supported back and spring curves briefly exceed their endpoints. Keep
-  // that easing for spatial transforms while bounding hostile/custom values to
-  // a finite range. Direct callers retain the historical clamped behavior;
-  // the presentation player opts in. Non-spatial channels and layer presence
-  // always use `amount`.
   const geometryProgress = allowOvershoot
     ? Math.max(-2, Math.min(2, requestedProgress))
     : amount;
-  // Return the authored snapshots at the endpoints. Building the transition
-  // tree from the destination and snapping only known fields can otherwise
-  // leak destination-only metadata into the source frame, and zero-opacity
-  // entering layers can still affect masks or hit testing in some renderers.
-  if (allowOvershoot ? requestedProgress === 0 : amount === 0) return structuredClone(fromFrame);
-  if (allowOvershoot ? requestedProgress === 1 : amount === 1) return structuredClone(toFrame);
-  const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
-  const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
+  return { requestedProgress, amount, allowOvershoot, geometryProgress };
+}
+
+function clearFramePaint(frame) {
+  for (const property of [
+    'fill', 'fillOpacity', 'fillStyleId', 'fillGradient', 'fillVariableId', 'fills', 'imageFill', 'fit', 'transforms',
+    'stroke', 'strokeOpacity', 'strokeStyleId', 'strokeVariableId', 'strokeWidth', 'strokeMiterLimit',
+    'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'strokes', 'effects'
+  ]) delete frame[property];
+
+  if (frame.variableBindings && typeof frame.variableBindings === 'object' && !Array.isArray(frame.variableBindings)) {
+    const bindings = { ...frame.variableBindings };
+    delete bindings.fill;
+    delete bindings.stroke;
+    if (Object.keys(bindings).length) frame.variableBindings = bindings;
+    else delete frame.variableBindings;
+  }
+  return frame;
+}
+
+function interpolateFrameProperties(fromFrame, toFrame, amount, geometryProgress, resolveRadius, resolveImageTransition, includePaint = true) {
   const frame = structuredClone(toFrame);
   snapProperties(frame, fromFrame, toFrame, amount);
   for (const property of ['width', 'height', 'opacity', 'rotation']) {
@@ -1088,6 +1124,7 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
     }
   }
   interpolateCornerRadii(frame, fromFrame, toFrame, geometryProgress, resolveRadius);
+  if (!includePaint) return frame;
   const fill = interpolateColor(fromFrame.fill, toFrame.fill, amount);
   if (fill && !fromFrame.fillVariableId && !toFrame.fillVariableId) frame.fill = fill;
   if (!fromFrame.fillVariableId && !toFrame.fillVariableId && canInterpolateGradient(fromFrame.fillGradient, toFrame.fillGradient)) {
@@ -1097,6 +1134,253 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   if (fills) frame.fills = fills;
   const strokes = interpolateStrokeStack(fromFrame, toFrame, amount);
   if (strokes) frame.strokes = strokes;
+  return frame;
+}
+
+/**
+ * Split a Smart Animate transition into matched child subtrees and unmatched
+ * source/destination frames. Matching uses the same sibling name/type ordinal
+ * and node compatibility checks as the full-frame interpolator.
+ *
+ * `matches` are in destination stack order and retain source/destination
+ * indexes. The transparent `matchingFrame` contains matched and fixed roots;
+ * the other frame shells contain endpoint-only roots. Every returned value is
+ * detached from the inputs. `matchingStacking` is the legacy coarse
+ * placement hint. `stackingOrder` retains the per-root order used by Smart
+ * Animate, including destination roots and outgoing roots anchored to source
+ * siblings, for renderers that need to interleave the layers.
+ */
+export function splitSmartFrameMatches(fromFrame, toFrame, progress, options = {}) {
+  if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
+  const { requestedProgress, amount, allowOvershoot, geometryProgress } = normalizeSmartProgress(progress, options);
+  const fromChildren = Array.isArray(fromFrame.children) ? fromFrame.children : [];
+  const toChildren = Array.isArray(toFrame.children) ? toFrame.children : [];
+  const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
+  const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
+  const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
+  const sourceEndpoint = allowOvershoot ? requestedProgress === 0 : amount === 0;
+  const destinationEndpoint = allowOvershoot ? requestedProgress === 1 : amount === 1;
+  const matches = [...siblingMatches.matchesByDestinationIndex.values()].map(match => {
+    const node = sourceEndpoint ? structuredClone(match.source)
+      : destinationEndpoint ? structuredClone(match.destination)
+        : interpolateLayer(match.source, match.destination, amount, resolveRadius, geometryProgress, resolveImageTransition, true);
+    return {
+      sourceIndex: match.sourceIndex,
+      destinationIndex: match.destinationIndex,
+      node
+    };
+  });
+  const matchedSourceIndexes = siblingMatches.matchedSourceIndexes;
+  const matchedDestinationIndexes = new Set(siblingMatches.matchesByDestinationIndex.keys());
+  const fixedSourceIndexes = new Set(fromChildren.map((node, index) => index)
+    .filter(index => !matchedSourceIndexes.has(index) && fromChildren[index].fixedPositionWhenScrolling === true));
+  const fixedDestinationIndexes = new Set(toChildren.map((node, index) => index)
+    .filter(index => !matchedDestinationIndexes.has(index) && toChildren[index].fixedPositionWhenScrolling === true));
+  const destinationOverlayIndexes = new Set([...matchedDestinationIndexes, ...fixedDestinationIndexes]);
+  let firstOverlayIndex = -1;
+  for (const index of destinationOverlayIndexes) {
+    if (firstOverlayIndex < 0 || index < firstOverlayIndex) firstOverlayIndex = index;
+  }
+  const matchingStacking = firstOverlayIndex >= 0
+    && toChildren.some((_, index) => index > firstOverlayIndex && !destinationOverlayIndexes.has(index))
+    ? 'below-destination'
+    : 'above-destination';
+  const sourceOnlyRoots = fromChildren
+    .map((node, sourceIndex) => ({ sourceIndex, node }))
+    .filter(({ sourceIndex }) => !matchedSourceIndexes.has(sourceIndex) && !fixedSourceIndexes.has(sourceIndex))
+    .map(({ sourceIndex, node }) => ({ sourceIndex, node: structuredClone(node) }));
+  const fixedSourceRoots = [...fixedSourceIndexes]
+    .map(sourceIndex => ({ sourceIndex, node: structuredClone(fromChildren[sourceIndex]) }));
+  const sourceFrame = clearFramePaint(structuredClone(fromFrame));
+  const destinationFrame = clearFramePaint(structuredClone(toFrame));
+  if (Array.isArray(sourceFrame.children)) {
+    sourceFrame.children = sourceFrame.children.filter((_, index) => !matchedSourceIndexes.has(index) && !fixedSourceIndexes.has(index));
+  }
+  if (Array.isArray(destinationFrame.children)) {
+    destinationFrame.children = destinationFrame.children.filter((_, index) => !matchedDestinationIndexes.has(index) && !fixedDestinationIndexes.has(index));
+  }
+  const matchingFrame = clearFramePaint(sourceEndpoint ? structuredClone(fromFrame)
+    : destinationEndpoint ? structuredClone(toFrame)
+      : interpolateFrameProperties(fromFrame, toFrame, amount, geometryProgress, resolveRadius, resolveImageTransition, false));
+  const fixedSourceIds = new Set([...fixedSourceIndexes].map(index => fromChildren[index].id));
+  const fixedDestinationIds = new Set([...fixedDestinationIndexes].map(index => toChildren[index].id));
+  const matchedLayerIds = new Set([...siblingMatches.matchesByDestinationIndex.values()]
+    .flatMap(match => [match.source.id, match.destination.id]));
+  const animatedChildren = blendChildren(fromChildren, toChildren, amount, resolveRadius, geometryProgress, resolveImageTransition, true);
+  const sourceIndexById = new Map(fromChildren.map((node, index) => [node.id, index]));
+  const destinationIndexById = new Map(toChildren.map((node, index) => [node.id, index]));
+  const matchedIndexesById = new Map();
+  for (const match of siblingMatches.matchesByDestinationIndex.values()) {
+    const indexes = { sourceIndex: match.sourceIndex, destinationIndex: match.destinationIndex };
+    matchedIndexesById.set(match.source.id, indexes);
+    matchedIndexesById.set(match.destination.id, indexes);
+  }
+  const stackingOrder = animatedChildren.map(node => {
+    const matched = matchedIndexesById.get(node.id);
+    const sourceIndex = matched?.sourceIndex ?? sourceIndexById.get(node.id) ?? null;
+    const destinationIndex = matched?.destinationIndex ?? destinationIndexById.get(node.id) ?? null;
+    const kind = matched ? 'matched'
+      : fixedSourceIndexes.has(sourceIndex) ? 'fixed-source'
+        : fixedDestinationIndexes.has(destinationIndex) ? 'fixed-destination'
+          : sourceIndex !== null ? 'source' : 'destination';
+    return { kind, sourceIndex, destinationIndex, node: structuredClone(node) };
+  });
+  const fixedAwareMatches = new Map(matches.map(match => [toChildren[match.destinationIndex].id, match.node]));
+  matchingFrame.children = animatedChildren
+    .filter(node => matchedLayerIds.has(node.id) || fixedSourceIds.has(node.id) || fixedDestinationIds.has(node.id))
+    .map(node => structuredClone(fixedAwareMatches.get(node.id) || node));
+  return {
+    matches, sourceFrame, destinationFrame, matchingFrame, stackingOrder,
+    sourceOnlyRoots, fixedSourceRoots,
+    matchCount: matches.length,
+    fixedSourceIndexes: [...fixedSourceIndexes],
+    fixedDestinationIndexes: [...fixedDestinationIndexes],
+    fixedLayerCount: fixedSourceIndexes.size + fixedDestinationIndexes.size,
+    matchingStacking
+  };
+}
+
+/**
+ * Build the ordered paint pass for a split Smart Animate transition.
+ * Matched roots interpolate in place; outgoing and entering roots use their
+ * respective endpoint geometry and selected main-transition motion. Keeping
+ * all root kinds in one pass preserves their overlap order during the move.
+ */
+export function smartAnimatePresentationPaintPlan(split, destinationFrame, incomingMotion = null, progress = 0, outgoingMotion = null) {
+  if (!split || !Array.isArray(split.stackingOrder) || !Array.isArray(destinationFrame?.children)) return [];
+  const matchFrame = split.matchingFrame;
+  const sourceShell = split.sourceFrame;
+  const destinationShell = split.destinationFrame;
+  const matchToSource = multiplyAffine(
+    invertAffine(nodeToParentTransform({ ...matchFrame, x: 0, y: 0 })),
+    nodeToParentTransform({ ...sourceShell, x: 0, y: 0 })
+  );
+  const matchToDestination = multiplyAffine(
+    invertAffine(nodeToParentTransform({ ...matchFrame, x: 0, y: 0 })),
+    nodeToParentTransform({ ...destinationFrame, x: 0, y: 0 })
+  );
+  const matchingClipFrame = { ...matchFrame, x: 0, y: 0 };
+  const sourceClipFrame = { ...sourceShell, x: 0, y: 0 };
+  const destinationClipFrame = { ...destinationShell, x: 0, y: 0 };
+  const sourceOnlyRoots = new Map((split.sourceOnlyRoots || []).map(root => [root.sourceIndex, root.node]));
+  const fixedSourceRoots = new Map((split.fixedSourceRoots || []).map(root => [root.sourceIndex, root.node]));
+  const plannedSourceIndexes = new Set();
+  const fixedDestinationIndexes = new Set(split.fixedDestinationIndexes || []);
+  const plannedDestinationIndexes = new Set();
+  const plan = [];
+  const makeSourceEntry = (index, fixed = false, matchedNode = null) => {
+    const sourceNode = fixed ? fixedSourceRoots.get(index) : sourceOnlyRoots.get(index);
+    const node = matchedNode || sourceNode;
+    if (!node) return null;
+    return {
+      kind: fixed ? 'fixed-source' : 'source',
+      sourceIndex: index,
+      destinationIndex: null,
+      node,
+      clipFrame: fixed ? matchingClipFrame : sourceClipFrame,
+      frameTransform: fixed ? null : matchToSource,
+      transitionMotion: fixed ? null : outgoingMotion
+    };
+  };
+  const makeDestinationEntry = (index, fixed = false) => {
+    const node = destinationFrame.children[index];
+    if (!node) return null;
+    const copy = fixed ? structuredClone(node) : node;
+    if (fixed) copy.opacity = (Number.isFinite(copy.opacity) ? copy.opacity : 1) * Math.max(0, Math.min(1, Number(progress) || 0));
+    return {
+      kind: fixed ? 'fixed-destination' : 'destination',
+      sourceIndex: null,
+      destinationIndex: index,
+      node: copy,
+      clipFrame: fixed ? matchingClipFrame : destinationClipFrame,
+      frameTransform: fixed ? null : matchToDestination,
+      transitionMotion: fixed ? null : incomingMotion
+    };
+  };
+
+  for (const entry of split.stackingOrder) {
+    if (entry.kind === 'source') {
+      const planned = makeSourceEntry(entry.sourceIndex);
+      if (!planned) continue;
+      plannedSourceIndexes.add(entry.sourceIndex);
+      plan.push(planned);
+      continue;
+    }
+    if (entry.kind === 'destination') {
+      const planned = makeDestinationEntry(entry.destinationIndex);
+      if (!planned) continue;
+      plannedDestinationIndexes.add(entry.destinationIndex);
+      plan.push(planned);
+      continue;
+    }
+    if (entry.kind === 'fixed-source') {
+      const planned = makeSourceEntry(entry.sourceIndex, true, entry.node);
+      if (!planned) continue;
+      plannedSourceIndexes.add(entry.sourceIndex);
+      plan.push(planned);
+      continue;
+    }
+    if (!['matched', 'fixed-destination'].includes(entry.kind)) continue;
+    plan.push({
+      kind: entry.kind,
+      sourceIndex: entry.sourceIndex,
+      destinationIndex: entry.destinationIndex,
+      node: entry.node,
+      clipFrame: matchingClipFrame,
+      frameTransform: null,
+      transitionMotion: null
+    });
+    if (entry.destinationIndex !== null) plannedDestinationIndexes.add(entry.destinationIndex);
+  }
+
+  // Keep source-only roots in the same paint pass at both exact endpoints.
+  // Their selected main-transition motion hides them at the destination end.
+  for (const { sourceIndex } of split.sourceOnlyRoots || []) {
+    if (plannedSourceIndexes.has(sourceIndex)) continue;
+    const planned = makeSourceEntry(sourceIndex);
+    if (!planned) continue;
+    plan.push(planned);
+    plannedSourceIndexes.add(sourceIndex);
+  }
+  for (const { sourceIndex, node } of split.fixedSourceRoots || []) {
+    if (plannedSourceIndexes.has(sourceIndex)) continue;
+    const planned = makeSourceEntry(sourceIndex, true, node);
+    if (!planned) continue;
+    plan.push(planned);
+    plannedSourceIndexes.add(sourceIndex);
+  }
+
+  // At the exact source endpoint blendChildren has no entering roots yet.
+  // Keep them in the destination's authored order so the main transition can
+  // still bring the incoming frame into view from its start position.
+  for (let index = 0; index < destinationFrame.children.length; index += 1) {
+    if (plannedDestinationIndexes.has(index)) continue;
+    const planned = makeDestinationEntry(index, fixedDestinationIndexes.has(index));
+    if (!planned) continue;
+    const nextDestination = plan.findIndex(entry => Number.isInteger(entry.destinationIndex) && entry.destinationIndex > index);
+    if (nextDestination >= 0) plan.splice(nextDestination, 0, planned);
+    else plan.push(planned);
+  }
+  return plan;
+}
+
+export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
+  if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
+  const { requestedProgress, amount, allowOvershoot, geometryProgress } = normalizeSmartProgress(progress, options);
+  // The supported back and spring curves briefly exceed their endpoints. Keep
+  // that easing for spatial transforms while bounding hostile/custom values to
+  // a finite range. Direct callers retain the historical clamped behavior;
+  // the presentation player opts in. Non-spatial channels and layer presence
+  // always use `amount`.
+  // Return the authored snapshots at the endpoints. Building the transition
+  // tree from the destination and snapping only known fields can otherwise
+  // leak destination-only metadata into the source frame, and zero-opacity
+  // entering layers can still affect masks or hit testing in some renderers.
+  if (allowOvershoot ? requestedProgress === 0 : amount === 0) return structuredClone(fromFrame);
+  if (allowOvershoot ? requestedProgress === 1 : amount === 1) return structuredClone(toFrame);
+  const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
+  const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
+  const frame = interpolateFrameProperties(fromFrame, toFrame, amount, geometryProgress, resolveRadius, resolveImageTransition);
   frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress, resolveImageTransition);
   return frame;
 }

@@ -64,22 +64,36 @@ test('search and page markup is escaped and exposes accessible source actions', 
   assert.match(markup, /data-asset-id="asset-&lt;unsafe&gt;"/u);
   assert.match(markup, /aria-label="Place A &lt;portrait&gt; &amp; &quot;poster&quot;"/u);
   assert.match(markup, /aria-label="Remove A &lt;portrait&gt; &amp; &quot;poster&quot; from image library"/u);
+  assert.match(markup, /class="image-library-place"[\s\S]*?title="Place A &lt;portrait&gt; &amp; &quot;poster&quot;"[\s\S]*?<span aria-hidden="true">＋<\/span><span class="sr-only">Place<\/span>/u,
+    'the compact place action should have a visible icon, hover title, and full accessible name');
+  assert.match(markup, /class="image-library-remove"[\s\S]*?title="Remove A &lt;portrait&gt; &amp; &quot;poster&quot; from image library"[\s\S]*?<span aria-hidden="true">×<\/span><span class="sr-only">Remove<\/span>/u,
+    'the compact remove action should retain a visible icon, hover title, and full accessible name');
   assert.doesNotMatch(markup, /<script/iu);
   assert.match(markup, /aria-live="polite"/u);
+  assert.match(markup, /class="image-library-search-label sr-only"[^>]*>Search reusable images/u);
   assert.match(markup, /data-image-library-action="add"/u);
-  assert.match(markup, /data-image-library-page="previous"/u);
-  assert.match(markup, /data-image-library-page="next"/u);
+  assert.doesNotMatch(markup, /data-image-library-page=/u);
 });
 
 test('an empty library and an unmatched search have clear, distinct states', () => {
   const emptyLibrary = renderImageLibraryMarkup({});
-  assert.match(emptyLibrary, /No images in this library yet/u);
-  assert.match(emptyLibrary, /data-image-library-status[^>]*>No saved images/u);
-  assert.equal((emptyLibrary.match(/No images in this library yet/gu) || []).length, 1);
+  assert.match(emptyLibrary, /class="image-library-empty"[^>]*>[\s\S]*?<strong>No images saved yet<\/strong>/u);
+  assert.match(emptyLibrary, /<small>Add originals here to reuse them on any page in this design\.<\/small>/u);
+  assert.match(emptyLibrary, /<p class="image-library-status sr-only" data-image-library-status/u);
+  assert.doesNotMatch(emptyLibrary, /data-image-library-search/u);
+  assert.doesNotMatch(emptyLibrary, /data-image-library-page=/u);
 
   const unmatchedSearch = renderImageLibraryMarkup({ imageLibrary: makeImages(1) }, { query: 'missing' });
-  assert.match(unmatchedSearch, /No images match this search/u);
+  assert.match(unmatchedSearch, /No matching images/u);
+  assert.match(unmatchedSearch, /Try another name, file type or image size\./u);
   assert.match(unmatchedSearch, /data-image-library-status[^>]*>No search results/u);
+});
+
+test('pagination appears only when the filtered library has more than one page', () => {
+  const markup = renderImageLibraryMarkup({ imageLibrary: makeImages(101) });
+  assert.match(markup, /data-image-library-page="previous"/u);
+  assert.match(markup, /data-image-library-page="next"/u);
+  assert.match(markup, /Page 1 of 2/u);
 });
 
 test('mount delegates add, place and remove with detached manifest entries and supports refresh/destroy', async () => {

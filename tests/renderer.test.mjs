@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { canvasLocalOffsetForScreenTranslation, deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
@@ -116,6 +116,77 @@ test('scene renderer carries sticky scroll context through nested groups', () =>
   const translations = calls.filter(([method]) => method === 'translate').map(([, x, y]) => [x, y]);
   assert.ok(translations.some(([x, y]) => x === 0 && y === -90), 'the scroll frame moves its content');
   assert.ok(translations.some(([x, y]) => x === 0 && y === 20), 'the nested sticky child is compensated to the viewport top');
+});
+
+test('Smart Animate renderer consumes the ordered root plan with per-root transition motion', () => {
+  const document = createDocument();
+  const destination = createNode('rectangle', { name: 'Entering', fill: 'transparent', strokeWidth: 0 });
+  const source = createNode('rectangle', { name: 'Leaving', fill: 'transparent', strokeWidth: 0 });
+  const matched = createNode('rectangle', { name: 'Matched', fill: 'transparent', strokeWidth: 0 });
+  const frame = createNode('frame', { width: 100, height: 100, fill: 'transparent', strokeWidth: 0, children: [destination, source, matched] });
+  addNode(document, frame);
+  const frameDestination = frame.children[0];
+  const frameSource = frame.children[1];
+  const frameMatched = frame.children[2];
+  const presentationLayerPlan = {
+    frameId: frame.id,
+    entries: [
+      { kind: 'destination', node: frameDestination, clipFrame: frame, transitionMotion: { x: 12, y: -4, opacity: .35 } },
+      { kind: 'source', node: frameSource, clipFrame: frame, frameTransform: { a: 1, b: 0, c: 0, d: 1, e: 4, f: 5 }, transitionMotion: { x: -6, y: 8, opacity: .65 } },
+      { kind: 'matched', node: frameMatched, clipFrame: frame, transitionMotion: null }
+    ]
+  };
+  const state = {
+    document, assets: new Map(), previews: new Map(), previewAssetIds: new Map(), previewSignatures: new Map(),
+    imageStatus: new Map(), motionPreview: new Map(), selectedIds: [], zoom: 1,
+    imageCropMode: false, presenting: true, outlineMode: false, presentationScrollOffsets: new Map(),
+    presentationLayerPlan
+  };
+  const calls = [];
+  const contextState = { globalAlpha: 1, globalCompositeOperation: 'source-over' };
+  const saveStack = [];
+  const context = new Proxy(contextState, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'getTransform') return () => ({ a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 });
+      if (property === 'save') return () => saveStack.push({ ...target });
+      if (property === 'restore') return () => Object.assign(target, saveStack.pop() || {});
+      if (property === 'translate') return (...args) => calls.push(['translate', ...args]);
+      if (property === 'transform') return (...args) => calls.push(['transform', ...args]);
+      return () => {};
+    },
+    set(target, property, value) { target[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.canvas = { width: 200, height: 100, getBoundingClientRect: () => ({ width: 100, height: 50 }) };
+  renderer.getState = () => state;
+  const painted = [];
+  const entryStates = [];
+  const drawNode = SceneRenderer.prototype.drawNode;
+  renderer.drawNode = function (ctx, node, parentX, parentY, assets, ...args) {
+    if (node.id === frame.id) return drawNode.call(this, ctx, node, parentX, parentY, assets, ...args);
+    painted.push(node.name);
+    entryStates.push(ctx.globalAlpha);
+  };
+
+  renderer.drawNode(context, frame, 0, 0, state.assets);
+
+  assert.deepEqual(painted, ['Entering', 'Leaving', 'Matched'], 'the renderer preserves outgoing, matched, and incoming root order in one pass');
+  assert.deepEqual(entryStates, [.35, .65, 1], 'endpoint roots inherit their own transition opacity while matched roots interpolate independently');
+  assert.ok(calls.some(([method, x, y]) => method === 'translate' && x === 12 && y === -4),
+    'incoming viewport-pixel motion is translated through the canvas device scale');
+  assert.ok(calls.some(([method, x, y]) => method === 'translate' && x === -6 && y === 8),
+    'outgoing viewport-pixel motion is translated through the canvas device scale');
+  assert.ok(calls.some(([method, a, b, c, d, e, f]) => method === 'transform' && a === 1 && b === 0 && c === 0 && d === 1 && e === 4 && f === 5),
+    'source geometry maps into the interpolated frame before its paint');
+});
+
+test('screen-pixel translations invert the current canvas scale and rotation', () => {
+  assert.deepEqual(canvasLocalOffsetForScreenTranslation(
+    { a: 0, b: 2, c: -2, d: 0, e: 45, f: 18 }, 2, 2, 10, 4
+  ), { x: 4, y: -10 });
+  assert.equal(canvasLocalOffsetForScreenTranslation({ a: 1, b: 2, c: 2, d: 4 }, 1, 1, 10, 4), null,
+    'singular or incomplete canvas transforms fail closed');
 });
 
 test('live smart-image rendering crops the original bitmap before fitting, rotating, and flipping', () => {

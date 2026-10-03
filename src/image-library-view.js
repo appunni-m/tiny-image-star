@@ -90,8 +90,8 @@ function entryMarkup(entry, pending) {
         <small>${type} · ${escapeHtml(dimensions)}</small>
       </div>
       <div class="image-library-actions">
-        <button type="button" class="image-library-place" data-image-library-action="place" data-asset-id="${assetId}" aria-label="Place ${name}"${pending ? ' disabled' : ''}>Place</button>
-        <button type="button" class="image-library-remove" data-image-library-action="remove" data-asset-id="${assetId}" aria-label="Remove ${name} from image library"${pending ? ' disabled' : ''}>Remove</button>
+        <button type="button" class="image-library-place" data-image-library-action="place" data-asset-id="${assetId}" aria-label="Place ${name}" title="Place ${name}"${pending ? ' disabled' : ''}><span aria-hidden="true">＋</span><span class="sr-only">Place</span></button>
+        <button type="button" class="image-library-remove" data-image-library-action="remove" data-asset-id="${assetId}" aria-label="Remove ${name} from image library" title="Remove ${name} from image library"${pending ? ' disabled' : ''}><span aria-hidden="true">×</span><span class="sr-only">Remove</span></button>
       </div>
     </article>
   </li>`;
@@ -106,28 +106,31 @@ export function renderImageLibraryMarkup(documentData, options = {}) {
     pageSize: options.pageSize
   });
   const pageLabel = `Page ${page.page + 1} of ${page.totalPages}`;
-  const rangeLabel = page.totalEntries
-    ? `Showing ${page.start}–${page.end} of ${page.totalEntries} images`
-    : (query.trim() ? 'No images match this search.' : 'No images in this library yet. Add images to keep reusable originals here.');
   const statusLabel = options.message || (page.totalEntries
-    ? rangeLabel
+    ? `Showing ${page.start}–${page.end} of ${page.totalEntries} images`
     : (query.trim() ? 'No search results' : 'No saved images'));
+  const showStatus = Boolean(options.message) || page.totalEntries > 0;
+  const showSearch = page.totalEntries > 0 || Boolean(query.trim());
+  const emptyTitle = query.trim() ? 'No matching images' : 'No images saved yet';
+  const emptyDetail = query.trim()
+    ? 'Try another name, file type or image size.'
+    : 'Add originals here to reuse them on any page in this design.';
   return `<section class="image-library-view" data-image-library-view aria-label="Original image library">
     <header class="image-library-heading">
       <div class="image-library-heading-copy"><strong>Reusable images</strong><small>Original files for this design</small></div>
       <button type="button" class="image-library-add" data-image-library-action="add"${options.pending ? ' disabled' : ''}>＋ Add sources</button>
     </header>
-    <label class="image-library-search-label" for="image-library-search">Search images</label>
-    <input id="image-library-search" class="image-library-search" type="search" data-image-library-search value="${escapeHtml(query)}" placeholder="Search by name, type or size" autocomplete="off" />
-    <p class="image-library-status" data-image-library-status aria-live="polite" aria-atomic="true">${escapeHtml(statusLabel)}</p>
+    ${showSearch ? `<label class="image-library-search-label sr-only" for="image-library-search">Search reusable images</label>
+    <input id="image-library-search" class="image-library-search" type="search" data-image-library-search value="${escapeHtml(query)}" placeholder="Search reusable images" autocomplete="off" />` : ''}
+    <p class="image-library-status${showStatus ? '' : ' sr-only'}" data-image-library-status aria-live="polite" aria-atomic="true">${escapeHtml(statusLabel)}</p>
     ${page.entries.length
       ? `<ul class="image-library-list" aria-label="Images in this design">${page.entries.map(entry => entryMarkup(entry, Boolean(options.pending))).join('')}</ul>`
-      : `<p class="image-library-empty" data-image-library-empty>${escapeHtml(rangeLabel)}</p>`}
-    <nav class="image-library-pagination" aria-label="Image library pages">
+      : `<div class="image-library-empty" data-image-library-empty><span class="image-library-empty-icon" aria-hidden="true">▧</span><span class="image-library-empty-copy"><strong>${escapeHtml(emptyTitle)}</strong><small>${escapeHtml(emptyDetail)}</small></span></div>`}
+    ${page.totalPages > 1 ? `<nav class="image-library-pagination" aria-label="Image library pages">
       <button type="button" data-image-library-page="previous" aria-label="Previous image library page"${page.page <= 0 ? ' disabled' : ''}>Previous</button>
       <span data-image-library-page-label>${pageLabel}</span>
       <button type="button" data-image-library-page="next" aria-label="Next image library page"${page.page + 1 >= page.totalPages ? ' disabled' : ''}>Next</button>
-    </nav>
+    </nav>` : ''}
   </section>`;
 }
 

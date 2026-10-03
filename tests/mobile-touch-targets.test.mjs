@@ -42,6 +42,16 @@ test('local component publish and place actions have phone-sized touch targets a
   assert.match(stylesheet.match(/\.component-library-list\s*\{([^}]*)\}/)?.[1] || '', /overflow:\s*auto/);
 });
 
+test('reusable image cards stay compact while keeping 44px phone actions and a narrow-screen fallback', () => {
+  assert.match(stylesheet, /\.image-library-card\s*\{[^}]*grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+auto/,
+    'desktop image cards should keep the thumbnail, filename and actions on one compact row');
+  assert.match(stylesheet, /@media \(max-width: 820px\)\s*\{[\s\S]*?\.image-library-card\s*\{\s*grid-template-columns:\s*56px\s+minmax\(0,\s*1fr\)\s+auto;[\s\S]*?\.image-library-actions button\s*\{\s*width:\s*44px;\s*min-width:\s*44px;\s*min-height:\s*44px/,
+    'phone image actions should remain finger-sized');
+  assert.match(stylesheet, /@media \(max-width: 380px\)\s*\{[\s\S]*?\.image-library-card\s*\{\s*grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)/);
+  assert.match(stylesheet, /@media \(max-width: 380px\)\s*\{[\s\S]*?\.image-library-actions\s*\{\s*grid-column:\s*1 \/ -1/,
+    'the action pair should wrap below the image metadata on the narrowest phones');
+});
+
 test('coarse-pointer phone navigation and canvas menus have 44px touch targets', () => {
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
   assert.match(coarsePhone, /\.mobile-panel-toggle, \.present-button\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
@@ -84,6 +94,17 @@ test('common inspector geometry, fill, opacity, effect, and range controls are f
   assert.match(coarsePhone, /\.inspector-content \.color-value, \.inspector-content \.fill-opacity\s*\{[^}]*height:\s*44px[^}]*min-height:\s*44px/);
   assert.match(coarsePhone, /\.inspector-content \.layer-effect-heading label\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
   assert.match(coarsePhone, /\.inspector-content \.gradient-stop-row \.tiny-icon-button,[\s\S]*?width:\s*44px[\s\S]*?min-height:\s*44px/);
+});
+
+test('mobile inspector tabs size to their labels without losing touch targets', () => {
+  const marker = '/* The landscape inspector is a narrow side drawer';
+  const start = stylesheet.indexOf(marker);
+  assert.notEqual(start, -1, 'expected the responsive inspector-tab rules');
+  const mobileTabs = stylesheet.slice(start, stylesheet.indexOf('/* Respect cutouts', start));
+  assert.match(mobileTabs, /@media \(max-width: 820px\)\s*\{\s*\.inspector-tabs\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/,
+    'phone tabs should use their natural label widths instead of five equal clipped columns');
+  assert.match(mobileTabs, /\.inspector-tab\s*\{[^}]*width:\s*auto[^}]*min-width:\s*44px[^}]*flex:\s*0 1 auto/,
+    'flexible label widths must retain finger-sized tab targets');
 });
 
 test('narrow mobile inspector sliders have finger-sized hit areas even without coarse-pointer emulation', () => {
@@ -156,12 +177,17 @@ test('mobile layer visibility controls keep a 40px target and expand to 44px on 
 test('short mobile viewports use a full-height side inspector and keep the canvas scrim below the top bar', () => {
   const shortMobile = mediaBlock('(max-width: 820px) and (max-height: 560px)');
   assert.match(shortMobile, /\.right-panel\s*\{[^}]*top:\s*0[^}]*right:\s*0[^}]*bottom:\s*0[^}]*left:\s*auto/);
-  assert.match(shortMobile, /\.right-panel\s*\{[^}]*width:\s*min\(400px,\s*max\(280px,\s*54vw\)\)[^}]*height:\s*auto[^}]*max-height:\s*none/);
+  assert.match(shortMobile, /\.right-panel\s*\{[^}]*width:\s*min\(100vw,\s*400px,\s*max\(280px,\s*54vw\)\)[^}]*height:\s*auto[^}]*max-height:\s*none/);
   assert.match(shortMobile, /\.right-panel\.is-open\s*\{[^}]*transform:\s*translateX\(0\)/);
   assert.match(shortMobile, /\.app-shell\.mobile-inspector-open\s*>\s*\.mobile-scrim\.is-visible\s*\{[^}]*top:\s*calc\(45px\s*\+\s*env\(safe-area-inset-top\)\)[^}]*bottom:\s*0/);
   assert.match(shortMobile, /:root\[data-theme="dark"\][\s\S]*?\.mobile-scrim\.is-visible\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*\.42\)/);
   assert.match(stylesheet, /\.right-panel\s*\{[^}]*height:\s*min\(50dvh,\s*500px\)/,
     'taller mobile viewports should retain the portrait bottom-sheet layout');
+  const mobile = mediaBlock('(max-width: 820px)', 0);
+  assert.match(mobile, /\.workspace\s*\{[^}]*min-width:\s*0[^}]*width:\s*100%/,
+    'mobile inspector positioning must use the viewport-bounded workspace');
+  assert.match(stylesheet, /\.app-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    'the app shell must constrain its implicit grid column to the viewport');
 });
 
 test('phone floating controls clear device cutouts and primary actions keep 44px targets', () => {
