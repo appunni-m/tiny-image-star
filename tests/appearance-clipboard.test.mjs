@@ -128,6 +128,7 @@ test('appearance apply preserves target state and order while regenerating all d
     ],
     strokes: [{ id: 'src-stroke', color: '#123456', width: 6, opacity: 0.8, visible: true,
       cap: 'round', join: 'round', pattern: 'dashed', miterLimit: 5,
+      sideMode: 'custom', sideWidths: { top: 1.5, right: 0, bottom: 3.25, left: 2 },
       gradient: { type: 'linear', angle: 0, stops: [
         { id: 'src-stroke-stop-a', color: '#000000', position: 0 },
         { id: 'src-stroke-stop-b', color: '#ffffff', position: 1 }
@@ -168,6 +169,8 @@ test('appearance apply preserves target state and order while regenerating all d
   assert.equal(result.node.fills[0].imageFill.fit, 'contain');
   assert.deepEqual(result.node.fills[0].imageFill.adjustments, source.fills[0].imageFill.adjustments);
   assert.deepEqual(result.node.strokes.map(stroke => stroke.width), [6]);
+  assert.deepEqual(result.node.strokes[0].sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 },
+    'appearance copy carries independent rectangle edge widths');
   assert.deepEqual(result.node.effects.map(effect => effect.type), ['inner-shadow']);
   assert.equal(result.node.radius, 8);
 

@@ -512,6 +512,36 @@ test('imports exact custom Figma stroke dash arrays as editable local stroke set
   assert.deepEqual(restored.strokes[0].dashArray, [3, 5, 0, 2]);
 });
 
+test('imports Figma individual rectangle stroke weights on each imported paint', () => {
+  const page = { sessionID: 832, localID: 1 };
+  const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    node('RECTANGLE', 2, page, 'a', {
+      name: 'Three-sided card', strokeWeight: 2,
+      strokeTopWeight: 1.5, strokeRightWeight: 0, strokeBottomWeight: 3.25, strokeLeftWeight: 2,
+      strokePaints: [
+        { type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } },
+        { type: 'SOLID', color: { r: 0.8, g: 0.4, b: 0.2, a: 1 } }
+      ]
+    }),
+    node('FRAME', 3, page, 'b', {
+      name: 'Uniform border', strokeWeight: 4,
+      strokeTopWeight: 4, strokeRightWeight: 4, strokeBottomWeight: 4, strokeLeftWeight: 4,
+      strokePaints: [{ type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.3, a: 1 } }]
+    })
+  ], images: new Map(), message: { blobs: [] } });
+  const [card, frame] = imported.document.pages[0].children;
+  assert.deepEqual(card.strokes.map(stroke => stroke.sideWidths), [
+    { top: 1.5, right: 0, bottom: 3.25, left: 2 },
+    { top: 1.5, right: 0, bottom: 3.25, left: 2 }
+  ]);
+  assert.equal(frame.strokes[0].width, 4);
+  assert.equal(Object.hasOwn(frame.strokes[0], 'sideWidths'), false,
+    'equal side weights import as the ordinary uniform stroke');
+  assert.deepEqual(parseDocument(serializeDocument(imported.document)).pages[0].children[0].strokes[0].sideWidths,
+    { top: 1.5, right: 0, bottom: 3.25, left: 2 });
+});
+
 test('import review flags paint blends isolated by their layer or any ancestor', () => {
   const page = { sessionID: 83, localID: 1 };
   const opacityParent = { sessionID: 83, localID: 4 };

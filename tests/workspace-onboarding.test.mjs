@@ -68,7 +68,7 @@ test('a deferred stable-link invitation opens after recipe recovery is resolved'
   assert.match(mainSource.slice(joinStart, joinEnd), /if \(state\.workspaceOnboardingRequired \|\| state\.workspacePermissionNeeded \|\| state\.pendingRecipeRecovery\) return false/);
 });
 
-test('recipe recovery stays blocked until an expired batch lease is actually claimed', () => {
+test('recipe recovery can take over an active lease in place without consulting another tab', () => {
   const resumeStart = mainSource.indexOf('function resumeInterruptedRecipe()');
   const resumeEnd = mainSource.indexOf('\nfunction renderBulkBar', resumeStart);
   assert.ok(resumeStart >= 0 && resumeEnd > resumeStart);
@@ -79,29 +79,57 @@ test('recipe recovery stays blocked until an expired batch lease is actually cla
   assert.ok(claim >= 0 && clearRecovery > claim && unblock > claim,
     'the recovery gate must remain active until the batch ownership claim succeeds');
   assert.match(resume, /clearRecipeRecoveryExpiryTimer\(\)/,
-    'the expiry reload must not race the in-progress recovery claim');
+    'the expiry refresh must not race the in-progress recovery claim');
+  assert.match(resume, /refreshSavedRecipeRecoveryDesign\(recovery\)/,
+    'recovery reloads the latest saved design checkpoint before resuming');
+  assert.match(resume, /expectedRecoveryOwnerToken:\s*recovery\.ownerToken/);
 
   const recoveryDialog = htmlSource.slice(htmlSource.indexOf('id="recipe-recovery-dialog"'), htmlSource.indexOf('</dialog>', htmlSource.indexOf('id="recipe-recovery-dialog"')));
-  assert.match(recoveryDialog, /id="recipe-recovery-fork"[^>]*>Fork and resume recipe/,
-    'the active lease prompt must offer a local fork that does not wait for another tab');
+  assert.match(recoveryDialog, /id="recipe-recovery-resume"[^>]*>Resume recipe/,
+    'recovery resumes the existing design in place');
+  assert.doesNotMatch(recoveryDialog, /fork|other tab|No reply yet/i,
+    'the recovery prompt must not send users into a copy or a cross-tab wait');
   const promptStart = mainSource.indexOf('function renderRecipeRecoveryPrompt(');
   const promptEnd = mainSource.indexOf('\nasync function keepInterruptedRecipeChanges', promptStart);
   assert.ok(promptStart >= 0 && promptEnd > promptStart);
   const prompt = mainSource.slice(promptStart, promptEnd);
-  assert.match(prompt, /keepButton\.hidden = leaseActive/);
-  assert.match(prompt, /resumeButton\.hidden = leaseActive/);
-  assert.match(prompt, /stopButton\.hidden = true/,
-    'the active recovery flow must not send the user to another tab');
-  const forkStart = mainSource.indexOf('async function forkInterruptedRecipeAndResume()');
-  const forkEnd = mainSource.indexOf('\nfunction initializeRecipeBatchCoordination', forkStart);
-  assert.ok(forkStart >= 0 && forkEnd > forkStart);
-  const fork = mainSource.slice(forkStart, forkEnd);
-  assert.match(fork, /createRecipeRecoveryDesignFork\(current, source\)/);
-  assert.match(fork, /saveCurrent: false/,
-    'opening the recovery copy must not save over the locked source design');
-  assert.match(fork, /startRecipe\(structuredClone\(current\.recipe\), current\.targetIds/);
-  assert.doesNotMatch(fork, /releaseRecipeBatchRecoveryLease|deleteRecipeBatchRecovery/,
-    'forking must preserve the original design’s lease and recovery record');
+  assert.match(prompt, /resumeButton\.textContent = leaseActive \? 'Take over and resume here'/,
+    'an active lease changes the action label but keeps recovery available in place');
+  assert.match(mainSource, /if \(recoveryOnFailure\) claimOptions\.replaceOwnerToken = expectedRecoveryOwnerToken/,
+    'the selected recovery action atomically takes over and fences the old owner');
+  assert.match(mainSource, /type: 'RECOVERY_TAKEN_OVER',[\s\S]*?previousOwnerToken/,
+    'a still-open previous tab is told to stop only after takeover succeeds');
+  assert.doesNotMatch(mainSource, /No reply yet|STOP_AND_RECOVER|recipe-recovery-stop-other/,
+    'recovery never asks a possibly closed tab to respond');
+});
+
+test('takeover drains an old owner save and reloads the checkpoint before continuing', () => {
+  const coordinationStart = mainSource.indexOf('function initializeRecipeBatchCoordination()');
+  const coordinationEnd = mainSource.indexOf('\nfunction clearRecipeRecoveryExpiryTimer', coordinationStart);
+  assert.ok(coordinationStart >= 0 && coordinationEnd > coordinationStart);
+  const coordination = mainSource.slice(coordinationStart, coordinationEnd);
+  assert.match(coordination, /loseRecipeBatchLease\(bulk,[\s\S]*?void state\.saveChain\.finally\([\s\S]*?RECOVERY_TAKEOVER_DRAINED/,
+    'the fenced owner acknowledges only after its already-started save chain settles');
+  assert.match(mainSource, /async function notifyAndDrainPreviousRecipeOwner\([\s\S]*?timeoutMs = 1200[\s\S]*?RECOVERY_TAKEOVER_DRAINED/,
+    'takeover drains a live prior tab without waiting indefinitely for a closed tab');
+  assert.match(mainSource, /if \(state\.saveTimer\) \{[\s\S]*?clearTimeout\(state\.saveTimer\)[\s\S]*?state\.saveRevision \+= 1/,
+    'a debounced save from the fenced owner is invalidated');
+
+  const startRecipe = mainSource.indexOf('function startRecipe(');
+  const claim = mainSource.indexOf('bulk.leaseClaimPromise = claimRecipeBatchRecovery', startRecipe);
+  const claimEnd = mainSource.indexOf('}).catch(async error =>', claim);
+  const claimed = mainSource.slice(claim, claimEnd);
+  assert.match(claimed, /await notifyAndDrainPreviousRecipeOwner/);
+  assert.match(claimed, /state\.bulk = null;[\s\S]*?refreshSavedRecipeRecoveryDesign\(bulk\.recoveryOnFailure\)[\s\S]*?createPageNodeIndex/,
+    'resume reloads the final durable checkpoint and rebuilds its node index before processing');
+  assert.ok(claimed.indexOf('refreshSavedRecipeRecoveryDesign(bulk.recoveryOnFailure)') < claimed.indexOf('scheduleBulk()'),
+    'no image work starts until checkpoint reconciliation has finished');
+
+  const keepStart = mainSource.indexOf('async function keepInterruptedRecipeChanges()');
+  const keepEnd = mainSource.indexOf('\nfunction resumeInterruptedRecipe', keepStart);
+  const keep = mainSource.slice(keepStart, keepEnd);
+  assert.match(keep, /if \(!current\) \{[\s\S]*?refreshSavedRecipeRecoveryDesign\(recovery\)[\s\S]*?state\.pendingRecipeRecovery = null;[\s\S]*?setDocumentEditingBlocked\(false\)/,
+    'a concurrently removed journal cannot unblock editing until the latest saved design is reopened');
 });
 
 test('browser-storage onboarding stays gated until the initial document save succeeds', () => {

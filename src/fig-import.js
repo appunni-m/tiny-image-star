@@ -353,7 +353,20 @@ function mapStrokes(paints, node, report) {
   const join = ({ ROUND: 'round', BEVEL: 'bevel', MITER: 'miter' })[joinValue] || 'miter';
   const rawDash = Array.isArray(node.dashPattern) ? node.dashPattern : [];
   const dash = rawDash.length ? normalizeStrokeDashArray(rawDash) : null;
-  const width = finite(node.strokeWeight, 1, 0, 100_000);
+  const weight = finite(node.strokeWeight, 1, 0, 100_000);
+  const sideWeightProperties = {
+    top: 'strokeTopWeight', right: 'strokeRightWeight',
+    bottom: 'strokeBottomWeight', left: 'strokeLeftWeight'
+  };
+  const supportsIndividualSideWeights = ['RECTANGLE', 'FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLIDE', 'SLOT'].includes(String(node.type || '').toUpperCase());
+  const hasIndividualSideWeights = supportsIndividualSideWeights
+    && Object.values(sideWeightProperties).some(property => Object.hasOwn(node, property));
+  const sideWidths = hasIndividualSideWeights
+    ? Object.fromEntries(Object.entries(sideWeightProperties).map(([side, property]) => [side, finite(node[property], weight, 0, 100_000)]))
+    : null;
+  const uniformSideWeights = sideWidths && Object.values(sideWidths).every(value => value === sideWidths.top);
+  const width = uniformSideWeights ? sideWidths.top : weight;
+  const sidePaint = sideWidths && !uniformSideWeights ? { sideMode: 'custom', sideWidths } : {};
   const close = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-6;
   let pattern = 'solid';
   let dashArray;
@@ -373,7 +386,7 @@ function mapStrokes(paints, node, report) {
       if (!mapped) continue;
       strokes.push({
         id: createId('stroke'), color: mapped.gradient.stops[0].color,
-        gradient: mapped.gradient, width,
+        gradient: mapped.gradient, width, ...sidePaint,
         opacity: mapped.opacity, visible: true, cap, join, pattern,
         ...(dashArray ? { dashArray: [...dashArray] } : {}),
         miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none',
@@ -389,7 +402,7 @@ function mapStrokes(paints, node, report) {
     const color = hexColor(paint.color);
     if (!color) continue;
     strokes.push({
-      id: createId('stroke'), color, width,
+      id: createId('stroke'), color, width, ...sidePaint,
       opacity: paintOpacity(paint), visible: true, cap, join, pattern,
       ...(dashArray ? { dashArray: [...dashArray] } : {}),
       miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none', ...blend

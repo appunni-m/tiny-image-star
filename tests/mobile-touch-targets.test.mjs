@@ -158,3 +158,20 @@ test('short mobile viewports use a full-height side inspector and keep the canva
   assert.match(stylesheet, /\.right-panel\s*\{[^}]*height:\s*min\(50dvh,\s*500px\)/,
     'taller mobile viewports should retain the portrait bottom-sheet layout');
 });
+
+test('phone floating controls clear device cutouts and primary actions keep 44px targets', () => {
+  const start = stylesheet.lastIndexOf('/* Respect cutouts and home indicators');
+  assert.notEqual(start, -1);
+  const block = enclosingRuleBlock(start);
+  const phoneRules = block.content;
+  assert.match(phoneRules, /\.bottom-toolbar,\s*\.bulk-bar\s*\{[^}]*left:\s*calc\(50% \+ \(env\(safe-area-inset-left\) - env\(safe-area-inset-right\)\) \/ 2\)/);
+  assert.match(phoneRules, /\.bottom-toolbar\s*\{[^}]*max-width:\s*calc\(100vw - max\(8px, env\(safe-area-inset-left\) \+ 8px\) - max\(8px, env\(safe-area-inset-right\) \+ 8px\)\)/);
+  assert.match(phoneRules, /\.bulk-bar\s*\{[^}]*width:\s*calc\(100vw - max\(8px, env\(safe-area-inset-left\) \+ 8px\) - max\(8px, env\(safe-area-inset-right\) \+ 8px\)\)[^}]*bottom:\s*calc\(76px \+ max\(env\(safe-area-inset-bottom\), 8px\)\)/);
+  assert.match(phoneRules, /\.zoom-controls\s*\{[^}]*right:\s*max\(10px, env\(safe-area-inset-right\)\)/);
+  assert.match(phoneRules, /\.modal\s*\{[^}]*max-height:\s*calc\(100dvh - max\(16px, env\(safe-area-inset-top\)\) - max\(16px, env\(safe-area-inset-bottom\)\)\)/);
+  assert.match(phoneRules, /\.mobile-panel-toggle,[\s\S]*?\.canvas-top-actions \.canvas-action-button\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
+  assert.match(phoneRules, /\.bottom-toolbar \.tool-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+  const landscapeStart = stylesheet.lastIndexOf('@media (max-width: 820px) and (max-height: 520px)');
+  assert.ok(landscapeStart > start, 'landscape bulk-bar clearance must override the portrait offset');
+  assert.match(enclosingRuleBlock(landscapeStart).content, /\.bulk-bar\s*\{[^}]*bottom:\s*calc\(66px \+ max\(env\(safe-area-inset-bottom\), 8px\)\)/);
+});

@@ -4,7 +4,7 @@ import { createNode } from '../src/model.js';
 import {
   MAX_STROKES_PER_NODE, addStroke, createStroke, detachPrimaryStrokeBinding,
   ensureStrokeStack, isValidStrokeStack, moveStroke, removeStroke,
-  strokeStackForNode, syncLegacyStrokeFields, updateStroke
+  strokeSideWidths, strokeStackForNode, syncLegacyStrokeFields, updateStroke
 } from '../src/strokes.js';
 
 test('legacy scalar strokes expose a stable read-only item and materialize without changing appearance', () => {
@@ -87,4 +87,31 @@ test('text layers accept editable stroke stacks without changing legacy text col
   assert.equal(text.color, '#235689');
   assert.equal(text.textVariableId, 'text-variable');
   assert.equal(text.stroke, '#ffffff');
+});
+
+test('individual rectangle stroke weights support Figma side presets and validated custom widths', () => {
+  const stroke = createStroke({ id: 'sides', width: 4, sideMode: 'bottom' });
+  assert.equal(stroke.sideMode, 'bottom');
+  assert.equal(Object.hasOwn(stroke, 'sideWidths'), false);
+  assert.equal(isValidStrokeStack([stroke], createNode('rectangle')), true);
+
+  const custom = createStroke({ id: 'custom-sides', width: 4, sideWidths: { top: 1.5, right: 0, bottom: 3.25, left: 2 } });
+  assert.equal(custom.sideMode, 'custom');
+  assert.deepEqual(custom.sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 });
+  assert.equal(isValidStrokeStack([custom], createNode('frame')), true);
+  assert.equal(isValidStrokeStack([custom], createNode('path')), false,
+    'side weights are only meaningful on rectangle and frame geometry');
+
+  const rectangle = createNode('rectangle');
+  addStroke(rectangle, custom);
+  assert.deepEqual(strokeSideWidths(rectangle.strokes[0]), { top: 1.5, right: 0, bottom: 3.25, left: 2 });
+  updateStroke(rectangle, 'custom-sides', { sideWidths: { ...custom.sideWidths, right: 2.5 } });
+  assert.equal(rectangle.strokes[0].sideWidths.right, 2.5);
+  assert.throws(() => updateStroke(rectangle, 'custom-sides', { sideWidths: { top: 1, right: -1, bottom: 1, left: 1 } }), /side widths/);
+  assert.equal(rectangle.strokes[0].sideWidths.right, 2.5, 'invalid side width updates leave the prior stroke intact');
+  assert.throws(() => createStroke({ sideMode: 'custom', sideWidths: { top: 1, right: 1, bottom: 1 } }), /side widths/);
+
+  updateStroke(rectangle, 'custom-sides', { sideMode: 'all' });
+  assert.equal(Object.hasOwn(rectangle.strokes[0], 'sideWidths'), false);
+  assert.deepEqual(strokeSideWidths(rectangle.strokes[0]), { top: 4, right: 4, bottom: 4, left: 4 });
 });

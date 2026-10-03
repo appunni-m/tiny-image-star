@@ -516,9 +516,10 @@ export async function claimRecipeBatchRecovery(input = {}, options = {}) {
     const leaseExpiresAt = existing ? recipeRecoveryLeaseExpiresAt(existing, now) : null;
     const leaseIsActive = Boolean(existing && leaseExpiresAt > now);
     const expectedMatches = checksExistingOwner && storedOwner === (expectedOwnerToken ?? null);
-    const transferMatches = replaceOwnerToken != null && storedOwner === replaceOwnerToken;
+    const checksTransferOwner = Object.hasOwn(options, 'replaceOwnerToken');
+    const transferMatches = checksTransferOwner && storedOwner === (replaceOwnerToken ?? null);
 
-    if (!existing && checksExistingOwner) {
+    if (!existing && (checksExistingOwner || checksTransferOwner)) {
       failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale');
       return;
     }
@@ -526,7 +527,7 @@ export async function claimRecipeBatchRecovery(input = {}, options = {}) {
       failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale', leaseExpiresAt);
       return;
     }
-    if (existing && replaceOwnerToken != null && !transferMatches) {
+    if (existing && checksTransferOwner && !transferMatches) {
       failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale', leaseExpiresAt);
       return;
     }

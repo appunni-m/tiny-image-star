@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -901,6 +901,117 @@ test('prototype set-variable actions evaluate bounded expressions in presentatio
   const invalid = structuredClone(document);
   findNode(invalid, trigger.id).node.interactions[0].valueExpression = 'unknown + 1';
   assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+});
+
+test('legacy one-action interactions migrate to a virtual v2 action program without changing saved data', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Legacy actions');
+  const count = createVariable(document, collection.id, 'count', 'number', 1);
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Trigger' });
+  home.children.push(trigger);
+  addNode(document, home);
+  const legacy = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: count.id, value: 5
+  });
+  const savedLegacy = structuredClone(legacy);
+
+  const migrated = prototypeActionProgram(legacy);
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.steps.length, 1);
+  assert.deepEqual(migrated.steps[0], {
+    type: 'action', actionId: legacy.id, action: 'set-variable', variableId: count.id, value: 5,
+    destinationId: null, destinationPageId: null, transition: 'instant', easing: 'ease-in-out', duration: 300
+  });
+  assert.deepEqual(legacy, savedLegacy, 'reading a legacy program must not rewrite the old serialized fields');
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reloaded), true);
+  assert.deepEqual(findNode(reloaded, trigger.id).node.interactions[0], savedLegacy,
+    'legacy interaction fields round-trip unchanged when no v2 program is stored');
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, session, legacy), 'variables-updated');
+  assert.equal(resolveVariableValue(document, count.id), 5);
+});
+
+test('v2 prototype action programs run actions in order and choose nested if/else branches from live session state', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Action program');
+  const count = createVariable(document, collection.id, 'count', 'number', 0);
+  const result = createVariable(document, collection.id, 'result', 'number', 0);
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Trigger' });
+  home.children.push(trigger);
+  addNode(document, home);
+  const interaction = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: count.id, value: 1
+  });
+  interaction.actionProgram = {
+    version: 2,
+    steps: [
+      { type: 'action', actionId: 'set-count', action: 'set-variable', variableId: count.id, value: 2 },
+      {
+        type: 'if', branchId: 'choose-result',
+        condition: { variableId: count.id, type: 'number', operator: 'equals', value: 2 },
+        then: [{ type: 'if', branchId: 'nested-check',
+          condition: { variableId: count.id, type: 'number', operator: 'greater-than', value: 1 },
+          then: [{ type: 'action', actionId: 'then-value', action: 'set-variable', variableId: result.id, value: 10 }],
+          else: [{ type: 'action', actionId: 'nested-else-value', action: 'set-variable', variableId: result.id, value: 11 }] }],
+        else: [{ type: 'action', actionId: 'else-value', action: 'set-variable', variableId: result.id, value: -1 }]
+      }
+    ]
+  };
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  const execution = executePrototypeActionProgram(document, session, interaction);
+  assert.deepEqual(execution.actionResults, ['variables-updated', 'variables-updated']);
+  assert.equal(execution.result, 'variables-updated');
+  assert.equal(resolveVariableValue(document, count.id), 2, 'later actions observe earlier writes');
+  assert.equal(resolveVariableValue(document, result.id), 10, 'nested true branch executes in source order');
+
+  const elseProgram = structuredClone(interaction);
+  elseProgram.actionProgram.steps[1].condition.value = 3;
+  const elseExecution = executePrototypeActionProgram(document, session, elseProgram);
+  assert.deepEqual(elseExecution.actionResults, ['variables-updated', 'variables-updated']);
+  assert.equal(resolveVariableValue(document, result.id), -1, 'the false branch executes when its condition does not match');
+});
+
+test('v2 prototype action programs reject malformed versions, duplicate IDs, invalid conditions, bad actions, and excessive nesting', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Action validation');
+  const count = createVariable(document, collection.id, 'count', 'number', 0);
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Trigger' });
+  home.children.push(trigger);
+  addNode(document, home);
+  const interaction = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: count.id, value: 1
+  });
+  const validProgram = {
+    version: 2,
+    steps: [{ type: 'action', actionId: 'set-count', action: 'set-variable', variableId: count.id, value: 2 }]
+  };
+  for (const mutate of [
+    program => { program.version = 1; },
+    program => { program.extra = true; },
+    program => { program.steps[0].actionId = ''; },
+    program => { program.steps[0].action = 'not-an-action'; },
+    program => { program.steps.push(structuredClone(program.steps[0])); },
+    program => { program.steps[0].value = 'wrong-type'; },
+    program => { program.steps = [{ type: 'if', branchId: 'if', condition: { variableId: 'missing', type: 'number', operator: 'equals', value: 0 }, then: [], else: [] }]; },
+    program => {
+      let nested = { type: 'action', actionId: 'deep-action', action: 'set-variable', variableId: count.id, value: 2 };
+      for (let depth = 0; depth < 9; depth += 1) nested = { type: 'if', branchId: `depth-${depth}`, condition: { variableId: count.id, type: 'number', operator: 'equals', value: 0 }, then: [nested], else: [] };
+      program.steps = [nested];
+    }
+  ]) {
+    const invalid = structuredClone(document);
+    const candidate = findNode(invalid, trigger.id).node.interactions[0];
+    candidate.actionProgram = structuredClone(validProgram);
+    mutate(candidate.actionProgram);
+    assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  }
+  interaction.actionProgram = structuredClone(validProgram);
+  assert.equal(validateDocument(document), true);
 });
 
 test('prototype expressions exclude ambiguous aliases produced by similar variable names', () => {

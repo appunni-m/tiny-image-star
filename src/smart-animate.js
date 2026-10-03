@@ -1,7 +1,7 @@
 import { gradientTypes, isValidGradientFill } from './fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
 import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
-import { isValidStrokeStack } from './strokes.js';
+import { isValidStrokeStack, strokeSideNames, strokeSideWidths } from './strokes.js';
 import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { defaultImageAdjustments, isValidImageFill } from './image-fills.js';
 
@@ -357,7 +357,7 @@ function canInterpolateStrokeStack(fromNode, toNode) {
   const to = toNode.strokes;
   return Array.isArray(from) && Array.isArray(to)
     && from.length === to.length
-    && isValidStrokeStack(from) && isValidStrokeStack(to)
+    && isValidStrokeStack(from, fromNode) && isValidStrokeStack(to, toNode)
     && from.every((stroke, index) => stroke.id === to[index].id
       && interpolateColor(stroke.color, to[index].color, .5) !== null);
 }
@@ -378,6 +378,16 @@ function interpolateStrokeStack(fromNode, toNode, progress) {
       && Array.isArray(start.dashArray) && Array.isArray(stroke.dashArray)
       && start.dashArray.length === stroke.dashArray.length) {
       result.dashArray = start.dashArray.map((value, dashIndex) => value + (stroke.dashArray[dashIndex] - value) * progress);
+    }
+    if (['rectangle', 'frame'].includes(fromNode.type) && fromNode.type === toNode.type
+      && (Object.hasOwn(start, 'sideMode') || Object.hasOwn(start, 'sideWidths')
+        || Object.hasOwn(stroke, 'sideMode') || Object.hasOwn(stroke, 'sideWidths'))) {
+      const startWidths = strokeSideWidths(start);
+      const endWidths = strokeSideWidths(stroke);
+      result.sideMode = 'custom';
+      result.sideWidths = Object.fromEntries(strokeSideNames.map(side => [
+        side, startWidths[side] + (endWidths[side] - startWidths[side]) * progress
+      ]));
     }
     return result;
   });

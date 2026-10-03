@@ -498,6 +498,50 @@ test('document validation rejects identity and prototype-field component overrid
   assert.throws(() => validateDocument(document), /Invalid component override/);
 });
 
+test('image recipe and processing metadata survives component override save and reload', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Photo card' });
+  const image = createNode('image', {
+    name: 'Photo', assetId: 'asset-source', sourceWidth: 640, sourceHeight: 480,
+    fit: 'cover', width: 160, height: 120
+  });
+  addNode(document, master);
+  addNode(document, image, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Photo card');
+  const instance = createComponentInstance(document, component.id);
+  const expansion = {
+    sourceImageAssetId: 'asset-source', sourceWidth: 640, sourceHeight: 480,
+    paddingRatio: { top: 0.1, right: 0, bottom: 0, left: 0 },
+    originalGeometry: { x: 0, y: 0, width: 160, height: 120 },
+    originalInpaintStrokes: []
+  };
+  const overrides = {
+    assetId: 'asset-derived', sourceWidth: 1280, sourceHeight: 960,
+    fit: 'tile', scalingFactor: 1.25, outputFormat: 'jpeg', outputQuality: 84,
+    inpaintStrokes: [], imageExpansion: expansion,
+    backgroundRemoved: true, backgroundRemovalSourceAssetId: 'asset-source', backgroundRemovalAssetId: 'asset-bg',
+    resolutionBoosted: true, resolutionBoostSourceAssetId: 'asset-source', resolutionBoostAssetId: 'asset-upscaled'
+  };
+  Object.assign(instance.children[0], overrides);
+  instance.componentOverrides[image.id] = structuredClone(overrides);
+
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[1].componentOverrides[image.id], overrides);
+  assert.equal(reopened.pages[0].children[1].children[0].scalingFactor, 1.25);
+  assert.deepEqual(reopened.pages[0].children[1].children[0].imageExpansion, expansion);
+
+  const malformed = structuredClone(reopened);
+  malformed.pages[0].children[1].componentOverrides[image.id].imageExpansion = {};
+  assert.throws(() => validateDocument(malformed), /Invalid component image expansion override/);
+  malformed.pages[0].children[1].componentOverrides[image.id].imageExpansion = expansion;
+  malformed.pages[0].children[1].componentOverrides[image.id] = { assetId: 'asset-other' };
+  const rectangle = createNode('rectangle', { name: 'Not an image' });
+  addNode(malformed, rectangle);
+  malformed.pages[0].children[1].componentOverrides[rectangle.id] = { assetId: 'asset-other' };
+  assert.throws(() => validateDocument(malformed), /Invalid component image override/);
+});
+
 test('components cannot be declared from an instance subtree', () => {
   const document = createDocument();
   const main = createNode('frame'); const child = createNode('rectangle');

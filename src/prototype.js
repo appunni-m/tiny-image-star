@@ -22,6 +22,9 @@ const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-over
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
 const maxPrototypeDelay = 10_000;
+export const PROTOTYPE_ACTION_PROGRAM_VERSION = 2;
+export const MAX_PROTOTYPE_ACTION_STEPS = 128;
+export const MAX_PROTOTYPE_ACTION_DEPTH = 8;
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
   'bottom-left', 'bottom-center', 'bottom-right'
@@ -82,6 +85,60 @@ function prototypeConditionMatches(document, condition, session, node) {
     ? value.toLowerCase() === condition.value.toLowerCase()
     : value === condition.value;
   return condition.operator === 'equals' ? matches : !matches;
+}
+
+const legacyActionFields = [
+  'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
+  'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
+  'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
+  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment'
+];
+
+/** View a legacy one-action interaction as v2 without rewriting saved data. */
+export function prototypeActionProgram(interaction) {
+  if (interaction?.actionProgram?.version === PROTOTYPE_ACTION_PROGRAM_VERSION) return interaction.actionProgram;
+  const config = Object.fromEntries(legacyActionFields
+    .filter(field => Object.hasOwn(interaction || {}, field))
+    .map(field => [field, structuredClone(interaction[field])]));
+  return {
+    version: PROTOTYPE_ACTION_PROGRAM_VERSION,
+    steps: [{ type: 'action', actionId: interaction?.id || 'legacy', ...config }]
+  };
+}
+
+function activePrototypeFrame(document, session) {
+  const overlay = session.overlays?.at(-1);
+  return findNode(document, overlay?.frameId || session.frameId, overlay?.pageId || session.pageId)?.node || null;
+}
+
+function runPrototypeActionSteps(document, session, interaction, steps, results) {
+  for (const step of steps) {
+    if (step.type === 'if') {
+      const frame = activePrototypeFrame(document, session);
+      const branch = prototypeConditionMatches(document, step.condition, session, frame) ? step.then : step.else;
+      const result = runPrototypeActionSteps(document, session, interaction, branch, results);
+      if (result === false) return false;
+      continue;
+    }
+    const action = { ...interaction, ...step, id: step.actionId, trigger: interaction.trigger };
+    delete action.type;
+    delete action.actionId;
+    delete action.actionProgram;
+    delete action.condition;
+    const result = applySinglePrototypeInteraction(document, session, action);
+    results.push(result);
+    if (result === false) return false;
+  }
+  return results.at(-1) ?? 'no-op';
+}
+
+/** Execute a v2 ordered action program (or its virtual legacy one-step migration). */
+export function executePrototypeActionProgram(document, session, interaction) {
+  if (!session || !interaction) return { result: false, actionResults: [] };
+  const results = [];
+  const program = prototypeActionProgram(interaction);
+  const result = runPrototypeActionSteps(document, session, interaction, program.steps, results);
+  return { result, actionResults: results };
 }
 
 export function listPrototypeFrames(document) {
@@ -551,6 +608,10 @@ function rememberPrototypeHoverInteraction(session, interaction) {
 }
 
 export function applyPrototypeInteraction(document, session, interaction) {
+  return executePrototypeActionProgram(document, session, interaction).result;
+}
+
+function applySinglePrototypeInteraction(document, session, interaction) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
   if (interaction.action === 'back') return backPrototypeSession(session);
   if (interaction.action === 'open-link') return normalizePrototypeLinkUrl(interaction.url) ? 'link-opened' : false;

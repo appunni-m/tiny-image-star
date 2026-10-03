@@ -362,8 +362,91 @@ function hasInvalidPrototypeInteractions(interactions, document) {
       if (item.overlayBackgroundColor != null && !/^#[0-9a-f]{6}$/i.test(item.overlayBackgroundColor)) return true;
       if (item.overlayBackgroundOpacity != null && (!Number.isFinite(Number(item.overlayBackgroundOpacity)) || Number(item.overlayBackgroundOpacity) < 0 || Number(item.overlayBackgroundOpacity) > 1)) return true;
     }
+    if (item.actionProgram != null && hasInvalidPrototypeActionProgram(item.actionProgram, item, document)) return true;
     return false;
   });
+}
+
+const prototypeActionProgramActionFields = new Set([
+  'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
+  'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
+  'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
+  'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment'
+]);
+
+function invalidPrototypeCondition(condition, document) {
+  const conditionFields = ['variableId', 'type', 'operator', 'value'];
+  const variable = condition && typeof condition === 'object' && !Array.isArray(condition)
+    ? document.variables?.find(candidate => candidate.id === condition.variableId)
+    : null;
+  return !condition || typeof condition !== 'object' || Array.isArray(condition)
+    || Object.keys(condition).some(key => !conditionFields.includes(key))
+    || typeof condition.variableId !== 'string' || !condition.variableId
+    || !isValidPrototypeConditionOperator(condition.operator, condition.type)
+    || !variable || condition.type !== variable.type || !isVariableValue(condition.type, condition.value);
+}
+
+function hasInvalidPrototypeActionProgram(program, envelope, document) {
+  if (!program || typeof program !== 'object' || Array.isArray(program)
+    || Object.keys(program).some(key => !['version', 'steps'].includes(key))
+    || program.version !== 2 || !Array.isArray(program.steps) || !program.steps.length) return true;
+  let count = 0;
+  const ids = new Set();
+  const visit = (steps, depth) => {
+    if (!Array.isArray(steps) || depth > 8) return true;
+    for (const step of steps) {
+      count += 1;
+      if (count > 128 || !step || typeof step !== 'object' || Array.isArray(step)) return true;
+      if (step.type === 'action') {
+        const keys = Object.keys(step);
+        if (keys.some(key => key !== 'type' && key !== 'actionId' && !prototypeActionProgramActionFields.has(key))
+          || typeof step.actionId !== 'string' || !step.actionId || ids.has(step.actionId)
+          || !prototypeActionProgramActionFields.has('action') || Object.hasOwn(step, 'condition')) return true;
+        ids.add(step.actionId);
+        const legacy = { ...envelope, ...step, id: step.actionId };
+        delete legacy.actionProgram;
+        delete legacy.type;
+        delete legacy.actionId;
+        delete legacy.condition;
+        if (hasInvalidPrototypeInteractions([legacy], document)) return true;
+      } else if (step.type === 'if') {
+        if (Object.keys(step).some(key => !['type', 'branchId', 'condition', 'then', 'else'].includes(key))
+          || typeof step.branchId !== 'string' || !step.branchId || ids.has(step.branchId)
+          || invalidPrototypeCondition(step.condition, document)) return true;
+        ids.add(step.branchId);
+        if (visit(step.then, depth + 1) || visit(step.else, depth + 1)) return true;
+      } else return true;
+    }
+    return false;
+  };
+  return visit(program.steps, 0);
+}
+
+function prototypeActionRecords(interaction) {
+  const records = [interaction];
+  const visit = steps => {
+    for (const step of steps || []) {
+      if (step?.type === 'action') records.push(step);
+      else if (step?.type === 'if') { visit(step.then); visit(step.else); }
+    }
+  };
+  if (interaction?.actionProgram?.version === 2) visit(interaction.actionProgram.steps);
+  return records;
+}
+
+function prototypeConditionRecords(interaction) {
+  const conditions = [interaction?.condition].filter(Boolean);
+  const visit = steps => {
+    for (const step of steps || []) {
+      if (step?.type === 'if') {
+        conditions.push(step.condition);
+        visit(step.then);
+        visit(step.else);
+      }
+    }
+  };
+  if (interaction?.actionProgram?.version === 2) visit(interaction.actionProgram.steps);
+  return conditions;
 }
 const prototypeScrollBehaviors = new Set(['vertical', 'horizontal', 'both']);
 
@@ -380,8 +463,8 @@ function hasInvalidPrototypeScrollTargets(document) {
   let invalid = false;
   for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
     if (invalid) return;
-    if ((node.interactions || []).some(interaction => interaction.action === 'scroll-to'
-      && !isValidPrototypeScrollTarget(document, page, node, parents, interaction.scrollTargetId))) invalid = true;
+    if ((node.interactions || []).some(interaction => prototypeActionRecords(interaction).some(action => action.action === 'scroll-to'
+      && !isValidPrototypeScrollTarget(document, page, node, parents, action.scrollTargetId)))) invalid = true;
   });
   return invalid;
 }
@@ -437,6 +520,9 @@ const componentOverrideProperties = new Set([
   'effects',
   'fillGradient',
   'imageFill',
+  'assetId', 'sourceWidth', 'sourceHeight', 'scalingFactor', 'inpaintStrokes', 'imageExpansion',
+  'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+  'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
   'blendMode',
   'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
@@ -1099,8 +1185,10 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
       else delete node.textPath.sourceId;
     }
     for (const interaction of node.interactions || []) {
-      if (idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
-      if (idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
+      for (const action of prototypeActionRecords(interaction)) {
+        if (idMap.has(action.destinationId)) action.destinationId = idMap.get(action.destinationId);
+        if (idMap.has(action.scrollTargetId)) action.scrollTargetId = idMap.get(action.scrollTargetId);
+      }
     }
   });
   duplicate.x += 16;
@@ -1969,13 +2057,15 @@ function removePrototypeInteractionsUsingVariables(document, removedIds) {
   for (const page of document.pages) walkNodes(page.children, ({ node, parents }) => {
     if (!Array.isArray(node.interactions)) return;
     const retained = node.interactions.filter(interaction => {
-      if (removedIds.has(interaction.condition?.variableId) || removedIds.has(interaction.variableId)) return false;
-      if (typeof interaction.valueExpression !== 'string') return true;
-      try {
-        return !prototypeExpressionReferences(interaction.valueExpression).some(alias => removedAliases.has(alias));
-      } catch {
-        return false;
+      if (prototypeConditionRecords(interaction).some(condition => removedIds.has(condition.variableId))) return false;
+      for (const action of prototypeActionRecords(interaction)) {
+        if (removedIds.has(action.variableId)) return false;
+        if (typeof action.valueExpression !== 'string') continue;
+        try {
+          if (prototypeExpressionReferences(action.valueExpression).some(alias => removedAliases.has(alias))) return false;
+        } catch { return false; }
       }
+      return true;
     });
     if (retained.length === node.interactions.length) return;
     if (retained.length) node.interactions = retained;
@@ -1994,7 +2084,8 @@ function removePrototypeInteractionsUsingVariables(document, removedIds) {
 function removePrototypeInteractionsUsingNodes(document, removedIds) {
   for (const page of document.pages) walkNodes(page.children, ({ node, parents }) => {
     if (!Array.isArray(node.interactions)) return;
-    const retained = node.interactions.filter(interaction => !removedIds.has(interaction.scrollTargetId));
+    const retained = node.interactions.filter(interaction => !prototypeActionRecords(interaction)
+      .some(action => removedIds.has(action.scrollTargetId)));
     if (retained.length === node.interactions.length) return;
     if (retained.length) node.interactions = retained;
     else delete node.interactions;
@@ -2780,8 +2871,10 @@ function cloneSlotContentTrees(document, nodes) {
       else delete node.textPath.sourceId;
     }
     for (const interaction of node.interactions || []) {
-      if (interaction.destinationId && idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
-      if (interaction.scrollTargetId && idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
+      for (const action of prototypeActionRecords(interaction)) {
+        if (action.destinationId && idMap.has(action.destinationId)) action.destinationId = idMap.get(action.destinationId);
+        if (action.scrollTargetId && idMap.has(action.scrollTargetId)) action.scrollTargetId = idMap.get(action.scrollTargetId);
+      }
     }
     if (node.isInstance && node.componentPropertyValues) {
       const component = document.components?.find(item => item.id === node.componentId);
@@ -3158,12 +3251,15 @@ export function removeComponentVariantFromSet(document, setId, componentId) {
   for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
     const interactions = Array.isArray(node.interactions) ? node.interactions : [];
     const retainedInteractions = interactions.filter(interaction => {
-      if (interaction.action !== 'change-variant') return true;
-      // An instance of the removed variant is now standalone, so it cannot
-      // change to another member of the former set.
-      if (node.isInstance && node.id === interaction.instanceId && node.componentId === componentId) return false;
-      // Existing actions elsewhere cannot target a component outside their set.
-      return interaction.targetVariantId !== componentId;
+      for (const action of prototypeActionRecords(interaction)) {
+        if (action.action !== 'change-variant') continue;
+        // An instance of the removed variant is now standalone, so it cannot
+        // change to another member of the former set.
+        if (node.isInstance && node.id === action.instanceId && node.componentId === componentId) return false;
+        // Existing actions elsewhere cannot target a component outside their set.
+        if (action.targetVariantId === componentId) return false;
+      }
+      return true;
     });
     const changed = retainedInteractions.length !== interactions.length;
     if (changed) {
@@ -3375,17 +3471,19 @@ export function createComponentInstance(document, componentId, { pageId = docume
       else delete node.textPath.sourceId;
     }
     for (const interaction of node.interactions || []) {
-      if (interaction.action === 'change-variant') {
-        const copiedInstanceId = cloneByOriginalId.get(interaction.instanceId) || cloneBySourceId.get(interaction.instanceId);
-        if (copiedInstanceId) interaction.instanceId = copiedInstanceId;
+      for (const action of prototypeActionRecords(interaction)) {
+        if (action.action === 'change-variant') {
+          const copiedInstanceId = cloneByOriginalId.get(action.instanceId) || cloneBySourceId.get(action.instanceId);
+          if (copiedInstanceId) action.instanceId = copiedInstanceId;
+        }
+        const copiedDestinationId = cloneByOriginalId.get(action.destinationId) || cloneBySourceId.get(action.destinationId);
+        if (copiedDestinationId) {
+          action.destinationId = copiedDestinationId;
+          action.destinationPageId = pageId;
+        }
+        const copiedScrollTargetId = cloneByOriginalId.get(action.scrollTargetId) || cloneBySourceId.get(action.scrollTargetId);
+        if (copiedScrollTargetId) action.scrollTargetId = copiedScrollTargetId;
       }
-      const copiedDestinationId = cloneByOriginalId.get(interaction.destinationId) || cloneBySourceId.get(interaction.destinationId);
-      if (copiedDestinationId) {
-        interaction.destinationId = copiedDestinationId;
-        interaction.destinationPageId = pageId;
-      }
-      const copiedScrollTargetId = cloneByOriginalId.get(interaction.scrollTargetId) || cloneBySourceId.get(interaction.scrollTargetId);
-      if (copiedScrollTargetId) interaction.scrollTargetId = copiedScrollTargetId;
     }
 
     if (node.isInstance && node.componentPropertyValues) {
@@ -3604,8 +3702,8 @@ function remapComponentInstanceReferences(document, instance) {
     }
 
     const fullParents = [...instanceEntry.parents, ...parents];
-    const retained = node.interactions.filter(interaction => interaction.action !== 'scroll-to'
-      || isValidPrototypeScrollTarget(document, instanceEntry.page, node, fullParents, interaction.scrollTargetId));
+    const retained = node.interactions.filter(interaction => !prototypeActionRecords(interaction).some(action => action.action === 'scroll-to'
+      && !isValidPrototypeScrollTarget(document, instanceEntry.page, node, fullParents, action.scrollTargetId)));
     if (retained.length !== node.interactions.length) {
       interactionsChanged = true;
       if (retained.length) node.interactions = retained;
@@ -4009,6 +4107,47 @@ export function validateDocument(document) {
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string'))) || (overrides.__deletedChildren != null && (!Array.isArray(overrides.__deletedChildren) || overrides.__deletedChildren.length > 100_000 || overrides.__deletedChildren.some(id => typeof id !== 'string' || !id || id.length > 160) || new Set(overrides.__deletedChildren).size !== overrides.__deletedChildren.length))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
           const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+          const imageOverrideProperties = [
+            'assetId', 'sourceWidth', 'sourceHeight', 'scalingFactor', 'inpaintStrokes', 'imageExpansion',
+            'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+            'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId'
+          ];
+          if (imageOverrideProperties.some(property => Object.hasOwn(overrides, property))) {
+            if (sourceNode?.type !== 'image') throw new TypeError(`Invalid component image override on ${node.name || node.id}.`);
+            if (Object.hasOwn(overrides, 'assetId') && overrides.assetId != null
+              && (typeof overrides.assetId !== 'string' || !overrides.assetId.trim())) {
+              throw new TypeError(`Invalid component image asset override on ${node.name || node.id}.`);
+            }
+            for (const property of ['sourceWidth', 'sourceHeight']) {
+              if (Object.hasOwn(overrides, property) && overrides[property] != null
+                && (!Number.isSafeInteger(overrides[property]) || overrides[property] < 1)) {
+                throw new TypeError(`Invalid component image dimensions override on ${node.name || node.id}.`);
+              }
+            }
+            if (overrides.scalingFactor != null && !isValidImageTileScale(overrides.scalingFactor)) {
+              throw new TypeError(`Invalid component image tile scale override on ${node.name || node.id}.`);
+            }
+            if (overrides.inpaintStrokes != null && !isValidImageEraseStrokes(overrides.inpaintStrokes)) {
+              throw new TypeError(`Invalid component object-erase strokes override on ${node.name || node.id}.`);
+            }
+            if (overrides.imageExpansion != null && !isValidImageExpansionState(overrides.imageExpansion)) {
+              throw new TypeError(`Invalid component image expansion override on ${node.name || node.id}.`);
+            }
+            for (const property of ['backgroundRemoved', 'resolutionBoosted']) {
+              if (Object.hasOwn(overrides, property) && overrides[property] != null && typeof overrides[property] !== 'boolean') {
+                throw new TypeError(`Invalid component image processing override on ${node.name || node.id}.`);
+              }
+            }
+            for (const property of [
+              'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+              'resolutionBoostSourceAssetId', 'resolutionBoostAssetId'
+            ]) {
+              if (Object.hasOwn(overrides, property) && overrides[property] != null
+                && (typeof overrides[property] !== 'string' || !overrides[property].trim())) {
+                throw new TypeError(`Invalid component image asset reference override on ${node.name || node.id}.`);
+              }
+            }
+          }
           if (Object.hasOwn(overrides, 'textTruncation')
             && (sourceNode?.type !== 'text' || !textTruncations.has(overrides.textTruncation))) {
             throw new TypeError(`Invalid component text truncation override on ${node.name || node.id}.`);
@@ -4285,13 +4424,15 @@ export function validateDocument(document) {
   }
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const interaction of node.interactions || []) {
-      if (interaction.action !== 'change-variant') continue;
-      const component = node.isInstance && node.id === interaction.instanceId
-        ? (document.components || []).find(item => item.id === node.componentId)
-        : null;
-      const target = (document.components || []).find(item => item.id === interaction.targetVariantId);
-      if (!component?.componentSetId || target?.componentSetId !== component.componentSetId || target.id === component.id) {
-        throw new TypeError(`Invalid component variant target on prototype interaction ${interaction.id}.`);
+      for (const action of prototypeActionRecords(interaction)) {
+        if (action.action !== 'change-variant') continue;
+        const component = node.isInstance && node.id === action.instanceId
+          ? (document.components || []).find(item => item.id === node.componentId)
+          : null;
+        const target = (document.components || []).find(item => item.id === action.targetVariantId);
+        if (!component?.componentSetId || target?.componentSetId !== component.componentSetId || target.id === component.id) {
+          throw new TypeError(`Invalid component variant target on prototype interaction ${interaction.id}.`);
+        }
       }
     }
   });

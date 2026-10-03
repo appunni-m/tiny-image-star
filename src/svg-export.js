@@ -8,7 +8,8 @@ import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDim
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
-import { isValidStrokeStack, strokeStackForNode } from './strokes.js';
+import { isUniformStrokeSideWidths, isValidStrokeStack, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorPathContours } from './vector-path.js';
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
@@ -420,10 +421,44 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
   if (!Array.isArray(node.strokes)) return '';
   const strokes = strokeStackForNode(node);
   return strokes.map((stroke, index) => {
-    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return '';
+    const sideWidths = ['rectangle', 'frame'].includes(node.type) ? strokeSideWidths(stroke) : null;
+    const maximumSideWidth = sideWidths ? Math.max(...strokeSideNames.map(side => sideWidths[side])) : stroke.width;
+    if (!stroke.visible || stroke.opacity <= 0 || maximumSideWidth <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return '';
     const strokeGradientId = addStrokeGradientDefinition(node, stroke, index, layerIndex, context);
     let markup;
-    if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
+    if (sideWidths && !isUniformStrokeSideWidths(sideWidths)) {
+      const cornerRadius = Number(getNodePropertyValue(document, node, 'radius') ?? node.radius ?? 0);
+      const runs = rectangleStrokeSidePaths(node.width, node.height,
+        node.cornerRadii || Object.fromEntries(cornerRadiusKeys.map(key => [key, cornerRadius])), node.cornerSmoothing || 0);
+      const encodedWidths = escapeXml(JSON.stringify(sideWidths));
+      const paths = runs.map(run => {
+        const width = sideWidths[run.side];
+        if (!(width > 0)) return '';
+        const d = `M ${number(run.points[0].x)} ${number(run.points[0].y)}${run.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}`;
+        // Every run ends at an artificial corner bisector. Butt caps avoid
+        // leaking the editable cap style there; explicit shared join geometry
+        // below handles the actual corner transition.
+        const attributes = strokeAttributes(document, node, {
+          ...stroke, width, opacity: 1, cap: stroke.pattern === 'dotted' ? 'round' : 'butt'
+        }, index, strokeGradientId);
+        return `<path d="${d}" fill="none"${attributes} data-tiny-image-star-stroke-side="${run.side}"/>`;
+      }).join('');
+      const joins = (stroke.pattern === 'solid'
+        ? rectangleStrokeSideJoins(runs, sideWidths, stroke.join, stroke.miterLimit)
+        : []).map(patch => {
+        const d = `M ${number(patch.points[0].x)} ${number(patch.points[0].y)}${patch.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')} Z`;
+        const fill = stroke.gradient ? `url(#${strokeGradientId})`
+          : index === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
+        return `<path d="${d}" fill="${escapeXml(fill || 'none')}" stroke="none" data-tiny-image-star-stroke-join="${escapeXml(stroke.join)}"/>`;
+      }).join('');
+      markup = `<g data-tiny-image-star-stroke-side-widths="${encodedWidths}" opacity="${number(stroke.opacity)}">${paths}${joins}</g>`;
+    }
+    else if (sideWidths) {
+      const uniformStroke = { ...stroke, width: sideWidths.top };
+      if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, uniformStroke, index, strokeGradientId)}`);
+      else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: uniformStroke, strokeIndex: index, strokeGradientId });
+    }
+    else if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
     else if (node.type === 'text') markup = textMarkup(node, document, measureText, {
       fillValue: 'transparent', fillOpacity: 0, includeStroke: true,
       strokeItem: stroke, strokeIndex: index, strokeGradientId, clipSuffix: `stroke-${index}`
@@ -1740,6 +1775,20 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       for (const [x, y] of [[0, 0], [width, 0], [width, height], [0, height]]) {
         include(transformPoint(matrix, x, y), bounds);
       }
+      if (['rectangle', 'frame'].includes(node.type)) {
+        const sideExtents = { top: 0, right: 0, bottom: 0, left: 0 };
+        for (const stroke of strokeStackForNode(node)) {
+          if (stroke.visible === false || Number(stroke.opacity ?? 1) <= 0) continue;
+          const sideWidths = strokeSideWidths(stroke);
+          for (const side of strokeSideNames) sideExtents[side] = Math.max(sideExtents[side], sideWidths[side] / 2);
+        }
+        if (Object.values(sideExtents).some(value => value > 0)) {
+          for (const [x, y] of [
+            [-sideExtents.left, -sideExtents.top], [width + sideExtents.right, -sideExtents.top],
+            [width + sideExtents.right, height + sideExtents.bottom], [-sideExtents.left, height + sideExtents.bottom]
+          ]) include(transformPoint(matrix, x, y), bounds);
+        }
+      }
       if (node.type === 'path') {
         for (const contour of vectorPathContours(node)) {
           for (const item of contour.points || []) {
@@ -1824,8 +1873,10 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
           }
         }
       }
-      const strokeWidth = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
-      if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
+      if (!['rectangle', 'frame'].includes(node.type)) {
+        const strokeWidth = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
+        if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
+      }
       const effectPadding = layerEffectPadding(node.effects);
       if (effectPadding.x || effectPadding.y) {
         for (const [x, y] of [

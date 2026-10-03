@@ -3,7 +3,7 @@ import { buildLayerEffectBoxShadow, buildLayerEffectFilter } from './layer-effec
 import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
 import { vectorPathContours } from './vector-path.js';
-import { strokeStackForNode } from './strokes.js';
+import { strokeSideMode, strokeSideWidths, strokeStackForNode } from './strokes.js';
 import { resolvedLineHeight } from './text-layout.js';
 import { fontFeatureSettings } from './font-features.js';
 
@@ -177,6 +177,9 @@ function resolvedStroke(document, node, stroke, index) {
     join: stroke.join,
     miterLimit: stroke.miterLimit,
     pattern: strokePatternStyle(stroke),
+    ...(strokeSideMode(stroke) !== 'all' || stroke.sideWidths
+      ? { sideMode: strokeSideMode(stroke), sideWidths: strokeSideWidths(stroke) }
+      : {}),
     ...(stroke.pattern === 'custom' && Array.isArray(stroke.dashArray) ? { dashArray: [...stroke.dashArray] } : {})
   };
 }
@@ -312,9 +315,16 @@ function cssForEntry(document, entry) {
       const stroke = primaryStroke?.visible ? cssColor(primaryStroke.color, primaryStroke.opacity) : null;
       if (stroke && primaryStroke.width > 0) declarations.push(`border-top: ${number(primaryStroke.width)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
       declarations.push('/* Exact line geometry is retained in layer JSON. */');
-    } else if (primaryStroke?.visible && primaryStroke.width > 0) {
+    } else if (primaryStroke?.visible && Math.max(...Object.values(primaryStroke.sideWidths || { top: primaryStroke.width })) > 0) {
       const stroke = cssColor(primaryStroke.color, primaryStroke.opacity);
-      if (stroke) declarations.push(`border: ${number(primaryStroke.width)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
+      if (stroke) {
+        const maxWidth = Math.max(...Object.values(primaryStroke.sideWidths || { top: primaryStroke.width }));
+        declarations.push(`border: ${number(maxWidth)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
+        const widths = primaryStroke.sideWidths;
+        if (widths && !Object.values(widths).every(value => value === widths.top)) {
+          declarations.push(`border-width: ${number(widths.top)}px ${number(widths.right)}px ${number(widths.bottom)}px ${number(widths.left)}px;`);
+        }
+      }
     }
     if (primaryStroke?.pattern === 'custom') declarations.push(`/* Custom stroke dash lengths ${primaryStroke.dashArray.join(' ')}px are preserved in layer JSON; CSS borders cannot reproduce custom dash arrays. */`);
     if (primaryStroke?.gradient) declarations.push('/* Linear/radial stroke gradient is preserved in layer JSON; this CSS border uses its first-stop color. */');

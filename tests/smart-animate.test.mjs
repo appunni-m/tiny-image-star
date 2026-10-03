@@ -366,6 +366,33 @@ test('smart animation interpolates custom stroke dash and gap lengths when their
   assert.deepEqual(at(1).dashArray, [6, 8]);
 });
 
+test('smart animation interpolates each rectangle side stroke weight continuously', () => {
+  const stroke = overrides => ({
+    id: 'sides', color: '#123456', width: 2, opacity: 1, visible: true,
+    cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+    ...overrides
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [
+    stroke({ sideMode: 'custom', sideWidths: { top: 1, right: 2, bottom: 3, left: 4 } })
+  ] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [
+    stroke({ sideMode: 'custom', sideWidths: { top: 5, right: 4, bottom: 3, left: 2 } })
+  ] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].strokes[0];
+  assert.deepEqual(at(0).sideWidths, { top: 1, right: 2, bottom: 3, left: 4 });
+  assert.deepEqual(at(.25).sideWidths, { top: 2, right: 2.5, bottom: 3, left: 3.5 });
+  assert.deepEqual(at(.5).sideWidths, { top: 3, right: 3, bottom: 3, left: 3 });
+  assert.deepEqual(at(1).sideWidths, { top: 5, right: 4, bottom: 3, left: 2 });
+
+  const uniform = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [stroke({ width: 2 })] })] });
+  const asymmetric = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: [
+    stroke({ sideMode: 'custom', sideWidths: { top: 4, right: 2, bottom: 0, left: 2 } })
+  ] })] });
+  assert.deepEqual(interpolateSmartFrame(uniform, asymmetric, .5).children[0].strokes[0].sideWidths,
+    { top: 3, right: 2, bottom: 1, left: 2 },
+  'a uniform-to-individual transition animates effective edge widths instead of snapping the mode');
+});
+
 test('smart animation takes the shortest rotation arc and preserves exact frame and layer endpoints', () => {
   const from = createNode('frame', {
     rotation: 350,

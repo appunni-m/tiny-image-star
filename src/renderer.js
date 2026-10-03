@@ -10,7 +10,8 @@ import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLAS
 import { createGradientPaint, fillStackForNode, gradientTypes, resolveGradientGeometry } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
-import { strokeStackForNode } from './strokes.js';
+import { isUniformStrokeSideWidths, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
@@ -765,17 +766,25 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
 
 function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null) {
   const strokes = strokeStackForNode(node);
+  const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
+  const hasIndividualSideStroke = supportsIndividualSides && strokes.some(stroke => !isUniformStrokeSideWidths(strokeSideWidths(stroke)));
+  const rectangleSides = hasIndividualSideStroke
+    ? rectangleStrokeSidePaths(width, height, node.cornerRadii || getNodePropertyValue(document, node, 'radius'), node.cornerSmoothing || 0)
+    : null;
   const vectorMask = maskMode === 'vector';
   for (let index = 0; index < strokes.length; index += 1) {
     const stroke = strokes[index];
-    if (!stroke.visible || (!vectorMask && stroke.opacity <= 0) || stroke.width <= 0
+    const sideWidths = supportsIndividualSides ? strokeSideWidths(stroke) : null;
+    const maximumSideWidth = sideWidths ? Math.max(...strokeSideNames.map(side => sideWidths[side])) : stroke.width;
+    if (!stroke.visible || (!vectorMask && stroke.opacity <= 0) || maximumSideWidth <= 0
       || (!stroke.gradient && (!stroke.color || (!vectorMask && stroke.color === 'transparent')))) continue;
     ctx.save();
     // Strokes follow fills in the node paint order, so each stroke composites
     // against the visible backdrop and every earlier fill/stroke.
     if (!maskMode && stroke.blendMode && stroke.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(stroke.blendMode);
     if (!vectorMask) ctx.globalAlpha *= stroke.opacity;
-    ctx.lineWidth = stroke.width;
+    const strokeHasIndividualSides = rectangleSides && sideWidths && !isUniformStrokeSideWidths(sideWidths);
+    ctx.lineWidth = sideWidths && !strokeHasIndividualSides ? sideWidths.top : stroke.width;
     const color = index === 0 && node.strokeVariableId
       ? getNodeColor(document, node, 'stroke')
       : stroke.color;
@@ -785,6 +794,45 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
     ctx.strokeStyle = paint;
     applyStrokeStyle(ctx, stroke);
     if (paintOutline) paintOutline(ctx);
+    else if (strokeHasIndividualSides) {
+      // Match Figma's rectangle/frame-only Individual strokes. The rounded
+      // perimeter is split at the corner bisectors, then each side is painted
+      // with its own width while retaining this stroke's paint and stack order.
+      for (const run of rectangleSides) {
+        const sideWidth = sideWidths[run.side];
+        if (!(sideWidth > 0)) continue;
+        applyStrokeStyle(ctx, { ...stroke, width: sideWidth });
+        ctx.lineWidth = sideWidth;
+        // Side-run endpoints are artificial corner bisectors. Keep solid
+        // contours butt-ended and close them with explicit joins; dotted
+        // contours require round caps to render their zero-length dashes.
+        ctx.lineCap = stroke.pattern === 'dotted' ? 'round' : 'butt';
+        ctx.beginPath();
+        ctx.moveTo(x + run.points[0].x, y + run.points[0].y);
+        for (let pointIndex = 1; pointIndex < run.points.length; pointIndex += 1) {
+          ctx.lineTo(x + run.points[pointIndex].x, y + run.points[pointIndex].y);
+        }
+        ctx.stroke();
+      }
+      // The shared join polygons fill only the outside wedges left between
+      // independently weighted side paths. They use the same stroke paint,
+      // opacity, blend mode and exact geometry as SVG export.
+      const joins = stroke.pattern === 'solid'
+        ? rectangleStrokeSideJoins(rectangleSides, sideWidths, stroke.join, stroke.miterLimit)
+        : [];
+      if (joins.length) {
+        ctx.fillStyle = paint;
+        for (const patch of joins) {
+          ctx.beginPath();
+          ctx.moveTo(x + patch.points[0].x, y + patch.points[0].y);
+          for (let pointIndex = 1; pointIndex < patch.points.length; pointIndex += 1) {
+            ctx.lineTo(x + patch.points[pointIndex].x, y + patch.points[pointIndex].y);
+          }
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
     else {
       if (tracePath) { ctx.beginPath(); tracePath(ctx); }
       ctx.stroke();

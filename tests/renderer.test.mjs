@@ -1297,6 +1297,45 @@ test('shape rendering applies editable stroke cap, join, and dash patterns', () 
   assert.deepEqual(calls, [['dash', [0, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']], 'dots need a round cap to keep zero-length dash segments visible');
 });
 
+test('rectangle rendering paints independent stroke edges with their saved widths', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { width: 80, height: 40, fill: 'transparent', strokes: [
+    { id: 'individual', color: '#123456', width: 0, opacity: 1, visible: true,
+      cap: 'round', join: 'miter', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 1.5, right: 2.5, bottom: 3.25, left: 2 } }
+  ] });
+  addNode(document, shape);
+  const calls = [];
+  let currentPath = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    save() {}, restore() {}, beginPath() { currentPath = []; }, rect() {}, closePath() { currentPath.push('close'); },
+    fill() { calls.push({ fill: true, points: currentPath }); },
+    moveTo(x, y) { currentPath.push([x, y]); }, lineTo(x, y) { currentPath.push([x, y]); },
+    setLineDash() {}, stroke() { calls.push({ width: this.lineWidth, cap: this.lineCap, points: currentPath }); }
+  };
+  const context = new Proxy(target, {
+    get(current, property) { return property in current ? current[property] : () => {}; },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, shape, 0, 0, new Map());
+  assert.deepEqual(calls.filter(call => Number.isFinite(call.width)).map(call => call.width).sort((left, right) => left - right), [1.5, 2, 2.5, 3.25]);
+  assert.ok(calls.filter(call => Number.isFinite(call.width)).every(call => call.cap === 'butt'), 'corner bisectors do not inherit open-vector caps');
+  assert.deepEqual(calls.filter(call => Number.isFinite(call.width)).map(call => call.points.length), [2, 2, 2, 2]);
+  assert.equal(calls.filter(call => call.fill).length, 4, 'the selected miter join fills each unequal-width square corner');
+  assert.ok(calls.filter(call => call.fill).every(call => call.points.at(-1) === 'close'));
+
+  calls.length = 0;
+  shape.strokes[0].pattern = 'dotted';
+  renderer.drawNode(context, shape, 0, 0, new Map());
+  assert.ok(calls.filter(call => Number.isFinite(call.width)).every(call => call.cap === 'round'),
+    'zero-length dotted dashes retain round caps after side splitting');
+  assert.equal(calls.filter(call => call.fill).length, 0, 'solid corner wedges do not erase the dotted rhythm');
+});
+
 test('fill and stroke paint blends composite in paint order on the active page backdrop', () => {
   const document = createDocument();
   const shape = createNode('rectangle', {

@@ -264,6 +264,60 @@ test('recipe recovery claims serialize concurrent tabs and fence stale save/dele
   assert.equal(await storage.deleteRecipeBatchRecovery(base.documentId, nextOwner), true);
 });
 
+test('explicit recovery takeover atomically replaces an active owner and fences its writes', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const base = {
+    documentId: 'design-forced-recovery', recipe: { id: 'recipe-1', name: 'Warm' },
+    pageId: 'page-1', targetIds: ['image-a'], status: 'running'
+  };
+  const now = 80_000;
+  await storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-old-tab' }, { now, leaseMs: 60_000 });
+
+  const attempts = await Promise.allSettled([
+    storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-recovery-a' }, {
+      replaceOwnerToken: 'run-old-tab', now: now + 1, leaseMs: 60_000
+    }),
+    storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-recovery-b' }, {
+      replaceOwnerToken: 'run-old-tab', now: now + 1, leaseMs: 60_000
+    })
+  ]);
+  const winners = attempts.filter(result => result.status === 'fulfilled');
+  assert.equal(winners.length, 1, 'only one explicit recovery takeover can replace the old owner');
+  const newOwner = winners[0].value.ownerToken;
+  const current = await storage.loadRecipeBatchRecovery(base.documentId);
+  assert.equal(current.ownerToken, newOwner);
+  assert.ok(current.leaseExpiresAt > now + 1, 'the recovery immediately receives a fresh active lease');
+  await assert.rejects(storage.saveRecipeBatchRecovery({ ...base, ownerToken: 'run-old-tab' }, { now: now + 2 }), /no longer owns/);
+  await assert.rejects(storage.deleteRecipeBatchRecovery(base.documentId, 'run-old-tab'), /no longer owns/);
+  assert.equal(await storage.deleteRecipeBatchRecovery(base.documentId, newOwner), true);
+});
+
+test('explicit recovery takeover can replace an active legacy lease with no owner token', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const now = Date.now();
+  const base = {
+    documentId: 'legacy-active-recovery', recipe: { id: 'legacy-recipe' },
+    pageId: 'page-1', targetIds: ['image-a'], status: 'running'
+  };
+  await storage.loadRecipeBatchRecovery(base.documentId);
+  mock.inject('figma-local-documents', 'recipeBatchRecovery', {
+    ...base, status: 'running', savedAt: now
+  });
+  const legacy = await storage.loadRecipeBatchRecovery(base.documentId);
+  assert.equal(legacy.ownerToken, null);
+  assert.ok(legacy.leaseExpiresAt > now, 'the compatibility grace lease is active');
+
+  const claimed = await storage.claimRecipeBatchRecovery({ ...legacy, ownerToken: 'run-force-legacy' }, {
+    replaceOwnerToken: null, now: now + 1, leaseMs: 60_000
+  });
+  assert.equal(claimed.ownerToken, 'run-force-legacy');
+  assert.equal((await storage.loadRecipeBatchRecovery(base.documentId)).ownerToken, 'run-force-legacy');
+});
+
 test('a drained batch owner can release its lease for a safe immediate recovery handoff', async () => {
   const mock = createIndexedDbMock();
   globalThis.indexedDB = mock.indexedDB;

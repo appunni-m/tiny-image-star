@@ -64,6 +64,24 @@ test('rounded rectangle corners and stroke-only interiors match visible paint', 
   assert.equal(hitTestVisibleGeometry(outline, { x: 50, y: 0 }), true);
 });
 
+test('individual rectangle stroke weights only extend hit testing on painted edges', () => {
+  const rectangle = createNode('rectangle', {
+    width: 100, height: 60, fill: 'transparent',
+    strokes: [{ id: 'asymmetric', color: '#000000', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 4, right: 0, bottom: 6, left: 0 } }]
+  });
+  assert.equal(hitTestVisibleGeometry(rectangle, { x: 50, y: -5 }), true, 'the 4px top stroke extends outside its own edge');
+  assert.equal(hitTestVisibleGeometry(rectangle, { x: 50, y: -7 }), false, 'the top edge stops beyond its own width and normal hit tolerance');
+  assert.equal(hitTestVisibleGeometry(rectangle, { x: 50, y: 63 }), true, 'the wider bottom edge has a wider hit region');
+  assert.equal(hitTestVisibleGeometry(rectangle, { x: 50, y: 68 }), false);
+  assert.equal(hitTestVisibleGeometry(rectangle, { x: 100, y: 30 }), false,
+    'a wide opposite edge must not make a zero-width right edge selectable');
+  const legacy = createNode('rectangle', { width: 100, height: 60, fill: 'transparent', stroke: '#000000', strokeWidth: 4 });
+  assert.equal(hitTestVisibleGeometry(legacy, { x: 50, y: -5 }), true, 'legacy uniform strokes retain their old hit region');
+  assert.equal(hitTestVisibleGeometry(legacy, { x: 50, y: 30 }), false);
+});
+
 test('stroke tolerance extends a small amount beyond the shape bounds', () => {
   const ellipse = createNode('ellipse', { width: 100, height: 50, fill: 'transparent', stroke: '#000000', strokeWidth: 2 });
   assert.equal(hitTestVisibleGeometry(ellipse, { x: 102, y: 25 }), true);

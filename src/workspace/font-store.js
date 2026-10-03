@@ -234,7 +234,15 @@ export async function readWorkspaceFontAsset(workspace, designId, fontId, { cryp
 /** Lists and verifies every font registered in a design. */
 export async function listWorkspaceFontAssets(workspace, designId, { crypto = globalThis.crypto } = {}) {
   designId = assertId(designId, 'design ID'); assertWorkspace(workspace); assertCrypto(crypto);
-  const { metadata } = await fontDirectories(workspace, designId);
+  let metadata;
+  try { ({ metadata } = await fontDirectories(workspace, designId)); }
+  catch (error) {
+    // Designs without local fonts do not need an empty fonts/ directory.
+    // Treat its absence as an empty catalog while preserving errors for a
+    // missing referenced font, broken directory structure, or corrupt data.
+    if (error?.code === 'FONT_NOT_FOUND') return [];
+    throw error;
+  }
   const names = [];
   try {
     for await (const [name, handle] of metadata.entries()) {

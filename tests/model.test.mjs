@@ -638,7 +638,8 @@ test('ordered stroke stacks and component overrides persist while legacy scalar 
     name: 'Outlined card', stroke: '#123456', strokeWidth: 2,
     strokes: [
       { id: 'inner', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
-      { id: 'outer', color: '#abcdef', width: 8, opacity: .4, visible: true, cap: 'round', join: 'bevel', pattern: 'dashed', miterLimit: 4 }
+      { id: 'outer', color: '#abcdef', width: 8, opacity: .4, visible: true, cap: 'round', join: 'bevel', pattern: 'dashed', miterLimit: 4,
+        sideMode: 'custom', sideWidths: { top: 2, right: 0, bottom: 4, left: 1 } }
     ]
   })] });
   addNode(document, master);
@@ -653,6 +654,8 @@ test('ordered stroke stacks and component overrides persist while legacy scalar 
   const restored = parseDocument(serializeDocument(document));
   assert.deepEqual(findNode(restored, instance.id).node.children[0].strokes, sourceShape.strokes);
   assert.deepEqual(findNode(restored, instance.id).node.componentOverrides[sourceShape.componentSourceId].strokes, sourceShape.strokes);
+  assert.deepEqual(findNode(restored, instance.id).node.children[0].strokes[1].sideWidths,
+    { top: 2, right: 0, bottom: 4, left: 1 }, 'individual weights survive component overrides and local save/reload');
   assert.deepEqual(findNode(restored, instance.id).node.children[0].stroke, sourceShape.strokes[0].color,
     'the primary stack entry stays mirrored for old tools');
 
@@ -665,7 +668,9 @@ test('ordered stroke stacks and component overrides persist while legacy scalar 
     [{ id: 'duplicate', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
       { id: 'duplicate', color: '#abcdef', width: 3, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }],
     [{ id: 'invalid', color: '#123456', width: -1, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }],
-    [{ id: 'dot', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'dotted', miterLimit: 10 }]
+    [{ id: 'dot', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'dotted', miterLimit: 10 }],
+    [{ id: 'bad-sides', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 2, right: -1, bottom: 2, left: 2 } }]
   ]) {
     const invalidDocument = createDocument();
     addNode(invalidDocument, createNode('rectangle', { strokes: invalid }));

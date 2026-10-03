@@ -18,7 +18,7 @@ import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCro
 import { createFallbackImage, createPillowFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from './image-intake.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
-import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
+import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
@@ -34,7 +34,6 @@ import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.j
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-processing.js';
 import { defaultImageRecipeName } from './image-recipe-name.js';
-import { createRecipeRecoveryForkDocument, recipeRecoveryForkName } from './recipe-recovery-fork.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
@@ -90,7 +89,7 @@ import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRaste
 import { importSvgToLayers } from './svg-import.js';
 import { parseLocalFigFile } from './fig-import-worker-client.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
 import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
@@ -191,7 +190,7 @@ const state = {
   pendingLocalShareTimer: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, pendingCommentText: '', activeCommentId: null, commentPlacementArmed: false, commentSelectionCycle: null,
   layoutGuideControlEdit: false,
-  prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
+  prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeProgramEditingActionId: null, prototypeProgramBranchStack: [], prototypeDestinationId: null,
   prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
@@ -235,10 +234,7 @@ let bulkConcurrencyTimer = 0;
 const RECIPE_BATCH_LEASE_RENEW_MS = 30_000;
 let recipeRecoveryExpiryTimer = 0;
 let recipeBatchCoordinationChannel = null;
-let pendingRecipeStopRequestId = null;
-let recipeStopRequestPending = false;
-let recipeStopReplyTimer = 0;
-let handedOffRecipeBatchDocumentId = null;
+let recipeRecoveryActionPending = false;
 let latestPageLayerIds = [];
 let layerRowsById = new Map();
 const collapsedLayerIds = new Set();
@@ -1393,10 +1389,8 @@ async function preserveDocumentSaveConflict(snapshot, error) {
   return recovery;
 }
 function setDocumentEditingBlocked(blocked) {
-  const handoffReadOnly = handedOffRecipeBatchDocumentId === state.document.id;
-  $('#recipe-recovery-handoff-banner').hidden = !handoffReadOnly;
   const access = workspaceEditingAccess({
-    blocked: blocked || handoffReadOnly,
+    blocked,
     onboarding: state.workspaceOnboardingRequired,
     permissionNeeded: state.workspacePermissionNeeded
   });
@@ -2262,6 +2256,7 @@ function strokeGradientStopOpacityField(stop, index, strokeId, name, node) {
 function strokeStackControls(node) {
   const strokes = strokeStackForNode(node);
   if (!strokes.length) return '';
+  const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
   const supportsEndpointDecorations = node.type === 'line' || node.type === 'network'
     || (node.type === 'path' && vectorPathContours(node).some(contour => !contour.closed && contour.points?.length >= 2));
   const rows = strokes.map((stroke, index) => {
@@ -2270,6 +2265,7 @@ function strokeStackControls(node) {
     const color = index === 0 && node.strokeVariableId ? getNodeColor(state.document, node, 'stroke') : stroke.color;
     const safeColor = /^#[0-9a-f]{6}$/i.test(color || '') ? color : '#1e1e1e';
     const cap = stroke.pattern === 'dotted' ? 'round' : stroke.cap;
+    const sideMode = strokeSideMode(stroke);
     const select = (field, label, value, options, disabled = false) => {
       const choices = options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('');
       return `<label class="stroke-field"><span>${label}</span><select data-stroke-field="${field}" data-stroke-id="${id}" aria-label="${name} ${label.toLowerCase()}"${node.locked || disabled ? ' disabled' : ''}>${choices}</select></label>`;
@@ -2294,7 +2290,10 @@ function strokeStackControls(node) {
       <div class="stroke-field-grid">
         ${paintControls}
         ${gradient ? '' : `<label class="stroke-field"><span>Color</span><input type="color" data-stroke-field="color" data-stroke-id="${id}" value="${escapeHtml(safeColor)}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`}
-        <label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>
+        ${supportsIndividualSides ? select('sideMode', 'Sides', sideMode, [['all', 'All'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right'], ['custom', 'Custom']]) : ''}
+        ${supportsIndividualSides && sideMode === 'custom'
+          ? `<div class="stroke-side-widths" role="group" aria-label="${name} individual side widths">${[['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom'], ['left', 'Left']].map(([side, label]) => `<label class="stroke-field"><span>${label}</span><input type="number" inputmode="decimal" data-stroke-field="sideWidth" data-stroke-side="${side}" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.sideWidths?.[side] ?? stroke.width)}" aria-label="${name} ${label.toLowerCase()} width"${node.locked ? ' disabled' : ''}/></label>`).join('')}</div>`
+          : `<label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>`}
         <div class="slider-row stroke-opacity-row"><label for="stroke-opacity-${id}">Opacity</label><input id="stroke-opacity-${id}" type="range" min="0" max="100" step="1" value="${opacity}" data-stroke-field="opacity" data-stroke-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${opacity}%</output></div>
         ${select('pattern', 'Pattern', stroke.pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted'], ['custom', 'Custom']])}
         ${stroke.pattern === 'custom' ? `<label class="stroke-field stroke-custom-dash-field"><span>Dash and gap lengths · px</span><input type="text" inputmode="decimal" data-stroke-field="dashArray" data-stroke-id="${id}" value="${stroke.dashArray.map(formatInspectorNumber).join(' ')}" aria-label="${name} custom dash and gap lengths in pixels"${node.locked ? ' disabled' : ''}/><small class="stroke-dash-error" data-stroke-dash-error hidden>Use 1–${MAX_STROKE_DASH_SEGMENTS} nonnegative lengths separated by spaces or commas; at least one must be positive.</small></label>` : ''}
@@ -2306,7 +2305,7 @@ function strokeStackControls(node) {
       ${primaryControls}
     </div>`;
   }).join('');
-  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, opacity, cap, join, and pattern.${supportsEndpointDecorations ? ' Open line ends can use no decoration, an arrow, or a filled triangle.' : ''}</div></div>`;
+  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, opacity, cap, join, and pattern.${supportsIndividualSides ? ' Rectangle and frame strokes can use independent top, right, bottom, and left weights; set a side to zero to remove it.' : ''}${supportsEndpointDecorations ? ' Open line ends can use no decoration, an arrow, or a filled triangle.' : ''}</div></div>`;
 }
 function cornerRadiusControls(node) {
   if (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(node.type)) return '';
@@ -3173,6 +3172,189 @@ function cancelPrototypeConnection() {
   canvas.focus({ preventScroll: true });
 }
 
+function prototypeProgramActions(steps, path = [], result = []) {
+  for (const step of steps || []) {
+    if (step?.type === 'action') result.push({ step, path: [...path] });
+    else if (step?.type === 'if') {
+      prototypeProgramActions(step.then, [...path, { branchId: step.branchId, branch: 'then' }], result);
+      prototypeProgramActions(step.else, [...path, { branchId: step.branchId, branch: 'else' }], result);
+    }
+  }
+  return result;
+}
+
+function prototypeProgramStepsAt(program, branchStack = []) {
+  let steps = program.steps;
+  for (const entry of branchStack) {
+    const branch = steps.find(step => step.type === 'if' && step.branchId === entry.branchId);
+    if (!branch) return null;
+    steps = branch[entry.branch];
+  }
+  return steps;
+}
+
+function prototypeProgramFirstAction(program) {
+  const steps = prototypeProgramActions(program.steps);
+  return steps[0]?.step || null;
+}
+
+function setPrototypeActionProjection(interaction, step, sourceId) {
+  if (!step) return;
+  const fields = ['action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
+    'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor', 'overlayBackgroundOpacity',
+    'delay', 'url', 'collectionId', 'modeId', 'targetVariantId', 'variableId', 'value', 'valueExpression',
+    'scrollTargetId', 'scrollAlignment', 'instanceId'];
+  for (const field of fields) delete interaction[field];
+  for (const field of fields) if (Object.hasOwn(step, field)) interaction[field] = structuredClone(step[field]);
+  if (step.action === 'change-variant' && sourceId) interaction.instanceId = sourceId;
+}
+
+function mutatePrototypeProgramSteps(program, branchStack, mutator) {
+  const steps = prototypeProgramStepsAt(program, branchStack);
+  if (!steps) throw new Error('This action branch no longer exists.');
+  mutator(steps);
+}
+
+function editPrototypeProgramAction(steps, actionId, replacement) {
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    if (step.type === 'action' && step.actionId === actionId) {
+      steps[index] = { ...replacement, actionId };
+      return true;
+    }
+    if (step.type === 'if' && (editPrototypeProgramAction(step.then, actionId, replacement)
+      || editPrototypeProgramAction(step.else, actionId, replacement))) return true;
+  }
+  return false;
+}
+
+function prototypeInteractionActionOptions() {
+  const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
+  const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
+  const variablePayload = state.prototypeAction === 'set-variable' ? buildPrototypeVariableValue() : {};
+  return {
+    action: state.prototypeAction,
+    transition: state.prototypeTransition,
+    easing: state.prototypeEasing,
+    easingBezier: state.prototypeEasingBezier,
+    duration: state.prototypeDuration,
+    delay: state.prototypeDelay,
+    // Conditional branches are represented by `if` steps. The interaction's
+    // own legacy condition remains an envelope-level compatibility setting.
+    condition: null,
+    url: $('#prototype-url')?.value ?? state.prototypeUrl,
+    ...variablePayload,
+    collectionId: selectedCollection?.id,
+    modeId: selectedMode?.id,
+    targetVariantId: $('#prototype-variant-target')?.value || state.prototypeVariantTargetId,
+    scrollTargetId: state.prototypeAction === 'scroll-to'
+      ? ($('#prototype-scroll-target')?.value || state.prototypeScrollTargetId || null) : null,
+    scrollAlignment: state.prototypeAction === 'scroll-to'
+      ? ($('#prototype-scroll-alignment')?.value || state.prototypeScrollAlignment) : 'nearest',
+    overlayPosition: state.prototypeOverlayPosition,
+    overlayOutsideClick: state.prototypeOverlayOutsideClick,
+    overlayBackground: state.prototypeOverlayBackground,
+    overlayBackgroundColor: state.prototypeOverlayBackgroundColor,
+    overlayBackgroundOpacity: state.prototypeOverlayBackgroundOpacity
+  };
+}
+
+function configuredPrototypeProgramAction(sourceId, destinationId, destinationPageId) {
+  const candidate = structuredClone(state.document);
+  const source = findNode(candidate, sourceId)?.node;
+  if (!source) throw new Error('The interaction source layer no longer exists.');
+  source.interactions = [];
+  const configured = addPrototypeInteraction(candidate, sourceId, destinationId, {
+    ...prototypeInteractionActionOptions(),
+    trigger: state.prototypeTrigger,
+    sourcePageId: state.document.activePageId,
+    destinationPageId
+  });
+  const { id: _id, trigger: _trigger, condition: _condition, instanceId: _instanceId, ...step } = configured;
+  return { type: 'action', actionId: createId('action'), ...step };
+}
+
+function loadPrototypeActionIntoComposer(interaction, action) {
+  state.prototypeAction = action.action || interaction.action;
+  state.prototypeTrigger = interaction.trigger;
+  state.prototypeDestinationId = action.destinationId || null;
+  state.prototypeTransition = action.transition || 'instant';
+  state.prototypeEasing = action.easing || 'ease-in-out';
+  state.prototypeEasingBezier = action.easingBezier ? [...action.easingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
+  state.prototypeDuration = Number.isFinite(action.duration) ? action.duration : 300;
+  state.prototypeDelay = Number.isFinite(interaction.delay) ? interaction.delay : 1000;
+  state.prototypeUrl = action.url || 'https://';
+  state.prototypeVariableCollectionId = action.collectionId || null;
+  state.prototypeVariableModeId = action.modeId || null;
+  state.prototypeVariableId = action.variableId || null;
+  state.prototypeVariableValue = Object.hasOwn(action, 'value') ? String(action.value) : null;
+  state.prototypeVariableExpressionMode = typeof action.valueExpression === 'string';
+  state.prototypeVariableExpression = state.prototypeVariableExpressionMode ? action.valueExpression : '';
+  state.prototypeVariantTargetId = action.targetVariantId || null;
+  state.prototypeScrollTargetId = action.scrollTargetId || null;
+  state.prototypeScrollAlignment = action.scrollAlignment || 'nearest';
+  state.prototypeConditionVariableId = interaction.condition?.variableId || null;
+  state.prototypeConditionOperator = interaction.condition?.operator || 'equals';
+  state.prototypeConditionValue = interaction.condition ? String(interaction.condition.value) : null;
+  state.prototypeOverlayPosition = action.overlayPosition || 'center';
+  state.prototypeOverlayOutsideClick = action.overlayOutsideClick !== false;
+  state.prototypeOverlayBackground = action.overlayBackground !== false;
+  state.prototypeOverlayBackgroundColor = action.overlayBackgroundColor || '#000000';
+  state.prototypeOverlayBackgroundOpacity = Number.isFinite(action.overlayBackgroundOpacity) ? action.overlayBackgroundOpacity : 0.32;
+}
+
+function prototypeProgramActionSummary(step) {
+  const labels = {
+    navigate: 'Navigate to', 'open-overlay': 'Open overlay', 'swap-overlay': 'Swap overlay',
+    'scroll-to': 'Scroll to layer', 'close-overlay': 'Close overlay', back: 'Back',
+    'open-link': 'Open link', 'set-variable': 'Set variable', 'set-variable-mode': 'Set variable mode',
+    'change-variant': 'Change to variant'
+  };
+  let detail = '';
+  if (step.action === 'navigate' || step.action === 'open-overlay' || step.action === 'swap-overlay') {
+    detail = findNode(state.document, step.destinationId, step.destinationPageId)?.node.name || 'Choose a frame';
+  } else if (step.action === 'set-variable') {
+    const variable = state.document.variables?.find(item => item.id === step.variableId);
+    detail = `${variable?.name || 'Missing variable'} · ${typeof step.valueExpression === 'string' ? `ƒ ${step.valueExpression}` : String(step.value)}`;
+  } else if (step.action === 'set-variable-mode') {
+    const collection = state.document.variableCollections?.find(item => item.id === step.collectionId);
+    detail = `${collection?.name || 'Missing collection'} · ${collection?.modes.find(mode => mode.id === step.modeId)?.name || 'Default mode'}`;
+  } else if (step.action === 'change-variant') {
+    detail = state.document.components?.find(item => item.id === step.targetVariantId)?.name || 'Choose a variant';
+  } else if (step.action === 'scroll-to') {
+    detail = findNode(state.document, step.scrollTargetId)?.node.name || 'Choose a layer';
+  } else if (step.action === 'open-link') detail = step.url || '';
+  else if (step.action === 'open-overlay') detail = step.overlayPosition || 'center';
+  return `${labels[step.action] || 'Action'}${detail ? ` · ${detail}` : ''}`;
+}
+
+function renderPrototypeProgramSteps(steps, branchStack = []) {
+  return (steps || []).map((step, index) => {
+    const stack = escapeHtml(JSON.stringify(branchStack));
+    if (step.type === 'if') {
+      const variable = state.document.variables?.find(item => item.id === step.condition.variableId);
+      const conditionValue = step.condition.type === 'string' ? `“${step.condition.value}”` : String(step.condition.value);
+      const label = `${variable?.name || 'Missing variable'} ${step.condition.operator} ${conditionValue}`;
+      const renderBranch = branch => {
+        const path = JSON.stringify([...branchStack, { branchId: step.branchId, branch }]);
+        return `<div class="prototype-program-branch"><div class="prototype-program-branch-heading"><strong>${branch === 'then' ? 'If true' : 'Else'}</strong><button class="prototype-edit-button" type="button" data-action="prototype-program-focus-branch" data-program-stack="${escapeHtml(path)}">Add here</button></div>${renderPrototypeProgramSteps(step[branch], [...branchStack, { branchId: step.branchId, branch }]) || '<small class="prototype-hint">No actions yet</small>'}</div>`;
+      };
+      return `<div class="prototype-program-if"><div class="prototype-program-if-heading"><span><strong>If</strong> ${escapeHtml(label)}</span><span class="prototype-program-step-actions"><button class="tiny-icon-button" type="button" data-action="prototype-program-move" data-program-stack="${stack}" data-program-index="${index}" data-program-direction="up" aria-label="Move condition up"${index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="prototype-program-move" data-program-stack="${stack}" data-program-index="${index}" data-program-direction="down" aria-label="Move condition down"${index === steps.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="prototype-program-remove" data-program-stack="${stack}" data-program-index="${index}" aria-label="Remove condition">×</button></span></div>${renderBranch('then')}${renderBranch('else')}</div>`;
+    }
+    const editing = step.actionId === state.prototypeProgramEditingActionId;
+    return `<div class="prototype-program-action${editing ? ' is-editing' : ''}"><span class="prototype-program-action-label">${escapeHtml(prototypeProgramActionSummary(step))}</span><span class="prototype-program-step-actions"><button class="prototype-edit-button" type="button" data-action="edit-prototype-program-action" data-action-id="${escapeHtml(step.actionId)}">${editing ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" type="button" data-action="prototype-program-move" data-program-stack="${stack}" data-program-index="${index}" data-program-direction="up" aria-label="Move action up"${index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="prototype-program-move" data-program-stack="${stack}" data-program-index="${index}" data-program-direction="down" aria-label="Move action down"${index === steps.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="prototype-program-remove" data-program-stack="${stack}" data-program-index="${index}" aria-label="Remove action">×</button></span></div>`;
+  }).join('');
+}
+
+function prototypeProgramEditor(interaction) {
+  if (!interaction) return '';
+  const program = prototypeActionProgram(interaction);
+  const branchStack = state.prototypeProgramBranchStack || [];
+  const activeAction = prototypeProgramActions(program.steps).find(entry => entry.step.actionId === state.prototypeProgramEditingActionId);
+  const branchLabel = branchStack.reduce((label, entry) => `${label} · ${entry.branch === 'then' ? 'If true' : 'Else'}`, 'Main sequence');
+  return `<div class="prototype-program-editor"><div class="prototype-section-label">${program.steps.length > 1 || interaction.actionProgram ? 'Ordered actions' : 'Actions'}</div><div class="prototype-program-tree">${renderPrototypeProgramSteps(program.steps) || '<small class="prototype-hint">No actions yet</small>'}</div><small class="prototype-hint">Actions run from top to bottom. Select an action to edit it, or add one to a branch.</small><div class="prototype-program-add-row"><span>Adding to ${escapeHtml(branchLabel)}</span><button class="secondary-button" type="button" data-action="prototype-program-add-action">＋ Add configured action</button><button class="secondary-button" type="button" data-action="prototype-program-add-if"${state.prototypeConditionVariableId ? '' : ' disabled'}>＋ Add if / else</button></div>${activeAction ? `<small class="prototype-hint">Editing ${escapeHtml(prototypeProgramActionSummary(activeAction.step))}; the sequence and branch IDs are preserved.</small>` : ''}</div>`;
+}
+
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const nodeInteractions = node?.interactions || [];
@@ -3185,6 +3367,11 @@ function prototypeInspector() {
     state.prototypeEditingInteractionId = null;
     state.prototypeDestinationId = null;
   }
+  const editingProgram = editingInteraction ? prototypeActionProgram(editingInteraction) : null;
+  const editingProgramActionEntry = editingProgram
+    ? prototypeProgramActions(editingProgram.steps).find(entry => entry.step.actionId === state.prototypeProgramEditingActionId)
+    : null;
+  const editingAction = editingProgramActionEntry?.step || editingInteraction;
   const entry = node ? findNode(state.document, node.id) : null;
   const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
   const presentationFrame = frame;
@@ -3193,7 +3380,7 @@ function prototypeInspector() {
     if (target.id === node?.id || ![presentationFrame, ...parents].some(parent => parent.type === 'frame' && ['vertical', 'horizontal', 'both'].includes(parent.overflowBehavior))) return;
     scrollTargets.push(target);
   });
-  const editingScrollTargetId = editingInteraction?.action === 'scroll-to' ? editingInteraction.scrollTargetId : null;
+  const editingScrollTargetId = editingAction?.action === 'scroll-to' ? editingAction.scrollTargetId : null;
   const selectedScrollTarget = scrollTargets.find(target => target.id === state.prototypeScrollTargetId)
     || scrollTargets.find(target => target.id === editingScrollTargetId)
     || scrollTargets[0]
@@ -3367,8 +3554,10 @@ function prototypeInspector() {
   const destinationControl = editingInteraction && needsDestination
     ? `<label>Destination<select id="prototype-destination" class="select-field" aria-label="Prototype destination"><option value="" disabled${state.prototypeDestinationId ? '' : ' selected'}>Choose a frame</option>${destinationFrames.map(({ page, frame }) => `<option value="${escapeHtml(frame.id)}"${frame.id === state.prototypeDestinationId ? ' selected' : ''}>${escapeHtml(page.name)} · ${escapeHtml(frame.name)}</option>`).join('')}</select></label>`
     : '';
-  const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const actionButtonLabel = state.prototypeProgramEditingActionId ? 'Save selected action' : editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
+  const actionProgramControls = prototypeProgramEditor(editingInteraction);
+  const composerTarget = state.prototypeProgramEditingActionId ? 'Selected sequence action' : editingInteraction ? 'Interaction action' : 'New interaction action';
+  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `${scrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -8061,6 +8250,13 @@ function updateStrokeInput(input) {
     updateStroke(node, stroke.id, { opacity });
     if (input.nextElementSibling) input.nextElementSibling.value = `${Math.round(opacity * 100)}%`;
   } else if (field === 'width' && Number.isFinite(Number(input.value))) updateStroke(node, stroke.id, { width: Number(input.value) });
+  else if (field === 'sideMode' && ['all', 'top', 'bottom', 'left', 'right', 'custom'].includes(input.value)) {
+    updateStroke(node, stroke.id, { sideMode: input.value });
+    renderInspector();
+  } else if (field === 'sideWidth' && ['top', 'right', 'bottom', 'left'].includes(input.dataset.strokeSide) && Number.isFinite(Number(input.value))) {
+    const value = Math.max(0, Math.min(100_000, Number(input.value)));
+    updateStroke(node, stroke.id, { sideWidths: { ...(stroke.sideWidths || {}), [input.dataset.strokeSide]: value } });
+  }
   else if (field === 'miterLimit' && Number.isFinite(Number(input.value))) updateStroke(node, stroke.id, { miterLimit: Number(input.value) });
   else if (field === 'cap' && ['butt', 'round', 'square'].includes(input.value)) updateStroke(node, stroke.id, { cap: input.value });
   else if (field === 'join' && ['miter', 'round', 'bevel'].includes(input.value)) updateStroke(node, stroke.id, { join: input.value });
@@ -11585,6 +11781,15 @@ function loseRecipeBatchLease(bulk, error) {
   if (!bulk || state.bulk !== bulk || bulk.ownershipLost) return false;
   stopRecipeBatchLeaseHeartbeat(bulk);
   bulk.ownershipLost = true;
+  // Invalidate a debounced save that has not entered the persistence chain.
+  // If it already entered, the takeover handshake below drains state.saveChain
+  // before the new owner reloads the design checkpoint.
+  if (state.saveTimer) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = null;
+    state.saveRevision += 1;
+  }
+  bulk.savePending = false;
   bulk.leaseError = error?.message || 'This tab no longer owns the recovery record.';
   abortRecipeBatchControllers(bulk, 'The image recipe recovery lease was lost.');
   setDocumentEditingBlocked(true);
@@ -11597,7 +11802,7 @@ function loseRecipeBatchLease(bulk, error) {
     imageEngine.resumeQueueGroup(bulk.queueGroup);
     if (bulk.done) restoreImageRecipeBatchConcurrency(bulk);
   }
-  showToast('This tab lost its recipe recovery lease. New work has stopped; reload after the other tab finishes to continue safely.', 8000);
+  showToast('This recipe was taken over elsewhere. Processing stopped in this tab; reload to open the latest saved state.', 8000);
   renderBulkBar();
   return true;
 }
@@ -11622,7 +11827,7 @@ function scheduleRecipeBatchLeaseHeartbeat(bulk) {
       const renewed = await renewal;
       if (state.bulk !== bulk || bulk.ownershipLost) return;
       bulk.leaseExpiresAt = renewed.leaseExpiresAt;
-      if (!bulk.recoveryHandoffReadyToRelease) scheduleRecipeBatchLeaseHeartbeat(bulk);
+      scheduleRecipeBatchLeaseHeartbeat(bulk);
     } catch (error) {
       loseRecipeBatchLease(bulk, error);
     } finally {
@@ -11630,11 +11835,6 @@ function scheduleRecipeBatchLeaseHeartbeat(bulk) {
     }
   }, RECIPE_BATCH_LEASE_RENEW_MS);
   return true;
-}
-
-async function waitForRecipeBatchLeaseRenewal(bulk) {
-  while (bulk?.leaseRenewalPromise) await bulk.leaseRenewalPromise.catch(() => {});
-  return !bulk?.ownershipLost;
 }
 
 function scheduleBulkConcurrency(bulk, immediate = false) {
@@ -11672,231 +11872,57 @@ async function recipeRecoveryForDocument(documentId) {
   }
 }
 
-async function createRecipeRecoveryDesignFork(recovery, source) {
-  if (!source) throw new Error('The last saved design could not be found, so no recovery copy was created.');
-  const name = recipeRecoveryForkName(source.name);
-  if (!state.workspace) {
-    const duplicate = await duplicateStoredDocument(recovery.documentId, name);
-    if (!duplicate) throw new Error('The last saved design could not be duplicated.');
-    return parseDocument(duplicate);
-  }
-
-  const duplicate = createRecipeRecoveryForkDocument(source, createId('file'));
-  let created = false;
-  try {
-    const initial = await createWorkspaceDesign(state.workspace, workspaceSeedDocument(duplicate));
-    created = true;
-    const requirements = collectReferencedAssets(duplicate);
-    for (const assetId of requirements.imageAssetIds) {
-      const asset = await readWorkspaceImageAsset(state.workspace, recovery.documentId, assetId);
-      await saveWorkspaceImageAsset(state.workspace, duplicate.id, assetId, asset.bytes, { mimeType: asset.metadata.mimeType });
-    }
-    const sourceFonts = await listWorkspaceFontAssets(state.workspace, recovery.documentId);
-    const usedFonts = sourceFonts.filter(font => requirements.fontSpecs.some(spec =>
-      spec.family.toLocaleLowerCase() === font.metadata.family.toLocaleLowerCase()
-        && spec.weight === font.metadata.weight && spec.style === font.metadata.style));
-    for (const font of usedFonts) await saveWorkspaceFontAsset(state.workspace, duplicate.id, font);
-    const committed = await commitWorkspaceDesign(state.workspace, duplicate.id, duplicate, {
-      expectedHead: initial.head,
-      pageId: duplicate.activePageId || duplicate.pages[0].id
-    });
-    if (committed.acknowledged !== true) throw new Error('The folder workspace did not confirm the recovery copy.');
-    state.workspaceVerifiedImageIds.set(duplicate.id, new Set(requirements.imageAssetIds));
-    state.workspaceVerifiedFontIds.set(duplicate.id, new Set(usedFonts.map(font => font.metadata.id)));
-    try { await saveDocument(duplicate, { expectedRevision: null }); }
-    catch (error) { console.warn('The recovery copy was saved to the folder, but its optional browser library mirror could not be updated.', error); }
-    return duplicate;
-  } catch (error) {
-    if (created) {
-      try { await deleteWorkspaceDesign(state.workspace, duplicate.id); }
-      catch (cleanupError) { console.warn('Could not clean up the incomplete recipe recovery copy.', cleanupError); }
-    }
-    throw error;
-  }
-}
-
-async function forkInterruptedRecipeAndResume() {
-  const recovery = state.pendingRecipeRecovery;
-  const button = $('#recipe-recovery-fork');
-  if (!recovery || state.documentTransitioning) return false;
-  button.disabled = true;
-  $('#recipe-recovery-status').textContent = 'Saving a separate copy of the last saved design…';
-  try {
-    const current = await loadRecipeBatchRecovery(recovery.documentId);
-    if (!current) throw new Error('This recipe recovery has already been resolved. Reload the original design to continue.');
-    const source = state.workspace
-      ? (await openWorkspaceDesign(state.workspace, recovery.documentId)).document
-      : await loadDocumentById(recovery.documentId);
-    if (!source) throw new Error('The last saved design could not be found.');
-    if (current.status !== 'complete') {
-      const index = createPageNodeIndex(source, current.pageId, { nodeIds: current.targetIds });
-      if (!current.targetIds.some(id => isEditableImageRecipeTarget(index.find(id)))) {
-        throw new Error('This saved recipe has no editable images left to resume. The original design is unchanged.');
-      }
-    }
-    const fork = await createRecipeRecoveryDesignFork(current, source);
-    const switched = await switchToDocument(fork, {
-      saveCurrent: false,
-      versionLabel: 'Forked image recipe recovery',
-      message: `Created a separate local copy: “${fork.name}”.`
-    });
-    if (!switched) throw new Error('The recovery copy was saved, but this tab could not open it. It is available in Your designs.');
-    if (current.status !== 'complete') {
-      const started = startRecipe(structuredClone(current.recipe), current.targetIds, {
-        concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY,
-        pageId: current.pageId
-      });
-      if (!started) {
-        showToast(`The recovery copy “${fork.name}” is open. Select its image layers and apply “${current.recipe.name || 'Image recipe'}” when ready.`, 8000);
-        return false;
-      }
-      showToast(`Applying “${current.recipe.name || 'Image recipe'}” to the recovery copy. The original design is unchanged.`, 6000);
-    } else {
-      showToast(`The completed image edits were copied to “${fork.name}”. The original design is unchanged.`, 6000);
-    }
-    return true;
-  } catch (error) {
-    $('#recipe-recovery-status').textContent = error.message || 'Could not create a separate recovery copy. The original design is unchanged.';
-    button.disabled = false;
-    return false;
-  }
-}
-
 function initializeRecipeBatchCoordination() {
   if (typeof BroadcastChannel !== 'function' || recipeBatchCoordinationChannel) return;
   try { recipeBatchCoordinationChannel = new BroadcastChannel('tiny-image-star-recipe-batch-recovery-v1'); }
   catch { return; }
   recipeBatchCoordinationChannel.addEventListener('message', event => {
     const message = event.data;
-    if (!message || typeof message !== 'object' || typeof message.documentId !== 'string') return;
-    if (message.type === 'STOP_AND_RECOVER') {
+    if (message?.type === 'RECOVERY_TAKEN_OVER' && typeof message.documentId === 'string') {
       const bulk = state.bulk;
-      if (!bulk || bulk.documentId !== message.documentId || state.document.id !== message.documentId
-        || bulk.ownerToken !== message.ownerToken || bulk.ownershipLost
-        || typeof message.requestId !== 'string') return;
-      bulk.recoveryHandoffRequestIds ||= new Set();
-      bulk.recoveryHandoffRequestIds.add(message.requestId);
-      recipeBatchCoordinationChannel.postMessage({
-        type: 'RECOVERY_STOPPING', documentId: bulk.documentId, ownerToken: bulk.ownerToken, requestId: message.requestId
-      });
-      if (!bulk.recoveryHandoffPromise) {
-        bulk.recoveryHandoffPending = true;
-        setDocumentEditingBlocked(true);
-        renderBulkBar();
-        bulk.recoveryHandoffPromise = stopOwnedRecipeBatchForRecovery(bulk).catch(error => {
-          if (state.bulk === bulk) {
-            bulk.recoveryHandoffPending = false;
-            bulk.recoveryHandoffReadyToRelease = false;
-            if (!bulk.ownershipLost) setDocumentEditingBlocked(false);
-            if (!bulk.ownershipLost && !bulk.leaseTimer) scheduleRecipeBatchLeaseHeartbeat(bulk);
-            renderBulkBar();
-          }
-          showToast(`Could not safely hand off this batch: ${error.message || 'the saved edits could not be confirmed'}. The other tab can try again.`, 8000);
-          for (const requestId of bulk.recoveryHandoffRequestIds || []) {
-            recipeBatchCoordinationChannel?.postMessage({
-              type: 'RECOVERY_STOP_FAILED', documentId: bulk.documentId,
-              ownerToken: bulk.ownerToken, requestId
-            });
-          }
-          bulk.recoveryHandoffPromise = null;
-          bulk.recoveryHandoffRequestIds = new Set();
+      if (bulk?.documentId === message.documentId && state.document.id === message.documentId
+        && bulk.ownerToken === message.previousOwnerToken) {
+        loseRecipeBatchLease(bulk, new RecipeBatchRecoveryLeaseError(message.documentId, 'owner'));
+        void state.saveChain.finally(() => {
+          recipeBatchCoordinationChannel?.postMessage({
+            type: 'RECOVERY_TAKEOVER_DRAINED', documentId: message.documentId,
+            previousOwnerToken: message.previousOwnerToken, ownerToken: message.ownerToken
+          });
         });
       }
       return;
     }
-    if (message.type === 'RECOVERY_STOPPING') {
-      if (message.requestId !== pendingRecipeStopRequestId) return;
-      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
-      recipeStopRequestPending = true;
-      $('#recipe-recovery-stop-other').disabled = true;
-      $('#recipe-recovery-status').textContent = 'The other tab is stopping the batch and saving its edits. Keep this screen open…';
-      recipeStopReplyTimer = window.setTimeout(() => {
-        recipeStopReplyTimer = 0;
-        if (pendingRecipeStopRequestId !== message.requestId) return;
-        recipeStopRequestPending = false;
-        $('#recipe-recovery-stop-other').disabled = false;
-        $('#recipe-recovery-status').textContent = 'The other tab is still saving. Keep this screen open, or switch to that tab to check its progress.';
-      }, 30_000);
-      return;
-    }
-    if (message.type === 'RECOVERY_STOP_FAILED') {
-      if (message.requestId !== pendingRecipeStopRequestId) return;
-      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
-      recipeStopReplyTimer = 0;
-      pendingRecipeStopRequestId = null;
-      recipeStopRequestPending = false;
-      $('#recipe-recovery-stop-other').disabled = false;
-      $('#recipe-recovery-status').textContent = 'The other tab could not save and release the batch. Its work is still protected; try again or switch to that tab.';
-      return;
-    }
-    if (['RECOVERY_RELEASED', 'RECOVERY_RESOLVED'].includes(message.type)) {
-      if (message.type === 'RECOVERY_RESOLVED' && message.documentId === handedOffRecipeBatchDocumentId) {
-        if (state.document.id === message.documentId) window.setTimeout(() => location.reload(), 300);
-        else {
-          handedOffRecipeBatchDocumentId = null;
-          setDocumentEditingBlocked(false);
-        }
-      }
-      const recovery = state.pendingRecipeRecovery;
-      if (!recovery || recovery.documentId !== message.documentId || recovery.ownerToken !== message.ownerToken) return;
-      if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
-      recipeStopReplyTimer = 0;
-      pendingRecipeStopRequestId = null;
-      recipeStopRequestPending = false;
-      $('#recipe-recovery-status').textContent = 'The other tab saved the latest edits. Reloading this design…';
-      window.setTimeout(() => location.reload(), 300);
-    }
+    if (message?.type === 'RECOVERY_TAKEOVER_DRAINED') return;
+    if (message?.type !== 'RECOVERY_RESOLVED' || typeof message.documentId !== 'string') return;
+    const recovery = state.pendingRecipeRecovery;
+    if (!recovery || recovery.documentId !== message.documentId || recovery.ownerToken !== message.ownerToken) return;
+    $('#recipe-recovery-status').textContent = 'Recovery was resolved in another tab. Reloading the saved design…';
+    window.setTimeout(() => location.reload(), 300);
   });
 }
 
-async function stopOwnedRecipeBatchForRecovery(bulk) {
-  if (!canDismissImageRecipeBatch(bulk)) cancelBulkRecipe();
-  while (state.bulk === bulk && !canDismissImageRecipeBatch(bulk)) {
-    await new Promise(resolve => window.setTimeout(resolve, 50));
-  }
-  if (state.bulk !== bulk || bulk.ownershipLost) throw new Error('the batch no longer belongs to this tab');
-  if (!(await persistCurrentDocumentNow()) || state.bulk !== bulk || bulk.saveError) {
-    throw new Error(bulk.saveError || 'the completed image edits could not be saved');
-  }
-  bulk.recoveryHandoffReadyToRelease = true;
-  stopRecipeBatchLeaseHeartbeat(bulk);
-  if (!(await waitForRecipeBatchLeaseRenewal(bulk))) throw new Error('the recovery lock changed while saving');
-  stopRecipeBatchLeaseHeartbeat(bulk);
-  await releaseRecipeBatchRecoveryLease(bulk.documentId, bulk.ownerToken);
-  if (state.bulk !== bulk) throw new Error('the batch changed before recovery could be handed off');
-  state.bulk = null;
-  handedOffRecipeBatchDocumentId = bulk.documentId;
-  setDocumentEditingBlocked(false);
-  renderBulkBar();
-  renderInspector();
-  showToast('The batch is saved and stopped. This tab is read-only until recovery finishes in the other tab.');
-  for (const requestId of bulk.recoveryHandoffRequestIds || []) {
-    recipeBatchCoordinationChannel?.postMessage({
-      type: 'RECOVERY_RELEASED', documentId: bulk.documentId, ownerToken: bulk.ownerToken, requestId
+async function notifyAndDrainPreviousRecipeOwner({ documentId, previousOwnerToken, ownerToken, timeoutMs = 1200 }) {
+  if (!recipeBatchCoordinationChannel || !previousOwnerToken || previousOwnerToken === ownerToken) return false;
+  let timer = 0;
+  const drained = new Promise(resolve => {
+    const onMessage = event => {
+      const message = event.data;
+      if (message?.type !== 'RECOVERY_TAKEOVER_DRAINED' || message.documentId !== documentId
+        || message.previousOwnerToken !== previousOwnerToken || message.ownerToken !== ownerToken) return;
+      recipeBatchCoordinationChannel.removeEventListener('message', onMessage);
+      if (timer) window.clearTimeout(timer);
+      resolve(true);
+    };
+    recipeBatchCoordinationChannel.addEventListener('message', onMessage);
+    timer = window.setTimeout(() => {
+      recipeBatchCoordinationChannel?.removeEventListener('message', onMessage);
+      resolve(false);
+    }, timeoutMs);
+    recipeBatchCoordinationChannel.postMessage({
+      type: 'RECOVERY_TAKEN_OVER', documentId, previousOwnerToken, ownerToken
     });
-  }
-}
-
-function requestRecipeBatchHandoff() {
-  const recovery = state.pendingRecipeRecovery;
-  if (!recovery || !recipeBatchCoordinationChannel) return false;
-  pendingRecipeStopRequestId ||= createId('recipe-recovery-request');
-  const requestId = pendingRecipeStopRequestId;
-  recipeStopRequestPending = true;
-  $('#recipe-recovery-stop-other').disabled = true;
-  $('#recipe-recovery-status').textContent = 'Asking the other tab to stop safely and save its edits…';
-  recipeBatchCoordinationChannel.postMessage({
-    type: 'STOP_AND_RECOVER', documentId: recovery.documentId, ownerToken: recovery.ownerToken, requestId
   });
-  if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer);
-  recipeStopReplyTimer = window.setTimeout(() => {
-    recipeStopReplyTimer = 0;
-    if (pendingRecipeStopRequestId !== requestId) return;
-    recipeStopRequestPending = false;
-    $('#recipe-recovery-stop-other').disabled = false;
-    $('#recipe-recovery-status').textContent = 'No reply yet. Switch to the other tab and finish or close it. If it is running an older version, its lock expires within two minutes after it stops renewing. Your saved edits are safe.';
-  }, 8_000);
-  return true;
+  return drained;
 }
 
 function clearRecipeRecoveryExpiryTimer() {
@@ -11904,6 +11930,23 @@ function clearRecipeRecoveryExpiryTimer() {
   window.clearTimeout(recipeRecoveryExpiryTimer);
   recipeRecoveryExpiryTimer = 0;
   return true;
+}
+
+async function refreshSavedRecipeRecoveryDesign(recovery) {
+  if (!recovery || state.document.id !== recovery.documentId) {
+    throw new Error('The saved recipe belongs to a different design. Reopen that design to recover it.');
+  }
+  const latest = state.workspace
+    ? (await openWorkspaceDesign(state.workspace, recovery.documentId)).document
+    : await loadDocumentById(recovery.documentId);
+  if (!latest) throw new Error('The saved design could not be found. Its recovery record remains available.');
+  const switched = await switchToDocument(latest, {
+    saveCurrent: false,
+    versionLabel: 'Reloaded recipe recovery checkpoint',
+    message: 'Loaded the latest saved edits before recipe recovery.'
+  });
+  if (!switched) throw new Error('The latest saved design could not be opened. Its recovery record remains available.');
+  return state.pendingRecipeRecovery;
 }
 
 function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
@@ -11916,21 +11959,16 @@ function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
   const leaseActive = Number.isFinite(recovery.leaseExpiresAt) && recovery.leaseExpiresAt > Date.now();
   const keepButton = $('#recipe-recovery-keep');
   const resumeButton = $('#recipe-recovery-resume');
-  const forkButton = $('#recipe-recovery-fork');
-  const stopButton = $('#recipe-recovery-stop-other');
   $('#recipe-recovery-recipe').textContent = recovery.recipe.name || 'Image recipe';
   $('#recipe-recovery-copy').textContent = leaseActive
-    ? `A saved ${recovery.recipe.name || 'image recipe'} batch still holds its lock. Make a separate copy and continue there now. The original stays untouched.`
+    ? `This ${recovery.recipe.name || 'image recipe'} batch still has a saved lock. Take it over here to continue on this design; the previous tab will be fenced out if it is still open.`
     : `${recovery.targetIds.length} image layer${recovery.targetIds.length === 1 ? '' : 's'} were in this batch. Resume the saved recipe, or keep the image edits that were already saved.`;
-  keepButton.hidden = leaseActive;
-  resumeButton.hidden = leaseActive;
-  keepButton.disabled = leaseActive;
-  resumeButton.disabled = leaseActive;
-  forkButton.hidden = !leaseActive;
-  forkButton.disabled = false;
-  forkButton.textContent = recovery.status === 'complete' ? 'Fork saved edits' : 'Fork and resume recipe';
-  stopButton.hidden = true;
-  stopButton.disabled = recipeStopRequestPending;
+  keepButton.hidden = false;
+  keepButton.disabled = recipeRecoveryActionPending;
+  keepButton.textContent = leaseActive ? 'Take over and keep saved edits' : 'Keep saved edits';
+  resumeButton.hidden = recovery.status === 'complete';
+  resumeButton.disabled = recipeRecoveryActionPending;
+  resumeButton.textContent = leaseActive ? 'Take over and resume here' : 'Resume recipe';
   if (!dialog.open) {
     $('#recipe-recovery-status').textContent = '';
     setDocumentEditingBlocked(true);
@@ -11959,31 +11997,53 @@ function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
 
 async function keepInterruptedRecipeChanges() {
   const recovery = state.pendingRecipeRecovery;
-  if (!recovery) return false;
+  if (!recovery || recipeRecoveryActionPending) return false;
+  recipeRecoveryActionPending = true;
   clearRecipeRecoveryExpiryTimer();
   const keepButton = $('#recipe-recovery-keep'); const resumeButton = $('#recipe-recovery-resume');
   keepButton.disabled = true; resumeButton.disabled = true;
-  $('#recipe-recovery-status').textContent = 'Keeping the saved image edits…';
+  $('#recipe-recovery-status').textContent = 'Loading the latest saved edits…';
   const ownerToken = createId('recipe-run');
   let claimed = false;
+  let current = recovery;
   try {
-    await claimRecipeBatchRecovery({ ...recovery, ownerToken }, { expectedOwnerToken: recovery.ownerToken });
+    current = await refreshSavedRecipeRecoveryDesign(recovery);
+    if (!current) {
+      return true;
+    }
+    $('#recipe-recovery-status').textContent = 'Taking over and keeping the saved image edits…';
+    await claimRecipeBatchRecovery({ ...current, ownerToken }, { replaceOwnerToken: current.ownerToken });
     claimed = true;
+    const previousOwnerToken = current.ownerToken;
+    await notifyAndDrainPreviousRecipeOwner({ documentId: current.documentId, previousOwnerToken, ownerToken });
+    // The prior tab may have had a document write already in flight when it
+    // lost the lease. Reload after its drain acknowledgement so “keep” keeps
+    // the newest durable checkpoint, not the snapshot from before takeover.
+    current = await refreshSavedRecipeRecoveryDesign(current);
+    if (!current) throw new Error('The recovery record changed while taking over. Reload this design before editing.');
     await deleteRecipeBatchRecovery(recovery.documentId, ownerToken);
     recipeBatchCoordinationChannel?.postMessage({
-      type: 'RECOVERY_RESOLVED', documentId: recovery.documentId, ownerToken: recovery.ownerToken
+      type: 'RECOVERY_RESOLVED', documentId: recovery.documentId, ownerToken: previousOwnerToken
     });
     state.pendingRecipeRecovery = null;
+    clearRecipeRecoveryExpiryTimer();
     $('#recipe-recovery-dialog').close();
     setDocumentEditingBlocked(false);
     if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
     return true;
   } catch (error) {
-    $('#recipe-recovery-status').textContent = error.message || 'Could not clear the recovery record. Your saved edits are unchanged; try again.';
+    $('#recipe-recovery-status').textContent = error.message || 'Could not take over and clear the recovery record. Your saved edits are unchanged; try again.';
     if (claimed) await releaseRecipeBatchRecoveryLease(recovery.documentId, ownerToken).catch(() => {});
-    let current = recovery;
     try { current = await loadRecipeBatchRecovery(recovery.documentId); } catch { /* keep the saved recovery visible if storage is temporarily unavailable */ }
     if (!current) {
+      // Another tab may have completed recovery after our initial checkpoint
+      // read. Reopen the persisted design before removing the recovery gate.
+      try { await refreshSavedRecipeRecoveryDesign(recovery); }
+      catch (refreshError) {
+        $('#recipe-recovery-status').textContent = refreshError.message || 'The saved design could not be refreshed. Keep this recovery open and retry.';
+        state.pendingRecipeRecovery = recovery;
+        return false;
+      }
       recipeBatchCoordinationChannel?.postMessage({
         type: 'RECOVERY_RESOLVED', documentId: recovery.documentId, ownerToken: recovery.ownerToken
       });
@@ -11996,6 +12056,9 @@ async function keepInterruptedRecipeChanges() {
     state.pendingRecipeRecovery = current;
     renderRecipeRecoveryPrompt(current);
     return false;
+  } finally {
+    recipeRecoveryActionPending = false;
+    if (state.pendingRecipeRecovery) renderRecipeRecoveryPrompt();
   }
 }
 
@@ -12005,42 +12068,49 @@ function resumeInterruptedRecipe() {
 }
 
 async function resumeInterruptedRecipeSafely() {
-  const recovery = state.pendingRecipeRecovery;
-  if (!recovery) return false;
-  if (recovery.leaseExpiresAt > Date.now()) {
-    renderRecipeRecoveryPrompt(recovery);
-    return false;
-  }
+  let recovery = state.pendingRecipeRecovery;
+  if (!recovery || recipeRecoveryActionPending) return false;
+  recipeRecoveryActionPending = true;
   clearRecipeRecoveryExpiryTimer();
   const keepButton = $('#recipe-recovery-keep'); const resumeButton = $('#recipe-recovery-resume');
   keepButton.disabled = true; resumeButton.disabled = true;
-  $('#recipe-recovery-status').textContent = 'Claiming the saved recipe…';
-  const started = startRecipe(structuredClone(recovery.recipe), recovery.targetIds, {
-    concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY, pageId: recovery.pageId, recoveryOnFailure: recovery,
-    expectedRecoveryOwnerToken: recovery.ownerToken
-  });
-  if (!started) {
-    renderRecipeRecoveryPrompt(recovery);
-    return false;
-  }
-  const bulk = state.bulk;
-  if (!bulk || bulk.recoveryOnFailure?.ownerToken !== recovery.ownerToken || !bulk.leaseClaimPromise) {
-    renderRecipeRecoveryPrompt(recovery);
-    return false;
-  }
-  await bulk.leaseClaimPromise;
-  if (state.bulk !== bulk || bulk.journalPending || bulk.ownershipLost) {
-    if (state.pendingRecipeRecovery) {
-      $('#recipe-recovery-status').textContent = 'The saved recipe is still protected. Resolve the current recovery notice before continuing.';
-      renderRecipeRecoveryPrompt();
+  $('#recipe-recovery-status').textContent = 'Loading the latest saved edits…';
+  try {
+    recovery = await refreshSavedRecipeRecoveryDesign(recovery);
+    if (!recovery) return !state.pendingRecipeRecovery;
+    $('#recipe-recovery-status').textContent = 'Taking over the saved recipe on this design…';
+    if (recovery.status === 'complete') {
+      recipeRecoveryActionPending = false;
+      return keepInterruptedRecipeChanges();
     }
+    const started = startRecipe(structuredClone(recovery.recipe), recovery.targetIds, {
+      concurrency: DEFAULT_IMAGE_RECIPE_CONCURRENCY, pageId: recovery.pageId, recoveryOnFailure: recovery,
+      expectedRecoveryOwnerToken: recovery.ownerToken
+    });
+    if (!started) return false;
+    const bulk = state.bulk;
+    if (!bulk || bulk.recoveryOnFailure?.ownerToken !== recovery.ownerToken || !bulk.leaseClaimPromise) return false;
+    await bulk.leaseClaimPromise;
+    if (state.bulk !== bulk || bulk.journalPending || bulk.ownershipLost) {
+      if (state.pendingRecipeRecovery) {
+        $('#recipe-recovery-status').textContent = 'The recovery lock changed before takeover. Refreshing its saved checkpoint…';
+        renderRecipeRecoveryPrompt();
+      }
+      return false;
+    }
+    state.pendingRecipeRecovery = null;
+    clearRecipeRecoveryExpiryTimer();
+    $('#recipe-recovery-dialog').close();
+    setDocumentEditingBlocked(false);
+    if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
+    return true;
+  } catch (error) {
+    $('#recipe-recovery-status').textContent = error.message || 'Could not resume the saved recipe. Your saved edits remain available.';
     return false;
+  } finally {
+    recipeRecoveryActionPending = false;
+    if (state.pendingRecipeRecovery) renderRecipeRecoveryPrompt();
   }
-  state.pendingRecipeRecovery = null;
-  $('#recipe-recovery-dialog').close();
-  setDocumentEditingBlocked(false);
-  if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
-  return true;
 }
 
 function renderBulkBar() {
@@ -12059,15 +12129,13 @@ function renderBulkBar() {
   const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0) - skipped);
   const lockedSkipped = (bulk.excludedLocked || 0) + (bulk.skippedLocked || 0);
   const drained = canDismissImageRecipeBatch(bulk);
-  const dismissible = drained && !bulk.savePending && !bulk.journalPending && !bulk.ownershipLost && !bulk.recoveryHandoffPending;
+  const dismissible = drained && !bulk.savePending && !bulk.journalPending && !bulk.ownershipLost;
   const normalTitle = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
-  $('#bulk-title').textContent = bulk.ownershipLost ? 'Recipe lease lost · reload to recover' : bulk.recoveryHandoffPending ? 'Stopping safely for recovery…' : bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
+  $('#bulk-title').textContent = bulk.ownershipLost ? 'Recipe lease lost · reload to recover' : bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
   const announcement = imageRecipeBatchAnnouncement(bulk);
   if (announcer.textContent !== announcement) announcer.textContent = announcement;
   $('#bulk-subtitle').textContent = bulk.ownershipLost
-    ? 'Another tab owns this batch now. This tab stopped processing and will not write more recipe changes; reload after the other tab finishes.'
-    : bulk.recoveryHandoffPending
-      ? 'Another tab asked to recover this recipe. Stopping work, waiting for active images to finish, and saving your edits…'
+    ? 'Recovery took this batch over. Processing stopped in this tab; reload the design to open the latest saved state.'
     : bulk.saveError
     ? bulk.recoveryError ? 'The image edits are saved, but the recovery marker could not be cleared. Retry to finish safely.' : drained ? 'The edits remain in this tab. Retry the local save before closing this bar.' : 'A local save failed. The batch will drain before retry is offered.'
     : bulk.journalPending && !bulk.done
@@ -12588,7 +12656,7 @@ function startRecipe(recipe, targets, { concurrency = DEFAULT_IMAGE_RECIPE_CONCU
   renderInspector();
   renderBulkBar();
   const claimOptions = {};
-  if (recoveryOnFailure) claimOptions.expectedOwnerToken = expectedRecoveryOwnerToken;
+  if (recoveryOnFailure) claimOptions.replaceOwnerToken = expectedRecoveryOwnerToken;
   else if (replacedBulk) claimOptions.replaceOwnerToken = replacedBulk.ownerToken;
   bulk.leaseClaimPromise = claimRecipeBatchRecovery({
     documentId: state.document.id,
@@ -12597,10 +12665,33 @@ function startRecipe(recipe, targets, { concurrency = DEFAULT_IMAGE_RECIPE_CONCU
     pageId: bulk.pageId,
     targetIds: bulk.targets,
     status: 'running'
-  }, claimOptions).then(claimed => {
+  }, claimOptions).then(async claimed => {
     if (state.bulk !== bulk) return;
     bulk.leaseExpiresAt = claimed.leaseExpiresAt;
     bulk.journalPending = false;
+    if (bulk.recoveryOnFailure) {
+      await notifyAndDrainPreviousRecipeOwner({
+        documentId: bulk.documentId, previousOwnerToken: bulk.recoveryOnFailure.ownerToken,
+        ownerToken: bulk.ownerToken
+      });
+      if (state.bulk !== bulk) return;
+      // Drain any save already in progress in the fenced tab, then base this
+      // resumed run on the resulting durable checkpoint before scheduling the
+      // first image. The batch is held out of state while switchToDocument
+      // refreshes the same design, then its target index is rebuilt.
+      state.bulk = null;
+      let refreshed = false;
+      try { refreshed = Boolean(await refreshSavedRecipeRecoveryDesign(bulk.recoveryOnFailure)); }
+      finally { if (state.bulk === null) state.bulk = bulk; }
+      if (!refreshed || state.bulk !== bulk) throw new Error('The latest saved design could not be refreshed before resuming this recipe.');
+      bulk.nodeIndex = createPageNodeIndex(state.document, bulk.pageId, {
+        nodeIds: bulk.targets, preserveNodeIdentity: true
+      });
+      state.pendingRecipeRecovery = null;
+      clearRecipeRecoveryExpiryTimer();
+      if ($('#recipe-recovery-dialog').open) $('#recipe-recovery-dialog').close();
+      setDocumentEditingBlocked(false);
+    }
     scheduleRecipeBatchLeaseHeartbeat(bulk);
     imageEngine.setConcurrency(bulk.renderConcurrency);
     renderBulkBar(); scheduleBulk();
@@ -18619,41 +18710,97 @@ function applyInspectorAction(action, details = {}) {
     setPrototypeFlowStartPoint(state.document, flow.id, frame.id, entry?.page?.id || activePage().id);
     renderInspector(); queueSave(); showToast(`“${frame.name}” now starts “${flow.name}”.`);
   }
-  else if (action === 'edit-prototype-interaction') {
+  else if (action === 'prototype-program-focus-branch') {
+    try {
+      const branchStack = JSON.parse(details.programStack || '[]');
+      const interaction = node?.interactions?.find(item => item.id === state.prototypeEditingInteractionId);
+      if (!interaction || !Array.isArray(branchStack) || !prototypeProgramStepsAt(prototypeActionProgram(interaction), branchStack)) return;
+      state.prototypeProgramBranchStack = branchStack;
+      renderInspector();
+    } catch { showToast('This action branch is no longer available.'); }
+  } else if (action === 'edit-prototype-program-action') {
+    const interaction = node?.interactions?.find(item => item.id === state.prototypeEditingInteractionId);
+    const program = interaction && prototypeActionProgram(interaction);
+    const entry = program && prototypeProgramActions(program.steps).find(item => item.step.actionId === details.actionId);
+    if (!interaction || !entry) { showToast('This prototype action no longer exists.'); return; }
+    state.prototypeProgramEditingActionId = entry.step.actionId;
+    state.prototypeProgramBranchStack = entry.path;
+    loadPrototypeActionIntoComposer(interaction, entry.step);
+    renderInspector();
+  } else if (action === 'prototype-program-add-action' || action === 'prototype-program-add-if'
+    || action === 'prototype-program-move' || action === 'prototype-program-remove') {
+    const interaction = node?.interactions?.find(item => item.id === state.prototypeEditingInteractionId);
+    if (!interaction) { showToast('Edit an interaction before changing its action sequence.'); return; }
+    try {
+      const candidate = structuredClone(state.document);
+      const candidateInteraction = findNode(candidate, node.id)?.node?.interactions?.find(item => item.id === interaction.id);
+      if (!candidateInteraction) throw new Error('This prototype interaction no longer exists.');
+      const program = structuredClone(prototypeActionProgram(candidateInteraction));
+      if (action === 'prototype-program-add-action') {
+        const destinationId = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction)
+          ? ($('#prototype-destination')?.value || state.prototypeDestinationId) : null;
+        const target = destinationId ? listPrototypeFrames(state.document).find(item => item.frame.id === destinationId) : null;
+        if (['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && !target) {
+          showToast('Choose a destination frame for this action.'); return;
+        }
+        const actionStep = configuredPrototypeProgramAction(node.id, destinationId, target?.page.id);
+        mutatePrototypeProgramSteps(program, state.prototypeProgramBranchStack, steps => steps.push(actionStep));
+        state.prototypeProgramEditingActionId = null;
+      } else if (action === 'prototype-program-add-if') {
+        const condition = buildPrototypeInteractionCondition();
+        if (!condition) { showToast('Choose a variable and value for the if / else condition.'); return; }
+        mutatePrototypeProgramSteps(program, state.prototypeProgramBranchStack, steps => steps.push({
+          type: 'if', branchId: createId('branch'), condition, then: [], else: []
+        }));
+      } else {
+        const stack = JSON.parse(details.programStack || '[]');
+        const index = Number(details.programIndex);
+        const steps = prototypeProgramStepsAt(program, stack);
+        if (!steps || !Number.isInteger(index) || index < 0 || index >= steps.length) throw new Error('This action position no longer exists.');
+        if (action === 'prototype-program-move') {
+          const nextIndex = index + (details.programDirection === 'up' ? -1 : 1);
+          if (nextIndex < 0 || nextIndex >= steps.length) return;
+          [steps[index], steps[nextIndex]] = [steps[nextIndex], steps[index]];
+        } else {
+          if (program.steps.length === 1 && stack.length === 0) {
+            showToast('Keep one action in the interaction. Remove the interaction to delete the whole sequence.'); return;
+          }
+          const [removed] = steps.splice(index, 1);
+          if (removed?.type === 'action' && state.prototypeProgramEditingActionId === removed.actionId) state.prototypeProgramEditingActionId = null;
+        }
+      }
+      if (state.prototypeProgramEditingActionId
+        && !prototypeProgramActions(program.steps).some(item => item.step.actionId === state.prototypeProgramEditingActionId)) {
+        state.prototypeProgramEditingActionId = null;
+      }
+      if (!prototypeProgramStepsAt(program, state.prototypeProgramBranchStack)) state.prototypeProgramBranchStack = [];
+      candidateInteraction.actionProgram = program;
+      setPrototypeActionProjection(candidateInteraction, prototypeProgramFirstAction(program), node.id);
+      validateDocument(candidate);
+      checkpoint(action === 'prototype-program-add-action' ? 'Add prototype action'
+        : action === 'prototype-program-add-if' ? 'Add prototype condition'
+          : action === 'prototype-program-move' ? 'Reorder prototype sequence' : 'Remove prototype sequence step');
+      state.document = candidate;
+      const updatedNode = findNode(state.document, node.id)?.node;
+      if (updatedNode) recordNodeComponentOverrides(updatedNode, ['interactions']);
+      renderInspector(); queueSave(); renderer.invalidate();
+    } catch (error) { showToast(error.message || 'Could not update the prototype action sequence.'); }
+  } else if (action === 'edit-prototype-interaction') {
     const interaction = node?.interactions?.find(item => item.id === details.interactionId);
     if (!node || !interaction) { showToast('This prototype interaction no longer exists.'); return; }
     state.prototypeEditingInteractionId = interaction.id;
-    state.prototypeDestinationId = interaction.destinationId || null;
-    state.prototypeAction = interaction.action;
-    state.prototypeTrigger = interaction.trigger;
-    state.prototypeTransition = interaction.transition || 'instant';
-    state.prototypeEasing = interaction.easing || 'ease-in-out';
-    state.prototypeEasingBezier = interaction.easingBezier ? [...interaction.easingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
-    state.prototypeDuration = Number.isFinite(interaction.duration) ? interaction.duration : 300;
-    state.prototypeDelay = Number.isFinite(interaction.delay) ? interaction.delay : 1000;
-    state.prototypeUrl = interaction.url || 'https://';
-    state.prototypeVariableCollectionId = interaction.collectionId || null;
-    state.prototypeVariableModeId = interaction.modeId || null;
-    state.prototypeVariableId = interaction.variableId || null;
-    state.prototypeVariableValue = Object.hasOwn(interaction, 'value') ? String(interaction.value) : null;
-    state.prototypeVariableExpressionMode = typeof interaction.valueExpression === 'string';
-    state.prototypeVariableExpression = state.prototypeVariableExpressionMode ? interaction.valueExpression : '';
-    state.prototypeVariantTargetId = interaction.targetVariantId || null;
-    state.prototypeScrollTargetId = interaction.scrollTargetId || null;
-    state.prototypeScrollAlignment = interaction.scrollAlignment || 'nearest';
-    state.prototypeConditionVariableId = interaction.condition?.variableId || null;
-    state.prototypeConditionOperator = interaction.condition?.operator || 'equals';
-    state.prototypeConditionValue = interaction.condition ? String(interaction.condition.value) : null;
-    state.prototypeOverlayPosition = interaction.overlayPosition || 'center';
-    state.prototypeOverlayOutsideClick = interaction.overlayOutsideClick !== false;
-    state.prototypeOverlayBackground = interaction.overlayBackground !== false;
-    state.prototypeOverlayBackgroundColor = interaction.overlayBackgroundColor || '#000000';
-    state.prototypeOverlayBackgroundOpacity = Number.isFinite(interaction.overlayBackgroundOpacity) ? interaction.overlayBackgroundOpacity : 0.32;
+    const program = prototypeActionProgram(interaction);
+    const firstAction = prototypeProgramFirstAction(program);
+    state.prototypeProgramEditingActionId = interaction.actionProgram ? firstAction?.actionId || null : null;
+    state.prototypeProgramBranchStack = [];
+    loadPrototypeActionIntoComposer(interaction, state.prototypeProgramEditingActionId ? firstAction : interaction);
     state.prototypeSourceId = null;
     renderInspector();
   } else if (action === 'cancel-prototype-interaction-edit') {
     state.prototypeEditingInteractionId = null;
     state.prototypeDestinationId = null;
+    state.prototypeProgramEditingActionId = null;
+    state.prototypeProgramBranchStack = [];
     renderInspector();
   } else if (action === 'prototype-connect') {
     if (!node) { showToast('Select a layer to add an interaction.'); return; }
@@ -18668,10 +18815,13 @@ function applyInspectorAction(action, details = {}) {
         const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
         const condition = buildPrototypeInteractionCondition();
         const variablePayload = state.prototypeAction === 'set-variable' ? buildPrototypeVariableValue() : {};
+        const programActionEdit = Boolean(state.prototypeProgramEditingActionId);
+        const sourceInteraction = node.interactions.find(item => item.id === state.prototypeEditingInteractionId);
         const updateOptions = {
           action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
           transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
-          condition, url: $('#prototype-url')?.value ?? state.prototypeUrl,
+          condition: programActionEdit ? sourceInteraction?.condition || null : condition,
+          url: $('#prototype-url')?.value ?? state.prototypeUrl,
           ...variablePayload,
           collectionId: selectedCollection?.id, modeId: selectedMode?.id,
           targetVariantId: $('#prototype-variant-target')?.value || state.prototypeVariantTargetId,
@@ -18689,13 +18839,25 @@ function applyInspectorAction(action, details = {}) {
         // history. Invalid settings must not create a no-op undo step or clear
         // the redo stack.
         const updatedDocument = structuredClone(state.document);
-        updatePrototypeInteraction(updatedDocument, node.id, state.prototypeEditingInteractionId, target?.frame.id || null, updateOptions, state.document.activePageId);
+        const updatedInteraction = updatePrototypeInteraction(updatedDocument, node.id, state.prototypeEditingInteractionId, target?.frame.id || null, updateOptions, state.document.activePageId);
+        if (programActionEdit) {
+          const program = structuredClone(prototypeActionProgram(sourceInteraction));
+          const replacement = configuredPrototypeProgramAction(node.id, target?.frame.id || null, target?.page.id);
+          if (!editPrototypeProgramAction(program.steps, state.prototypeProgramEditingActionId, replacement)) {
+            throw new Error('The selected prototype action no longer exists.');
+          }
+          updatedInteraction.actionProgram = program;
+          setPrototypeActionProjection(updatedInteraction, prototypeProgramFirstAction(program), node.id);
+        }
+        validateDocument(updatedDocument);
         checkpoint('Edit prototype interaction');
         state.document = updatedDocument;
         const updatedNode = findNode(state.document, node.id)?.node;
         if (updatedNode) recordNodeComponentOverrides(updatedNode, ['interactions']);
         state.prototypeEditingInteractionId = null;
         state.prototypeDestinationId = null;
+        state.prototypeProgramEditingActionId = null;
+        state.prototypeProgramBranchStack = [];
         renderInspector(); queueSave(); renderer.invalidate();
         showToast('Prototype interaction updated.');
       } catch (error) { showToast(error.message); }
@@ -18747,6 +18909,8 @@ function applyInspectorAction(action, details = {}) {
     if (state.prototypeEditingInteractionId === interactionId) {
       state.prototypeEditingInteractionId = null;
       state.prototypeDestinationId = null;
+      state.prototypeProgramEditingActionId = null;
+      state.prototypeProgramBranchStack = [];
     }
     recordNodeComponentOverrides(node, ['interactions']);
     renderInspector(); queueSave(); renderer.invalidate();
@@ -20365,9 +20529,6 @@ function initEvents() {
   recoveryDialog.addEventListener('cancel', event => event.preventDefault());
   $('#recipe-recovery-keep').addEventListener('click', () => { void keepInterruptedRecipeChanges(); });
   $('#recipe-recovery-resume').addEventListener('click', resumeInterruptedRecipe);
-  $('#recipe-recovery-fork').addEventListener('click', () => { void forkInterruptedRecipeAndResume(); });
-  $('#recipe-recovery-stop-other').addEventListener('click', requestRecipeBatchHandoff);
-  $('#recipe-recovery-handoff-reload').addEventListener('click', () => location.reload());
   $('#toggle-rulers').addEventListener('click', event => {
     if (state.interaction?.kind?.startsWith('ruler-guide-')) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.showRulers = !state.showRulers;
@@ -20707,7 +20868,7 @@ async function boot() {
     if (updateCanvasViewportCamera()) renderer.invalidate();
   });
   canvasViewportObserver.observe(canvas);
-  window.addEventListener('beforeunload', () => { if (recipeStopReplyTimer) window.clearTimeout(recipeStopReplyTimer); recipeBatchCoordinationChannel?.close(); resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
+  window.addEventListener('beforeunload', () => { recipeBatchCoordinationChannel?.close(); resetObjectIsolationSession(); objectIsolationEngine.dispose(); state.fontShaper.close(); localWoff2Decoder.close(); preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();

@@ -2,7 +2,8 @@ import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, rounded
 import { regularShapeVertices, roundedPolygonPathPoints } from './polygon-corners.js';
 import { fillStackForNode } from './fills.js';
 import { getNodeColor, getNodePropertyValue } from './model.js';
-import { strokeStackForNode } from './strokes.js';
+import { strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import {
   vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkEdgeForPair,
   vectorNetworkVertexPoint, vectorPathContours, vectorSegmentPoints
@@ -38,8 +39,10 @@ function visibleStrokeWidth(node, document) {
     const color = index === 0 && node.strokeVariableId && document
       ? getNodeColor(document, node, 'stroke')
       : stroke.color;
+    const sideWidths = ['rectangle', 'frame'].includes(node.type) ? strokeSideWidths(stroke) : null;
+    const width = sideWidths ? Math.max(...strokeSideNames.map(side => sideWidths[side])) : Number(stroke.width) || 0;
     return stroke.visible !== false && Number(stroke.opacity ?? 1) > 0 && color && color !== 'transparent'
-      ? Math.max(maximum, Number(stroke.width) || 0)
+      ? Math.max(maximum, width)
       : maximum;
   }, 0);
 }
@@ -263,7 +266,25 @@ function inVisibleStroke(node, point, tolerance, document) {
   if (width <= 0) return false;
   const threshold = tolerance + width / 2;
   if (node.type === 'line') return pointSegmentDistance(point, ...lineSegmentForNode(node)) <= threshold;
-  if (['frame', 'section', 'group', 'rectangle'].includes(node.type)) return distanceToPolyline(point, roundedRectanglePolygon(node, document), true) <= threshold;
+  if (['frame', 'section', 'group', 'rectangle'].includes(node.type)) {
+    if (['rectangle', 'frame'].includes(node.type)) {
+      const fallbackRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
+      const radii = node.cornerRadii || Object.fromEntries(cornerRadiusKeys.map(key => [key, Number(fallbackRadius) || 0]));
+      const sidePaths = rectangleStrokeSidePaths(node.width, node.height, radii, node.cornerSmoothing || 0);
+      for (const [strokeIndex, stroke] of strokeStackForNode(node).entries()) {
+        const color = strokeIndex === 0 && node.strokeVariableId && document
+          ? getNodeColor(document, node, 'stroke') : stroke.color;
+        if (stroke.visible === false || Number(stroke.opacity ?? 1) <= 0 || !color || color === 'transparent') continue;
+        const sideWidths = strokeSideWidths(stroke);
+        for (const run of sidePaths) {
+          const sideWidth = sideWidths[run.side];
+          if (sideWidth > 0 && distanceToPolyline(point, run.points, false) <= tolerance + sideWidth / 2) return true;
+        }
+      }
+      return false;
+    }
+    return distanceToPolyline(point, roundedRectanglePolygon(node, document), true) <= threshold;
+  }
   if (node.type === 'ellipse') {
     const rx = Math.abs(node.width) / 2;
     const ry = Math.abs(node.height) / 2;

@@ -419,6 +419,20 @@ test('Inspect exposes ordered stroke records while CSS reports the primary strok
   assert.match(output.css, /2 ordered strokes are preserved in layer JSON/);
 });
 
+test('Inspect reports individual edge weights in structured output and generated CSS', () => {
+  const document = createDocument();
+  const card = createNode('rectangle', { name: 'Individual border', strokes: [
+    { id: 'individual', color: '#123456', width: 4, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 1.5, right: 0, bottom: 3.25, left: 2 } }
+  ] });
+  addNode(document, card);
+  const output = buildInspectOutput(document, [findNode(document, card.id)]);
+  assert.deepEqual(output.layers[0].stroke.sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 });
+  assert.deepEqual(JSON.parse(output.json).strokes[0].sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 });
+  assert.match(output.css, /border-width: 1\.5px 0px 3\.25px 2px;/);
+});
+
 test('Inspect preserves stroke gradient stops and identifies the CSS color approximation', () => {
   const document = createDocument();
   const gradient = createGradientFill('radial', '#ff8800');

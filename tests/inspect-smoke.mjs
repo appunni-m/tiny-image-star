@@ -271,6 +271,22 @@ try {
   const strokeRecords = await readDocuments(); strokeRecords.sort((a, b) => b.savedAt - a.savedAt);
   const styledButton = strokeRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
   assert(styledButton?.strokeWidth === 3 && styledButton.strokePattern === 'dashed' && styledButton.strokeCap === 'round' && styledButton.strokeJoin === 'bevel' && styledButton.strokeMiterLimit === 4, 'stroke appearance edits should be saved in the local document');
+  const sideMode = app.querySelector('[data-stroke-field="sideMode"]');
+  assert(sideMode && [...sideMode.options].some(option => option.value === 'custom'), 'rectangle strokes should expose All, side presets, and Custom weights');
+  sideMode.value = 'custom'; sideMode.dispatchEvent(new Event('input', { bubbles: true })); sideMode.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'individual stroke sides');
+  const sideWidths = Object.fromEntries([...app.querySelectorAll('[data-stroke-field="sideWidth"]')].map(input => [input.dataset.strokeSide, input]));
+  assert(['top', 'right', 'bottom', 'left'].every(side => sideWidths[side]), 'custom weights should expose all four edge inputs');
+  assert(Object.values(sideWidths).every(control => control.getBoundingClientRect().right <= rightPanel.right), 'four side weights should fit inside the phone inspector');
+  for (const [side, value] of [['top', '1.5'], ['right', '0'], ['bottom', '3.25'], ['left', '2']]) {
+    sideWidths[side].value = value;
+    sideWidths[side].dispatchEvent(new Event('input', { bubbles: true }));
+    sideWidths[side].dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  await waitForSaveCycle(app, 'custom individual stroke weights');
+  const individualStrokeRecords = await readDocuments(); individualStrokeRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const individualButton = individualStrokeRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
+  assert.deepEqual(individualButton?.strokes?.[0]?.sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 }, 'per-side weights should persist in the local design');
   const addShadow = app.querySelector('[data-action="add-layer-effect"][data-effect-type="drop-shadow"]');
   assert(addShadow && addShadow.getBoundingClientRect().right <= rightPanel.right, 'effect actions should fit inside the phone inspector');
   click(addShadow);

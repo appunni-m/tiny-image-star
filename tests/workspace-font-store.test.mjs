@@ -98,6 +98,14 @@ test('font bytes round-trip exactly and metadata has a content hash and byte siz
   assert.ok(Object.isFrozen(loaded.metadata));
 });
 
+test('listing local fonts treats a design with no fonts directory as an empty catalog', async () => {
+  const { workspace, designId } = await fixture();
+  const design = await workspace.getDesignDirectoryHandle(designId);
+  assert.equal(design.children.has('fonts'), false);
+  assert.deepEqual(await listWorkspaceFontAssets(workspace, designId, { crypto: webcrypto }), []);
+  assert.equal(design.children.has('fonts'), false, 'listing does not create folders as a side effect');
+});
+
 test('font asset writes fail closed after workspace design deletion is marked', async () => {
   const { workspace, designId } = await fixture();
   const handle = await workspace.designsDirectory.getFileHandle(`${designId}.deleted.json`, { create: true });

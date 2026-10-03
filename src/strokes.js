@@ -6,6 +6,9 @@ import { defaultStrokeDashArray, isValidStrokeDashArray, normalizeStrokeDashArra
 
 export const MAX_STROKES_PER_NODE = 32;
 
+export const strokeSideNames = Object.freeze(['top', 'right', 'bottom', 'left']);
+export const strokeSideModes = Object.freeze(['all', ...strokeSideNames, 'custom']);
+
 const caps = new Set(['butt', 'round', 'square']);
 const joins = new Set(['miter', 'round', 'bevel']);
 const patterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
@@ -57,6 +60,14 @@ export function createStroke(overrides = {}) {
     startDecoration: 'none', endDecoration: 'none', blendMode: 'normal',
     ...overrides
   };
+  const sideMode = overrides.sideMode ?? (overrides.sideWidths ? 'custom' : 'all');
+  if (!strokeSideModes.includes(sideMode)) throw new TypeError('A stroke side mode must be all, one side, or custom.');
+  if (sideMode === 'custom') {
+    stroke.sideMode = sideMode;
+    stroke.sideWidths = normalizeStrokeSideWidths(overrides.sideWidths ?? uniformStrokeSideWidths(stroke.width));
+    if (!stroke.sideWidths) throw new TypeError('Custom stroke side widths must contain finite, nonnegative top, right, bottom, and left values.');
+  } else if (sideMode !== 'all') stroke.sideMode = sideMode;
+  else { delete stroke.sideMode; delete stroke.sideWidths; }
   const hasDashArray = Object.hasOwn(overrides, 'dashArray') && overrides.dashArray != null;
   const normalizedDashArray = hasDashArray ? normalizeStrokeDashArray(overrides.dashArray) : null;
   if (hasDashArray && !normalizedDashArray) throw new TypeError('A custom stroke dash array must contain finite, nonnegative dash and gap lengths.');
@@ -111,6 +122,18 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (dashArraySpecified && changes.dashArray != null && !normalizedDashArray) {
     throw new TypeError('A custom stroke dash array must contain finite, nonnegative dash and gap lengths.');
   }
+  const sideModeSpecified = Object.hasOwn(changes, 'sideMode');
+  const requestedSideMode = sideModeSpecified ? changes.sideMode : null;
+  if (sideModeSpecified && !strokeSideModes.includes(requestedSideMode)) {
+    throw new TypeError('A stroke side mode must be all, one side, or custom.');
+  }
+  const sideWidthsSpecified = Object.hasOwn(changes, 'sideWidths');
+  const normalizedSideWidths = sideWidthsSpecified && changes.sideWidths != null
+    ? normalizeStrokeSideWidths(changes.sideWidths)
+    : null;
+  if (sideWidthsSpecified && changes.sideWidths != null && !normalizedSideWidths) {
+    throw new TypeError('Custom stroke side widths must contain finite, nonnegative top, right, bottom, and left values.');
+  }
   const stroke = ensureStrokeStack(node).find(item => item.id === strokeId);
   if (!stroke) return null;
   if (Object.hasOwn(changes, 'visible') && typeof changes.visible === 'boolean') stroke.visible = changes.visible;
@@ -118,6 +141,23 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (Object.hasOwn(changes, 'blendMode') && isValidLayerBlendMode(changes.blendMode)) stroke.blendMode = changes.blendMode;
   if (Object.hasOwn(changes, 'color') && validColor(changes.color)) stroke.color = changes.color;
   if (Object.hasOwn(changes, 'width') && Number.isFinite(changes.width) && changes.width >= 0 && changes.width <= 100_000) stroke.width = changes.width;
+  if (sideModeSpecified) {
+    const previousMode = strokeSideMode(stroke);
+    if (requestedSideMode === 'custom') {
+      stroke.sideMode = 'custom';
+      stroke.sideWidths = previousMode === 'custom' && isValidStrokeSideWidths(stroke.sideWidths)
+        ? { ...stroke.sideWidths }
+        : uniformStrokeSideWidths(stroke.width);
+    } else {
+      if (requestedSideMode === 'all') delete stroke.sideMode;
+      else stroke.sideMode = requestedSideMode;
+      delete stroke.sideWidths;
+    }
+  }
+  if (sideWidthsSpecified && normalizedSideWidths) {
+    stroke.sideMode = 'custom';
+    stroke.sideWidths = normalizedSideWidths;
+  }
   if (Object.hasOwn(changes, 'cap') && caps.has(changes.cap)) stroke.cap = changes.cap;
   if (Object.hasOwn(changes, 'join') && joins.has(changes.join)) stroke.join = changes.join;
   const patternSpecified = Object.hasOwn(changes, 'pattern') && patterns.has(changes.pattern);
@@ -180,6 +220,42 @@ export function syncLegacyStrokeFields(node) {
   return node;
 }
 
+/** The selected edge-width preset. Old stroke objects are uniform by default. */
+export function strokeSideMode(stroke) {
+  if (!stroke) return 'all';
+  if (stroke.sideMode && strokeSideModes.includes(stroke.sideMode)) return stroke.sideMode;
+  return stroke.sideWidths ? 'custom' : 'all';
+}
+
+/** Effective per-edge widths, with legacy and preset strokes kept uniform-compatible. */
+export function strokeSideWidths(stroke) {
+  const width = Number(stroke?.width) || 0;
+  const mode = strokeSideMode(stroke);
+  if (mode === 'custom' && isValidStrokeSideWidths(stroke.sideWidths)) return { ...stroke.sideWidths };
+  if (mode === 'all') return uniformStrokeSideWidths(width);
+  return Object.fromEntries(strokeSideNames.map(side => [side, mode === side ? width : 0]));
+}
+
+export function isUniformStrokeSideWidths(widths) {
+  return isValidStrokeSideWidths(widths) && strokeSideNames.every(side => widths[side] === widths.top);
+}
+
+export function isValidStrokeSideWidths(widths) {
+  return Boolean(widths && typeof widths === 'object' && !Array.isArray(widths)
+    && Object.keys(widths).length === strokeSideNames.length
+    && strokeSideNames.every(side => Object.hasOwn(widths, side)
+      && Number.isFinite(widths[side]) && widths[side] >= 0 && widths[side] <= 100_000));
+}
+
+function uniformStrokeSideWidths(width) {
+  const normalized = Number.isFinite(width) ? Math.max(0, Math.min(100_000, width)) : 1;
+  return Object.fromEntries(strokeSideNames.map(side => [side, normalized]));
+}
+
+function normalizeStrokeSideWidths(widths) {
+  return isValidStrokeSideWidths(widths) ? Object.fromEntries(strokeSideNames.map(side => [side, widths[side]])) : null;
+}
+
 /** Preserve a previously bound primary color before its paint leaves slot 0. */
 export function detachPrimaryStrokeBinding(node, previousPrimary, resolvedColor) {
   if (!node || !node.strokeVariableId) return false;
@@ -209,12 +285,17 @@ export function isValidStroke(stroke) {
     && (stroke.pattern !== 'dotted' || stroke.cap === 'round')
     && (!Object.hasOwn(stroke, 'startDecoration') || endpointDecorations.has(stroke.startDecoration))
     && (!Object.hasOwn(stroke, 'endDecoration') || endpointDecorations.has(stroke.endDecoration))
+    && (!Object.hasOwn(stroke, 'sideMode') || strokeSideModes.includes(stroke.sideMode))
+    && (strokeSideMode(stroke) !== 'custom' || isValidStrokeSideWidths(stroke.sideWidths))
+    && (!Object.hasOwn(stroke, 'sideWidths') || strokeSideMode(stroke) === 'custom')
     && (!Object.hasOwn(stroke, 'gradient') || isValidGradientFill(stroke.gradient)));
 }
 
 export function isValidStrokeStack(strokes, node = null) {
   if (!Array.isArray(strokes) || strokes.length > MAX_STROKES_PER_NODE) return false;
   if (node?.type === 'boolean' && strokes.length) return false;
+  if (node && strokes.some(stroke => (Object.hasOwn(stroke || {}, 'sideMode') || Object.hasOwn(stroke || {}, 'sideWidths'))
+    && !['rectangle', 'frame'].includes(node.type))) return false;
   const ids = new Set();
   for (const stroke of strokes) {
     if (!isValidStroke(stroke) || ids.has(stroke.id)) return false;

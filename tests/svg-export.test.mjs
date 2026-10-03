@@ -371,6 +371,45 @@ test('SVG export emits ordered stroke stack records with independent presentatio
   assert.match(svg, /data-tiny-image-star-stroke-order="2"/);
 });
 
+test('SVG export preserves editable rectangle side weights and omits a zero-width edge', () => {
+  const node = createNode('rectangle', { width: 40, height: 20, radius: 3, fill: '#ffffff', strokes: [
+    { id: 'asymmetric', color: '#123456', width: 4, opacity: .5, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 1.5, right: 0, bottom: 3.25, left: 2 } }
+  ] });
+  const svg = exportNodeToSvg(node);
+  assert.match(svg, /data-tiny-image-star-stroke-side-widths="\{&quot;top&quot;:1\.5,&quot;right&quot;:0,&quot;bottom&quot;:3\.25,&quot;left&quot;:2\}"/);
+  assert.match(svg, /<g[^>]*opacity="0\.5"[^>]*>[\s\S]*?<\/g>/);
+  assert.deepEqual([...svg.matchAll(/data-tiny-image-star-stroke-side="([^"]+)"/g)].map(match => match[1]).sort(), ['bottom', 'left', 'top']);
+  assert.match(svg, /stroke-width="1\.5"/);
+  assert.match(svg, /stroke-width="3\.25"/);
+  assert.match(svg, /stroke-width="2"/);
+});
+
+test('SVG individual-side runs use shared butt endpoints and configured corner join polygons', () => {
+  const node = createNode('rectangle', { width: 40, height: 20, radius: 0, fill: '#ffffff', strokes: [
+    { id: 'joined', color: '#123456', width: 4, opacity: .5, visible: true,
+      cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10,
+      sideMode: 'custom', sideWidths: { top: 1.5, right: 2, bottom: 3.25, left: 2 } }
+  ] });
+  const svg = exportNodeToSvg(node);
+  const sidePaths = [...svg.matchAll(/<path\b[^>]*data-tiny-image-star-stroke-side="[^"]+"[^>]*>/g)].map(match => match[0]);
+  const joins = [...svg.matchAll(/<path\b[^>]*data-tiny-image-star-stroke-join="round"[^>]*>/g)].map(match => match[0]);
+  assert.equal(sidePaths.length, 4);
+  assert.ok(sidePaths.every(path => !path.includes('stroke-linecap="round"')),
+    'closed-frame side splits do not inherit an open-path cap');
+  assert.equal(joins.length, 4, 'all unequal-width square corners get explicit round join geometry');
+  assert.ok(joins.every(path => path.includes('fill="#123456"') && path.includes('stroke="none"')));
+
+  node.strokes[0].pattern = 'dotted';
+  const dotted = exportNodeToSvg(node);
+  const dottedSides = [...dotted.matchAll(/<path\b[^>]*data-tiny-image-star-stroke-side="[^"]+"[^>]*>/g)].map(match => match[0]);
+  assert.ok(dottedSides.every(path => path.includes('stroke-linecap="round"')),
+    'SVG retains the round cap needed to draw zero-length dotted dashes');
+  assert.doesNotMatch(dotted, /data-tiny-image-star-stroke-join=/,
+    'solid corner wedges must not fill the gaps in a dotted stroke');
+});
+
 test('exports graph-backed vector networks as editable face and edge paths', () => {
   const network = createNode('network', {
     id: 'graph', width: 100, height: 80, fill: '#abcdef', fillOpacity: 0.4,

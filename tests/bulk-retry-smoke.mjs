@@ -1,5 +1,5 @@
 import { addNode, createDocument, createImageRecipe, createNode } from '../src/model.js';
-import { claimRecipeBatchRecovery, deleteRecipeBatchRecovery, deleteStoredDocument, listSavedDocuments, loadDocumentById, loadRecipeBatchRecovery, RECIPE_BATCH_RECOVERY_LEASE_MS, saveDocument } from '../src/storage.js';
+import { claimRecipeBatchRecovery, deleteRecipeBatchRecovery, deleteStoredDocument, listSavedDocuments, loadDocumentById, loadRecipeBatchRecovery, RECIPE_BATCH_RECOVERY_LEASE_MS, saveDocument, saveRecipeBatchRecovery } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -108,24 +108,27 @@ try {
     && libraryDialog.querySelector(`[data-design-id="${activeDesign.id}"][data-design-action="open"]`), 'active-lease fixture in local library');
   tap(app, activeDesignButton);
   const activeRecoveryDialog = await waitFor(() => app.querySelector('#recipe-recovery-dialog')?.open
-    && !app.querySelector('#recipe-recovery-fork')?.hidden, 'fork action for an active recovery lease');
-  assert(!app.querySelector('#recipe-recovery-fork').disabled, 'A live-looking lease must allow a safe copy without waiting for another tab.');
-  tap(app, app.querySelector('#recipe-recovery-fork'));
-  const forkName = `${activeDesign.name} (recipe recovery copy)`;
-  const forkRecord = await waitFor(async () => (await listSavedDocuments()).find(item => item.name === forkName), 'saved recipe recovery copy');
-  designIds.add(forkRecord.id);
-  await waitFor(() => app.querySelector('#document-name')?.value === forkName, 'recovery copy opened in this tab');
-  const forkRecovery = await waitFor(async () => {
-    const record = await loadRecipeBatchRecovery(forkRecord.id);
+    && app.querySelector('#recipe-recovery-resume')?.textContent === 'Take over and resume here',
+  'in-place takeover action for an active recovery lease');
+  tap(app, app.querySelector('#recipe-recovery-resume'));
+  const resumedRecovery = await waitFor(async () => {
+    const record = await loadRecipeBatchRecovery(activeDesign.id);
     return record?.ownerToken && record.ownerToken !== activeOwnerToken ? record : null;
-  }, 'recipe started under the new design identity');
-  const originalRecovery = await loadRecipeBatchRecovery(activeDesign.id);
-  assert.equal(originalRecovery?.ownerToken, activeOwnerToken, 'Forking must leave the possibly active original lease untouched.');
-  assert.equal(forkRecovery.targetIds[0], activeImage.id, 'The same saved image target is resumed in the fork.');
-  const forkedDesign = await loadDocumentById(forkRecord.id);
-  assert.equal(forkedDesign.pages[0].children[0].assetId, activeImage.assetId,
-    'The fork retains the original local image reference.');
-  outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true, activeLeaseForked: true, originalLeasePreserved: true, resumedUnderForkIdentity: true })}`;
+  }, 'active lease taken over under the existing design identity');
+  assert.equal(resumedRecovery.documentId, activeDesign.id, 'Recovery stays on the original design.');
+  assert.equal(resumedRecovery.targetIds[0], activeImage.id, 'The saved batch target resumes in place.');
+  assert.equal(app.querySelector('#document-name').value, activeDesign.name, 'No recovery-copy design is opened.');
+  assert.equal((await listSavedDocuments()).some(item => item.name.endsWith('(recipe recovery copy)')), false,
+    'Taking over does not create a duplicate design.');
+  await assert.rejects(
+    saveRecipeBatchRecovery({
+      documentId: activeDesign.id, ownerToken: activeOwnerToken, recipe: activeRecipe,
+      pageId: activeDesign.activePageId, targetIds: [activeImage.id], status: 'running'
+    }),
+    /no longer owns/,
+    'the previous tab owner is fenced from further recipe writes'
+  );
+  outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true, activeLeaseTakenOverInPlace: true, previousOwnerFenced: true, sameDesignIdResumed: true })}`;
 } catch (error) {
   outcome = `FAIL\n${error?.stack || error}`;
 } finally {

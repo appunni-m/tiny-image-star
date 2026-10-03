@@ -163,6 +163,26 @@ test('plans custom stroke dash edits through the same host-validated property pa
   assert.deepEqual(findNode(plan.at(-1).snapshot, 'rectangle-a', pageId).node.strokeDashArray, [4, 6, 2, 3]);
 });
 
+test('plans custom per-side rectangle stroke weights through host validation', async () => {
+  const { document, pageId } = fixture();
+  const rectangle = findNode(document, 'rectangle-a', pageId).node;
+  assert.equal(addStroke(rectangle, createStroke({ id: 'stroke-sides', width: 4, sideWidths: {
+    top: 1.5, right: 0, bottom: 3.25, left: 2
+  } })), true);
+  validateDocument(document);
+
+  const after = structuredClone(document);
+  assert.ok(updateStroke(findNode(after, 'rectangle-a', pageId).node, 'stroke-sides', {
+    sideWidths: { top: 1.5, right: 2.25, bottom: 3.25, left: 2 }
+  }));
+  validateDocument(after);
+
+  const plan = await assertPlanMatchesHost(document, after, ['SetProperty']);
+  assert.equal(plan[0].operation.property, 'strokes');
+  assert.deepEqual(findNode(plan[0].snapshot, 'rectangle-a', pageId).node.strokes[0].sideWidths,
+    { top: 1.5, right: 2.25, bottom: 3.25, left: 2 });
+});
+
 test('plans text truncation properties in host-valid order and supports clearing the line limit', async () => {
   const { document, pageId } = fixture();
   const ending = structuredClone(document);
