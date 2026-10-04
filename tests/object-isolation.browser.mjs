@@ -73,6 +73,8 @@ try {
   click(app, await waitFor(() => app.querySelector('#design-library-dialog [data-design-id="' + design.id + '"][data-design-action="open"]'), 'saved fixture', 30000));
   const sourceLayer = await waitFor(() => app.querySelector('[data-layer-id="' + source.id + '"]'), 'source layer', 30000);
   click(app, sourceLayer);
+  const imageAiTools = await waitFor(() => app.querySelector('#inspector-content .image-ai-tools'), 'local AI image tools disclosure');
+  imageAiTools.open = true;
   await waitFor(() => app.querySelector('[data-action="toggle-object-isolation-mode"]'), 'object-isolation inspector controls', 30000);
   const selectAreaButton = app.querySelector('[data-action="toggle-object-isolation-mode"]');
   const isolateButton = app.querySelector('[data-action="create-object-isolation-layer"]');

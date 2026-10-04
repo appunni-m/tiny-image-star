@@ -584,7 +584,7 @@ try {
     `The fractional slice edge must retain only cropped green artwork, excluding red artwork just outside the crop; got ${Array.from(fractionalEdgePixel).join(',')}.`);
   click(app.querySelector('#file-menu-button'));
   const pagePdfMenuItem = [...app.querySelectorAll('#context-menu button')]
-    .find(button => button.textContent.includes('Export page to PDF'));
+    .find(button => button.textContent.includes('Fit page artwork to a PDF sheet'));
   assert(pagePdfMenuItem, 'The file menu should offer a paper-sized PDF export for the current page.');
   click(pagePdfMenuItem);
   const pagePdfDialog = app.querySelector('#page-pdf-dialog');

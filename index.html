@@ -46,29 +46,48 @@
             <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
-            <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or create a frame to start.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button></div></div>
+          <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or create a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button></div></div>
           </section>
           <section class="assets-section" id="assets-section" role="tabpanel" aria-labelledby="sidebar-tab-assets" tabindex="0" hidden>
-            <div class="section-heading local-assets-heading" role="heading" aria-level="3"><span>Images</span><button class="asset-section-action asset-place-button" id="place-image-assets" type="button" aria-label="Add an image to this page from this device" title="Add to page">＋ Add to page</button></div>
-            <div id="assets-list" class="assets-list">
-              <div id="placed-image-assets" class="placed-image-assets" aria-label="Images used on this page"></div>
-              <div id="image-library-root" class="image-library-root"></div>
-            </div>
-            <div class="section-heading" role="heading" aria-level="3"><span>Components</span></div>
-            <div id="components-list" class="components-list"></div>
-            <div class="section-heading local-component-library-heading" role="heading" aria-level="3"><span>Component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
-            <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
-            <div class="section-heading" role="heading" aria-level="3"><span>Variables</span><div class="heading-actions"><button class="asset-section-action" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">Import</button><button class="asset-section-action" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">Export</button><button class="tiny-icon-button" id="add-variable-collection" type="button" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
-            <div class="image-properties-note token-interop-note">Stored locally · DTCG exports use the default mode.</div>
-            <div id="variable-collections-list" class="variable-collections-list"></div>
-            <input id="design-token-file-input" type="file" accept="application/json,.json" hidden />
-            <div class="section-heading" role="heading" aria-level="3"><span>Color styles</span></div>
-            <div id="color-styles-list" class="color-styles-list"></div>
-            <div class="section-heading" role="heading" aria-level="3"><span>Text styles</span></div>
-            <div id="text-styles-list" class="text-styles-list"></div>
-            <div class="section-heading local-fonts-heading" role="heading" aria-level="3"><span>Local fonts</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
-            <div class="image-properties-note local-fonts-note">Stored on this device · included in .flocal files.</div>
-            <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
+            <details class="assets-group" open>
+              <summary class="assets-group-summary">Images</summary>
+              <div class="assets-group-content">
+                <button class="asset-section-action asset-place-button assets-group-action" id="place-image-assets" type="button" aria-label="Add an image to this page from this device" title="Choose image files from this device to add them to the page">＋ Add image</button>
+                <div id="assets-list" class="assets-list">
+                  <div id="placed-image-assets" class="placed-image-assets" aria-label="Images used on this page"></div>
+                  <div id="image-library-root" class="image-library-root"></div>
+                </div>
+              </div>
+            </details>
+            <details class="assets-group">
+              <summary class="assets-group-summary">Components</summary>
+              <div class="assets-group-content">
+                <div id="components-list" class="components-list"></div>
+                <div class="section-heading local-component-library-heading" role="heading" aria-level="3"><span>Component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
+                <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
+              </div>
+            </details>
+            <details class="assets-group">
+              <summary class="assets-group-summary">Variables and styles</summary>
+              <div class="assets-group-content">
+                <div class="section-heading" role="heading" aria-level="3"><span>Variables</span><div class="heading-actions"><button class="asset-section-action" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">Import</button><button class="asset-section-action" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">Export</button><button class="tiny-icon-button" id="add-variable-collection" type="button" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
+                <div class="image-properties-note token-interop-note">Stored locally · DTCG exports use the default mode.</div>
+                <div id="variable-collections-list" class="variable-collections-list"></div>
+                <input id="design-token-file-input" type="file" accept="application/json,.json" hidden />
+                <div class="section-heading" role="heading" aria-level="3"><span>Color styles</span></div>
+                <div id="color-styles-list" class="color-styles-list"></div>
+                <div class="section-heading" role="heading" aria-level="3"><span>Text styles</span></div>
+                <div id="text-styles-list" class="text-styles-list"></div>
+              </div>
+            </details>
+            <details class="assets-group">
+              <summary class="assets-group-summary">Local fonts</summary>
+              <div class="assets-group-content">
+                <div class="local-font-add-row"><span>Add fonts used by this design.</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
+                <div class="image-properties-note local-fonts-note">Stored on this device · included in .flocal files.</div>
+                <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
+              </div>
+            </details>
           </section>
           <div class="sidebar-footer"><span class="device-icon" aria-hidden="true">◉</span><span id="storage-mode-label" aria-live="polite">Browser storage</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
         </aside>
@@ -82,12 +101,12 @@
             <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
             <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" hidden>
               <div class="image-crop-toolbar-copy">
-                <strong id="image-crop-toolbar-title">Image selected</strong>
-                <span id="image-crop-toolbar-hint">Crop this image or save its look to reuse it later.</span>
+                <strong id="image-crop-toolbar-title">Edit image</strong>
+                <span id="image-crop-toolbar-hint">Crop: tap Crop image, drag over the part to keep, then tap Finish crop. Save recipe reuses these edits on other images.</span>
               </div>
               <div class="image-context-single" id="image-context-single">
-                <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button">Save recipe</button>
-                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button">Crop image</button>
+                <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button" title="Save these image edits to reuse them on other images">Save recipe</button>
+                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Draw a crop on the image, then finish to keep it">Crop image</button>
               </div>
               <div class="image-context-batch" id="image-context-batch" hidden>
                 <select class="select-field image-context-recipe-picker" id="image-context-recipe" aria-label="Choose a saved recipe to apply to selected images"></select>
@@ -97,6 +116,10 @@
             <div class="shape-builder-bar" id="shape-builder-bar" role="toolbar" aria-label="Shape Builder tools" hidden>
               <div class="shape-builder-copy"><strong>Shape Builder</strong><span>Tap to extract · drag across regions to merge</span></div>
               <div class="shape-builder-actions"><button type="button" data-shape-builder-mode="extract" aria-pressed="true">Extract</button><button type="button" data-shape-builder-mode="subtract" aria-pressed="false">Subtract</button><button class="shape-builder-done" type="button" data-action="shape-builder-done">Done</button></div>
+            </div>
+            <div class="pen-drawing-bar" id="pen-drawing-bar" role="toolbar" aria-label="Pen drawing actions" hidden>
+              <div class="pen-drawing-copy"><strong>Draw a path</strong><span>Tap to add points; drag for curves. Tap the first point to close.</span></div>
+              <div class="pen-drawing-actions"><button class="pen-drawing-finish" id="pen-drawing-finish" type="button" disabled>Finish path</button><button id="pen-drawing-cancel" type="button">Cancel</button></div>
             </div>
             <div class="text-editor-overlay" id="text-editor-overlay" contenteditable="true" spellcheck="false" hidden aria-label="Edit text layer"></div>
             <div class="text-format-toolbar" id="text-format-toolbar" role="toolbar" aria-label="Format selected text" hidden>
@@ -139,21 +162,21 @@
             <button class="tool-button is-selected" data-tool="select" data-tool-label="Move" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
             <button class="tool-button" data-tool="scale" data-tool-label="Scale" aria-pressed="false" tabindex="-1" title="Scale (K) · scale layers, strokes, effects, and text together" aria-label="Scale layers and their appearance"><span data-icon="scale"></span><kbd>K</kbd></button>
             <button class="tool-button" data-tool="lasso" data-tool-label="Lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
-            <button class="tool-button" data-tool="frame" data-tool-label="Frame" aria-pressed="false" tabindex="-1" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
+            <button class="tool-button" data-tool="frame" data-tool-label="Frame" aria-pressed="false" tabindex="-1" title="Frame (F) · choose a preset or drag on the canvas to draw" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
             <button class="tool-button" data-tool="slice" data-tool-label="Slice" aria-pressed="false" tabindex="-1" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
-            <button class="tool-button" data-tool="section" data-tool-label="Section" aria-pressed="false" tabindex="-1" title="Section (⇧ S)" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
+            <button class="tool-button" data-tool="section" data-tool-label="Section" aria-pressed="false" tabindex="-1" title="Section (⇧ S) · drag on the canvas to draw a section" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button" data-tool="rectangle" data-tool-label="Rectangle" aria-pressed="false" tabindex="-1" title="Rectangle (R)" aria-label="Rectangle"><span data-icon="rectangle"></span><kbd>R</kbd></button>
-            <button class="tool-button" data-tool="ellipse" data-tool-label="Ellipse" aria-pressed="false" tabindex="-1" title="Ellipse (O)" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
-            <button class="tool-button" data-tool="line" data-tool-label="Line" aria-pressed="false" tabindex="-1" title="Line (L)" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
-            <button class="tool-button" data-tool="polygon" data-tool-label="Polygon" aria-pressed="false" tabindex="-1" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
-            <button class="tool-button" data-tool="star" data-tool-label="Star" aria-pressed="false" tabindex="-1" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="rectangle" data-tool-label="Rectangle" aria-pressed="false" tabindex="-1" title="Rectangle (R) · drag on the canvas to draw" aria-label="Rectangle"><span data-icon="rectangle"></span><kbd>R</kbd></button>
+            <button class="tool-button" data-tool="ellipse" data-tool-label="Ellipse" aria-pressed="false" tabindex="-1" title="Ellipse (O) · drag on the canvas to draw" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
+            <button class="tool-button" data-tool="line" data-tool-label="Line" aria-pressed="false" tabindex="-1" title="Line (L) · drag on the canvas to draw" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
+            <button class="tool-button" data-tool="polygon" data-tool-label="Polygon" aria-pressed="false" tabindex="-1" title="Polygon · drag on the canvas to draw; change the number of sides in Design properties" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="star" data-tool-label="Star" aria-pressed="false" tabindex="-1" title="Star · drag on the canvas to draw; change its points in Design properties" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button" data-tool="eyedropper" data-tool-label="Color" aria-pressed="false" tabindex="-1" title="Eyedropper (I) · sample a color" aria-label="Eyedropper · sample a color"><span data-icon="eye"></span><kbd>I</kbd></button>
-            <button class="tool-button" data-tool="pen" data-tool-label="Pen" aria-pressed="false" tabindex="-1" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
+            <button class="tool-button" data-tool="pen" data-tool-label="Pen" aria-pressed="false" tabindex="-1" title="Pen (P) · tap to add points; drag for curves; choose Finish path when done" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
             <button class="tool-button" data-tool="pencil" data-tool-label="Pencil" aria-pressed="false" tabindex="-1" title="Pencil · draw freehand; stylus pressure varies stroke width, hold Shift for uniform" aria-label="Pencil · draw freehand with stylus pressure"><span data-icon="pencil"></span><kbd></kbd></button>
-            <button class="tool-button" data-tool="text" data-tool-label="Text" aria-pressed="false" tabindex="-1" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
-            <button class="tool-button" data-tool="image" data-tool-label="Image" aria-pressed="false" tabindex="-1" title="Add image from this device (⇧ Ctrl K)" aria-label="Add image from this device"><span data-icon="image"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="text" data-tool-label="Text" aria-pressed="false" tabindex="-1" title="Text (T) · tap or click the canvas, then type" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
+            <button class="tool-button" data-tool="image" data-tool-label="Image" aria-pressed="false" tabindex="-1" title="Add image from this device (⇧ Ctrl K) · choose one or more files to add them to the page" aria-label="Add image from this device"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button hand-tool" data-tool="hand" data-tool-label="Hand" aria-pressed="false" tabindex="-1" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
             <span class="toolbar-separator"></span>
@@ -211,8 +234,8 @@
 
       <dialog class="modal page-pdf-dialog" id="page-pdf-dialog" aria-labelledby="page-pdf-title">
         <form id="page-pdf-form">
-          <div class="modal-title-row"><div><span class="modal-eyebrow">PAGE EXPORT</span><h2 id="page-pdf-title">Export page to PDF</h2></div></div>
-          <p class="modal-copy">Choose a paper size for this page. All visible artwork is fitted inside the page with print margins.</p>
+          <div class="modal-title-row"><div><span class="modal-eyebrow">PDF SHEET</span><h2 id="page-pdf-title">Export artwork to PDF</h2></div></div>
+          <p class="modal-copy">Choose the printed sheet size. This uses visible artwork on the current design page and scales it inside the margins. To set a fixed design size, create or select a frame and set its width and height in Design properties.</p>
           <div class="page-pdf-controls">
             <label class="page-pdf-field"><span>Paper size</span><select class="select-field" id="page-pdf-size" aria-label="PDF paper size">
               <option value="a4">A4</option><option value="letter">US Letter</option><option value="legal">US Legal</option><option value="a3">A3</option><option value="custom">Custom size</option>

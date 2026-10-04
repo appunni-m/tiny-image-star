@@ -186,6 +186,7 @@ const state = {
   fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
+  imageAiToolsExpandedNodeIds: new Set(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic',
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
@@ -1681,17 +1682,46 @@ function selectedImageAssetId() {
 }
 function syncActiveImageSource() { imageEngine.setActiveSource(selectedImageAssetId()); }
 function formatInspectorNumber(value) { return formatEditorNumber(value); }
+const DESIGN_TOOL_STATUS_HINTS = Object.freeze({
+  select: 'Tap an object to select it, or drag to move it.',
+  scale: 'Drag a corner to scale the layer and its appearance.',
+  lasso: 'Drag around layers to select them.',
+  frame: 'Drag on the canvas to draw; open Properties for a frame size preset.',
+  slice: 'Drag over artwork to create an export region.',
+  section: 'Drag on the canvas to draw a section.',
+  rectangle: 'Drag on the canvas to draw a rectangle.',
+  ellipse: 'Drag on the canvas to draw an ellipse.',
+  line: 'Drag on the canvas to draw a line.',
+  polygon: 'Drag on the canvas to draw a polygon.',
+  star: 'Drag on the canvas to draw a star.',
+  eyedropper: 'Tap a color on the canvas to apply it to the selected layer.',
+  pen: 'Tap or click to add points; drag for curves. Use Finish path or tap the first point to close.',
+  pencil: 'Draw a freehand path; stylus pressure varies its width.',
+  text: 'Tap or click the canvas, then type.',
+  hand: 'Drag the canvas to pan; hold Space to pan temporarily.',
+  comment: 'Tap an object to select it, or tap empty canvas to comment; drag to pan.'
+});
 function updateSelectionStatus() {
   const nodes = selectedNodes();
+  const toolHint = DESIGN_TOOL_STATUS_HINTS[state.tool];
+  syncPenDrawingBar();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click objects to select; Shift-click or click/tap the same spot again to choose a nested frame or component; click/tap empty canvas to comment, drag to pan' : `Tool · ${state.tool}`
-      : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
+    : state.tool !== 'select' && toolHint ? `${state.tool[0].toLocaleUpperCase()}${state.tool.slice(1)} · ${toolHint}`
+      : nodes.length === 0 ? `Move / Select · ${toolHint}`
+        : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
     $('#position-status').textContent = `${formatInspectorNumber(geometry.x)}, ${formatInspectorNumber(geometry.y)} · ${formatInspectorNumber(geometry.width)} × ${formatInspectorNumber(geometry.height)}`;
   }
   else $('#position-status').textContent = `${Math.round(state.zoom * 100)}%`;
+}
+function syncPenDrawingBar() {
+  const bar = $('#pen-drawing-bar');
+  if (!bar) return;
+  const active = Boolean(state.penDraft && state.tool === 'pen' && !state.presenting);
+  bar.hidden = !active;
+  $('#pen-drawing-finish').disabled = !active || state.penDraft.anchors.length < 2;
 }
 function showToast(message, duration = 2500) {
   const region = $('#toast-region');
@@ -2259,7 +2289,10 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   const asset = state.assets.get(imageFill.assetId);
   const fillCropActive = state.imageCropMode && state.imageFillCropTarget?.nodeId === node.id && state.imageFillCropTarget?.fillId === fillId;
   const fillCropAvailable = Number.isSafeInteger(asset?.sourceWidth) && Number.isSafeInteger(asset?.sourceHeight);
-  const fillCropButton = `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" data-transform-target="fill" data-fill-id="${escapeHtml(fillId)}" aria-pressed="${fillCropActive}"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}>${fillCropActive ? 'Done adjusting' : 'Adjust image'}</button>${fillCropActive ? '<div class="image-properties-note image-crop-mode-hint">Drag to reposition. Pinch with two fingers to zoom. Changes apply as you release; Undo reverses them. The image stays clipped to this shape.</div>' : imageFill.fit !== 'cover' ? '<div class="image-properties-note">Choose Fill to reposition or zoom this image on the canvas.</div>' : ''}`;
+  const fillCropButton = `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" data-transform-target="fill" data-fill-id="${escapeHtml(fillId)}" aria-label="Position image fill on canvas" aria-pressed="${fillCropActive}"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}>${fillCropActive ? 'Done positioning' : 'Position image'}</button>${fillCropActive ? '<div class="image-properties-note image-crop-mode-hint">Drag the image to reposition it. Pinch or use Zoom to change its size. Tap Done positioning when it looks right; Undo restores the previous position. The image stays inside this shape.</div>' : imageFill.fit !== 'cover' ? '<div class="image-properties-note">Choose Fill to reposition or zoom this image on the canvas.</div>' : ''}`;
+  const cropHelp = imageFill.fit === 'cover'
+    ? 'Fill crops the image to this shape. Choose Position image to move or zoom what shows; use the Crop values below for precise adjustments.'
+    : 'Choose Fill to crop the image to this shape. Then use Position image to move or zoom it, or edit the Crop values below.';
   const tileScale = Math.round((imageFill.scalingFactor ?? 1) * 100);
   const tileScaleControl = `<label class="slider-row image-fill-tile-scale"${imageFill.fit === 'tile' ? '' : ' hidden'}><span>Tile size</span><input type="range" min="1" max="1600" step="1" value="${tileScale}" data-image-fill-field="scalingFactor"${fillData} aria-label="Image fill tile size"${node.locked ? ' disabled' : ''}/><output>${tileScale}%</output></label>`;
   let zoomPercent = 100;
@@ -2271,7 +2304,7 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   }
   const zoomControl = `<div class="slider-row image-fill-zoom-control"><label>Zoom</label><input type="range" min="100" max="800" step="1" value="${zoomPercent}" data-image-fill-zoom data-fill-id="${escapeHtml(fillId)}" aria-label="Image fill zoom"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}/><output>${zoomPercent}%</output></div>`;
   const tone = imageToneControls(adjustments, { fillId, disabled: node.locked });
-  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option><option value="tile"${imageFill.fit === 'tile' ? ' selected' : ''}>Tile</option></select></label>${tileScaleControl}${fields}${tone}${zoomControl}${fillCropButton}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM. Tile size is a percentage of the original image dimensions.</div></div>`;
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option><option value="tile"${imageFill.fit === 'tile' ? ' selected' : ''}>Tile</option></select></label><div class="image-properties-note image-fill-crop-help">${cropHelp}</div>${tileScaleControl}${fields}${tone}${zoomControl}${fillCropButton}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM. Tile size is a percentage of the original image dimensions.</div></div>`;
 }
 function imageToneControls(adjustments, { fillId = '', disabled = false } = {}) {
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
@@ -2442,6 +2475,19 @@ function imageExpansionControls(node) {
     ].map(([side, label, dimension]) => `<label class="property-field"><span class="field-caption">${label} · %</span><input type="number" inputmode="decimal" min="0" max="100" step="1" value="10" data-image-expansion-side="${side}" aria-label="Expand ${label.toLowerCase()} by percent of source ${dimension}"${disabled ? ' disabled' : ''}/></label>`).join('')}</div><button class="primary-button" type="button" data-action="expand-image"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Image expansion is processing.') }"` : ''}>${processing ? 'Expanding image…' : 'Expand image'}</button>${processing ? '<button class="secondary-button" type="button" data-action="cancel-image-expansion">Cancel</button>' : ''}`;
   return section('Expand image · local AI', `<div class="image-expansion-controls">${controls}</div><div class="image-engine-status object-isolation-status" role="status" aria-live="polite">${escapeHtml(status)}</div><div class="image-properties-note">Runs the bundled MI-GAN model through local WebAssembly. The existing layer stays selected; undo or Restore returns to the exact source and size.</div>`);
 }
+
+function imageAiToolsSection(node) {
+  const active = state.backgroundRemovalSourceId === node.id
+    || state.objectIsolationSourceId === node.id
+    || state.resolutionBoostSourceId === node.id
+    || state.imageExpansionSourceId === node.id
+    || state.imageEraseMode && state.selectedIds.includes(node.id);
+  const hasSavedEdit = node.backgroundRemoved === true || node.resolutionBoosted === true
+    || Boolean(node.imageExpansion) || Boolean(node.inpaintStrokes?.length);
+  const open = active || hasSavedEdit || state.imageAiToolsExpandedNodeIds.has(node.id);
+  return `<details class="property-section image-ai-tools" data-image-ai-node-id="${escapeHtml(node.id)}"${open ? ' open' : ''}><summary class="property-heading"><span>More image tools</span><small>Remove background · erase · isolate · expand · upscale</small></summary><div class="image-ai-tools-content"><p class="image-properties-note">These tools run on this device. Your original image stays available for undo or restore.</p>${imageEraseControls(node)}${objectIsolationControls(node)}${backgroundRemovalControls(node)}${resolutionBoostControls(node)}${imageExpansionControls(node)}</div></details>`;
+}
+
 function imageTransformControls(transforms, target, disabled = false, fillId = '', nodeId = null) {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
@@ -4252,7 +4298,7 @@ function renderInspector() {
   if (!entries.length) {
     const page = activePage();
     const framePresets = state.tool === 'frame' ? framePresetPicker() : '';
-    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, frame, or text. Select an image and choose Crop image to edit its visible area.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div>`)}`;
+    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, frame, or text. To crop an image, select it, choose Crop image, drag over what you want to keep, then choose Finish crop.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div>`)}`;
     return;
   }
   if (entries.length > 1) {
@@ -4398,11 +4444,7 @@ function renderInspector() {
   body += sizeLimitsSection(node, parent);
   if (node.type === 'image') {
     body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option><option value="tile">Tile</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field image-tile-scale"${node.fit === 'tile' ? '' : ' hidden'}><span>Tile size</span><input class="prop-input" data-prop="scalingFactor" type="range" min="1" max="1600" step="1" value="${Math.round((node.scalingFactor ?? 1) * 100)}" aria-label="Image tile size"/><output>${Math.round((node.scalingFactor ?? 1) * 100)}%</output></label><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, adjustments, and object erase at the original image resolution. Tile size and output settings are also saved in recipes for batch export.</div>`);
-    body += imageEraseControls(node);
-    body += objectIsolationControls(node);
-    body += backgroundRemovalControls(node);
-    body += resolutionBoostControls(node);
-    body += imageExpansionControls(node);
+    body += imageAiToolsSection(node);
   }
   body += exportSettingsSection(node);
   content.innerHTML = body;
@@ -4863,10 +4905,11 @@ function startPenPath(world, pointerType = 'mouse') {
       anchors: [{ ...point, in: { ...point }, out: { ...point }, ...(existing ? { vertexId: existing.vertexId } : {}) }]
     };
     state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false, penDraftBefore: null };
-    showToast(existing ? 'Starting at a shared point · add a branch, connect another point, then press Enter.' : 'Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
+      showToast(existing ? 'Starting at a shared point · add a branch or connect another point, then choose Finish path.' : 'Tap to add points · drag for curves · choose Finish path when done.', 5000);
   }
   state.penHover = world;
-  $('#selection-status').textContent = 'Pen · draw connected vector networks · Enter finish · Esc cancel';
+  $('#selection-status').textContent = 'Pen · tap to add points; drag for curves; choose Finish path when done';
+  syncPenDrawingBar();
   renderer.invalidate();
 }
 
@@ -8967,8 +9010,8 @@ function syncImageCropToolbar() {
   }
 
   if (!active && singleImage) {
-    $('#image-crop-toolbar-title').textContent = 'Image selected';
-    $('#image-crop-toolbar-hint').textContent = 'Crop this image or save its look to reuse it later.';
+    $('#image-crop-toolbar-title').textContent = 'Edit image';
+    $('#image-crop-toolbar-hint').textContent = 'Crop: tap Crop image, drag over the part to keep, then tap Finish crop. Save recipe reuses these edits on other images.';
     action.textContent = 'Crop image';
     action.disabled = node.locked || !imageCropContext(node);
     return;
@@ -8977,9 +9020,9 @@ function syncImageCropToolbar() {
   const adjustingFill = Boolean(state.imageFillCropTarget);
   $('#image-crop-toolbar-title').textContent = adjustingFill ? 'Adjust image fill' : 'Crop image';
   $('#image-crop-toolbar-hint').textContent = adjustingFill
-    ? 'Drag to reposition the image, or pinch to zoom. Changes apply as you release; Undo reverses them.'
-    : 'Drag on the image to choose what stays visible. Drag an edge or corner to fine-tune. Changes apply as you release; Undo reverses them.';
-  action.textContent = adjustingFill ? 'Done adjusting' : 'Finish crop';
+    ? 'Drag to reposition the image, or pinch / use Zoom to resize it. Tap Done positioning when ready; Undo restores the previous position.'
+    : 'Drag across the part you want to keep. Drag an edge or corner to adjust it. Tap Finish crop; Undo restores the previous crop.';
+  action.textContent = adjustingFill ? 'Done positioning' : 'Finish crop';
   action.disabled = false;
 }
 
@@ -14216,11 +14259,11 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
     { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
     { label: exportLabel, action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
-    { label: 'Export selected frame as 1× raster PDF', action: () => { exportSelectedFrameRasterPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a raster PDF.')); }, disabled: !selectedFrame },
-    { label: 'Export page to PDF…', action: openPagePdfDialog },
-    { label: 'Export current page frames as multipage raster PDF', action: () => { exportActivePageRasterPdf().catch(error => showToast(error.message || 'Could not export this page as a raster PDF.')); } },
-    { label: 'Export selected frame as vector PDF', action: () => { exportSelectedFrameVectorPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a vector PDF.')); }, disabled: !selectedFrame },
-    { label: 'Export current page frames as multipage vector PDF', action: () => { exportActivePageVectorPdf().catch(error => showToast(error.message || 'Could not export this page as a vector PDF.')); } },
+    { label: 'Export selected frame · raster PDF at design size', action: () => { exportSelectedFrameRasterPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a raster PDF.')); }, disabled: !selectedFrame },
+    { label: 'Fit page artwork to a PDF sheet…', action: openPagePdfDialog },
+    { label: 'Export each frame as a raster PDF page', action: () => { exportActivePageRasterPdf().catch(error => showToast(error.message || 'Could not export this page as a raster PDF.')); } },
+    { label: 'Export selected frame · editable vector PDF', action: () => { exportSelectedFrameVectorPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a vector PDF.')); }, disabled: !selectedFrame },
+    { label: 'Export each frame as an editable vector PDF page', action: () => { exportActivePageVectorPdf().catch(error => showToast(error.message || 'Could not export this page as a vector PDF.')); } },
     { label: 'Export selected layer as SVG', action: () => { exportSelectedNodeSvg(rootSelectedIds()[0]).catch(error => showToast(error.message || 'Could not export this layer as SVG.')); }, disabled: rootSelectedIds().length !== 1 },
     { label: 'Export current page as SVG', action: () => { exportActivePageSvg().catch(error => showToast(error.message || 'Could not export this page as SVG.')); } },
     { separator: true },
@@ -21511,6 +21554,12 @@ function initEvents() {
   $('#inspector-content').addEventListener('pointerup', finishGradientStopPointer);
   $('#inspector-content').addEventListener('pointercancel', finishGradientStopPointer);
   $('#inspector-content').addEventListener('lostpointercapture', finishGradientStopPointer);
+  $('#inspector-content').addEventListener('toggle', event => {
+    const disclosure = event.target.closest?.('.image-ai-tools[data-image-ai-node-id]');
+    if (!disclosure) return;
+    if (disclosure.open) state.imageAiToolsExpandedNodeIds.add(disclosure.dataset.imageAiNodeId);
+    else state.imageAiToolsExpandedNodeIds.delete(disclosure.dataset.imageAiNodeId);
+  }, true);
   $('#inspector-content').addEventListener('pointerover', event => {
     showComponentPropertyTarget(event.target.closest('[data-component-property-highlight]'));
   });
@@ -21576,6 +21625,15 @@ function initEvents() {
     event.preventDefault(); submitCommentForm(form);
   });
   $('#image-crop-toolbar-done').addEventListener('click', toggleSelectedImageCropMode);
+  $('#pen-drawing-finish').addEventListener('click', () => {
+    if (finishPenPath(false)) canvas.focus({ preventScroll: true });
+  });
+  $('#pen-drawing-cancel').addEventListener('click', () => {
+    if (!state.penDraft) return;
+    cancelPenPath();
+    showToast('Vector path cancelled.');
+    canvas.focus({ preventScroll: true });
+  });
   $('#image-context-save-recipe').addEventListener('click', () => {
     const node = state.selectedIds.length === 1 ? selectedNodes()[0] : null;
     if (node?.type === 'image') saveRecipeFor(node.id);

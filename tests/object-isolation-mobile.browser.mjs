@@ -95,6 +95,8 @@ try {
   click(app, app.querySelector('[data-inspector-tab="design"]'));
   await waitFor(() => Boolean(app.querySelector('[data-action="toggle-object-isolation-mode"]')), 'phone Design controls for the selected image');
   assert(app.querySelector('#canvas-region').inert, 'The phone Design sheet should keep focus in the inspector while controls are being used.');
+  const imageAiTools = await waitFor(() => app.querySelector('#inspector-content .image-ai-tools'), 'phone local AI image tools disclosure');
+  imageAiTools.open = true;
   const selectArea = app.querySelector('[data-action="toggle-object-isolation-mode"]');
   const isolate = app.querySelector('[data-action="create-object-isolation-layer"]');
   const modes = [...app.querySelectorAll('[data-action="set-object-isolation-mode"]')];
