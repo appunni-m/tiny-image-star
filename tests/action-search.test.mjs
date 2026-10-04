@@ -15,6 +15,7 @@ const [html, main, styles, readme] = await Promise.all([
 const actions = [
   { id: 'add-image', label: 'Add image', description: 'Choose a photo from this device.', keywords: ['images', 'photo', 'photos', 'picture', 'pictures', 'import', 'crop image'] },
   { id: 'crop-image', label: 'Crop image', description: 'Drag over the part to keep, then finish the crop.', keywords: ['trim', 'cut', 'photo', 'photos', 'image', 'images', 'cropping'] },
+  { id: 'add-text', label: 'Add text', description: 'Choose the text tool, then click or drag on the canvas.', keywords: ['type', 'label', 'title', 'copy'] },
   { id: 'export-pdf', label: 'Export page as PDF', description: 'Choose a paper size and save a local PDF.', keywords: ['print', 'document'] },
   { id: 'erase-image-object', label: 'Erase an object from an image', description: 'Brush over the object, then finish erasing.', keywords: ['erase object', 'erase objects', 'remove object', 'remove objects', 'remove person', 'remove people', 'magic erase'] },
   { id: 'isolate-image-subject', label: 'Cut out or isolate a subject', description: 'Draw around the subject and create a transparent layer.', keywords: ['select subject', 'isolate subject', 'transparent cutout'] },
@@ -39,6 +40,19 @@ test('action search understands full questions, aliases, and accented text', () 
   assert.deepEqual(searchActions(actions, 'upscale photo').map(action => action.id), ['boost-image-resolution']);
   assert.deepEqual(searchActions(actions, 'How do I remove the background from a photo?').map(action => action.id), ['remove-image-background']);
   assert.deepEqual(searchActions(actions, 'How do I select multiple images for a recipe?').map(action => action.id), ['apply-image-recipe']);
+});
+
+test('beginner task suggestions lead to the matching action', () => {
+  const suggestions = [
+    ['How do I crop an image?', 'crop-image'],
+    ['remove image background', 'remove-image-background'],
+    ['add text', 'add-text'],
+    ['apply recipe to selected images', 'apply-image-recipe'],
+    ['export page as PDF', 'export-pdf']
+  ];
+  for (const [query, expectedId] of suggestions) {
+    assert.ok(searchActions(actions, query).some(action => action.id === expectedId), `${query} should find ${expectedId}`);
+  }
 });
 
 test('action search requires every meaningful term and preserves source order for ties', () => {
@@ -175,6 +189,22 @@ test('task help is directly reachable on touch and keeps the full instructions v
   const descriptionRule = styles.match(/\.quick-action-option-description\s*\{([^}]*)\}/)?.[1] || '';
   assert.doesNotMatch(descriptionRule, /(?:overflow:\s*hidden|white-space:\s*nowrap|text-overflow:\s*ellipsis)/,
     'action instructions should not be cut off at the end of one line');
+  assert.match(html, /id="quick-actions-suggestions"[^>]*aria-label="Suggested tasks"[\s\S]*?Crop an image[\s\S]*?Remove background[\s\S]*?Add text[\s\S]*?Apply an image recipe[\s\S]*?Export PDF/,
+    'the help screen should show concrete starter tasks before the user knows what to search for');
+  assert.match(main, /const normalizedQuery = normalizeActionSearchText\(query\)[\s\S]*?suggestions\.hidden = Boolean\(normalizedQuery\)[\s\S]*?const actions = normalizedQuery \? searchActions\(quickActionCatalog\(\), query, \{ limit: 20 \}\) : \[\]/,
+    'the initial help screen should stay focused on suggestions until a task is searched');
+  assert.match(main, /empty\.hidden = !normalizedQuery \|\| actions\.length > 0/,
+    'an empty initial query should not be presented as a failed search');
+  assert.match(main, /import \{ normalizeActionSearchText, searchActions \} from '\.\/action-search\.js'/,
+    'suggestion visibility should use the shared query normalization function');
+  assert.match(main, /\$\('#quick-actions-suggestions'\)\.addEventListener\('click'[\s\S]*?input\.value = suggestion\.dataset\.quickActionQuery[\s\S]*?renderQuickActionResults\(input\.value\)/,
+    'a starter task should fill the search without running it unexpectedly');
+  assert.match(styles, /\.quick-action-suggestion\s*\{[^}]*min-height:\s*44px/,
+    'starter tasks should have touch-sized targets on small screens');
+  assert.match(html, /aria-label="Design tools\. Swipe or scroll horizontally to reveal all tools/,
+    'the mobile toolbar should announce how to reach tools outside its first viewport');
+  assert.match(styles, /\.bottom-toolbar::after\s*\{[^}]*content:\s*"More ›"/,
+    'the phone toolbar should visibly label its horizontal overflow');
 });
 
 test('empty canvas offers direct start actions and explains pages versus fixed-size frames', () => {
@@ -196,6 +226,8 @@ test('empty canvas offers direct start actions and explains pages versus fixed-s
 
 test('crop help distinguishes standalone photos from photos placed inside shapes', () => {
   assert.match(main, /id: 'crop-image-fill', label: 'Crop image inside shape'/);
+  assert.match(main, /set its Scale menu to Fill in Design properties, then choose Crop \/ position image/);
+  assert.match(main, /set the image’s Scale menu to Fill before repositioning it/);
   assert.match(main, /applyInspectorAction\('toggle-image-crop-mode', \{ transformTarget: 'fill', fillId: selectedImageFill\.id \}\)/);
   assert.match(main, /This photo is inside a shape\. Use Crop image inside shape below\./);
   assert.match(main, /Visible source edges · %/);

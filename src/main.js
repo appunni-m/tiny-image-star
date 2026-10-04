@@ -17,7 +17,7 @@ import { imageErasePointFromDisplay, imageEraseRadiusFraction, imageEraseRadiusL
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
 import { createFallbackImage, createPillowFallbackImage, FALLBACK_IMAGE_MAX_EDGE, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback, shouldPreferPillowFallback } from './image-intake.js';
-import { searchActions } from './action-search.js';
+import { normalizeActionSearchText, searchActions } from './action-search.js';
 import { createEditorToolActions } from './editor-tool-tasks.js';
 import { createEditorLayerActions } from './editor-layer-tasks.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
@@ -66,7 +66,7 @@ import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWo
 import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, readWorkspaceFontAssetOrRestore, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
 import { workspaceEditingAccess } from './workspace/editing-access.js';
-import { workspaceOnboardingCopy } from './workspace/onboarding-copy.js';
+import { shouldRequireWorkspaceOnboarding, workspaceOnboardingCopy } from './workspace/onboarding-copy.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { canvasFontWeight, fontVariationInspectionStatus, fontVariationSettings, inspectFontVariationAxes, isValidFontVariationValues, setFontVariationValue } from './font-variation.js';
 import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings, setFontFeatureValue } from './font-features.js';
@@ -14416,7 +14416,7 @@ function quickActionCatalog() {
   const imageFillCropUnavailableReason = batchReason || (selectedImageFills.length !== 1
     ? 'Choose one visible image fill in Design properties.'
     : selectedImageLocked ? 'Unlock this shape and its parent layers before positioning its image.'
-      : selectedImageFill.imageFill?.fit !== 'cover' ? 'In Design properties, change Scale to Fill before positioning this image.'
+      : selectedImageFill.imageFill?.fit !== 'cover' ? 'In Design properties, set the image’s Scale menu to Fill before repositioning it.'
         : !selectedImageFillCropContext ? 'The image source or dimensions are not ready yet.' : '');
   const recipeDisabledReason = batchReason || (!imageLayers.length
     ? 'Choose Select multiple in Layers, then click or tap the image layers you want to update.'
@@ -14455,7 +14455,7 @@ function quickActionCatalog() {
       id: 'crop-image-fill', label: 'Crop image inside shape',
       description: selectedImageFillCropContext
         ? 'Drag the photo inside its shape to choose what shows. Pinch or use Zoom to resize it.'
-        : 'Select a shape with one visible image fill. Choose Fill in Design properties before positioning it.',
+        : 'Select a shape with one visible photo, set its Scale menu to Fill in Design properties, then choose Crop / position image.',
       keywords: ['crop image', 'crop photo in shape', 'position image', 'reposition photo', 'image fill', 'image inside shape'],
       disabled: Boolean(imageFillCropUnavailableReason),
       unavailableReason: imageFillCropUnavailableReason,
@@ -14619,10 +14619,13 @@ function quickActionCatalog() {
 function renderQuickActionResults(query = $('#quick-actions-search').value) {
   const results = $('#quick-actions-results');
   const empty = $('#quick-actions-empty');
+  const normalizedQuery = normalizeActionSearchText(query);
+  const suggestions = $('#quick-actions-suggestions');
+  if (suggestions) suggestions.hidden = Boolean(normalizedQuery);
   quickActionActions = new Map();
   results.replaceChildren();
-  const actions = searchActions(quickActionCatalog(), query, { limit: 20 });
-  empty.hidden = actions.length > 0;
+  const actions = normalizedQuery ? searchActions(quickActionCatalog(), query, { limit: 20 }) : [];
+  empty.hidden = !normalizedQuery || actions.length > 0;
   for (const [index, action] of actions.entries()) {
     quickActionActions.set(action.id, action);
     const option = document.createElement('button');
@@ -22418,6 +22421,15 @@ function initEvents() {
   $('#help-actions-button').addEventListener('click', () => openQuickActions());
   $('#quick-actions-close').addEventListener('click', () => $('#quick-actions-dialog').close('close'));
   $('#quick-actions-search').addEventListener('input', event => renderQuickActionResults(event.currentTarget.value));
+  $('#quick-actions-suggestions').addEventListener('click', event => {
+    const suggestion = event.target.closest('[data-quick-action-query]');
+    if (!suggestion) return;
+    const input = $('#quick-actions-search');
+    input.value = suggestion.dataset.quickActionQuery;
+    renderQuickActionResults(input.value);
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
   $('#quick-actions-search').addEventListener('keydown', event => {
     if (event.key === 'ArrowDown') {
       event.preventDefault(); moveQuickActionSelection(1);
@@ -23003,7 +23015,12 @@ async function boot() {
     }
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
   const reopenedFolder = await restoreSavedWorkspaceOnBoot();
-  state.workspaceOnboardingRequired = !reopenedFolder && !state.workspace && !state.workspacePermissionNeeded;
+  state.workspaceOnboardingRequired = shouldRequireWorkspaceOnboarding({
+    folderReopened: reopenedFolder,
+    workspaceActive: Boolean(state.workspace),
+    permissionNeeded: state.workspacePermissionNeeded,
+    restoredSavedDesign: restoredSavedDocument
+  });
   if (!state.workspace && !state.workspacePermissionNeeded && !state.workspaceOnboardingRequired) {
     try { migratedImageLibrary = await ensureImageLibraryCompatibility(state.document); }
     catch (error) { console.warn('Could not migrate legacy image sources into the reusable image library.', error); }

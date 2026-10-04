@@ -174,7 +174,7 @@
             <span class="zoom-divider"></span>
             <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
           </div>
-          <div class="bottom-toolbar" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Design tools. Use the arrow keys to move between tools, then Enter or Space to select.">
+          <div class="bottom-toolbar" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Design tools. Swipe or scroll horizontally to reveal all tools; use arrow keys to move between tools, then Enter or Space to select.">
             <button class="tool-button is-selected" data-tool="select" data-tool-label="Move" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
             <button class="tool-button" data-tool="scale" data-tool-label="Scale" aria-pressed="false" tabindex="-1" title="Scale (K) · scale layers, strokes, effects, and text together" aria-label="Scale layers and their appearance"><span data-icon="scale"></span><kbd>K</kbd></button>
             <button class="tool-button" data-tool="lasso" data-tool-label="Lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
@@ -257,6 +257,13 @@
           <label class="sr-only" for="quick-actions-search">Search actions</label>
           <input class="text-field quick-actions-search" id="quick-actions-search" type="search" role="combobox" aria-autocomplete="list" aria-controls="quick-actions-results" aria-expanded="false" autocomplete="off" placeholder="Try “How do I crop an image?”" />
           <p class="quick-actions-help" id="quick-actions-help">Type a task or question in your own words, such as “How do you crop an image?”</p>
+          <div class="quick-actions-suggestions" id="quick-actions-suggestions" aria-label="Suggested tasks">
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="How do I crop an image?">Crop an image</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="remove image background">Remove background</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="add text">Add text</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="apply recipe to selected images">Apply an image recipe</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="export page as PDF">Export PDF</button>
+          </div>
           <div class="quick-actions-results" id="quick-actions-results" role="listbox" aria-label="Matching actions"></div>
           <p class="quick-actions-empty" id="quick-actions-empty" role="status" aria-live="polite" hidden>No matching action. Try a shorter word such as crop, image, recipe, text, or export.</p>
           <div class="quick-actions-footer"><span>↑ ↓ Choose</span><span>Enter Open</span><span>Esc Close</span><kbd>⌘K / Ctrl+K</kbd></div>

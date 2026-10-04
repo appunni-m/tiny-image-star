@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { workspaceEditingAccess } from '../src/workspace/editing-access.js';
-import { workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
+import { shouldRequireWorkspaceOnboarding, workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
 
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
@@ -21,6 +21,23 @@ test('workspace onboarding describes only storage choices available on this brow
   assert.match(browser.status, /export a local design file from File/);
   assert.match(browser.status, /stay in this browser profile/);
   assert.match(folder.status, /choose browser storage for solo editing/);
+});
+
+test('a saved browser design remembers the storage choice on reload', () => {
+  assert.equal(shouldRequireWorkspaceOnboarding(), true, 'a genuinely new workspace still asks where designs should live');
+  assert.equal(shouldRequireWorkspaceOnboarding({ restoredSavedDesign: true }), false);
+  assert.equal(shouldRequireWorkspaceOnboarding({ folderReopened: true }), false);
+  assert.equal(shouldRequireWorkspaceOnboarding({ workspaceActive: true }), false);
+  assert.equal(shouldRequireWorkspaceOnboarding({ permissionNeeded: true }), false,
+    'a missing folder permission follows its dedicated reconnect path');
+
+  const start = mainSource.indexOf('async function boot()');
+  const onboardingGate = mainSource.indexOf('state.workspaceOnboardingRequired = shouldRequireWorkspaceOnboarding({', start);
+  assert.ok(start >= 0 && onboardingGate > start);
+  const boot = mainSource.slice(start, onboardingGate + 400);
+  assert.match(boot, /restoredSavedDocument = true/);
+  assert.match(boot, /shouldRequireWorkspaceOnboarding\(\{[\s\S]*?folderReopened:\s*reopenedFolder,[\s\S]*?restoredSavedDesign/,
+    'boot should skip first-use onboarding when an editable browser design was restored');
 });
 
 test('folder permission recovery keeps File navigation available and canvas editing blocked', () => {

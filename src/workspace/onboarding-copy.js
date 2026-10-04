@@ -11,3 +11,13 @@ export function workspaceOnboardingCopy({ folderPickerAvailable = false } = {}) 
     status: 'Continue with browser storage for solo editing. Your designs stay in this browser profile; export a local design file from File for backup or transfer.'
   };
 }
+
+/** Require a storage choice only when there is no usable local design or folder workspace yet. */
+export function shouldRequireWorkspaceOnboarding({
+  folderReopened = false,
+  workspaceActive = false,
+  permissionNeeded = false,
+  restoredSavedDesign = false,
+} = {}) {
+  return !folderReopened && !workspaceActive && !permissionNeeded && !restoredSavedDesign;
+}
