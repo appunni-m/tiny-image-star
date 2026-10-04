@@ -160,6 +160,48 @@ test('single-image and multi-image canvas actions route to the existing recipe a
   assert.match(actions, /closeMobilePanels\(\{ restoreFocus: false \}\)/);
 });
 
+test('a shape with one visible image fill exposes an unambiguous canvas crop and position action', () => {
+  const target = main.match(/function uniqueVisibleShapeImageFill\(node\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(target, 'expected a helper that resolves one shape image fill for direct positioning');
+  assert.match(target, /fill\.type === 'image'[\s\S]*?fill\.visible !== false[\s\S]*?\(fill\.opacity \?\? 1\) > 0/,
+    'hidden and fully transparent image fills must not create a misleading crop action');
+  assert.match(target, /fills\.length === 1 \? fills\[0\] : null/,
+    'multiple visible image fills must keep using the explicitly targeted Inspector controls');
+
+  const reason = main.match(/function shapeImageFillCropUnavailableReason\(node, fill\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(reason, /Choose Fill in Design properties to crop or position this image\./,
+    'Fit and Tile fills should say exactly how to enable positioning');
+  assert.match(reason, /imageFillCropContext\(node, fill\.id\)/,
+    'the shortcut must share the crop-mode source and geometry eligibility checks');
+
+  const syncStart = main.indexOf('function syncImageCropToolbar()');
+  const syncEnd = main.indexOf('\nfunction toggleSelectedImageCropMode()', syncStart);
+  const sync = main.slice(syncStart, syncEnd);
+  assert.match(sync, /const shapeImageFill = uniqueVisibleShapeImageFill\(node\)/);
+  assert.match(sync, /active \|\| singleImage \|\| singleShapeImageFill \|\| batchImages/,
+    'the contextual bar should appear for the one unambiguous shape fill');
+  assert.match(sync, /adjustAction\.hidden = active \|\| !singleImage/);
+  assert.match(sync, /saveRecipeAction\.hidden = active \|\| !singleImage/,
+    'shape selection must not expose image-layer-only Adjust and Save recipe actions');
+  assert.match(sync, /action\.textContent = 'Crop \/ position image'/);
+  assert.match(sync, /action\.disabled = Boolean\(unavailableReason\)/,
+    'unusable or locked fills must remain visible with their specific explanation');
+  assert.match(sync, /action\.textContent = adjustingFill \? 'Done positioning' : 'Finish crop'/,
+    'the existing contextual action must finish image-fill positioning in place');
+  assert.match(sync, /singleActions\.dataset\.imageFillContext = String\(singleShapeImageFill \|\| active && adjustingFill\)/,
+    'phone layout should give the shape crop action and Finish control the full toolbar width');
+
+  const toggleStart = main.indexOf('function toggleSelectedImageCropMode()');
+  const toggleEnd = main.indexOf('\nfunction finishImageCropMode()', toggleStart);
+  const toggle = main.slice(toggleStart, toggleEnd);
+  assert.match(toggle, /const fill = uniqueVisibleShapeImageFill\(node\)/);
+  assert.match(toggle, /state\.imageFillCropTarget = \{ nodeId: node\.id, fillId: fill\.id \}/,
+    'starting from the canvas bar must enter the existing targeted fill-crop mode');
+
+  assert.match(css, /\.image-context-single\[data-image-fill-context="true"\] #image-crop-toolbar-done \{ grid-column: 1 \/ -1; \}/,
+    'the contextual action must remain a usable full-width target on phones');
+});
+
 test('floating recipe controls retain finger-sized touch targets on mobile', () => {
   assert.match(css, /\.image-context-adjustments, \.image-context-save-recipe, \.image-context-undo, \.image-context-recipe-picker, \.image-context-apply-recipe, \.image-crop-toolbar-done\s*\{[^}]*min-height:\s*44px/);
 });

@@ -9043,6 +9043,30 @@ function syncImageCropOverlay() {
   return context;
 }
 
+function uniqueVisibleShapeImageFill(node) {
+  if (!node || node.type === 'image') return null;
+  const fills = fillStackForNode(node).filter(fill => fill.type === 'image'
+    && fill.visible !== false && (fill.opacity ?? 1) > 0
+    && typeof fill.id === 'string' && typeof fill.imageFill?.assetId === 'string');
+  return fills.length === 1 ? fills[0] : null;
+}
+
+function shapeImageFillCropUnavailableReason(node, fill) {
+  if (!node || !fill) return 'Select a shape with one visible image fill to crop or position it.';
+  const entry = findNode(state.document, node.id);
+  if (node.locked || entry?.parents.some(parent => parent.locked)) {
+    return 'Unlock this shape and its parent layers before positioning its image.';
+  }
+  if (fill.imageFill.fit !== 'cover') {
+    return 'Choose Fill in Design properties to crop or position this image.';
+  }
+  const asset = state.assets.get(fill.imageFill.assetId);
+  if (!Number.isSafeInteger(asset?.sourceWidth) || !Number.isSafeInteger(asset?.sourceHeight)) {
+    return 'Wait for the image source to load before positioning it.';
+  }
+  return imageFillCropContext(node, fill.id) ? '' : 'This image fill cannot be positioned on the canvas.';
+}
+
 function syncImageCropToolbar() {
   const toolbar = $('#image-crop-toolbar');
   if (!toolbar) return;
@@ -9050,11 +9074,13 @@ function syncImageCropToolbar() {
   const selectedImages = [...new Map(selection.filter(node => node.type === 'image').map(node => [node.id, node])).values()];
   const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
   const isImage = node?.type === 'image';
+  const shapeImageFill = uniqueVisibleShapeImageFill(node);
   const active = Boolean(state.imageCropMode && node && (isImage || state.imageFillCropTarget?.nodeId === node.id));
   toolbar.dataset.cropMode = String(active);
   const singleImage = state.selectedIds.length === 1 && isImage;
+  const singleShapeImageFill = state.selectedIds.length === 1 && Boolean(shapeImageFill);
   const batchImages = selectedImages.length > 1;
-  toolbar.hidden = Boolean(state.bulk) || !(active || singleImage || batchImages);
+  toolbar.hidden = Boolean(state.bulk) || !(active || singleImage || singleShapeImageFill || batchImages);
   if (toolbar.hidden) return;
 
   const action = $('#image-crop-toolbar-done');
@@ -9063,12 +9089,13 @@ function syncImageCropToolbar() {
   const adjustAction = $('#image-context-adjustments');
   const saveRecipeAction = $('#image-context-save-recipe');
   const undoCropAction = $('#image-crop-toolbar-undo');
-  singleActions.hidden = !(active || singleImage);
-  adjustAction.hidden = active;
+  singleActions.hidden = !(active || singleImage || singleShapeImageFill);
+  adjustAction.hidden = active || !singleImage;
   adjustAction.disabled = Boolean(node?.locked || active);
-  saveRecipeAction.hidden = active;
+  saveRecipeAction.hidden = active || !singleImage;
   batchActions.hidden = active || !batchImages;
   const adjustingFill = Boolean(state.imageFillCropTarget);
+  singleActions.dataset.imageFillContext = String(singleShapeImageFill || active && adjustingFill);
   const currentImageTarget = active
     ? adjustingFill ? imageFillTarget(node, state.imageFillCropTarget.fillId) : node
     : null;
@@ -9116,6 +9143,16 @@ function syncImageCropToolbar() {
     action.disabled = node.locked || !cropContext;
     return;
   }
+  if (!active && singleShapeImageFill) {
+    const unavailableReason = shapeImageFillCropUnavailableReason(node, shapeImageFill);
+    $('#image-crop-toolbar-title').textContent = 'Edit image fill';
+    $('#image-crop-toolbar-hint').textContent = unavailableReason
+      || 'Position the photo inside this shape. Drag it, pinch to zoom, then choose Done positioning.';
+    action.textContent = 'Crop / position image';
+    action.title = unavailableReason || 'Position or zoom the photo inside this shape';
+    action.disabled = Boolean(unavailableReason);
+    return;
+  }
   if (!active) return;
   $('#image-crop-toolbar-title').textContent = adjustingFill ? 'Adjust image fill' : 'Crop image';
   $('#image-crop-toolbar-hint').textContent = adjustingFill
@@ -9134,9 +9171,17 @@ function toggleSelectedImageCropMode() {
     return;
   }
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  if (node?.type !== 'image' || node.locked || !imageCropContext(node)) return;
-  state.imageCropMode = true;
-  state.imageFillCropTarget = null;
+  if (node?.type === 'image') {
+    if (node.locked || !imageCropContext(node)) return;
+    state.imageCropMode = true;
+    state.imageFillCropTarget = null;
+  } else {
+    const fill = uniqueVisibleShapeImageFill(node);
+    const unavailableReason = shapeImageFillCropUnavailableReason(node, fill);
+    if (unavailableReason) { showToast(unavailableReason); return; }
+    state.imageCropMode = true;
+    state.imageFillCropTarget = { nodeId: node.id, fillId: fill.id };
+  }
   state.imageCropDraftSelection = null;
   syncImageCropOverlay();
   renderInspector();
@@ -12913,6 +12958,10 @@ function renderBulkBar() {
         : `Editing original layers · ${bulk.inflight} queued or processing${bulk.localAiRequired ? ` · ${localModelWorkerActive ? bulk.localAiStage || 'local image model' : bulk.localAiWaiting ? 'waiting for local image model' : 'one serialized local image model'} · ${localAiCpuReservationDescription(bulk)}` : ''}`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
+  const progressTrack = $('#bulk-progress-track');
+  progressTrack.setAttribute('aria-valuemax', String(Math.max(1, total)));
+  progressTrack.setAttribute('aria-valuenow', String(Math.min(total, bulk.completed)));
+  progressTrack.setAttribute('aria-valuetext', `${Math.min(total, bulk.completed)} of ${total} images processed`);
   $('#bulk-rate').textContent = formatImageRecipeBatchTiming(bulk);
   const timing = imageRecipeBatchTiming(bulk);
   $('#bulk-rate').title = `Historical average and trailing 5-second throughput. Paused time and paused completions are excluded; ETA uses the historical average.${bulk.localAiRequired ? ' The reported image rate includes local AI processing and the Pillow-RS render.' : ''}${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;

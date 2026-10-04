@@ -1577,6 +1577,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .image-context-single { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .image-context-single[data-crop-mode="true"][data-crop-undo-available="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .image-context-single[data-crop-mode="true"][data-crop-undo-available="false"] { grid-template-columns: minmax(0, 1fr); }
+  .image-context-single[data-image-fill-context="true"] #image-crop-toolbar-done { grid-column: 1 / -1; }
   .image-context-batch { display: grid; grid-template-columns: minmax(0, 1fr); }
   .image-context-adjustments, .image-context-save-recipe, .image-context-undo, .image-context-recipe-picker, .image-context-apply-recipe, .image-crop-toolbar-done { box-sizing: border-box; width: 100%; min-width: 0; height: 44px; min-height: 44px; padding-inline: 5px; font-size: 12px; }
   .pen-drawing-bar { bottom: calc(74px + max(env(safe-area-inset-bottom), 8px)); width: calc(100% - 16px); max-width: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; border-radius: 12px; }

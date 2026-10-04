@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from '../src/bulk-recipe-a11y.js';
+
+const [html, main] = await Promise.all([
+  readFile(new URL('../index.html', import.meta.url), 'utf8'),
+  readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
+]);
 
 const activeBatch = {
   recipe: { name: 'Warm light' }, targets: ['a', 'b', 'c'], completed: 0,
@@ -18,6 +24,17 @@ test('worker readout keeps active batch work visible beside its adjustable cap',
   assert.equal(formatImageRecipeWorkerReadout(3, 4), '3/4 active');
   assert.equal(formatImageRecipeWorkerReadout(-1, 0), '0/1 active');
   assert.equal(formatImageRecipeWorkerReadout(Number.NaN, Number.NaN), '0/1 active');
+});
+
+test('the live visual batch progress exposes its current image count to assistive technology', () => {
+  const progress = html.match(/<div class="bulk-progress-track"[^>]*>/)?.[0] || '';
+  assert.match(progress, /role="progressbar"/);
+  assert.match(progress, /aria-label="Images processed"/);
+  assert.match(progress, /aria-valuemin="0"[^>]*aria-valuemax="1"[^>]*aria-valuenow="0"/);
+  assert.match(progress, /aria-valuetext="0 of 0 images processed"/);
+  assert.match(main, /progressTrack\.setAttribute\('aria-valuemax', String\(Math\.max\(1, total\)\)\)/);
+  assert.match(main, /progressTrack\.setAttribute\('aria-valuenow', String\(Math\.min\(total, bulk\.completed\)\)\)/);
+  assert.match(main, /progressTrack\.setAttribute\('aria-valuetext', `\$\{Math\.min\(total, bulk\.completed\)\} of \$\{total\} images processed`\)/);
 });
 
 test('batch announcements describe pause, failure, save, and final outcomes', () => {
