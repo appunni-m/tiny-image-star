@@ -3279,6 +3279,26 @@ export class ImageOps {
         return Image.__wrap(ret[0]);
     }
     /**
+     * Converts RGBA8 pixels to white with luminance-scaled alpha in place.
+     *
+     * Uses SVG sRGB coefficients, or linearized sRGB channels when requested.
+     * Source alpha is multiplied by luminance so transparent pixels stay hidden.
+     *
+     * # Errors
+     *
+     * Returns a `ValueError` when the input length is not a multiple of four.
+     * @param {Uint8Array} rgba
+     * @param {boolean} linear_rgb
+     */
+    static luminanceMaskAlpha(rgba, linear_rgb) {
+        var ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imageops_luminanceMaskAlpha(ptr0, len0, rgba, linear_rgb);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {Image} img
      * @returns {Image}
      */
@@ -4883,6 +4903,9 @@ function __wbg_get_imports() {
             const v = arg0;
             const ret = typeof(v) === 'boolean' ? v : undefined;
             return isLikeNone(ret) ? 0xFFFFFF : ret ? 1 : 0;
+        },
+        __wbg___wbindgen_copy_to_typed_array_4db0cbe2cc60dbee: function(arg0, arg1, arg2) {
+            new Uint8Array(arg2.buffer, arg2.byteOffset, arg2.byteLength).set(getArrayU8FromWasm0(arg0, arg1));
         },
         __wbg___wbindgen_is_null_ea9085d691f535d3: function(arg0) {
             const ret = arg0 === null;

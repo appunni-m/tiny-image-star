@@ -7,14 +7,16 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourceRef = 'main';
-const sourceCommit = '1f67a3f48324bcbf5e0048810914922d1c677980';
+const sourceCommit = '3f4f7b29ec0c646e74d30c743fd07c13b16299c1';
 // Keep these aligned with the upstream rust-toolchain.toml and CI env pins at
 // sourceCommit so local WASM generation does not silently drift by PATH.
 const expectedRustVersion = '1.96.1';
 const expectedWasmPackVersion = '0.15.0';
 const upstreamUrl = 'https://github.com/appunni-m/pillow-rs.git';
-const patchRelativePath = 'patches/pillow-rs/encode-quality.patch';
-const patchPath = resolve(root, patchRelativePath);
+const patchRelativePaths = [
+  'patches/pillow-rs/encode-quality.patch',
+  'patches/pillow-rs/luminance-mask.patch',
+];
 const buildDirectory = await mkdtemp(join(tmpdir(), 'tiny-image-star-pillow-rs-'));
 const sourceDirectory = join(buildDirectory, 'pillow-rs');
 
@@ -46,8 +48,15 @@ try {
   if (wasmPackVersion !== expectedWasmPackVersion) {
     throw new Error(`Pillow-RS WASM must be built with wasm-pack ${expectedWasmPackVersion}; found ${wasmPackVersion || 'an unknown version'}.`);
   }
-  run('git', ['apply', '--check', patchPath], sourceDirectory);
-  run('git', ['apply', patchPath], sourceDirectory);
+  const sourcePatches = await Promise.all(patchRelativePaths.map(async path => ({
+    path,
+    bytes: await readFile(resolve(root, path)),
+    absolutePath: resolve(root, path),
+  })));
+  for (const patch of sourcePatches) {
+    run('git', ['apply', '--check', patch.absolutePath], sourceDirectory);
+    run('git', ['apply', patch.absolutePath], sourceDirectory);
+  }
   const wasmBuild = spawnSync('node', ['scripts/build_wasm.mjs', 'core', 'release'], {
     cwd: join(sourceDirectory, 'pillow-rs-js'),
     stdio: 'inherit',
@@ -71,7 +80,6 @@ try {
   const cargo = await readFile(join(sourceDirectory, 'Cargo.toml'), 'utf8');
   const version = cargo.match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1];
   if (!version) throw new Error('Could not read the pinned Pillow-RS version from Cargo.toml.');
-  const patchBytes = await readFile(patchPath);
   const fileHashes = Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, sha256(bytes)]));
   const integrity = createHash('sha512');
   for (const name of Object.keys(fileHashes).sort()) {
@@ -82,12 +90,12 @@ try {
     version,
     sourceRef,
     sourceCommit,
-    sourcePatch: { path: patchRelativePath, sha256: sha256(patchBytes) },
+    sourcePatches: sourcePatches.map(({ path, bytes }) => ({ path, sha256: sha256(bytes) })),
     buildToolchain: { rust: expectedRustVersion, wasmPack: expectedWasmPackVersion, wasmOpt: false },
     files: fileHashes,
     integrityAlgorithm: 'sha512 over each sorted filename, NUL, file bytes, NUL',
     integrity: `sha512-${integrity.digest('base64')}`,
-    artifactSource: `Release-profile WASM compiled from upstream ${sourceRef} at commit ${sourceCommit} with the local JPEG/WebP quality patch and fixed build toolchain.`,
+    artifactSource: `Release-profile WASM compiled from upstream ${sourceRef} at commit ${sourceCommit} with the local JPEG/WebP quality and luminance-mask patches and fixed build toolchain.`,
   };
   await writeFile(resolve(root, 'wasm/runtime.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 } finally {

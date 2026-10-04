@@ -1,0 +1,52 @@
+diff --git a/pillow-rs-js/src/lib.rs b/pillow-rs-js/src/lib.rs
+--- a/pillow-rs-js/src/lib.rs
++++ b/pillow-rs-js/src/lib.rs
+@@ -4310,8 +4310,48 @@
+ // ── ImageOps ─────────────────────────────────────────────────────
+ #[wasm_bindgen]
+ pub struct ImageOps {}
+ #[wasm_bindgen]
+ impl ImageOps {
++    /// Converts RGBA8 pixels to white with luminance-scaled alpha in place.
++    ///
++    /// Uses SVG sRGB coefficients, or linearized sRGB channels when requested.
++    /// Source alpha is multiplied by luminance so transparent pixels stay hidden.
++    ///
++    /// # Errors
++    ///
++    /// Returns a `ValueError` when the input length is not a multiple of four.
++    #[wasm_bindgen(js_name = "luminanceMaskAlpha")]
++    pub fn luminance_mask_alpha(rgba: &mut [u8], linear_rgb: bool) -> Result<(), JsValue> {
++        if rgba.len() % 4 != 0 {
++            return Err(err(pillow_rs::PilError::ValueError(
++                "luminance mask input must contain complete RGBA pixels".into(),
++            )));
++        }
++        let linearize = |channel: u8| {
++            let value = f64::from(channel) / 255.0;
++            if value <= 0.04045 {
++                value / 12.92
++            } else {
++                ((value + 0.055) / 1.055).powf(2.4)
++            }
++        };
++        for pixel in rgba.chunks_exact_mut(4) {
++            let channel = |value| {
++                if linear_rgb {
++                    linearize(value)
++                } else {
++                    f64::from(value) / 255.0
++                }
++            };
++            let luminance = channel(pixel[0]) * 0.2125
++                + channel(pixel[1]) * 0.7154
++                + channel(pixel[2]) * 0.0721;
++            let source_alpha = f64::from(pixel[3]) / 255.0;
++            pixel[..3].fill(255);
++            pixel[3] = (255.0 * source_alpha * luminance).round() as u8;
++        }
++        Ok(())
++    }
+     #[wasm_bindgen(js_name = "invert")]
+     pub fn inv(img: &Image) -> Result<Image, JsValue> {
+         pillow_rs::imageops_invert(&img.inner)

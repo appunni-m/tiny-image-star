@@ -122,15 +122,20 @@ assert.equal(runtime.sourceRef, runtimeBuilder.match(/const sourceRef = '([^']+)
   'the vendored runtime must name the upstream Pillow-RS ref pinned by the build script');
 assert.equal(runtime.sourceCommit, runtimeBuilder.match(/const sourceCommit = '([a-f0-9]{40})';/)?.[1],
   'the vendored runtime must be built from the exact Pillow-RS commit pinned by the build script');
-assert.equal(runtime.artifactSource, `Release-profile WASM compiled from upstream ${runtime.sourceRef} at commit ${runtime.sourceCommit} with the local JPEG/WebP quality patch and fixed build toolchain.`);
+assert.equal(runtime.artifactSource, `Release-profile WASM compiled from upstream ${runtime.sourceRef} at commit ${runtime.sourceCommit} with the local JPEG/WebP quality and luminance-mask patches and fixed build toolchain.`);
 assert.ok(readme.includes(`https://github.com/appunni-m/pillow-rs/commit/${runtime.sourceCommit}`),
   'README provenance must match the pinned Pillow-RS runtime commit');
-assert.equal(runtime.sourcePatch.path, 'patches/pillow-rs/encode-quality.patch');
+assert.deepEqual(runtime.sourcePatches.map(patch => patch.path), [
+  'patches/pillow-rs/encode-quality.patch',
+  'patches/pillow-rs/luminance-mask.patch',
+]);
 assert.deepEqual(runtime.buildToolchain, { rust: '1.96.1', wasmPack: '0.15.0', wasmOpt: false });
 assert.equal(runtime.buildToolchain.rust, runtimeBuilder.match(/const expectedRustVersion = '([^']+)';/)?.[1]);
 assert.equal(runtime.buildToolchain.wasmPack, runtimeBuilder.match(/const expectedWasmPackVersion = '([^']+)';/)?.[1]);
-const runtimePatch = await readFile(resolve(root, runtime.sourcePatch.path));
-assert.equal(createHash('sha256').update(runtimePatch).digest('hex'), runtime.sourcePatch.sha256);
+for (const patch of runtime.sourcePatches) {
+  const bytes = await readFile(resolve(root, patch.path));
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), patch.sha256, `${patch.path} SHA-256`);
+}
 const runtimeIntegrity = createHash('sha512');
 for (const name of Object.keys(runtime.files).sort()) {
   const bytes = await readFile(resolve(root, 'wasm', name));
@@ -141,6 +146,7 @@ assert.equal(runtime.integrityAlgorithm, 'sha512 over each sorted filename, NUL,
 assert.equal(runtime.integrity, `sha512-${runtimeIntegrity.digest('base64')}`);
 const pillowRuntime = await readFile(resolve(root, 'wasm/pillow_rs_js.js'), 'utf8');
 assert.match(pillowRuntime, /saveWithQuality\(/, 'the vendored WASM binding must expose local JPEG/WebP quality controls');
+assert.match(pillowRuntime, /luminanceMaskAlpha\(/, 'the vendored WASM binding must expose local luminance-mask pixel conversion');
 const figWorker = await readFile(resolve(root, 'src/workers/fig-import-worker.bundle.js'), 'utf8');
 assert.match(figWorker, /fig-kiwi/, 'the deployed local import worker must contain the .fig binary decoder');
 assert.doesNotMatch(figWorker, /(?:^|[;\n])\s*import\s+[^;]*from\s+["']https?:\/\//m, 'the local import worker must not load remote code');

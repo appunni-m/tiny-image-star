@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { canvasLocalOffsetForScreenTranslation, deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
+import { initializeLuminanceMaskWasm } from '../src/luminance-mask.js';
 
 function textContext({ nativeTracking = false } = {}) {
   const calls = [];
@@ -698,7 +700,9 @@ test('vector mask groups build an opaque source surface before applying destinat
   }
 });
 
-test('luminance mask groups read real source colors and fail closed when pixels cannot be read', () => {
+test('luminance mask groups use Pillow-RS pixels and fail closed when pixels cannot be read', async () => {
+  const wasmBytes = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await initializeLuminanceMaskWasm(wasmBytes);
   const group = { id: 'luminance-group', name: 'Color mask', width: 2, height: 1, mask: true, maskMode: 'luminance',
     maskSourceId: 'luminance-source', children: [{ id: 'masked-content' }, { id: 'luminance-source' }] };
   const canvases = [];

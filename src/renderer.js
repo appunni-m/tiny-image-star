@@ -11,7 +11,7 @@ import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLAS
 import { createGradientPaint, fillStackForNode, gradientTypes, resolveGradientGeometry } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
-import { applyLuminanceMaskAlpha } from './luminance-mask.js';
+import { applyLuminanceMaskAlpha, initializeLuminanceMaskWasm, isLuminanceMaskWasmReady } from './luminance-mask.js';
 import { isUniformStrokeSideWidths, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
@@ -1370,7 +1370,7 @@ export class SceneRenderer {
   }
 
   invalidate() {
-    if (this.frame) return;
+    if (this.destroyed || this.frame) return;
     this.frame = requestAnimationFrame(() => { this.frame = 0; this.draw(); });
   }
 
@@ -2768,6 +2768,10 @@ export class SceneRenderer {
     const maskNode = node.children.find(child => child.id === node.maskSourceId) || node.children[0];
     const contentNodes = node.children.filter(child => child !== maskNode);
     if (!contentNodes.length) return;
+    if (node.maskMode === 'luminance' && !isLuminanceMaskWasmReady()) {
+      this.loadLuminanceMaskWasm(node, renderOptions);
+      return;
+    }
     const transform = ctx.getTransform?.();
     const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
     const { width: pixelWidth, height: pixelHeight } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
@@ -2837,6 +2841,24 @@ export class SceneRenderer {
         catch (callbackError) { console.warn('The luminance-mask warning handler failed.', callbackError); }
       }
     }
+  }
+
+  loadLuminanceMaskWasm(node, renderOptions) {
+    if (this.destroyed) return;
+    if (this.luminanceMaskWasmError) {
+      this.reportLuminanceMaskError(node, this.luminanceMaskWasmError, renderOptions);
+      return;
+    }
+    if (this.luminanceMaskWasmLoading) return;
+    this.luminanceMaskWasmLoading = initializeLuminanceMaskWasm().then(() => {
+      this.luminanceMaskWasmLoading = null;
+      if (!this.destroyed) this.invalidate();
+    }).catch(error => {
+      this.luminanceMaskWasmLoading = null;
+      if (this.destroyed) return;
+      this.luminanceMaskWasmError = error;
+      this.reportLuminanceMaskError(node, error, renderOptions);
+    });
   }
 
   drawBooleanGroup(ctx, node, x, y, assets, maskMode = false, renderOptions = {}) {
@@ -3681,7 +3703,7 @@ export class SceneRenderer {
     }
   }
 
-  destroy() { cancelAnimationFrame(this.frame); this.resizeObserver.disconnect(); }
+  destroy() { this.destroyed = true; cancelAnimationFrame(this.frame); this.resizeObserver.disconnect(); }
 }
 
 export function screenToWorld(event, canvas, state) {

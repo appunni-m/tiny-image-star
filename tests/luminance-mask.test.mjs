@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyLuminanceMaskAlpha, SVG_LUMINANCE_COEFFICIENTS } from '../src/luminance-mask.js';
+import { readFile } from 'node:fs/promises';
+import { applyLuminanceMaskAlpha, initializeLuminanceMaskWasm, SVG_LUMINANCE_COEFFICIENTS } from '../src/luminance-mask.js';
+
+const wasmBytes = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+const imageOps = await initializeLuminanceMaskWasm(wasmBytes);
 
 test('converts sRGB luminance and source alpha into white mask coverage', () => {
   const imageData = { data: new Uint8ClampedArray([
@@ -43,4 +47,8 @@ test('rejects invalid ImageData and unsupported color spaces', () => {
   assert.throws(() => applyLuminanceMaskAlpha({ data: [255, 255, 255, 255] }), TypeError);
   assert.throws(() => applyLuminanceMaskAlpha({ data: new Uint8ClampedArray([1, 2, 3]) }), TypeError);
   assert.throws(() => applyLuminanceMaskAlpha({ data: new Uint8ClampedArray([1, 2, 3, 4]) }, { colorSpace: 'display-p3' }), TypeError);
+});
+
+test('Pillow-RS WASM rejects incomplete RGBA pixels', () => {
+  assert.throws(() => imageOps.luminanceMaskAlpha(new Uint8Array([1, 2, 3]), false), { name: 'ValueError' });
 });
