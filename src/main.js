@@ -164,6 +164,7 @@ import { installLiveLinkHashChangeHandler } from './collaboration/live-link-entr
 import { formatLiveReplyMessage, formatLiveShareMessage, parseLiveReplyMessage, parseLiveShareMessage } from './collaboration/share-message.js';
 import { createLiveReplyHandoff, createLiveReplyLink, parseLiveReplyLink } from './collaboration/reply-link.js';
 import { initializeCollaborationQrHandoff } from './collaboration/qr-handoff-ui.js';
+import { bindDialogDismissal } from './collaboration/dialog-dismissal.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -21528,32 +21529,7 @@ function initEvents() {
     if (copy) { void copyLiveField(copy.dataset.copyField); return; }
   });
   const liveDialogElement = $('#live-collaboration-dialog');
-  $('#live-collaboration-close').addEventListener('click', () => {
-    const session = state.liveCollaboration;
-    if (session?.role === 'host' && !liveTerminal(session.status)) {
-      if (isLiveHostViewOnly()) liveDialogElement.close();
-      else showToast('Wait for the guest to connect or stop sharing before closing this panel.');
-      return;
-    }
-    if (session?.role === 'guest' && session.replicaReady && ['connected', 'pending'].includes(session.status)) { liveDialogElement.close(); return; }
-    if (session?.role === 'guest' && !liveTerminal(session.status)) {
-      showToast('Leave the live session first so Tiny Image Star can save your local fork.');
-      return;
-    }
-    liveDialogElement.close();
-  });
-  liveDialogElement.addEventListener('cancel', event => {
-    const session = state.liveCollaboration;
-    if (session?.role === 'host' && !liveTerminal(session.status)) {
-      if (!isLiveHostViewOnly()) { event.preventDefault(); showToast('Wait for the guest to connect or stop sharing before closing this panel.'); }
-      return;
-    }
-    if (session?.role === 'guest' && session.replicaReady && ['connected', 'pending'].includes(session.status)) return;
-    if (session?.role === 'guest' && !liveTerminal(session.status)) {
-      event.preventDefault();
-      showToast('Leave the live session first so Tiny Image Star can save your local fork.');
-    }
-  });
+  bindDialogDismissal(liveDialogElement, [$('#live-collaboration-close')]);
   document.addEventListener('pointerdown', event => {
     if (!state.interaction || canvas.contains(event.target)) return;
     // A canvas gesture owns the document until it ends. If the user starts a
