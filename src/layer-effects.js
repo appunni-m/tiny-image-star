@@ -81,14 +81,14 @@ function cssColorWithOpacity(color, opacity) {
 
 export function buildLayerEffectFilter(effects, scale = 1) {
   const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  return (effects || []).filter(effect => effect?.visible !== false).map(effect => {
-    if (effect.type === 'layer-blur') return `blur(${Math.max(0, effect.radius) * factor}px)`;
-    if (effect.type === 'background-blur') return '';
-    if (effect.type === 'drop-shadow') {
-      return `drop-shadow(${effect.offsetX * factor}px ${effect.offsetY * factor}px ${Math.max(0, effect.blur) * factor}px ${cssColorWithOpacity(effect.color, effect.opacity)})`;
-    }
-    return '';
-  }).filter(Boolean).join(' ') || 'none';
+  const visible = (effects || []).filter(effect => effect?.visible !== false);
+  const layerBlurs = visible.filter(effect => effect.type === 'layer-blur')
+    .map(effect => `blur(${Math.max(0, effect.radius) * factor}px)`);
+  const dropShadows = visible.filter(effect => effect.type === 'drop-shadow')
+    .map(effect => `drop-shadow(${effect.offsetX * factor}px ${effect.offsetY * factor}px ${Math.max(0, effect.blur) * factor}px ${cssColorWithOpacity(effect.color, effect.opacity)})`);
+  // Figma renders layer blur above paints and drop shadows below them, even
+  // when those two effect types are interleaved in the authored list.
+  return [...layerBlurs, ...dropShadows].join(' ') || 'none';
 }
 
 export function buildLayerEffectBoxShadow(effects) {

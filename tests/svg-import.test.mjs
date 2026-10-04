@@ -456,10 +456,10 @@ test('round-trips editor-exported inner-shadow filter chains as editable ordered
   const layer = allNodes(source.nodes).find(node => node.effects?.length);
   assert.deepEqual(layer.effects.map(({ type, color, opacity, offsetX, offsetY, blur, radius }) =>
     ({ type, color, opacity, offsetX, offsetY, blur, radius })), [
+    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 1 },
     { type: 'inner-shadow', color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, radius: undefined },
     { type: 'inner-shadow', color: '#102030', opacity: 0.75, offsetX: -4, offsetY: 6, blur: 2, radius: undefined },
-    { type: 'drop-shadow', color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, radius: undefined },
-    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 1 }
+    { type: 'drop-shadow', color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, radius: undefined }
   ]);
 });
 

@@ -806,7 +806,7 @@ test('exports inner shadows as editable SVG alpha-mask filter primitives', () =>
   assert.match(svg, /filter="url\(#tis-effect-0\)"/);
 });
 
-test('orders SVG inner shadows before authored blur and drop-shadow effects like the canvas renderer', () => {
+test('orders SVG effects in Figma paint phases while preserving order within each phase', () => {
   const shape = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',
     effects: [
@@ -819,15 +819,15 @@ test('orders SVG inner shadows before authored blur and drop-shadow effects like
   const svg = exportNodeToSvg(shape);
   const filter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
   assert.ok(filter, 'expected the SVG effect filter');
-  const firstShadow = filter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="5"');
-  const secondShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-0" stdDeviation="2"');
-  const firstBlur = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-1" stdDeviation="3"');
+  const firstBlur = filter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="3"');
+  const firstShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-0" stdDeviation="5"');
+  const secondShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-1" stdDeviation="2"');
   const dropShadow = filter.indexOf('<feDropShadow in="tis-effect-0-result-2"');
-  const positions = [firstShadow, secondShadow, firstBlur, dropShadow];
+  const positions = [firstBlur, firstShadow, secondShadow, dropShadow];
   assert.ok(positions.every(position => position >= 0), 'all visible effects should be represented');
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right),
-    'inner shadows should precede outer effects while outer effects retain authored order');
-  assert.match(filter, /<feComposite in="tis-effect-0-result-0" in2="tis-effect-0-result-1-offset" operator="out" result="tis-effect-0-result-1-shape"\/>/,
+    'layer blur should run before inner shadows, with drop shadow below both in the rendered paint phases');
+  assert.match(filter, /<feComposite in="tis-effect-0-result-1" in2="tis-effect-0-result-2-offset" operator="out" result="tis-effect-0-result-2-shape"\/>/,
     'the second inner shadow must use the first shadow result alpha, matching sequential Canvas compositing');
   assert.doesNotMatch(filter, /stdDeviation="9"/, 'hidden effects should remain omitted');
 });

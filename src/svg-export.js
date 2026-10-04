@@ -1497,13 +1497,12 @@ function effectDefinition(node, index, document, measureText) {
   const id = `tis-effect-${index}`;
   const bounds = getBounds([node], { document, includePosition: false, measureText });
   let input = 'SourceGraphic';
-  // Canvas composites every inner shadow onto the source surface first, then
-  // passes that result through the authored blur/drop-shadow filter chain.
-  // Keep the SVG filter primitive order identical, preserving authored order
-  // within each of those two phases.
+  // Figma renders layer blur in the top effect phase, then inner shadows, then
+  // drop shadows below the paints. Preserve authored order within each phase.
   const orderedEffects = [
+    ...effects.filter(effect => effect.type === 'layer-blur'),
     ...effects.filter(effect => effect.type === 'inner-shadow'),
-    ...effects.filter(effect => effect.type !== 'inner-shadow')
+    ...effects.filter(effect => effect.type === 'drop-shadow')
   ];
   const primitives = orderedEffects.map((effect, effectIndex) => {
     const result = `${id}-result-${effectIndex}`;

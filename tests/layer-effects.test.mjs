@@ -72,27 +72,28 @@ test('effect stack reordering is stable, directional, and bounded at both ends',
   assert.deepEqual(effects.map(effect => effect.id), ['ordered-2', 'ordered-0', 'ordered-1']);
 });
 
-test('reordered stacks retain authored order while the Canvas filter stage includes only outer blur and shadow filters', () => {
+test('filter-based effects follow Figma paint phases: layer blur before drop shadows', () => {
   const effects = [
     createLayerEffect('inner-shadow', { id: 'mixed-inner' }),
     createLayerEffect('drop-shadow', { id: 'mixed-drop' }),
     createLayerEffect('layer-blur', { id: 'mixed-blur' })
   ];
   const outerFilters = buildLayerEffectFilter(effects);
+  assert.match(outerFilters, /^blur\(/);
   assert.equal(moveLayerEffect(effects, 'mixed-inner', 'down'), true);
   assert.deepEqual(effects.map(effect => effect.id), ['mixed-drop', 'mixed-inner', 'mixed-blur'], 'the model retains the changed mixed-type order');
-  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'inner shadows remain in their separately composited renderer pass');
+  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'inner shadows remain between top effects and drop shadows');
   assert.equal(moveLayerEffect(effects, 'mixed-blur', 'up'), true);
-  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'crossing an inner shadow does not change the outer-filter chain');
+  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'crossing an inner shadow does not change the documented paint phases');
   assert.equal(moveLayerEffect(effects, 'mixed-blur', 'up'), true);
-  assert.match(buildLayerEffectFilter(effects), /^blur\(/, 'reordering two outer filters changes their live filter-chain order');
+  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'layer blur renders before drop shadows regardless of panel interleaving');
 });
 
-test('effect filters preserve order, scale with output resolution, and ignore hidden effects', () => {
+test('effect filters use documented layer-blur/drop-shadow phases, scale with resolution, and ignore hidden effects', () => {
   const shadow = createLayerEffect('drop-shadow', { offsetX: 2, offsetY: -3, blur: 4, color: '#123456', opacity: 0.5 });
   const blur = createLayerEffect('layer-blur', { radius: 5 });
   const hidden = createLayerEffect('layer-blur', { radius: 20, visible: false });
-  assert.equal(buildLayerEffectFilter([shadow, blur, hidden], 2), 'drop-shadow(4px -6px 8px rgba(18, 52, 86, 0.5)) blur(10px)');
+  assert.equal(buildLayerEffectFilter([shadow, blur, hidden], 2), 'blur(10px) drop-shadow(4px -6px 8px rgba(18, 52, 86, 0.5))');
   assert.equal(buildLayerEffectFilter([hidden]), 'none');
   assert.deepEqual(layerEffectPadding([shadow, blur, hidden]), { x: 29, y: 30 });
 });

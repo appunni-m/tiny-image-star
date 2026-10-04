@@ -675,6 +675,40 @@ test('inner-shadow raster composition clips a shifted blurred mask back to the s
   }
 });
 
+test('layer blur processes the current surface at raster scale and copies it back inside the padded budget', () => {
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.draws = [];
+      this.context = {
+        filter: 'none', globalAlpha: 1, globalCompositeOperation: 'source-over',
+        save() {}, restore() {}, setTransform() {}, clearRect() {},
+        drawImage: (image, ...args) => this.draws.push({ image, args, filter: this.context.filter })
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const surface = new RecordingCanvas(160, 100);
+    const renderer = Object.create(SceneRenderer.prototype);
+    assert.equal(renderer.applyLayerBlurEffect(surface, { type: 'layer-blur', radius: 3 }, 2, 160, 100), true);
+    const scratch = canvases[1];
+    assert.equal(scratch.width, 160);
+    assert.equal(scratch.height, 100);
+    assert.deepEqual(scratch.draws[0], { image: surface, args: [0, 0], filter: 'blur(6px)' });
+    assert.equal(surface.draws[0].image, scratch, 'the filtered pixels replace the prior surface before the next effect');
+    assert.deepEqual(surface.draws[0].args, [0, 0]);
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('layer opacity is applied once after the completed effect surface', () => {
   const document = createDocument();
   const node = createNode('rectangle', {
@@ -722,6 +756,57 @@ test('layer opacity is applied once after the completed effect surface', () => {
     const finalComposite = parent.draws.at(-1);
     assert.equal(finalComposite.alpha, 0.35);
     assert.equal(finalComposite.args[0], canvases[1], 'the finished effect surface is composited once');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('foreground effect rendering preserves top-stack order before inner and drop shadow phases', () => {
+  const document = createDocument();
+  const effects = [
+    { id: 'grain-a', type: 'noise', visible: true },
+    { id: 'soften', type: 'layer-blur', visible: true, radius: 3 },
+    { id: 'grain-b', type: 'noise', visible: true },
+    { id: 'edge', type: 'texture', visible: true },
+    { id: 'inset', type: 'inner-shadow', visible: true, color: '#000000', opacity: .5, offsetX: 0, offsetY: 1, blur: 2 },
+    { id: 'shade', type: 'drop-shadow', visible: true, color: '#123456', opacity: .5, offsetX: 2, offsetY: 3, blur: 4 },
+    { id: 'hidden-grain', type: 'noise', visible: false }
+  ];
+  const node = createNode('rectangle', { id: 'effect-order', width: 30, height: 20, effects });
+  addNode(document, node);
+  const events = [];
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.context = {
+        filter: 'none', globalAlpha: 1, globalCompositeOperation: 'source-over',
+        setTransform() {}, save() {}, restore() {}, clearRect() {}, drawImage() {}
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1 });
+    renderer.drawNode = () => events.push('paint');
+    renderer.applyLayerBlurEffect = (_surface, effect) => { events.push(effect.id); return true; };
+    renderer.applyNoiseEffects = (_surface, _node, [effect]) => events.push(effect.id);
+    renderer.applyTextureEffects = (_surface, _node, [effect]) => events.push(effect.id);
+    renderer.applyInnerShadows = () => events.push('inner-phase');
+    const destination = new RecordingCanvas(100, 80);
+    destination.context.getTransform = () => ({ a: 1, b: 0 });
+
+    renderer.drawNodeWithEffects(destination.context, node, 0, 0, new Map(), effects.filter(effect => effect.visible));
+
+    assert.deepEqual(events, ['paint', 'grain-a', 'soften', 'grain-b', 'edge', 'inner-phase']);
+    assert.match(destination.context.filter, /^drop-shadow\(/, 'drop shadows run after the ordered top stack and inner shadows');
+    assert.doesNotMatch(destination.context.filter, /blur\(/, 'an applied layer blur must not be repeated in the final pass');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;

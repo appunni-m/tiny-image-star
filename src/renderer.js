@@ -2040,6 +2040,38 @@ export class SceneRenderer {
     }
   }
 
+  applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight) {
+    if (!effect || effect.type !== 'layer-blur' || effect.radius <= 0) return true;
+    const ownerDocument = surface.ownerDocument || globalThis.document;
+    const scratch = typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(pixelWidth, pixelHeight)
+      : ownerDocument?.createElement
+        ? Object.assign(ownerDocument.createElement('canvas'), { width: pixelWidth, height: pixelHeight })
+        : null;
+    const scratchContext = scratch?.getContext('2d');
+    const surfaceContext = surface.getContext('2d');
+    if (!scratchContext || !surfaceContext || typeof scratchContext.filter !== 'string') return false;
+
+    scratchContext.save();
+    scratchContext.setTransform(1, 0, 0, 1, 0, 0);
+    scratchContext.globalAlpha = 1;
+    scratchContext.globalCompositeOperation = 'source-over';
+    scratchContext.filter = `blur(${Math.max(0, effect.radius) * rasterScale}px)`;
+    scratchContext.clearRect(0, 0, pixelWidth, pixelHeight);
+    scratchContext.drawImage(surface, 0, 0);
+    scratchContext.restore();
+
+    surfaceContext.save();
+    surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+    surfaceContext.globalAlpha = 1;
+    surfaceContext.globalCompositeOperation = 'source-over';
+    surfaceContext.filter = 'none';
+    surfaceContext.clearRect(0, 0, pixelWidth, pixelHeight);
+    surfaceContext.drawImage(scratch, 0, 0);
+    surfaceContext.restore();
+    return true;
+  }
+
   applyNoiseEffects(surface, node, effects, rasterScale, contentWidth, contentHeight, padX, padY, renderOptions = {}) {
     const noiseEffects = effects.filter(effect => effect?.type === 'noise' && effect.visible !== false);
     if (!noiseEffects.length) return;
@@ -2460,14 +2492,21 @@ export class SceneRenderer {
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
     this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
-    this.applyTextureEffects(surface, node, effects, pixelWidth, pixelHeight, rasterScale, renderOptions);
+    const topEffects = effects.filter(effect => ['layer-blur', 'noise', 'texture'].includes(effect.type));
+    const deferredLayerBlurIds = new Set();
+    for (const effect of topEffects) {
+      if (effect.type === 'layer-blur') {
+        if (!this.applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight)) deferredLayerBlurIds.add(effect.id);
+      } else if (effect.type === 'noise') {
+        this.applyNoiseEffects(surface, node, [effect], rasterScale,
+          Math.max(1, Math.ceil(node.width * rasterScale)), Math.max(1, Math.ceil(node.height * rasterScale)), padX, padY, renderOptions);
+      } else this.applyTextureEffects(surface, node, [effect], pixelWidth, pixelHeight, rasterScale, renderOptions);
+    }
     this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
-    this.applyNoiseEffects(surface, node, effects, rasterScale,
-      Math.max(1, Math.ceil(node.width * rasterScale)), Math.max(1, Math.ceil(node.height * rasterScale)), padX, padY, renderOptions);
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
     ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
-    ctx.filter = buildLayerEffectFilter(effects, displayScale);
+    ctx.filter = buildLayerEffectFilter(effects.filter(effect => effect.type === 'drop-shadow' || deferredLayerBlurIds.has(effect.id)), displayScale);
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(surface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
