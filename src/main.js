@@ -160,6 +160,7 @@ import { createImageLibraryThumbnailBlob } from './image-library-thumbnail.js';
 import { createHostSessionController, createGuestSessionController } from './collaboration/session-controller.js';
 import { decodeStableDesignInvite } from './collaboration/session-capsules.js';
 import { createLiveInvitationLink, LIVE_INVITATION_HASH_PREFIX, parseLiveInvitationLink } from './collaboration/invitation-link.js';
+import { installLiveLinkHashChangeHandler } from './collaboration/live-link-entry.js';
 import { formatLiveReplyMessage, formatLiveShareMessage, parseLiveReplyMessage, parseLiveShareMessage } from './collaboration/share-message.js';
 import { createLiveReplyHandoff, createLiveReplyLink, parseLiveReplyLink } from './collaboration/reply-link.js';
 import { initializeCollaborationQrHandoff } from './collaboration/qr-handoff-ui.js';
@@ -15781,7 +15782,7 @@ function startJoinFromStableLink() {
       $('#live-join-message').value = '';
       $('#live-join-invite').value = '';
       $('#live-guest-join-step').hidden = false;
-      history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+      window.history.replaceState(window.history.state, '', `${location.pathname}${location.search}`);
       openLiveDialog('guest');
       liveStatus('guest', error.message || 'This invite link is incomplete. Ask the owner for a fresh link.');
       return true;
@@ -15794,7 +15795,7 @@ function startJoinFromStableLink() {
     $('#live-join-message').value = '';
   }
   $('#live-guest-join-step').hidden = false;
-  history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+  window.history.replaceState(window.history.state, '', `${location.pathname}${location.search}`);
   openLiveDialog('guest');
   if (combinedInvite && state.workspace) {
     liveStatus('guest', 'Invite opened. Connecting to the owner…');
@@ -15849,7 +15850,7 @@ async function startLiveReplyFromLink() {
   let reply;
   try { reply = parseLiveReplyLink(location.href); }
   catch (error) { reply = null; pendingLiveReplyLink = null; setLiveReplyLinkStatus(error.message || 'This reply link could not be read.', true); }
-  history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+  window.history.replaceState(window.history.state, '', `${location.pathname}${location.search}`);
   openLiveDialog('reply');
   if (!reply) return true;
   pendingLiveReplyLink = reply;
@@ -21358,6 +21359,10 @@ function initEvents() {
   initializeRecipeBatchCoordination();
   liveReplyHandoff = createLiveReplyHandoff();
   liveReplyHandoff.onReply(reply => acceptLiveReplyInOpenHostTab(reply));
+  installLiveLinkHashChangeHandler(window, {
+    onInvitation: () => { startJoinFromStableLink(); },
+    onReply: () => { void startLiveReplyFromLink(); }
+  });
   initializeCollaborationQrHandoff({
     onInvitationShown: () => revealLiveHostReplyStep('Invite shown. Keep this tab open for the reply link.'),
     validateInvitation: invitationFromText,

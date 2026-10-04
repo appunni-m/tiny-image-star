@@ -36,9 +36,25 @@ try {
     await waitFor(() => !onboarding.open, 'editor workspace setup');
   }
 
+  // A received invite is commonly clicked while the editor tab is already
+  // open. Exercise the real hashchange route so a thrown history error cannot
+  // leave the user with no UI.
+  const dialog = app.querySelector('#live-collaboration-dialog');
+  const inviteErrors = [];
+  app.defaultView.addEventListener('error', event => inviteErrors.push(event.message));
+  app.defaultView.location.hash = '#tisjoin1.tisd1.invalid.tisc1.invalid';
+  await waitFor(() => dialog.open && !app.querySelector('#live-guest-panel').hidden, 'received invite link');
+  assert(app.querySelector('#live-join-message').value.includes('#tisjoin1.tisd1.invalid.tisc1.invalid'),
+    'clicking a received one-link invite should put it in the join flow');
+  assert(app.defaultView.location.hash === '', 'the invite secret should be removed from the address bar after routing');
+  await waitFor(() => app.querySelector('#live-guest-status').textContent.trim(), 'invite feedback');
+  assert(inviteErrors.length === 0, `invite click should not throw: ${inviteErrors.join('; ')}`);
+  app.querySelector('#live-collaboration-close').click();
+  await waitFor(() => !dialog.open, 'close received invite flow');
+
+
   assert(app.querySelector('#share-button').textContent.trim() === 'Share', 'The top-bar action should open the live invitation flow.');
   app.defaultView.dispatchEvent(new app.defaultView.CustomEvent('tiny-image-star:join-live', { cancelable: true }));
-  const dialog = app.querySelector('#live-collaboration-dialog');
   await waitFor(() => dialog.open && !app.querySelector('#live-guest-panel').hidden, 'join design dialog');
   assert(app.querySelector('#live-collaboration-title').textContent === 'Join a design', 'The joining dialog should use plain language.');
   assert(app.querySelector('#live-join-message')?.placeholder === 'Paste the whole invite message here', 'The default join flow should ask for one complete message.');
