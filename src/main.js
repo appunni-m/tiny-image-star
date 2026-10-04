@@ -8933,14 +8933,42 @@ function syncImageCropOverlay() {
 function syncImageCropToolbar() {
   const toolbar = $('#image-crop-toolbar');
   if (!toolbar) return;
+  const selection = selectedNodes();
+  const selectedImages = [...new Map(selection.filter(node => node.type === 'image').map(node => [node.id, node])).values()];
   const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
   const isImage = node?.type === 'image';
   const active = Boolean(state.imageCropMode && node && (isImage || state.imageFillCropTarget?.nodeId === node.id));
-  toolbar.hidden = !(active || isImage);
+  const singleImage = state.selectedIds.length === 1 && isImage;
+  const batchImages = selectedImages.length > 1;
+  toolbar.hidden = Boolean(state.bulk) || !(active || singleImage || batchImages);
+  if (toolbar.hidden) return;
+
   const action = $('#image-crop-toolbar-done');
-  if (!active && isImage) {
+  const singleActions = $('#image-context-single');
+  const batchActions = $('#image-context-batch');
+  const saveRecipeAction = $('#image-context-save-recipe');
+  singleActions.hidden = !(active || singleImage);
+  saveRecipeAction.hidden = active;
+  batchActions.hidden = active || !batchImages;
+
+  if (batchImages && !active) {
+    const recipes = state.document.recipes || [];
+    const picker = $('#image-context-recipe');
+    const apply = $('#image-context-apply-recipe');
+    picker.innerHTML = imageRecipeOptions('', { placeholder: recipes.length ? 'Choose a saved recipe' : 'No saved recipes yet' });
+    picker.disabled = recipes.length === 0;
+    apply.disabled = true;
+    apply.textContent = `Apply to ${selectedImages.length} images`;
+    $('#image-crop-toolbar-title').textContent = `Apply a recipe to ${selectedImages.length} images`;
+    $('#image-crop-toolbar-hint').textContent = recipes.length
+      ? 'The recipe runs on these image layers in place. Other selected layers stay unchanged.'
+      : 'Select one edited image and choose Save recipe first, then return here to apply it.';
+    return;
+  }
+
+  if (!active && singleImage) {
     $('#image-crop-toolbar-title').textContent = 'Image selected';
-    $('#image-crop-toolbar-hint').textContent = 'Choose Crop image to adjust which part of this photo stays visible.';
+    $('#image-crop-toolbar-hint').textContent = 'Crop this image or save its look to reuse it later.';
     action.textContent = 'Crop image';
     action.disabled = node.locked || !imageCropContext(node);
     return;
@@ -21548,6 +21576,23 @@ function initEvents() {
     event.preventDefault(); submitCommentForm(form);
   });
   $('#image-crop-toolbar-done').addEventListener('click', toggleSelectedImageCropMode);
+  $('#image-context-save-recipe').addEventListener('click', () => {
+    const node = state.selectedIds.length === 1 ? selectedNodes()[0] : null;
+    if (node?.type === 'image') saveRecipeFor(node.id);
+  });
+  $('#image-context-recipe').addEventListener('change', event => {
+    $('#image-context-apply-recipe').disabled = !event.currentTarget.value;
+  });
+  $('#image-context-apply-recipe').addEventListener('click', () => {
+    const recipe = state.document.recipes?.find(item => item.id === $('#image-context-recipe').value);
+    if (!recipe) { showToast('Choose a saved image recipe first.'); return; }
+    const targets = [...new Set(selectedNodes().filter(node => node.type === 'image').map(node => node.id))];
+    if (!targets.length) { showToast('Select one or more image layers first.'); return; }
+    state.layerSelectionMode = false;
+    renderLayers();
+    closeMobilePanels({ restoreFocus: false });
+    if (startRecipe(recipe, targets)) $('#bulk-bar').focus({ preventScroll: true });
+  });
   $('#shape-builder-bar').addEventListener('click', event => {
     const modeButton = event.target.closest('[data-shape-builder-mode]');
     if (modeButton && state.shapeBuilder) {

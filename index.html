@@ -80,12 +80,19 @@
           </div>
           <div class="canvas-scroll" id="canvas-scroll">
             <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
-            <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image crop controls" hidden>
+            <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" hidden>
               <div class="image-crop-toolbar-copy">
                 <strong id="image-crop-toolbar-title">Image selected</strong>
-                <span id="image-crop-toolbar-hint">Choose Crop image to adjust which part of this photo stays visible.</span>
+                <span id="image-crop-toolbar-hint">Crop this image or save its look to reuse it later.</span>
               </div>
-              <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button">Crop image</button>
+              <div class="image-context-single" id="image-context-single">
+                <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button">Save recipe</button>
+                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button">Crop image</button>
+              </div>
+              <div class="image-context-batch" id="image-context-batch" hidden>
+                <select class="select-field image-context-recipe-picker" id="image-context-recipe" aria-label="Choose a saved recipe to apply to selected images"></select>
+                <button class="primary-button image-context-apply-recipe" id="image-context-apply-recipe" type="button" disabled>Apply recipe</button>
+              </div>
             </div>
             <div class="shape-builder-bar" id="shape-builder-bar" role="toolbar" aria-label="Shape Builder tools" hidden>
               <div class="shape-builder-copy"><strong>Shape Builder</strong><span>Tap to extract · drag across regions to merge</span></div>
