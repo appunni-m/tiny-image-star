@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -1350,4 +1350,40 @@ test('prototype interaction conditions reject invalid variable, operator, type, 
   assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
     condition: { variableId: variable.id, type: 'boolean', operator: 'equals', value: 'true' }
   }), /Invalid prototype interaction condition/);
+});
+
+test('keyboard shortcut interactions validate, persist, and match exact modifiers in the active screen', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Destination', x: 500 });
+  const hotspot = createNode('rectangle', { name: 'Shortcut hotspot' });
+  home.children.push(hotspot);
+  addNode(document, home); addNode(document, destination);
+  const interaction = addPrototypeInteraction(document, hotspot.id, destination.id, {
+    trigger: 'on-key', key: 'ENTER', keyModifiers: { shift: true }
+  });
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(restored), true);
+  assert.equal(findNode(restored, hotspot.id).node.interactions[0].key, 'Enter');
+  assert.equal(findNode(restored, hotspot.id).node.interactions[0].keyModifiers.control, false);
+  const session = createPrototypeSession({ page: restored.pages[0], frame: findNode(restored, home.id).node });
+  const event = { key: 'Enter', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false };
+  assert.equal(findPrototypeKeyboardInteraction(restored, restored.activePageId, home.id, event, session)?.interaction.id, interaction.id);
+  assert.equal(findPrototypeKeyboardInteraction(restored, restored.activePageId, home.id, { ...event, shiftKey: false }, session), null,
+    'modifier combinations must match exactly');
+  assert.equal(findPrototypeKeyboardInteraction(restored, restored.activePageId, destination.id, event, session), null,
+    'shortcuts outside the active screen must not fire');
+
+  for (const mutate of [
+    item => { delete item.key; },
+    item => { item.key = 'Not A Key'; },
+    item => { item.keyModifiers = { shift: 1 }; }
+  ]) {
+    const invalid = structuredClone(restored);
+    mutate(findNode(invalid, hotspot.id).node.interactions[0]);
+    assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  }
+  assert.throws(() => addPrototypeInteraction(restored, hotspot.id, destination.id, { trigger: 'on-key', key: 'Chord' }),
+    /Keyboard triggers need a supported key/);
 });

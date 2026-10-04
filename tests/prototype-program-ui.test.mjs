@@ -54,3 +54,11 @@ test('Navigate can combine a main transition with a persisted Smart Animate matc
   assert.match(html, /id="present-matching-canvas" aria-hidden="true"/);
   assert.match(css, /#present-matching-canvas \{ z-index: 3; pointer-events: none; \}/);
 });
+
+test('keyboard shortcuts can be authored and dispatched in presentation mode', () => {
+  assert.match(main, /value="on-key"[^>]*>Keyboard shortcut/);
+  assert.match(main, /id="prototype-key"/);
+  assert.match(main, /prototype-key-\$\{name\}/);
+  assert.match(main, /findPrototypeKeyboardInteraction\(presentRuntimeDocument, pageId, frameId, event, state\.presenting\)/);
+  assert.match(main, /if \(found\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*navigatePresentation\(found\.interaction\);/);
+});

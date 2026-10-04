@@ -526,9 +526,6 @@ function paintText(node, inheritedOpacity, context) {
     || (attrs['stroke-opacity'] != null && parseOpacity(attrs['stroke-opacity'], 'text stroke opacity') !== 0)) {
     fail('text strokes', 'outlined text requires glyph paths; use raster PDF');
   }
-  if (attrs['text-anchor'] != null && attrs['text-anchor'] !== 'start') {
-    fail('text alignment', 'only start-aligned SVG text is supported');
-  }
   if (attrs['text-transform'] != null) {
     fail('text transformations', 'the text must already contain its final characters; use raster PDF to preserve transformed text');
   }
@@ -570,13 +567,14 @@ function paintText(node, inheritedOpacity, context) {
       if (line.children.some(child => child.name !== '#text')) {
         fail('rich text', 'nested styled spans need font shaping and per-run positioning');
       }
-      if (line.attributes['text-anchor'] != null && line.attributes['text-anchor'] !== 'start') {
-        fail('text alignment', 'only left-aligned positioned lines are supported; use raster PDF for other alignments');
+      const textAnchor = line.attributes['text-anchor'] ?? attrs['text-anchor'] ?? 'start';
+      if (!['start', 'middle', 'end'].includes(textAnchor)) {
+        fail('text alignment', 'positioned lines support only start, middle, or end text anchors');
       }
       const value = line.children.map(child => child.text).join('');
       if (!value) continue;
       const literal = pdfTextLiteral(value);
-      const x = finite(line.attributes.x, 'text line x');
+      let x = finite(line.attributes.x, 'text line x');
       const y = finite(line.attributes.y, 'text line y') + ascent;
       let horizontalScale = 100;
       if (line.attributes.textLength != null) {
@@ -595,6 +593,10 @@ function paintText(node, inheritedOpacity, context) {
         if (!Number.isFinite(horizontalScale) || horizontalScale < 1 || horizontalScale > 10_000) {
           fail('text line metrics', 'the requested line width is outside the supported PDF text scale');
         }
+        if (textAnchor === 'middle') x -= desiredWidth / 2;
+        else if (textAnchor === 'end') x -= desiredWidth;
+      } else if (textAnchor !== 'start') {
+        fail('text alignment', 'centered or right-aligned PDF lines need measured textLength; use raster PDF when line metrics are unavailable');
       }
       // SVG positions lines from the top edge. The editor supplies the
       // standard Helvetica ascent measured in the same browser, and the PDF
@@ -609,6 +611,9 @@ function paintText(node, inheritedOpacity, context) {
   }
   if (node.children.some(child => child.name !== '#text')) {
     fail('rich text', 'nested tspans and text paths need font shaping and run layout');
+  }
+  if (attrs['text-anchor'] != null && attrs['text-anchor'] !== 'start') {
+    fail('text alignment', 'centered or right-aligned SVG text needs positioned line metrics; use raster PDF');
   }
   const value = node.children.map(child => child.text).join('');
   const literal = pdfTextLiteral(value);

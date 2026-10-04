@@ -18,7 +18,7 @@ import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrde
 import { selectionBounds } from './group-transform.js';
 import { planScaleTransform } from './scale-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
-import { imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode } from './image-preview-runtime.js';
+import { canShowPreviousImagePreview, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRequiresRenderedPixels, imagePreviewSettingsForNode } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
 import { gridTrackResizeHandles } from './grid-track-editing.js';
 import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js';
@@ -694,8 +694,14 @@ function imageForNode(node, assets, state, assetId = node.assetId, previewKey = 
     settings, cachedAssetId, state.previewSignatures?.get(previewKey)
   );
   if (preview && previewIsCurrent) return preview;
+  const previewStatus = state.imageStatus?.get(previewKey) || '';
+  const previewIsUpdating = /^(Updating preview|Processing locally|Processing recipe|Object erase)/.test(previewStatus);
+  if (preview && previewIsUpdating && canShowPreviousImagePreview(
+    settings, cachedAssetId, state.previewSignatures?.get(previewKey)
+  )) return preview;
   // Never let an older retained bitmap or the original source masquerade as
-  // the current appearance while an edited preview is missing or being rebuilt.
+  // the current appearance while a source, geometry, or erase edit is pending.
+  // Adjustment-only updates may show the last frame above until the new one is ready.
   if (requiresRenderedPixels && !previewIsCurrent) return null;
   return assets.get(assetId)?.bitmap ?? null;
 }

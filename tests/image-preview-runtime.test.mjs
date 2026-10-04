@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
+import { canShowPreviousImagePreview, collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -81,6 +81,34 @@ test('preview signatures include pixel inputs but ignore export-only format and 
     'export-only settings do not require a new preview render');
   assert.equal(imagePreviewRequiresRenderedPixels({ adjustments: { brightness: 5 }, outputFormat: 'jpeg', outputQuality: 40 }), true,
     'pixel-changing adjustments still require a rendered preview');
+});
+
+test('previous previews are temporary fallbacks only for same-source adjustment changes', () => {
+  const original = {
+    assetId: 'photo', adjustments: { brightness: 8 },
+    transforms: { rotation: 90, crop: { left: .1, top: 0, right: .9, bottom: 1 } },
+    inpaintStrokes: []
+  };
+  const signature = imagePreviewSettingsSignature(original);
+  const current = { ...original, adjustments: { brightness: -24 } };
+
+  assert.equal(canShowPreviousImagePreview(current, 'photo', signature), true,
+    'the old color frame can stay visible while the matching source and crop rerender');
+  assert.equal(canShowPreviousImagePreview({ ...current, assetId: 'other' }, 'photo', signature), false,
+    'a previous source must never stand in for a different image');
+  assert.equal(canShowPreviousImagePreview({ ...current, transforms: { ...current.transforms, rotation: 180 } }, 'photo', signature), false,
+    'a previous geometry transform must not be shown against new crop or rotation settings');
+  assert.equal(canShowPreviousImagePreview({ ...current, inpaintStrokes: [{ radius: 3, points: [{ x: 4, y: 5 }] }] }, 'photo', signature), false,
+    'a changed erase mask has different pixels and must fail closed');
+  assert.equal(canShowPreviousImagePreview({ ...original, adjustments: { brightness: 8 } }, 'photo', signature), false,
+    'the helper is only for a genuinely changed adjustment while its new render is pending');
+  assert.equal(canShowPreviousImagePreview({
+    assetId: 'photo', adjustments: {}, transforms: {}, inpaintStrokes: []
+  }, 'photo', imagePreviewSettingsSignature({
+    assetId: 'photo', adjustments: { brightness: 8 }, transforms: {}, inpaintStrokes: []
+  })), false, 'an unedited source should render directly instead of showing an obsolete adjusted frame');
+  assert.equal(canShowPreviousImagePreview(current, 'other', signature), false,
+    'the retained bitmap asset identity must match the live image');
 });
 
 test('undo and redo detect object-erase changes even when image transforms and adjustments match', async () => {

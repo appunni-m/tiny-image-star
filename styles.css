@@ -533,6 +533,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .inspector-empty strong { color: #666; font-weight: 550; }
 .inspector-empty span { font-size: 10px; line-height: 1.5; }
 .property-section { min-width: 0; border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
+.frame-preset-picker { display: grid; gap: 6px; }
+.frame-preset-group { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.frame-preset-group > summary { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: var(--surface-subtle); color: var(--ink); cursor: pointer; list-style-position: inside; font-size: 10px; font-weight: 550; }
+.frame-preset-count { margin-left: auto; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.frame-preset-options { display: grid; gap: 4px; padding: 5px; }
+.frame-preset-option { width: 100%; min-width: 0; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--ink); text-align: left; }
+.frame-preset-option:hover { background: var(--surface-hover); }
+.frame-preset-option > span:first-child { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 10px; }
+.frame-preset-dimensions { flex: 0 0 auto; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .delete-layer-button { width: 100%; min-height: 38px; margin-top: 7px; padding: 0 12px; border: 1px solid #e5b8b4; border-radius: 6px; background: transparent; color: #a43a33; font-size: 11px; font-weight: 550; text-align: center; }
 .delete-layer-button:hover { border-color: #d78f88; background: #fff5f4; }
 .delete-layer-button:focus-visible { outline: 2px solid #d94b45; outline-offset: 2px; }
@@ -900,6 +909,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .context-menu { z-index: 20; position: fixed; min-width: 205px; padding: 5px; border: 1px solid #e3e3e3; border-radius: 8px; background: #fff; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
 .context-menu[hidden] { display: none; }
 .context-menu button { display: flex; align-items: center; width: 100%; min-height: 31px; gap: 10px; padding: 0 9px; border-radius: 5px; text-align: left; font-size: 11px; }
+.context-menu button > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .context-menu button:hover:not(:disabled) { background: #f3f3f3; }
 .context-menu button:disabled { color: #aaa; cursor: default; }
 .context-menu button .shortcut { margin-left: auto; color: #9b9b9b; font-size: 10px; }
@@ -1174,6 +1184,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .delete-layer-button { min-height: 44px; }
   .vector-point-actions .add-fill { min-height: 44px; }
   .recipe-picker { box-sizing: border-box; min-height: 44px; font-size: 16px; }
+  .frame-preset-group > summary { min-height: 44px; padding: 8px 9px; font-size: 12px; }
+  .frame-preset-option { min-height: 46px; padding: 8px; }
+  .frame-preset-option > span:first-child { font-size: 12px; }
+  .frame-preset-dimensions { font-size: 10px; }
   .recipe-save-button, .recipe-apply-button { min-height: 44px; font-size: 12px; }
   .property-section .primary-button.recipe-apply-button { height: auto; min-height: 44px; }
   .recipe-management > summary { min-height: 44px; }

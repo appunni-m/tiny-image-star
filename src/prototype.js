@@ -2,11 +2,12 @@ import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry
 import { pageToNodeLocal } from './transform-geometry.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS } from './prototype-expressions.js';
 import { DEFAULT_PROTOTYPE_BEZIER, isValidPrototypeEasing } from './prototype-easing.js';
+import { normalizePrototypeKeyboardKey, normalizePrototypeKeyModifiers, prototypeKeyboardEventMatches } from './prototype-keyboard.js';
 
 export { easePrototypeProgress, prototypeEasingTimingFunction } from './prototype-easing.js';
 export { prototypeMoveInOffset } from './prototype-transition.js';
 
-const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
+const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay', 'on-key']);
 const transitionDirections = ['left', 'right', 'up', 'down'];
 const transitions = new Set([
   'instant', 'dissolve',
@@ -92,7 +93,7 @@ const legacyActionFields = [
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
-  'smartAnimateMatchingLayers', 'scrollPosition'
+  'smartAnimateMatchingLayers', 'scrollPosition', 'key', 'keyModifiers'
 ];
 
 /** View a legacy one-action interaction as v2 without rewriting saved data. */
@@ -334,12 +335,19 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   scrollTargetId,
   scrollAlignment = 'nearest',
   scrollPosition = 'preserve',
+  key,
+  keyModifiers = {},
   smartAnimateMatchingLayers,
   condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!['preserve', 'reset'].includes(scrollPosition)) throw new TypeError('Unsupported prototype scroll position policy.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
+  const normalizedKey = trigger === 'on-key' ? normalizePrototypeKeyboardKey(key) : null;
+  const normalizedKeyModifiers = trigger === 'on-key' ? normalizePrototypeKeyModifiers(keyModifiers) : null;
+  if (trigger === 'on-key' ? (!normalizedKey || !normalizedKeyModifiers) : (key != null || Object.keys(keyModifiers || {}).length)) {
+    throw new TypeError('Keyboard triggers need a supported key and valid modifier settings; other triggers cannot include keyboard settings.');
+  }
   if (trigger === 'after-delay' && (!delayedActions.has(action)
     || !Number.isInteger(delay) || delay < minPrototypeDelay || delay > maxPrototypeDelay)) {
     throw new TypeError('After-delay interactions need a destination action and a whole-number delay from 100 to 10,000 ms.');
@@ -433,7 +441,9 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
         : Object.is(item.value, value) && !Object.hasOwn(item, 'valueExpression'))))
     && (action !== 'change-variant' || item.targetVariantId === targetVariantId)
     && (action !== 'scroll-to' || (item.scrollTargetId === scrollTargetId && item.scrollAlignment === scrollAlignment))
-    && (item.scrollPosition ?? 'preserve') === scrollPosition);
+    && (item.scrollPosition ?? 'preserve') === scrollPosition
+    && (trigger !== 'on-key' || (normalizePrototypeKeyboardKey(item.key) === normalizedKey
+      && JSON.stringify(normalizePrototypeKeyModifiers(item.keyModifiers)) === JSON.stringify(normalizedKeyModifiers))));
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
@@ -479,6 +489,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     duration: Math.max(0, Math.min(10_000, Number(duration) || 0))
   };
   if (scrollPosition !== 'preserve') interaction.scrollPosition = scrollPosition;
+  if (trigger === 'on-key') Object.assign(interaction, { key: normalizedKey, keyModifiers: normalizedKeyModifiers });
   if (smartAnimateMatchingLayers !== undefined) interaction.smartAnimateMatchingLayers = smartAnimateMatchingLayers;
   if (normalizedEasingBezier) interaction.easingBezier = normalizedEasingBezier;
   if (action === 'open-link') interaction.url = linkUrl;
@@ -570,6 +581,28 @@ export function findPrototypeDelayInteraction(document, pageId, frameId, session
     return false;
   };
   visitVisibleNodes([frame]);
+  return match;
+}
+
+/** Resolve the first visible, condition-matching keyboard interaction in the active screen. */
+export function findPrototypeKeyboardInteraction(document, pageId, frameId, event, session = null) {
+  const frame = findNode(document, frameId, pageId)?.node;
+  if (!frame || frame.type !== 'frame') return null;
+  let match = null;
+  const visit = node => {
+    if (!isPrototypeNodeVisible(document, node, session)) return false;
+    const interaction = node.interactions?.find(item => item.trigger === 'on-key'
+      && actions.has(item.action)
+      && prototypeKeyboardEventMatches(item.key, item.keyModifiers, event)
+      && prototypeConditionMatches(document, item.condition, session, node));
+    if (interaction) {
+      match = { source: node, interaction };
+      return true;
+    }
+    for (const child of node.children || []) if (visit(child)) return true;
+    return false;
+  };
+  visit(frame);
   return match;
 }
 

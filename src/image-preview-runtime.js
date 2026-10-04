@@ -128,6 +128,26 @@ export function imagePreviewMatchesSettings(settings, previewAssetId, previewSig
     && previewSignature === imagePreviewSettingsSignature(settings);
 }
 
+/**
+ * Keep the last rendered frame visible while color adjustments are recomputed.
+ * A prior bitmap is safe as a temporary visual fallback only when it belongs
+ * to the same source and has identical geometry and erase inputs. The renderer
+ * must still use imagePreviewMatchesSettings before treating it as current.
+ */
+export function canShowPreviousImagePreview(settings, previewAssetId, previewSignature) {
+  if (!settings?.assetId || previewAssetId !== settings.assetId || !previewSignature
+    || !imagePreviewRequiresRenderedPixels(settings)) return false;
+  let previous;
+  try { previous = JSON.parse(previewSignature); }
+  catch { return false; }
+  if (!previous || typeof previous !== 'object' || previous.assetId !== settings.assetId) return false;
+  const stableJson = value => JSON.stringify(stableSettingsValue(value ?? {}));
+  const sameGeometry = stableJson(previous.transforms) === stableJson(settings.transforms);
+  const sameErase = stableJson(previous.inpaintStrokes || []) === stableJson(settings.inpaintStrokes || []);
+  const adjustmentsChanged = stableJson(previous.adjustments) !== stableJson(settings.adjustments);
+  return sameGeometry && sameErase && adjustmentsChanged;
+}
+
 /** A decoded source is needed only for a visible, requested, or resident layer. */
 export function shouldRestoreImageAssetSource({
   alreadyResident = false,

@@ -511,18 +511,29 @@ test('exports editor-generated simple ASCII text with measured line placement an
   assertValidXref(pdf);
 });
 
-test('editor-generated text rejects custom fonts and unsupported alignment with actionable errors', () => {
+test('editor-generated text rejects custom fonts and preserves centered and right-aligned PDF line placement', () => {
   const measureText = pdfTextMeasurer();
   const customFont = exportNodeToSvg(createNode('text', {
     text: 'Hello', fontFamily: 'Inter, Arial, sans-serif', fontSize: 16, width: 100, height: 25,
   }), { measureText });
   assert.throws(() => createVectorPdf(customFont), error => error instanceof PdfVectorExportError
     && error.feature === 'custom text fonts' && /raster PDF/.test(error.message));
+
   const centered = exportNodeToSvg(createNode('text', {
     text: 'Hello', fontFamily: 'Arial, sans-serif', align: 'center', fontSize: 16, width: 100, height: 25,
   }), { measureText });
-  assert.throws(() => createVectorPdf(centered), error => error instanceof PdfVectorExportError
-    && error.feature === 'text alignment');
+  const centeredPdf = pdfText(createVectorPdf(centered));
+  assert.match(centered, /<tspan x="50" y="0" textLength="40" lengthAdjust="spacingAndGlyphs" data-tiny-image-star-pdf-width="40">Hello<\/tspan>/);
+  assert.ok(centeredPdf.includes('1 0 0 1 30 12 Tm'), 'the PDF text origin is shifted left by half of the measured line width');
+  assertValidXref(createVectorPdf(centered));
+
+  const rightAligned = exportNodeToSvg(createNode('text', {
+    text: 'Hello', fontFamily: 'Arial, sans-serif', align: 'right', fontSize: 16, width: 100, height: 25,
+  }), { measureText });
+  const rightPdf = pdfText(createVectorPdf(rightAligned));
+  assert.match(rightAligned, /<tspan x="100" y="0" textLength="40" lengthAdjust="spacingAndGlyphs" data-tiny-image-star-pdf-width="40">Hello<\/tspan>/);
+  assert.ok(rightPdf.includes('1 0 0 1 60 12 Tm'), 'the PDF text origin is shifted left by the full measured line width');
+  assertValidXref(createVectorPdf(rightAligned));
 });
 
 test('positioned PDF text fails closed when transforms or font metrics cannot be preserved', () => {

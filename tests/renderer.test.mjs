@@ -288,6 +288,57 @@ test('image layers and fills render Tile through the clipped CanvasPattern path'
     'Tile paint is clipped to its image layer or fill geometry');
 });
 
+test('image layer keeps the last same-geometry preview visible during an adjustment rerender', () => {
+  const document = createDocument();
+  const source = { name: 'source pixels', width: 80, height: 60 };
+  const preview = { name: 'previous adjusted frame', width: 80, height: 60 };
+  const image = createNode('image', {
+    assetId: 'photo', width: 80, height: 60, adjustments: { brightness: 8 },
+  });
+  addNode(document, image);
+  const settingsBeforeEdit = imagePreviewSettingsForNode(image, image.id);
+  const state = {
+    document, assets: new Map([['photo', { bitmap: source }]]),
+    previews: new Map([[image.id, preview]]), previewAssetIds: new Map([[image.id, 'photo']]),
+    previewSignatures: new Map([[image.id, imagePreviewSettingsSignature(settingsBeforeEdit)]]),
+    imageStatus: new Map([[image.id, 'Processing locally…']]),
+    zoom: 1, presenting: false, selectedIds: [], imageCropMode: false,
+  };
+  image.adjustments = { brightness: -24 };
+  const calls = [];
+  const context = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'getTransform') return () => ({ a: 1, b: 0 });
+      return (...args) => calls.push({ method: property, args });
+    },
+    set(target, property, value) { target[property] = value; return true; },
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+
+  renderer.drawNode(context, image, 0, 0, state.assets);
+
+  assert.ok(calls.some(call => call.method === 'drawImage' && call.args[0] === preview),
+    'adjustment edits should keep the prior frame visible until the current Pillow-RS render is ready');
+  assert.ok(!calls.some(call => call.method === 'fillText' && String(call.args[0]).includes('Updating image')),
+    'the canvas should not replace the retained frame with a placeholder during color edits');
+
+  state.imageStatus.set(image.id, 'Preview failed');
+  const failedCalls = [];
+  const failedContext = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'getTransform') return () => ({ a: 1, b: 0 });
+      return (...args) => failedCalls.push({ method: property, args });
+    },
+    set(target, property, value) { target[property] = value; return true; },
+  });
+  renderer.drawNode(failedContext, image, 0, 0, state.assets);
+  assert.ok(!failedCalls.some(call => call.method === 'drawImage' && call.args[0] === preview),
+    'a failed render must not leave an outdated adjustment frame presented as the result');
+});
+
 test('scene renderer bypasses endpoint previews for live smart-animate image layers and fills', () => {
   const document = createDocument();
   const source = { name: 'original bitmap', width: 400, height: 200 };

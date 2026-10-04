@@ -17,6 +17,7 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 import { isValidPrototypeEasing } from './prototype-easing.js';
+import { normalizePrototypeKeyboardKey, normalizePrototypeKeyModifiers } from './prototype-keyboard.js';
 import { createTextPathGeometry, isValidTextPathGeometry } from './text-on-path.js';
 import { isValidFontVariationValues } from './font-variation.js';
 import { isValidFontFeatureValues } from './font-features.js';
@@ -242,7 +243,7 @@ const defaults = {
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
 const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
-const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
+const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay', 'on-key']);
 const prototypeTransitionDirections = ['left', 'right', 'up', 'down'];
 const prototypeTransitions = new Set([
   'instant', 'dissolve',
@@ -349,6 +350,9 @@ function hasInvalidPrototypeInteractions(interactions, document) {
       ? (typeof item.instanceId !== 'string' || !item.instanceId || typeof item.targetVariantId !== 'string' || !item.targetVariantId)
       : (Object.hasOwn(item, 'instanceId') || Object.hasOwn(item, 'targetVariantId'))) return true;
     if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
+    if (item.trigger === 'on-key'
+      ? (!normalizePrototypeKeyboardKey(item.key) || !normalizePrototypeKeyModifiers(item.keyModifiers))
+      : (Object.hasOwn(item, 'key') || Object.hasOwn(item, 'keyModifiers'))) return true;
     if (item.scrollPosition != null && !['preserve', 'reset'].includes(item.scrollPosition)) return true;
     if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
     if (item.easing != null && !isValidPrototypeEasing(item.easing, item.easingBezier)) return true;
@@ -381,7 +385,7 @@ const prototypeActionProgramActionFields = new Set([
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
-  'smartAnimateMatchingLayers', 'scrollPosition'
+  'smartAnimateMatchingLayers', 'scrollPosition', 'key', 'keyModifiers'
 ]);
 
 function invalidPrototypeCondition(condition, document) {

@@ -82,6 +82,7 @@ import { exportNodeToSvg, exportPageToSvg, getPageContentBounds } from './svg-ex
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { fitPdfContent, pdfContentRenderScale, planPdfPage, PDF_PAGE_PRESETS } from './pdf-page-layout.js';
+import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
@@ -91,7 +92,7 @@ import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRaste
 import { importSvgToLayers } from './svg-import.js';
 import { parseLocalFigFile } from './fig-import-worker-client.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
 import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
@@ -129,6 +130,7 @@ import { snapToAlignmentGuides } from './smart-guides.js';
 import { preserveCanvasWorldCenterOnResize } from './canvas-viewport.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
+import { getFramePreset, groupFramePresetsByCategory } from './frame-presets.js';
 import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionEntryForHit, commentSelectionTarget, commentPanelCanvasIsInteractive, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentSelectionOverridesCanvasTool } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
@@ -199,7 +201,7 @@ const state = {
   pendingVariableDialog: null, pendingCommentAnchor: null, pendingCommentText: '', activeCommentId: null, commentPlacementArmed: false, commentSelectionCycle: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeProgramEditingActionId: null, prototypeProgramBranchStack: [], prototypeDestinationId: null,
-  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeSmartAnimateMatchingLayers: false, prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
+  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeKey: 'Enter', prototypeKeyModifiers: { shift: false, control: false, alt: false, meta: false }, prototypeTransition: 'instant', prototypeSmartAnimateMatchingLayers: false, prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
@@ -1794,6 +1796,7 @@ function setTool(tool) {
     state.commentPlacementArmed = false;
   }
   state.tool = tool;
+  if (tool === 'frame' && !state.selectedIds.length && state.inspectorTab !== 'design') setInspectorTab('design');
   // Mobile panels make the canvas inert while open. Entering Comment mode
   // requires canvas taps to select objects or place a pin, so dismiss the
   // panel here; beginCommentAt() will reopen it when the user needs to type.
@@ -2005,6 +2008,12 @@ function renderLayers() {
 
 function section(title, body, iconName = null) {
   return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
+}
+function framePresetPicker() {
+  const preferredCategory = innerWidth <= 820 ? 'phone' : 'desktop';
+  const groups = groupFramePresetsByCategory();
+  const markup = groups.map(group => `<details class="frame-preset-group"${group.id === preferredCategory ? ' open' : ''}><summary><span>${escapeHtml(group.name)}</span><span class="frame-preset-count">${group.presets.length}</span></summary><div class="frame-preset-options">${group.presets.map(preset => `<button class="frame-preset-option" type="button" data-action="create-frame-preset" data-preset-id="${escapeHtml(preset.id)}" aria-label="Create ${escapeHtml(preset.name)} frame, ${preset.width} by ${preset.height} pixels"><span>${escapeHtml(preset.name)}</span><span class="frame-preset-dimensions">${preset.width} × ${preset.height}</span></button>`).join('')}</div></details>`).join('');
+  return section('Frame presets', `<p class="image-properties-note frame-preset-hint">Choose a preset or drag on the canvas to draw a custom frame.</p><div class="frame-preset-picker">${markup}</div>`);
 }
 function propertyFieldLabelClass(label) {
   return String(label).trim().length > 2 ? ' property-field--descriptive' : '';
@@ -2670,7 +2679,7 @@ function exportSettingsSection(node) {
     ? '<button class="add-fill" type="button" data-action="export-raster-pdf">Download 1× raster PDF</button><div class="image-properties-note">This local PDF is a flattened 1× export. Use vector PDF for supported shapes or editable SVG for full vector artwork.</div>'
     : '';
   const vectorPdf = node.type === 'frame'
-    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes, paths, masks, and single-style, left-aligned ASCII text editable; text uses built-in Helvetica regular, bold, and italic with zero letter spacing. Custom fonts, rich text, non-ASCII text, case transforms, ellipsis, lists, variable-font settings, text strokes, unsupported image formats, filters, blend modes, and unsupported effects need raster PDF. Use raster PDF to preserve the editor’s exact typography.</div>'
+    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes, paths, masks, and single-style, left-, center-, or right-aligned ASCII text editable; text uses built-in Helvetica regular, bold, and italic with zero letter spacing. Custom fonts, rich text, non-ASCII text, justified paragraphs, case transforms, ellipsis, lists, variable-font settings, text strokes, unsupported image formats, filters, blend modes, and unsupported effects need raster PDF. Use raster PDF to preserve the editor’s exact typography.</div>'
     : '';
   const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes supported linear/radial gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Angular gradients are canvas-editable but require raster export because SVG/PDF vector export cannot preserve them. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${rasterPdf}${vectorPdf}${svgExport}`);
@@ -3341,7 +3350,7 @@ function setPrototypeActionProjection(interaction, step, sourceId) {
   const fields = ['action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
     'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor', 'overlayBackgroundOpacity',
     'delay', 'url', 'collectionId', 'modeId', 'targetVariantId', 'variableId', 'value', 'valueExpression',
-    'scrollTargetId', 'scrollAlignment', 'scrollPosition', 'instanceId'];
+    'scrollTargetId', 'scrollAlignment', 'scrollPosition', 'key', 'keyModifiers', 'instanceId'];
   for (const field of fields) delete interaction[field];
   for (const field of fields) if (Object.hasOwn(step, field)) interaction[field] = structuredClone(step[field]);
   if (step.action === 'change-variant' && sourceId) interaction.instanceId = sourceId;
@@ -3366,6 +3375,13 @@ function editPrototypeProgramAction(steps, actionId, replacement) {
   return false;
 }
 
+function prototypeKeyboardSettings() {
+  if (state.prototypeTrigger !== 'on-key') return {};
+  const keyModifiers = Object.fromEntries(['shift', 'control', 'alt', 'meta'].map(name => [name,
+    $(`#prototype-key-${name}`)?.checked ?? state.prototypeKeyModifiers?.[name] === true]));
+  return { key: $('#prototype-key')?.value ?? state.prototypeKey ?? 'Enter', keyModifiers };
+}
+
 function prototypeInteractionActionOptions() {
   const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
   const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
@@ -3380,6 +3396,7 @@ function prototypeInteractionActionOptions() {
     easingBezier: state.prototypeEasingBezier,
     duration: state.prototypeDuration,
     delay: state.prototypeDelay,
+    ...prototypeKeyboardSettings(),
     // Conditional branches are represented by `if` steps. The interaction's
     // own legacy condition remains an envelope-level compatibility setting.
     condition: null,
@@ -3433,6 +3450,8 @@ function loadPrototypeActionIntoComposer(interaction, action) {
   state.prototypeEasingBezier = action.easingBezier ? [...action.easingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
   state.prototypeDuration = Number.isFinite(action.duration) ? action.duration : 300;
   state.prototypeDelay = Number.isFinite(interaction.delay) ? interaction.delay : 1000;
+  state.prototypeKey = action.key || interaction.key || 'Enter';
+  state.prototypeKeyModifiers = { shift: false, control: false, alt: false, meta: false, ...(action.keyModifiers || interaction.keyModifiers || {}) };
   state.prototypeUrl = action.url || 'https://';
   state.prototypeVariableCollectionId = action.collectionId || null;
   state.prototypeVariableModeId = action.modeId || null;
@@ -3560,7 +3579,7 @@ function prototypeInspector() {
       : String(interaction.value);
     const targetVariant = interaction.action === 'change-variant' ? state.document.components?.find(item => item.id === interaction.targetVariantId) : null;
     const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable' ? `Set ${actionVariable?.name || 'variable'}` : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : interaction.action === 'change-variant' ? 'Change variant' : interaction.action === 'scroll-to' ? `Scroll to · ${interaction.scrollAlignment || 'nearest'}` : 'Navigate to';
-    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : interaction.trigger === 'on-press' ? 'On press / touch down' : interaction.trigger === 'on-drag' ? 'On drag' : 'On click / tap';
+    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : interaction.trigger === 'on-press' ? 'On press / touch down' : interaction.trigger === 'on-drag' ? 'On drag' : interaction.trigger === 'on-key' ? `Key · ${(interaction.keyModifiers?.shift ? 'Shift+' : '')}${(interaction.keyModifiers?.control ? 'Ctrl+' : '')}${(interaction.keyModifiers?.alt ? 'Alt+' : '')}${(interaction.keyModifiers?.meta ? 'Meta+' : '')}${escapeHtml(interaction.key || 'Enter')}` : 'On click / tap';
     const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'scroll-to' ? (scrollTarget?.name || 'Missing scroll target') : interaction.action === 'change-variant' ? `${targetVariant?.name || 'Missing variant'} · ${variantSourceSet?.name || 'Component set'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable' ? variableValueSummary : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
     const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
     const conditionOperatorText = {
@@ -3635,7 +3654,10 @@ function prototypeInspector() {
   const hasTimedTransition = needsDestination || state.prototypeAction === 'scroll-to';
   const variableCollections = state.document.variableCollections || [];
   const canUseDelayTrigger = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
-  const triggerOptions = `<option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="on-press"${state.prototypeTrigger === 'on-press' ? ' selected' : ''}>On press / touch down</option><option value="on-drag"${state.prototypeTrigger === 'on-drag' ? ' selected' : ''}>On drag</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option>${canUseDelayTrigger ? `<option value="after-delay"${state.prototypeTrigger === 'after-delay' ? ' selected' : ''}>After delay</option>` : ''}`;
+  const triggerOptions = `<option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="on-press"${state.prototypeTrigger === 'on-press' ? ' selected' : ''}>On press / touch down</option><option value="on-drag"${state.prototypeTrigger === 'on-drag' ? ' selected' : ''}>On drag</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option><option value="on-key"${state.prototypeTrigger === 'on-key' ? ' selected' : ''}>Keyboard shortcut</option>${canUseDelayTrigger ? `<option value="after-delay"${state.prototypeTrigger === 'after-delay' ? ' selected' : ''}>After delay</option>` : ''}`;
+  const keyboardTriggerControl = state.prototypeTrigger === 'on-key'
+    ? `<label>Key<input id="prototype-key" class="text-input" type="text" maxlength="32" value="${escapeHtml(state.prototypeKey || 'Enter')}" placeholder="Enter, Space, A, ArrowRight" aria-label="Keyboard shortcut key" /></label><div class="prototype-key-modifiers" aria-label="Keyboard shortcut modifiers">${[['shift', 'Shift'], ['control', 'Control'], ['alt', 'Alt'], ['meta', 'Meta / Command']].map(([name, label]) => `<label><input id="prototype-key-${name}" type="checkbox"${state.prototypeKeyModifiers?.[name] ? ' checked' : ''} />${label}</label>`).join('')}</div><small class="prototype-hint">The key and selected modifiers must match exactly during presentation.</small>`
+    : '';
   const conditionVariables = state.document.variables || [];
   const conditionVariable = conditionVariables.find(variable => variable.id === state.prototypeConditionVariableId) || null;
   const rawConditionValue = conditionVariable
@@ -3714,7 +3736,7 @@ function prototypeInspector() {
   const actionButtonLabel = state.prototypeProgramEditingActionId ? 'Save selected action' : editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
   const actionProgramControls = prototypeProgramEditor(editingInteraction);
   const composerTarget = state.prototypeProgramEditingActionId ? 'Selected sequence action' : editingInteraction ? 'Interaction action' : 'New interaction action';
-  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${scrollPositionControl}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${smartAnimateMatchingControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label>${keyboardTriggerControl}<label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${scrollPositionControl}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${smartAnimateMatchingControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `${scrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -4143,7 +4165,8 @@ function renderInspector() {
   }
   if (!entries.length) {
     const page = activePage();
-    content.innerHTML = `<div class="inspector-empty"><div class="empty-layer-icon">✣</div><strong>Nothing selected</strong><span>Choose a layer or create something on the canvas. Everything is saved locally as you work.</span></div>${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><button class="add-fill" data-action="create-frame">＋ Create a frame</button>`)}`;
+    const framePresets = state.tool === 'frame' ? framePresetPicker() : '';
+    content.innerHTML = `<div class="inspector-empty"><div class="empty-layer-icon">✣</div><strong>Nothing selected</strong><span>Choose a layer or create something on the canvas. Everything is saved locally as you work.</span></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><button class="add-fill" data-action="create-frame">＋ Create a frame</button>`)}`;
     return;
   }
   if (entries.length > 1) {
@@ -18591,9 +18614,8 @@ function assertVectorPdfTextSupported(documentSnapshot, node) {
   }
   if (node.textTruncation === 'ending') reject('truncated text', 'the rendered ellipsis and clip cannot be represented as editable text.');
   if (node.textCase && node.textCase !== 'none') reject('text case transforms', 'choose the desired case in the layer content before exporting.');
-  if ((node.align || 'left') !== 'left' || (node.paragraphStyles || []).some(paragraph => paragraph?.align && paragraph.align !== 'left')) {
-    reject('text alignment', 'only left-aligned paragraphs are supported by the vector text subset.');
-  }
+  const alignmentIssue = vectorPdfTextAlignmentIssue(node);
+  if (alignmentIssue) reject('text alignment', alignmentIssue);
   if ((node.paragraphStyles || []).some(paragraph => paragraph?.listStyle && paragraph.listStyle !== 'none')) {
     reject('paragraph lists', 'list markers require rich text positioning.');
   }
@@ -19104,6 +19126,44 @@ function applyVectorOffset() {
     showToast(`${Number(state.vectorOffsetAmount) > 0 ? 'Expanded' : 'Contracted'} vector by ${Math.abs(Number(state.vectorOffsetAmount))} px.`);
   } catch (error) {
     showToast(error instanceof VectorOffsetError ? error.message : error.message || 'Could not offset this vector path.');
+  }
+}
+
+function createFrameFromPreset(presetId) {
+  const preset = getFramePreset(presetId);
+  if (!preset) { showToast('That frame preset is no longer available.'); return false; }
+  if (state.tool !== 'frame' || selectedEntries().length) return false;
+  if (state.documentTransitioning || state.presenting || state.interaction || isLiveHostViewOnly() || state.workspacePermissionNeeded) {
+    showToast('Finish the current editor action before creating a frame preset.');
+    return false;
+  }
+  const page = activePage();
+  const bounds = canvas.getBoundingClientRect();
+  if (!page || !(bounds.width > 0) || !(bounds.height > 0)) {
+    showToast('The canvas viewport is not ready for a frame preset.');
+    return false;
+  }
+  const center = screenToWorld({
+    clientX: bounds.left + bounds.width / 2,
+    clientY: bounds.top + bounds.height / 2
+  }, canvas, state);
+  const frame = createNode('frame', {
+    name: preset.name,
+    x: center.x - preset.width / 2,
+    y: center.y - preset.height / 2,
+    width: preset.width,
+    height: preset.height
+  });
+  try {
+    checkpoint(`Create ${preset.name} frame`);
+    addNode(state.document, frame, { pageId: page.id });
+    setSelection([frame.id], { source: 'programmatic' });
+    queueSave();
+    renderer.invalidate();
+    return true;
+  } catch (error) {
+    showToast(error.message || 'Could not create this frame preset.');
+    return false;
   }
 }
 
@@ -19733,6 +19793,7 @@ function applyInspectorAction(action, details = {}) {
         const sourceInteraction = node.interactions.find(item => item.id === state.prototypeEditingInteractionId);
         const updateOptions = {
           action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
+          ...prototypeKeyboardSettings(),
           transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
           ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
             ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
@@ -19791,6 +19852,7 @@ function applyInspectorAction(action, details = {}) {
         const updatedDocument = structuredClone(state.document);
         addPrototypeInteraction(updatedDocument, node.id, null, {
           action: state.prototypeAction, trigger: state.prototypeTrigger,
+          ...prototypeKeyboardSettings(),
           transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
           ...(canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)
             ? { smartAnimateMatchingLayers: state.prototypeSmartAnimateMatchingLayers }
@@ -19906,7 +19968,8 @@ function applyInspectorAction(action, details = {}) {
     checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover'; node.inpaintStrokes = [];
     recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit', 'inpaintStrokes']);
     schedulePreview(node, true); renderInspector(); queueSave();
-  } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
+  } else if (action === 'create-frame-preset') { createFrameFromPreset(details.presetId); }
+  else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
   else if (action === 'ios-corner-smoothing') {
     const targets = selectedNodes().filter(target => !target.locked && ['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(target.type));
     if (!targets.length) return;
@@ -20966,7 +21029,20 @@ function initEvents() {
     if (event.target.id === 'prototype-scroll-target') state.prototypeScrollTargetId = event.target.value || null;
     if (event.target.id === 'prototype-scroll-alignment') state.prototypeScrollAlignment = event.target.value;
     if (event.target.id === 'prototype-scroll-position') state.prototypeScrollPosition = event.target.value;
-    if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
+    if (event.target.id === 'prototype-key') state.prototypeKey = event.target.value;
+    if (event.target.id?.startsWith('prototype-key-')) {
+      const name = event.target.id.slice('prototype-key-'.length);
+      if (['shift', 'control', 'alt', 'meta'].includes(name)) {
+        state.prototypeKeyModifiers = { ...state.prototypeKeyModifiers, [name]: event.target.checked };
+      }
+    }
+    if (event.target.id === 'prototype-trigger') {
+      state.prototypeKey = $('#prototype-key')?.value || state.prototypeKey;
+      state.prototypeKeyModifiers = Object.fromEntries(['shift', 'control', 'alt', 'meta'].map(name => [name,
+        $(`#prototype-key-${name}`)?.checked ?? state.prototypeKeyModifiers?.[name] === true]));
+      state.prototypeTrigger = event.target.value;
+      renderInspector();
+    }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') {
       state.prototypeTransition = event.target.value;
@@ -21542,6 +21618,22 @@ function initEvents() {
 
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
+  if (state.presenting) {
+    const isEditable = event.target?.matches?.('input, textarea, select, [contenteditable="true"]')
+      || event.target?.closest?.('[contenteditable="true"]');
+    if (!isEditable && !event.repeat && presentRuntimeDocument) {
+      const overlay = state.presenting.overlays?.at(-1);
+      const pageId = overlay?.pageId || state.presenting.pageId;
+      const frameId = overlay?.frameId || state.presenting.frameId;
+      const found = findPrototypeKeyboardInteraction(presentRuntimeDocument, pageId, frameId, event, state.presenting);
+      if (found) {
+        event.preventDefault();
+        event.stopPropagation();
+        navigatePresentation(found.interaction);
+      }
+    }
+    return;
+  }
   if (state.workspacePermissionNeeded && event.key !== 'Escape') return;
   if (isLiveHostViewOnly()) {
     const inLiveControls = event.target.closest?.('#live-view-dock, #live-collaboration-dialog');

@@ -77,3 +77,10 @@ test('the recipe refresh chooser and confirmation remain touch-sized on phones',
   assert.match(stylesheet, /#recipe-dialog \.dialog-actions > button \{ min-height: 44px; \}/,
     'the refresh confirmation provides a 44px phone tap target');
 });
+
+test('unbroken saved recipe names can wrap inside the narrow mobile context menu', () => {
+  assert.match(stylesheet, /\.context-menu button > span:first-child\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/,
+    'the menu label must be allowed to shrink and break a long, unspaced recipe name instead of widening past the phone viewport');
+  assert.match(stylesheet, /\.context-menu\s*\{[^}]*min-width:\s*205px/,
+    'the wrapped label should preserve the menu’s usable minimum width');
+});
