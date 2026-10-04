@@ -18,6 +18,7 @@ import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCro
 import { createFallbackImage, createPillowFallbackImage, FALLBACK_IMAGE_MAX_EDGE, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback, shouldPreferPillowFallback } from './image-intake.js';
 import { searchActions } from './action-search.js';
+import { createEditorToolActions } from './editor-tool-tasks.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
@@ -14380,6 +14381,7 @@ function quickActionCatalog() {
   const recipeDisabledReason = batchReason || (!imageLayers.length
     ? 'Choose Multi-select in Layers, then tap the image layers you want to update.'
     : !hasRecipes ? 'Save a recipe from an edited image first.' : '');
+  const drawingAndNavigationActions = createEditorToolActions({ setTool, disabledReason: batchReason });
   return [
     {
       id: 'crop-image', label: 'Crop image',
@@ -14420,6 +14422,7 @@ function quickActionCatalog() {
       keywords: ['type', 'label', 'title', 'copy'], disabled: Boolean(batchReason),
       unavailableReason: batchReason, run: () => setTool('text'),
     },
+    ...drawingAndNavigationActions,
     {
       id: 'adjust-image', label: 'Adjust selected image',
       description: 'Open image controls for exposure, color, crop, erase, and local enhancement.',

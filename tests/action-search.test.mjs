@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { normalizeActionSearchText, searchActions } from '../src/action-search.js';
+import { createEditorToolActions } from '../src/editor-tool-tasks.js';
 
 const [html, main, styles, readme] = await Promise.all([
   readFile(new URL('../index.html', import.meta.url), 'utf8'),
@@ -51,6 +52,34 @@ test('action search validates its bounded result limit and action list', () => {
   assert.throws(() => searchActions(actions, 'crop', { limit: 0 }), /between one and one hundred/i);
 });
 
+test('plain-language drawing and navigation tasks open the matching editor tools', () => {
+  const openedTools = [];
+  const toolActions = createEditorToolActions({ setTool: tool => openedTools.push(tool) });
+  const cases = [
+    ['How do I draw a rectangle?', 'draw-rectangle', 'rectangle'],
+    ['make a circle', 'draw-ellipse', 'ellipse'],
+    ['draw a star', 'draw-star', 'star'],
+    ['make a polygon', 'draw-polygon', 'polygon'],
+    ['pan the canvas', 'pan-canvas', 'hand'],
+    ['sample a color', 'pick-color', 'eyedropper'],
+    ['draw a bezier path', 'draw-pen-path', 'pen']
+  ];
+  for (const [query, expectedId, expectedTool] of cases) {
+    const match = searchActions(toolActions, query)[0];
+    assert.equal(match?.id, expectedId, `expected ${query} to find ${expectedId}`);
+    match.run();
+    assert.equal(openedTools.at(-1), expectedTool, `${expectedId} should open the matching canvas tool`);
+  }
+  assert.throws(() => createEditorToolActions(), /setTool function/);
+});
+
+test('drawing and navigation tasks explain why they are disabled during a batch', () => {
+  const actions = createEditorToolActions({ setTool() {}, disabledReason: 'Finish or cancel the current image batch first.' });
+  const rectangle = actions.find(action => action.id === 'draw-rectangle');
+  assert.equal(rectangle.disabled, true);
+  assert.equal(rectangle.unavailableReason, 'Finish or cancel the current image batch first.');
+});
+
 test('the editor exposes image cropping through searchable keyboard and menu actions', () => {
   assert.match(html, /id="quick-actions-dialog"[^>]*aria-labelledby="quick-actions-title"/);
   assert.match(html, /id="quick-actions-search"[^>]*role="combobox"[^>]*aria-controls="quick-actions-results"/);
@@ -60,6 +89,9 @@ test('the editor exposes image cropping through searchable keyboard and menu act
   assert.match(main, /\{ label: 'Search actions…', shortcut: '⌘K', action: \(\) => openQuickActions\(\) \}/);
   assert.match(main, /key === 'k'[\s\S]*?openQuickActions\(\)/);
   assert.match(main, /id: 'crop-image', label: 'Crop image'[\s\S]*?drag across the area to keep[\s\S]*?toggleSelectedImageCropMode/i);
+  assert.match(main, /import \{ createEditorToolActions \} from '\.\/editor-tool-tasks\.js'/);
+  assert.match(main, /const drawingAndNavigationActions = createEditorToolActions\(\{ setTool, disabledReason: batchReason \}\)[\s\S]*?\.\.\.drawingAndNavigationActions/,
+    'the task finder should expose the existing drawing and navigation tools');
   assert.match(main, /id: 'crop-image',[\s\S]*?keywords: \[[^\]]*'images'[^\]]*'cropping'/);
   assert.match(main, /Select an image layer first, or choose Add image if none is on this page\./);
   assert.match(main, /id: 'add-image', label: 'Add image'[\s\S]*?Add an image before cropping it[\s\S]*?keywords: \[[^\]]*'crop image'/);
