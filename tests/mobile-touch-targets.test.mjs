@@ -63,6 +63,12 @@ test('coarse-pointer phone navigation and canvas menus have 44px touch targets',
   assert.match(coarsePhone, /\.section-heading > \.tiny-icon-button/);
 });
 
+test('the layer reorder drag handle has a full 44px touch target on coarse-pointer phones', () => {
+  const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 0);
+  assert.match(coarsePhone, /\.layer-reorder-handle\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px[^}]*flex-basis:\s*44px[^}]*touch-action:\s*none/,
+    'the drag-only layer reorder handle should be easy to acquire without yielding the gesture to page scrolling');
+});
+
 test('coarse-pointer inspector and repeated edit actions meet the 44px target', () => {
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
   for (const selector of [

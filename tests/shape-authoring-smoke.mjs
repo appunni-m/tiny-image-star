@@ -256,6 +256,17 @@ try {
   const snappedLine = findNodeInPages(modifierDocument, snappedLineId);
   assert(snappedLine?.type === 'line' && Math.abs(snappedLine.width - snappedLine.height) < 1e-8,
     `Shift-drag should snap line angles to 45° (${snappedLine?.width}×${snappedLine?.height}).`);
+  const lineEndDecoration = app.querySelector('#inspector-content [data-stroke-field="endDecoration"]');
+  assert(lineEndDecoration && [...lineEndDecoration.options].some(option => option.value === 'triangle-inward'),
+    'the line inspector should expose the imported inward-pointing triangle decoration');
+  lineEndDecoration.value = 'triangle-inward';
+  lineEndDecoration.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
+  lineEndDecoration.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  await waitForSave(app, 'inward triangle endpoint decoration');
+  modifierDocument = await readSavedDesign(app, documentId);
+  const decoratedLine = findNodeInPages(modifierDocument, snappedLineId);
+  assert(decoratedLine?.strokes?.[0]?.endDecoration === 'triangle-inward',
+    'the inward-pointing triangle decoration should survive a local save');
 
   drawShape(app, 'line', { x: 350, y: 130 }, { x: 400, y: 100 }, 221, { shiftKey: true });
   const reverseLineId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;

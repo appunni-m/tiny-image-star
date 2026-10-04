@@ -349,6 +349,20 @@ function mapStrokes(paints, node, report) {
   const strokes = [];
   const capValue = String(node.strokeCap || '').toUpperCase();
   const joinValue = String(node.strokeJoin || '').toUpperCase();
+  const lineLike = ['LINE', 'VECTOR'].includes(String(node.type || '').toUpperCase());
+  const standardCaps = ['NONE', 'ROUND', 'SQUARE', 'BUTT'];
+  const representedDecorations = {
+    ARROW_LINES: 'arrow', ARROW_EQUILATERAL: 'triangle', TRIANGLE_FILLED: 'triangle-inward'
+  };
+  const decoration = lineLike ? representedDecorations[capValue] : undefined;
+  // Do not silently turn a Figma cap shape into a plain butt cap. Missing cap
+  // geometry changes the visual stroke, so omit that stroke and flag it for review.
+  if (paints.some(paint => paint?.visible !== false && paintOpacity(paint) > 0)
+    && capValue && !standardCaps.includes(capValue) && !Object.hasOwn(representedDecorations, capValue)) {
+    warn(report, 'unsupported', 'STROKE_CAP', node.name,
+      `The ${capValue} Figma stroke cap has no safe local representation; this stroke was omitted.`);
+    return [];
+  }
   let cap = ({ ROUND: 'round', SQUARE: 'square', BUTT: 'butt' })[capValue] || 'butt';
   const join = ({ ROUND: 'round', BEVEL: 'bevel', MITER: 'miter' })[joinValue] || 'miter';
   const rawDash = Array.isArray(node.dashPattern) ? node.dashPattern : [];
@@ -375,7 +389,6 @@ function mapStrokes(paints, node, report) {
   else if (dash) { pattern = 'custom'; dashArray = dash; }
   else if (rawDash.length) warn(report, 'unsupported', 'STROKE_PATTERN', node.name, 'The custom dash pattern was invalid; the imported stroke uses a solid pattern.');
   if (pattern === 'dotted') cap = 'round';
-  if (paints.length && capValue && !['ROUND', 'SQUARE', 'BUTT'].includes(capValue)) warn(report, 'flattened', 'STROKE_CAP', node.name, 'Arrow and custom endpoint caps were reduced to a standard line cap.');
   if (paints.length && joinValue && !['ROUND', 'BEVEL', 'MITER'].includes(joinValue)) warn(report, 'flattened', 'STROKE_JOIN', node.name, 'This stroke join was reduced to a miter join.');
   if (node.strokeAlign && node.strokeAlign !== 'CENTER') warn(report, 'flattened', 'STROKE_ALIGNMENT', node.name, 'Inside and outside stroke alignment were centered.');
   if (paints.length > 32) warn(report, 'unsupported', 'STROKE_STACK', node.name, 'Only the first 32 stroke paint layers were considered.');
@@ -388,8 +401,10 @@ function mapStrokes(paints, node, report) {
         id: createId('stroke'), color: mapped.gradient.stops[0].color,
         gradient: mapped.gradient, width, ...sidePaint,
         opacity: mapped.opacity, visible: true, cap, join, pattern,
+        startDecoration: 'none', endDecoration: 'none',
+        ...(decoration ? { startDecoration: decoration, endDecoration: decoration } : {}),
         ...(dashArray ? { dashArray: [...dashArray] } : {}),
-        miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none',
+        miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000),
         ...mappedPaintBlendMode(paint, report, node.name)
       });
       continue;
@@ -404,8 +419,10 @@ function mapStrokes(paints, node, report) {
     strokes.push({
       id: createId('stroke'), color, width, ...sidePaint,
       opacity: paintOpacity(paint), visible: true, cap, join, pattern,
+      startDecoration: 'none', endDecoration: 'none',
+      ...(decoration ? { startDecoration: decoration, endDecoration: decoration } : {}),
       ...(dashArray ? { dashArray: [...dashArray] } : {}),
-      miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none', ...blend
+      miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), ...blend
     });
   }
   return strokes;
@@ -1418,7 +1435,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     const editableStrokeStyles = !visibleStrokePaint
       || (['CENTER', undefined, null].includes(source.strokeAlign)
         && !(Array.isArray(source.dashPattern) && source.dashPattern.length)
-        && (!source.strokeCap || ['ROUND', 'SQUARE', 'BUTT'].includes(String(source.strokeCap).toUpperCase()))
+        && (!source.strokeCap || ['NONE', 'ROUND', 'SQUARE', 'BUTT', 'ARROW_LINES', 'ARROW_EQUILATERAL', 'TRIANGLE_FILLED'].includes(String(source.strokeCap).toUpperCase()))
         && (!source.strokeJoin || ['ROUND', 'BEVEL', 'MITER'].includes(String(source.strokeJoin).toUpperCase())));
     const directNetworkPathChars = paths.fill.reduce((total, path) => total + (path?.svgPath?.length ?? 0), 0);
     const editableNetworkPathsFitBudget = paths.fill.length > 0

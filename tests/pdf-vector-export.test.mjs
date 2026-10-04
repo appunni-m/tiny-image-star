@@ -457,13 +457,53 @@ test('preserves affine linear and elliptical radial gradient geometry in PDF sha
   }
 });
 
+test('exports simple single-line ASCII text with editable standard PDF fonts', () => {
+  const svg = '<svg width="120px" height="40px" viewBox="0 0 120 40">'
+    + '<text x="8" y="24" font-family="Arial, sans-serif" font-size="16" font-weight="700" font-style="italic"'
+    + ' fill="#204060" fill-opacity="0.5">PDF (local) \\ text</text></svg>';
+  const pdf = createVectorPdf(svg);
+  const text = pdfText(pdf);
+
+  assert.match(text, /\/F1 \d+ 0 R/);
+  assert.match(text, /\/Type \/Font \/Subtype \/Type1 \/BaseFont \/Helvetica-BoldOblique \/Encoding \/WinAnsiEncoding/);
+  assert.match(text, /1 0 0 -1 0 48 cm/);
+  assert.match(text, /0\.125490196078 0\.250980392157 0\.376470588235 rg/);
+  assert.match(text, /\/ca 0\.5 \/CA 1/);
+  assert.ok(text.includes(`BT\n/F1 16 Tf\n1 0 0 1 8 24 Tm\n${String.raw`(PDF \(local\) \\ text) Tj`}\nET`),
+    'PDF string delimiters and backslashes are escaped without changing the text');
+  assertValidXref(pdf);
+});
+
+test('simple text rejects font-dependent or shaped SVG cases instead of substituting silently', () => {
+  const svg = body => `<svg width="40px" height="20px" viewBox="0 0 40 20">${body}</svg>`;
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14" font-family="Inter">Hello</text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'custom text fonts');
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14">café</text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'non-ASCII text');
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14" text-anchor="middle">Hello</text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'text alignment');
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14"><tspan>Rich</tspan></text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'rich text');
+});
+
+test('editor text SVG stays unsupported by vector PDF until its positioned runs can be preserved', () => {
+  const editorTextSvg = exportNodeToSvg(createNode('text', {
+    text: 'Hello', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 100, height: 25,
+  }), { measureText: () => 30 });
+
+  assert.match(editorTextSvg, /<tspan\b[^>]*textLength=/,
+    'the app emits an explicitly positioned and measured text run');
+  assert.throws(() => createVectorPdf(editorTextSvg), PdfVectorExportError,
+    'the low-level writer must reject the app SVG instead of silently changing text layout');
+});
+
 test('fails closed with specific errors for unsupported rendered SVG features', () => {
-  const textSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><text x="0" y="0">Hi</text></svg>';
+  const textSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><text x="0" y="0"><tspan>Hi</tspan></text></svg>';
   const gradientSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="10"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/></linearGradient></defs><rect width="10" height="10" fill="url(#g)"/></svg>';
   const effectSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><filter id="f"/></defs><g filter="url(#f)"><rect width="10" height="10"/></g></svg>';
   const maskSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><mask id="m" mask-type="luminance"/></defs><g mask="url(#m)"><rect width="10" height="10"/></g></svg>';
   for (const [svg, feature] of [
-    [textSvg, /text layers/],
+    [textSvg, /rich text/],
     [effectSvg, /layer effects/],
     [maskSvg, /luminance masks/],
   ]) {

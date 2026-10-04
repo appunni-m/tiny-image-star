@@ -12,7 +12,7 @@ export const strokeSideModes = Object.freeze(['all', ...strokeSideNames, 'custom
 const caps = new Set(['butt', 'round', 'square']);
 const joins = new Set(['miter', 'round', 'bevel']);
 const patterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
-const endpointDecorations = new Set(['none', 'arrow', 'triangle']);
+const endpointDecorations = new Set(['none', 'arrow', 'triangle', 'triangle-inward']);
 const clone = value => structuredClone(value);
 const id = () => `stroke-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
 

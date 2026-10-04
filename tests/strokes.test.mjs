@@ -56,6 +56,8 @@ test('stroke edits validate independently and removing the stack clears stale sc
   assert.equal(stroke.opacity, .25);
   assert.equal(stroke.startDecoration, 'arrow');
   assert.equal(stroke.endDecoration, 'triangle');
+  updateStroke(node, stroke.id, { endDecoration: 'triangle-inward' });
+  assert.equal(stroke.endDecoration, 'triangle-inward');
   assert.equal(stroke.blendMode, 'screen');
   assert.equal(isValidStrokeStack(node.strokes, node), true);
   for (const bad of [

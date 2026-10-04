@@ -2409,7 +2409,7 @@ function strokeStackControls(node) {
       ? (stroke.gradient ? '' : `${variableBindingControl(node, 'stroke')}<button class="add-fill" type="button" data-action="create-color-variable" data-kind="stroke"${node.locked ? ' disabled' : ''}>＋ Create stroke variable</button>`)
       : '';
     const decorationControls = supportsEndpointDecorations
-      ? `${select('startDecoration', 'Start', stroke.startDecoration ?? 'none', [['none', 'None'], ['arrow', 'Arrow'], ['triangle', 'Triangle']])}${select('endDecoration', 'End', stroke.endDecoration ?? 'none', [['none', 'None'], ['arrow', 'Arrow'], ['triangle', 'Triangle']])}`
+      ? `${select('startDecoration', 'Start', stroke.startDecoration ?? 'none', [['none', 'None'], ['arrow', 'Arrow'], ['triangle', 'Outward triangle'], ['triangle-inward', 'Inward triangle']])}${select('endDecoration', 'End', stroke.endDecoration ?? 'none', [['none', 'None'], ['arrow', 'Arrow'], ['triangle', 'Outward triangle'], ['triangle-inward', 'Inward triangle']])}`
       : '';
     const opacity = Math.round(stroke.opacity * 100);
     const gradient = stroke.gradient;

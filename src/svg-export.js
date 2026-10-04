@@ -480,7 +480,7 @@ function strokeDecorationMarkup(node, document, stroke, strokeIndex, gradientId 
   return decorations.map(item => {
     const path = `M ${number(item.points[0].x)} ${number(item.points[0].y)}${item.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}${item.closed ? ' Z' : ''}`;
     const role = ` data-tiny-image-star-decoration="${item.type}" data-tiny-image-star-decoration-end="${item.side}"`;
-    if (item.type === 'triangle') {
+    if (item.closed) {
       return `<path${metadata}${role} d="${path}" fill="${escapeXml(value)}" fill-opacity="${number(stroke.opacity)}" stroke="none"/>`;
     }
     return `<path${metadata}${role} d="${path}" fill="none"${attributes} stroke-linecap="round" stroke-linejoin="round"/>`;

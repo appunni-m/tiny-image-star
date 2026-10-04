@@ -1585,7 +1585,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     flex-basis: 44px;
   }
   .layer-chevron, .layer-icon { height: 44px; }
-  .layer-reorder-handle { width: 32px; height: 44px; flex-basis: 32px; touch-action: none; }
+  .layer-reorder-handle { width: 44px; min-width: 44px; height: 44px; flex-basis: 44px; touch-action: none; }
   .layer-row .layer-order-control, .layer-row .layer-visibility {
     width: 44px;
     height: 44px;

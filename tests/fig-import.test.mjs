@@ -512,6 +512,62 @@ test('imports exact custom Figma stroke dash arrays as editable local stroke set
   assert.deepEqual(restored.strokes[0].dashArray, [3, 5, 0, 2]);
 });
 
+test('imports Figma line caps with the correct decoration direction and NONE semantics', () => {
+  const page = { sessionID: 833, localID: 1 };
+  const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    node('LINE', 2, page, 'a', {
+      name: 'Open arrow', strokeCap: 'ARROW_LINES',
+      strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }]
+    }),
+    node('LINE', 3, page, 'b', {
+      name: 'Outward triangle', strokeCap: 'ARROW_EQUILATERAL',
+      strokePaints: [{ type: 'SOLID', color: { r: 0.8, g: 0.4, b: 0.2, a: 1 } }]
+    }),
+    node('LINE', 4, page, 'c', {
+      name: 'Inward triangle', strokeCap: 'TRIANGLE_FILLED',
+      strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.7, b: 0.4, a: 1 } }]
+    }),
+    node('LINE', 5, page, 'd', {
+      name: 'Plain butt cap', strokeCap: 'NONE',
+      strokePaints: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4, a: 1 } }]
+    })
+  ], images: new Map(), message: { blobs: [] } });
+  const [openArrow, outward, inward, plain] = imported.document.pages[0].children;
+  assert.deepEqual(
+    [openArrow.strokes[0].startDecoration, openArrow.strokes[0].endDecoration],
+    ['arrow', 'arrow']
+  );
+  assert.deepEqual(
+    [outward.strokes[0].startDecoration, outward.strokes[0].endDecoration],
+    ['triangle', 'triangle']
+  );
+  assert.deepEqual([inward.strokes[0].startDecoration, inward.strokes[0].endDecoration], ['triangle-inward', 'triangle-inward']);
+  assert.deepEqual([plain.strokes[0].startDecoration, plain.strokes[0].endDecoration], ['none', 'none']);
+  assert.equal(plain.strokes[0].cap, 'butt');
+  assert.equal(imported.report.flattenedTypes.STROKE_CAP || 0, 0);
+  const restored = parseDocument(serializeDocument(imported.document)).pages[0].children;
+  assert.equal(restored[0].strokes[0].endDecoration, 'arrow');
+  assert.equal(restored[1].strokes[0].endDecoration, 'triangle');
+  assert.equal(restored[2].strokes[0].endDecoration, 'triangle-inward');
+});
+
+test('unsupported Figma stroke cap shapes are omitted with a review warning', () => {
+  for (const cap of ['DIAMOND_FILLED', 'CIRCLE_FILLED']) {
+    const page = { sessionID: 835, localID: 1 };
+    const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('LINE', 2, page, 'a', { name: `${cap} cap`, strokeCap: cap,
+        strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }] })
+    ], images: new Map(), message: { blobs: [] } });
+    const line = imported.document.pages[0].children[0];
+    assert.equal(line.strokes?.length || 0, 0, `${cap} must not become an undecorated butt stroke`);
+    assert.equal(line.strokeWidth, 0);
+    assert.equal(imported.report.unsupportedTypes.STROKE_CAP, 1);
+    assert.match(imported.report.warnings.find(item => item.type === 'STROKE_CAP').detail, /stroke was omitted/);
+  }
+});
+
 test('imports Figma individual rectangle stroke weights on each imported paint', () => {
   const page = { sessionID: 832, localID: 1 };
   const imported = convertFigDocument({ header: { version: 106 }, nodes: [

@@ -188,6 +188,16 @@ test('SVG endpoint decorations stay editable, independent per stroke, and inside
     'legacy stack items with omitted decoration fields continue to mean none');
 });
 
+test('SVG places inward triangle apices inside the line endpoint', () => {
+  const line = createNode('line', { width: 40, height: 0, strokes: [
+    { id: 'inward', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'triangle-inward', endDecoration: 'triangle-inward' }
+  ] });
+  const svg = exportNodeToSvg(line);
+  assert.match(svg, /data-tiny-image-star-decoration="triangle-inward" data-tiny-image-star-decoration-end="start" d="M 8 0 L 0 4\.4 L 0 -4\.4 Z"/);
+  assert.match(svg, /data-tiny-image-star-decoration="triangle-inward" data-tiny-image-star-decoration-end="end" d="M 32 0 L 40 -4\.4 L 40 4\.4 Z"/);
+});
+
 test('SVG exports independent editable linear and radial stroke gradients with local definitions', () => {
   const linear = createGradientFill('linear', '#ff0000');
   linear.angle = 90;

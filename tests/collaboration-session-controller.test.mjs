@@ -219,6 +219,86 @@ test('multiple host peers share one durable sequencer and receive revisions with
   assert.equal(secondChannel.closed, true, 'revoking the room closes every active peer');
 });
 
+test('an eight-guest room fans one durable revision to every connected session', async () => {
+  const durableStart = fakeDesign();
+  let durable = durableStart;
+  const peers = [];
+  let commitCount = 0;
+  const { controller } = await hostFixture({
+    maxRoomPeers: 8,
+    open: async () => durable,
+    revokeGrant: async () => true,
+    verifyAnswer: async answer => ({
+      kind: 'answer', designId: 'design-a', shareId: 'share-a', sessionId: answer
+    }),
+    createTransport: async () => {
+      const channel = new FakeChannel();
+      peers.push({ sessionId: 'session-0', channel });
+      return {
+        offerCapsule: 'offer-0', dataChannel: channel,
+        session: { sessionId: 'session-0', expiresAt: Date.now() + 60_000 },
+        acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => channel.close()
+      };
+    },
+    commit: async (_workspace, _designId, snapshot, options) => {
+      commitCount += 1;
+      durable = {
+        ...durable,
+        document: structuredClone(snapshot),
+        head: { sequence: options.expectedHead.sequence + 1, commitHash: String(options.expectedHead.sequence + 1).padStart(64, '0') }
+      };
+      return durable;
+    }
+  });
+  await controller.acceptAnswer('session-0');
+  for (let index = 1; index < 8; index += 1) {
+    const sessionId = `session-${index}`;
+    const channel = new FakeChannel();
+    const peer = await controller.addGuestSession({
+      createTransport: async () => ({
+        offerCapsule: `offer-${index}`, dataChannel: channel,
+        session: { sessionId, expiresAt: Date.now() + 60_000 },
+        acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => channel.close()
+      })
+    });
+    peers.push({ sessionId, channel });
+    await peer.acceptAnswer(sessionId);
+  }
+
+  for (const [index, peer] of peers.entries()) {
+    peer.channel.receive(context('HELLO', {
+      actorId: `guest-${index}`, sessionId: peer.sessionId, lastRevision: 0
+    }));
+  }
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(controller.guestCount, 8);
+  for (const peer of peers) {
+    const kinds = peer.channel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind);
+    assert.deepEqual(kinds, ['WELCOME', 'SNAPSHOT']);
+  }
+
+  const edited = structuredClone(durable.document);
+  edited.name = 'One room-wide revision';
+  peers[0].channel.receive(context('OPERATION', {
+    actorId: 'guest-0', sessionId: 'session-0',
+    operation: { type: 'ReplaceSnapshot', opId: 'op-eight-peer-room', baseRevision: 2, snapshot: edited }
+  }));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(commitCount, 1);
+  assert.equal(controller.head.sequence, 3);
+  assert.equal(durable.document.name, 'One room-wide revision');
+  for (const [index, peer] of peers.entries()) {
+    const messages = peer.channel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }));
+    const update = messages.find(message => message.kind === (index === 0 ? 'ACK' : 'ROOM_REVISION'));
+    assert.ok(update, `guest ${index} receives its response to the shared commit`);
+    assert.equal(update.revision, 3);
+    if (index !== 0) assert.equal(update.snapshot.name, 'One room-wide revision');
+  }
+  await assert.rejects(controller.addGuestSession(), /8-guest limit/);
+  await controller.revoke();
+  assert.ok(peers.every(peer => peer.channel.closed), 'revoking the room closes all eight sessions');
+});
+
 test('a peer disconnect during asynchronous asset approval releases its aggregate room reservation', async () => {
   const firstChannel = new FakeChannel();
   const secondChannel = new FakeChannel();

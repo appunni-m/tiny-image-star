@@ -16,9 +16,9 @@ const LIMITS = Object.freeze({
  * It keeps supported geometry as PDF paths and shading functions (never
  * screenshots the page). Paths, solid paints, gradients, clips, and embedded
  * PNG/JPEG image XObjects and isolated group-opacity forms remain editable PDF
- * objects. Text, gradient strokes, filters, luminance masks, and blend modes are rejected
- * with a feature-specific error until their PDF semantics can be represented
- * without changing the result.
+ * objects. Simple single-line ASCII text uses the standard Helvetica PDF fonts;
+ * custom fonts, rich text, gradient strokes, filters, luminance masks, and blend
+ * modes are rejected with feature-specific errors.
  */
 export class PdfVectorExportError extends TypeError {
   constructor(feature, detail = '') {
@@ -484,8 +484,69 @@ function shapePath(node, { closeOpen = false } = {}) {
   if (node.name === 'rect') return rectPath(node.attributes);
   if (node.name === 'ellipse') return ellipsePath(node.attributes);
   if (node.name === 'polygon') return polygonPath(node.attributes.points || '');
-  if (node.name === 'text' || node.name === 'tspan') fail('text layers', 'PDF text needs embedded glyph outlines; the current editor export uses font-dependent SVG text');
+  if (node.name === 'text' || node.name === 'tspan') fail('text layers', 'only simple single-line ASCII text with a standard Helvetica font is supported');
   fail(`SVG element <${node.name}>`);
+}
+
+function pdfTextLiteral(value) {
+  if (!/^[\x20-\x7e]*$/.test(value)) {
+    fail('non-ASCII text', 'only printable ASCII text can be represented by the standard PDF fonts');
+  }
+  return `(${value.replace(/[\\()]/g, character => `\\${character}`)})`;
+}
+
+function textFont(attributes, context) {
+  const families = String(attributes['font-family'] || 'Helvetica').split(',')
+    .map(family => family.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
+  if (!families.length || families.some(family => !['arial', 'helvetica', 'sans-serif'].includes(family))) {
+    fail('custom text fonts', 'only Arial, Helvetica, or sans-serif can use the built-in PDF font');
+  }
+  const weight = String(attributes['font-weight'] || '400').toLowerCase();
+  const style = String(attributes['font-style'] || 'normal').toLowerCase();
+  if (!['400', 'normal', '700', 'bold'].includes(weight) || !['normal', 'italic'].includes(style)) {
+    fail('text font variants', 'only regular, bold, italic, and bold italic standard fonts are supported');
+  }
+  const bold = weight === '700' || weight === 'bold';
+  const standardName = `Helvetica${bold ? '-Bold' : ''}${style === 'italic' ? (bold ? 'Oblique' : '-Oblique') : ''}`;
+  if (!context.fontNames.has(standardName)) {
+    context.fontNames.set(standardName, `F${context.fontNames.size + 1}`);
+    context.fonts.set(context.fontNames.get(standardName), standardName);
+  }
+  return context.fontNames.get(standardName);
+}
+
+function paintText(node, inheritedOpacity, context) {
+  const attrs = node.attributes;
+  assertAttributes(node, new Set([
+    'x', 'y', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor',
+    'fill', 'fill-opacity', 'xml:space',
+  ]));
+  if (attrs['text-anchor'] != null && attrs['text-anchor'] !== 'start') {
+    fail('text alignment', 'only start-aligned SVG text is supported');
+  }
+  if (attrs['xml:space'] != null && attrs['xml:space'] !== 'preserve') {
+    fail('SVG text whitespace', 'only preserved SVG text whitespace is supported');
+  }
+  if (node.children.some(child => child.name !== '#text')) {
+    fail('rich text', 'nested tspans and text paths need font shaping and run layout');
+  }
+  const value = node.children.map(child => child.text).join('');
+  const literal = pdfTextLiteral(value);
+  const x = finite(attrs.x, 'text x');
+  const y = finite(attrs.y, 'text y');
+  const size = finite(attrs['font-size'] ?? 16, 'font size');
+  if (size <= 0) throw new TypeError('SVG text font size must be positive.');
+  const fill = colorOperator(attrs.fill ?? '#000000', 'fill');
+  if (!fill) return '';
+  const alpha = inheritedOpacity * parseOpacity(attrs['fill-opacity'], 'text fill opacity');
+  const state = alphaState(alpha, 1, context.stateNames);
+  const font = textFont(attrs, context);
+  // The SVG viewport CTM flips Y. Flip locally around the text baseline to keep
+  // glyphs upright while preserving the SVG baseline position.
+  return [
+    'q', `1 0 0 -1 0 ${pdfNumber(2 * y)} cm`, fill, state,
+    'BT', `/${font} ${pdfNumber(size)} Tf`, `1 0 0 1 ${pdfNumber(x)} ${pdfNumber(y)} Tm`, `${literal} Tj`, 'ET', 'Q',
+  ].filter(Boolean).join('\n');
 }
 
 function transformMatrix(value) {
@@ -816,6 +877,11 @@ function renderTree(node, context = {}) {
     }
     return paintImage(node, opacity, { definitions, stateNames, imageNames, images });
   }
+  if (node.name === 'text') {
+    if (inDefs) return '';
+    if (node.attributes.mask) fail('text alpha masks', 'masked text requires glyph outlines');
+    return paintText(node, opacity, context);
+  }
   if (['path', 'rect', 'ellipse', 'polygon', 'text', 'tspan'].includes(node.name)) {
     if (inDefs) return '';
     if (node.attributes.mask) {
@@ -847,10 +913,12 @@ function compileSvg(svg) {
   const imageNames = new Map();
   const images = new Map();
   const forms = new Map();
+  const fontNames = new Map();
+  const fonts = new Map();
   const maskFormNames = new Map();
   const buildingMaskIds = new Set();
   const renderContext = {
-    definitions, stateNames, shadingNames, shadings, imageNames, images, forms,
+    definitions, stateNames, shadingNames, shadings, imageNames, images, forms, fontNames, fonts,
     maskFormNames, buildingMaskIds,
   };
   const [vx, vy, vbWidth, vbHeight] = viewBox;
@@ -864,7 +932,7 @@ function compileSvg(svg) {
     ...root.children.map(child => renderTree(child, renderContext)),
     'Q',
   ].filter(Boolean).join('\n');
-  return { width, height, content: `${content}\n`, stateNames, shadings, images, forms };
+  return { width, height, content: `${content}\n`, stateNames, shadings, images, forms, fonts };
 }
 
 function safePdfContent(content) {
@@ -889,11 +957,13 @@ function resourceDictionary(content, page, { excludeFormName = null } = {}) {
   const usedStates = used(/\/(GS\d+)\s+gs\b/g);
   const usedShadings = used(/\/(Sh\d+)\s+sh\b/g);
   const usedXObjects = used(/\/(Im\d+|Fm\d+)\s+Do\b/g);
+  const usedFonts = used(/\/(F\d+)\s+[-+\d.eE]+\s+Tf\b/g);
   const resources = [];
   const states = page.states.filter(item => usedStates.has(item.name));
   const shadings = page.shadingObjects.filter(item => usedShadings.has(item.name));
   const images = page.imageObjects.filter(item => usedXObjects.has(item.name));
   const forms = page.formObjects.filter(item => item.name !== excludeFormName && usedXObjects.has(item.name));
+  const fonts = page.fontObjects.filter(item => usedFonts.has(item.name));
   if (states.length) resources.push(`/ExtGState << ${states.map(item => `/${item.name} ${item.objectId} 0 R`).join(' ')} >>`);
   if (shadings.length) resources.push(`/Shading << ${shadings.map(item => `/${item.name} ${item.shadingId} 0 R`).join(' ')} >>`);
   const xObjects = [
@@ -901,6 +971,7 @@ function resourceDictionary(content, page, { excludeFormName = null } = {}) {
     ...forms.map(item => ({ name: item.name, objectId: item.objectId })),
   ];
   if (xObjects.length) resources.push(`/XObject << ${xObjects.map(item => `/${item.name} ${item.objectId} 0 R`).join(' ')} >>`);
+  if (fonts.length) resources.push(`/Font << ${fonts.map(item => `/${item.name} ${item.objectId} 0 R`).join(' ')} >>`);
   return `<< ${resources.join(' ')} >>`;
 }
 
@@ -942,8 +1013,9 @@ function createPdf(pages) {
       const alphaId = descriptor.alpha ? nextId++ : null;
       return { name, descriptor, imageId, alphaId };
     });
+    const fonts = [...page.fonts.entries()].map(([name, baseFont]) => ({ name, baseFont, objectId: nextId++ }));
     const forms = [...page.forms.entries()].map(([name, descriptor]) => ({ name, descriptor, objectId: nextId++ }));
-    return { ...page, pageId, contentId, states, shadingObjects: shadings, imageObjects: images, formObjects: forms };
+    return { ...page, pageId, contentId, states, shadingObjects: shadings, imageObjects: images, fontObjects: fonts, formObjects: forms };
   });
   const objectCount = nextId - 1;
   const objects = new Array(objectCount + 1);
@@ -990,6 +1062,9 @@ function createPdf(pages) {
           + ` /ColorSpace /DeviceGray /BitsPerComponent ${descriptor.alpha.bitsPerComponent} /Filter /FlateDecode /Interpolate true`;
         objects[item.alphaId] = pdfStreamObject(alphaDictionary, descriptor.alpha.data);
       }
+    }
+    for (const item of page.fontObjects) {
+      objects[item.objectId] = `<< /Type /Font /Subtype /Type1 /BaseFont /${item.baseFont} /Encoding /WinAnsiEncoding >>`;
     }
     for (const item of page.formObjects) {
       const bytes = safePdfContent(item.descriptor.content);

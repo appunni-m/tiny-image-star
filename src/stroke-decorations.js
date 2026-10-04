@@ -1,6 +1,6 @@
 import { vectorNetworkEdgePoints, vectorNodePoint, vectorPathContours } from './vector-path.js';
 
-export const strokeDecorationTypes = Object.freeze(['none', 'arrow', 'triangle']);
+export const strokeDecorationTypes = Object.freeze(['none', 'arrow', 'triangle', 'triangle-inward']);
 const knownDecorations = new Set(strokeDecorationTypes);
 
 function point(x, y) { return { x, y }; }
@@ -41,15 +41,18 @@ function decoration(type, side, tip, forward, strokeWidth, metadata = {}) {
   const forwardLength = length(forward);
   const direction = point(forward.x / forwardLength, forward.y / forwardLength);
   const outward = side === 'start' ? point(-direction.x, -direction.y) : direction;
-  const normal = point(-outward.y, outward.x);
+  const pointsOutward = type !== 'triangle-inward';
+  const pointing = pointsOutward ? outward : point(-outward.x, -outward.y);
+  const normal = point(-pointing.y, pointing.x);
   const size = strokeWidth * 4;
   const halfWidth = size * .55;
-  const base = point(tip.x - outward.x * size, tip.y - outward.y * size);
+  const apex = pointsOutward ? tip : point(tip.x + pointing.x * size, tip.y + pointing.y * size);
+  const base = point(apex.x - pointing.x * size, apex.y - pointing.y * size);
   const left = point(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth);
   const right = point(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth);
   return {
-    type, side, tip: { ...tip }, points: type === 'triangle' ? [{ ...tip }, left, right] : [left, { ...tip }, right],
-    closed: type === 'triangle', ...metadata
+    type, side, tip: { ...tip }, points: type === 'triangle' || type === 'triangle-inward' ? [apex, left, right] : [left, { ...tip }, right],
+    closed: type === 'triangle' || type === 'triangle-inward', ...metadata
   };
 }
 

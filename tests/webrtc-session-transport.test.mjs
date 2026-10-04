@@ -121,8 +121,10 @@ class FakeNetwork {
     async setRemoteDescription(description) {
       this.remoteDescription = description;
       if (description.type !== 'answer') return;
+      // The answer SDP identifies the guest whose offer this host is accepting.
+      // Several independent host/guest pairs can share one fake network in a room.
       const guest = this.network.peers.find(peer => peer !== this
-        && peer.remoteDescription?.type === 'offer' && peer.localDescription?.type === 'answer');
+        && peer.remoteDescription?.type === 'offer' && peer.localDescription?.sdp === description.sdp);
       if (!guest || !this.createdChannels.length) return;
       const peers = this.createdChannels.map(hostChannel => {
         const guestChannel = new FakeDataChannel(hostChannel.label, {});
@@ -208,6 +210,63 @@ test('host and guest exchange signed capsules over separate ordered control and 
   assert.equal(openedGuestChannel.binaryType, 'arraybuffer');
   assert.equal(guest.assetDataChannel.readyState, 'open');
   assert.equal(acceptedHost.assetDataChannel.readyState, 'open');
+});
+
+test('four guests keep independent peer connections and ordered control and asset channels', async () => {
+  const owner = await ownerFixture();
+  const network = new FakeNetwork();
+  const factory = network.makeFactory();
+  const pairs = [];
+
+  for (let index = 0; index < 4; index += 1) {
+    const host = await createHostWebRtcSession({
+      invite: owner.invite,
+      identityPrivateKey: owner.identityPrivateKey,
+      peerConnectionFactory: factory,
+      crypto,
+      now: () => baseTime + index * 2
+    });
+    const guest = await createGuestWebRtcSession({
+      offerCapsule: host.offerCapsule,
+      expectedInvite: owner.invite,
+      peerConnectionFactory: factory,
+      crypto,
+      now: () => baseTime + index * 2 + 1
+    });
+    await host.acceptAnswer(guest.answerCapsule);
+    await guest.waitForOpen();
+    pairs.push({ host, guest });
+  }
+
+  assert.equal(network.peers.length, 8);
+  assert.equal(new Set(pairs.map(pair => pair.host.peerConnection)).size, 4);
+  assert.equal(new Set(pairs.map(pair => pair.guest.peerConnection)).size, 4);
+  for (const [index, { host, guest }] of pairs.entries()) {
+    assert.notEqual(host.peerConnection, guest.peerConnection);
+    assert.equal(host.dataChannel.options.ordered, true);
+    assert.equal(host.assetDataChannel.options.ordered, true);
+    assert.notEqual(host.dataChannel, host.assetDataChannel);
+    assert.equal(guest.dataChannel.peer, host.dataChannel, `guest ${index} control channel belongs to its host`);
+    assert.equal(guest.assetDataChannel.peer, host.assetDataChannel, `guest ${index} asset channel belongs to its host`);
+    assert.equal(guest.dataChannel.readyState, 'open');
+    assert.equal(guest.assetDataChannel.readyState, 'open');
+  }
+
+  pairs[1].host.close();
+  assert.equal(pairs[1].guest.peerConnection.closed, true, 'closing one host closes only its connected guest peer');
+  assert.equal(pairs[1].guest.dataChannel.readyState, 'closed');
+  for (const [index, pair] of pairs.entries()) {
+    if (index !== 1) {
+      assert.equal(pair.host.state, 'connected');
+      assert.equal(pair.guest.state, 'connected');
+      assert.equal(pair.host.dataChannel.readyState, 'open');
+      assert.equal(pair.guest.dataChannel.readyState, 'open');
+    }
+  }
+  for (const pair of pairs) {
+    pair.host.close();
+    pair.guest.close();
+  }
 });
 
 test('caller-supplied ICE servers are passed through explicitly', async () => {
