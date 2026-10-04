@@ -1,7 +1,7 @@
 const SEARCH_STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'around', 'by', 'can', 'could', 'did', 'do', 'does', 'for', 'from',
   'how', 'i', 'in', 'into', 'is', 'it', 'make', 'me', 'my', 'need', 'of', 'on', 'our', 'please', 'should',
-  'show', 'some', 'that', 'the', 'this', 'to', 'want', 'was', 'we', 'were', 'what', 'with', 'you', 'your'
+  'show', 'some', 'that', 'the', 'these', 'this', 'those', 'to', 'want', 'was', 'we', 'were', 'what', 'with', 'you', 'your'
 ]);
 
 export function normalizeActionSearchText(value) {

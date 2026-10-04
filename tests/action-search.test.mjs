@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { normalizeActionSearchText, searchActions } from '../src/action-search.js';
 import { createEditorToolActions } from '../src/editor-tool-tasks.js';
+import { createEditorLayerActions } from '../src/editor-layer-tasks.js';
 
 const [html, main, styles, readme] = await Promise.all([
   readFile(new URL('../index.html', import.meta.url), 'utf8'),
@@ -80,6 +81,53 @@ test('drawing and navigation tasks explain why they are disabled during a batch'
   assert.equal(rectangle.unavailableReason, 'Finish or cancel the current image batch first.');
 });
 
+test('plain-language layer tasks search, respect selection state, and run their commands', () => {
+  const called = [];
+  const tasks = createEditorLayerActions({
+    selectedCount: 2,
+    pageLayerCount: 5,
+    canGroup: true,
+    canUngroup: true,
+    group: () => called.push('group'),
+    ungroup: () => called.push('ungroup'),
+    duplicate: () => called.push('duplicate'),
+    remove: () => called.push('delete'),
+    selectAll: () => called.push('select-all'),
+    deselectAll: () => called.push('deselect-all')
+  });
+  const cases = [
+    ['duplicate a layer', 'duplicate-layers', 'duplicate'],
+    ['group these layers', 'group-layers', 'group'],
+    ['ungroup the group', 'ungroup-layers', 'ungroup'],
+    ['delete selected layers', 'delete-layers', 'delete'],
+    ['select all on this page', 'select-all-layers', 'select-all'],
+    ['clear the selection', 'deselect-all-layers', 'deselect-all']
+  ];
+  for (const [query, expectedId, command] of cases) {
+    const match = searchActions(tasks, query)[0];
+    assert.equal(match?.id, expectedId, `expected ${query} to find ${expectedId}`);
+    assert.equal(match.disabled, false);
+    match.run();
+    assert.equal(called.at(-1), command);
+  }
+  assert.throws(() => createEditorLayerActions(), /handlers for each layer command/);
+});
+
+test('layer tasks explain missing selection and current batch restrictions', () => {
+  const handlers = { group() {}, ungroup() {}, duplicate() {}, remove() {}, selectAll() {}, deselectAll() {} };
+  const empty = createEditorLayerActions({ ...handlers });
+  assert.equal(empty.find(action => action.id === 'duplicate-layers').unavailableReason, 'Select a layer first.');
+  assert.equal(empty.find(action => action.id === 'select-all-layers').unavailableReason, 'This page has no layers yet.');
+  const busy = createEditorLayerActions({
+    ...handlers,
+    selectedCount: 2,
+    pageLayerCount: 2,
+    disabledReason: 'Finish or cancel the current image batch first.'
+  });
+  assert.equal(busy.find(action => action.id === 'group-layers').disabled, true);
+  assert.equal(busy.find(action => action.id === 'group-layers').unavailableReason, 'Finish or cancel the current image batch first.');
+});
+
 test('the editor exposes image cropping through searchable keyboard and menu actions', () => {
   assert.match(html, /id="quick-actions-dialog"[^>]*aria-labelledby="quick-actions-title"/);
   assert.match(html, /id="quick-actions-search"[^>]*role="combobox"[^>]*aria-controls="quick-actions-results"/);
@@ -90,8 +138,11 @@ test('the editor exposes image cropping through searchable keyboard and menu act
   assert.match(main, /key === 'k'[\s\S]*?openQuickActions\(\)/);
   assert.match(main, /id: 'crop-image', label: 'Crop image'[\s\S]*?drag across the area to keep[\s\S]*?toggleSelectedImageCropMode/i);
   assert.match(main, /import \{ createEditorToolActions \} from '\.\/editor-tool-tasks\.js'/);
+  assert.match(main, /import \{ createEditorLayerActions \} from '\.\/editor-layer-tasks\.js'/);
   assert.match(main, /const drawingAndNavigationActions = createEditorToolActions\(\{ setTool, disabledReason: batchReason \}\)[\s\S]*?\.\.\.drawingAndNavigationActions/,
     'the task finder should expose the existing drawing and navigation tools');
+  assert.match(main, /const layerActions = createEditorLayerActions\([\s\S]*?group: groupSelectedLayers,[\s\S]*?duplicate: duplicateSelected,[\s\S]*?remove: deleteSelected,[\s\S]*?\.\.\.layerActions/,
+    'the task finder should expose selection-aware group, duplicate, delete, and selection commands');
   assert.match(main, /id: 'crop-image',[\s\S]*?keywords: \[[^\]]*'images'[^\]]*'cropping'/);
   assert.match(main, /Select an image layer first, or choose Add image if none is on this page\./);
   assert.match(main, /id: 'add-image', label: 'Add image'[\s\S]*?Add an image before cropping it[\s\S]*?keywords: \[[^\]]*'crop image'/);

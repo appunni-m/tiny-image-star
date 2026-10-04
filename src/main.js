@@ -19,6 +19,7 @@ import { createFallbackImage, createPillowFallbackImage, FALLBACK_IMAGE_MAX_EDGE
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback, shouldPreferPillowFallback } from './image-intake.js';
 import { searchActions } from './action-search.js';
 import { createEditorToolActions } from './editor-tool-tasks.js';
+import { createEditorLayerActions } from './editor-layer-tasks.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
@@ -14365,6 +14366,11 @@ function quickActionCatalog() {
     : selectedImageLocked
       ? 'Unlock this image and its parent layers before using local image tools.' : '');
   const imageLayers = [...new Map(selection.filter(node => node.type === 'image').map(node => [node.id, node])).values()];
+  const rootIds = rootSelectedIds();
+  const currentPageLayerRows = pageLayerRows();
+  const selectedGroup = selection.length === 1 && selection[0].type === 'group' ? selection[0] : null;
+  const canGroupSelection = canGroupLayers(state.document, rootIds);
+  const canUngroupSelection = Boolean(selectedGroup && canUngroupLayers(state.document, selectedGroup.id));
   const exportRoots = orderedRootSelection().map(id => findNode(state.document, id)?.node).filter(Boolean);
   const exportingImageArchive = exportRoots.length > 1 && exportRoots.every(node => node.type === 'image');
   const hasRecipes = (state.document.recipes || []).length > 0;
@@ -14382,6 +14388,23 @@ function quickActionCatalog() {
     ? 'Choose Multi-select in Layers, then tap the image layers you want to update.'
     : !hasRecipes ? 'Save a recipe from an edited image first.' : '');
   const drawingAndNavigationActions = createEditorToolActions({ setTool, disabledReason: batchReason });
+  const layerActions = createEditorLayerActions({
+    selectedCount: rootIds.length,
+    pageLayerCount: currentPageLayerRows.length,
+    canGroup: canGroupSelection,
+    canUngroup: canUngroupSelection,
+    groupUnavailableReason: rootIds.length < 2
+      ? 'Select at least two layers first.'
+      : 'Select unlocked sibling layers that can be grouped together.',
+    ungroupUnavailableReason: selectedGroup ? 'This group cannot be ungrouped.' : 'Select a group layer first.',
+    disabledReason: batchReason,
+    group: groupSelectedLayers,
+    ungroup: () => ungroupSelectedLayers(selectedGroup?.id),
+    duplicate: duplicateSelected,
+    remove: deleteSelected,
+    selectAll: () => setSelection(currentPageLayerRows.map(entry => entry.node.id)),
+    deselectAll: () => setSelection([])
+  });
   return [
     {
       id: 'crop-image', label: 'Crop image',
@@ -14423,6 +14446,7 @@ function quickActionCatalog() {
       unavailableReason: batchReason, run: () => setTool('text'),
     },
     ...drawingAndNavigationActions,
+    ...layerActions,
     {
       id: 'adjust-image', label: 'Adjust selected image',
       description: 'Open image controls for exposure, color, crop, erase, and local enhancement.',

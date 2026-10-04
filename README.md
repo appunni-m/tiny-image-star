@@ -96,7 +96,7 @@ The canvas tool strip is a horizontal keyboard toolbar: Tab enters at one tool, 
 
 ## Find an action
 
-Tap **? Help** beside the canvas controls, choose **Search actions…** from the main menu, or press **⌘K / Ctrl+K**. Search in your own words for tasks such as “how do I crop an image,” “draw a circle,” “make a star,” “move around the canvas,” “erase an object,” “remove the background,” “save a recipe,” or “export PDF.” Results explain the next step and open the matching tool. To crop a photo layer: add and select an image, choose **Crop image**, drag over the part to keep, adjust the edges if needed, then choose **Finish crop**. To crop a photo inside a shape: select the shape, search **Crop image**, then choose **Crop image inside shape**; drag the photo within the shape to position it.
+Tap **? Help** beside the canvas controls, choose **Search actions…** from the main menu, or press **⌘K / Ctrl+K**. Search in your own words for tasks such as “how do I crop an image,” “draw a circle,” “make a star,” “move around the canvas,” “group these layers,” “duplicate a layer,” “erase an object,” “save a recipe,” or “export PDF.” Results explain the next step and open the matching tool or layer action. To crop a photo layer: add and select an image, choose **Crop image**, drag over the part to keep, adjust the edges if needed, then choose **Finish crop**. To crop a photo inside a shape: select the shape, search **Crop image**, then choose **Crop image inside shape**; drag the photo within the shape to position it.
 
 ## Run locally
 
