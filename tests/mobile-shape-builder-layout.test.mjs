@@ -27,7 +27,7 @@ test('phone Shape Builder keeps its action bar and canvas tools independently re
   const canvasRegion = html.match(/<main class="canvas-region" id="canvas-region"[\s\S]*?<\/main>/)?.[0] || '';
   assert.match(canvasRegion, /<div class="shape-builder-bar" id="shape-builder-bar"[^>]*hidden>/,
     'Shape Builder should expose a dedicated temporary action bar');
-  assert.match(canvasRegion, /<div class="bottom-toolbar" id="bottom-toolbar"/,
+  assert.match(canvasRegion, /<div class="bottom-toolbar bottom-toolbar-shell"[^>]*role="group"[^>]*>[\s\S]*?<div class="bottom-toolbar-viewport" id="bottom-toolbar"/,
     'the normal tool palette should remain available while Shape Builder is active');
 
   const shapeBuilderRule = stylesheet.indexOf('/* Shape Builder has its own temporary action bar.');
@@ -37,7 +37,7 @@ test('phone Shape Builder keeps its action bar and canvas tools independently re
   const phoneRules = ruleBlock(stylesheet.slice(phoneMediaStart), '@media (max-width: 820px) {');
   assert.match(phoneRules, /#shape-builder-bar\s*\{\s*bottom:\s*max\(8px,\s*env\(safe-area-inset-bottom\)\)/,
     'the temporary bar should clear the phone home indicator');
-  assert.match(phoneRules, /#canvas-region:has\(#shape-builder-bar:not\(\[hidden\]\)\)\s*>\s*#bottom-toolbar\s*\{\s*bottom:\s*calc\(116px\s*\+\s*max\(env\(safe-area-inset-bottom\),\s*8px\)\)/,
+  assert.match(phoneRules, /#canvas-region:has\(#shape-builder-bar:not\(\[hidden\]\)\)\s*>\s*\.bottom-toolbar\s*\{\s*bottom:\s*calc\(116px\s*\+\s*max\(env\(safe-area-inset-bottom\),\s*8px\)\)/,
     'the normal canvas toolbar should move above the temporary action bar instead of occupying the same bottom strip');
   assert.match(stylesheet, /\.shape-builder-actions button\s*\{[^}]*min-height:\s*44px/,
     'Shape Builder mode actions should remain finger-sized on phones');

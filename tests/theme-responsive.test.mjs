@@ -62,7 +62,7 @@ test('appearance can be selected in the app menu and updates browser chrome', ()
 });
 
 test('dark theme keeps mobile scroll affordance and selected layer controls on dark surfaces', () => {
-  assert.match(stylesheet, /@media \(max-width: 820px\) \{[\s\S]*?:root\[data-theme="dark"\] \.bottom-toolbar::after\s*\{[^}]*linear-gradient\([^}]*rgba\(39,42,49/);
+  assert.match(stylesheet, /@media \(max-width: 820px\) \{[\s\S]*?:root\[data-theme="dark"\] \.bottom-toolbar \.toolbar-more-tools:not\(\[hidden\]\)\s*\{[^}]*background:\s*var\(--floating-panel-background\)/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.left-panel,[\s\S]*?:root\[data-theme="dark"\] \.right-panel\s*\{[^}]*background:\s*var\(--panel\)/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.layer-row\.is-selected \.layer-order-control:not\(:disabled\)[\s\S]*background:\s*#303b47/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.stroke-field input,[\s\S]*?background-color:\s*#30333a/);

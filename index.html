@@ -174,7 +174,8 @@
             <span class="zoom-divider"></span>
             <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
           </div>
-          <div class="bottom-toolbar" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Design tools. Swipe or scroll horizontally to reveal all tools; use arrow keys to move between tools, then Enter or Space to select.">
+          <div class="bottom-toolbar bottom-toolbar-shell" role="group" aria-label="Design tools">
+            <div class="bottom-toolbar-viewport" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Canvas tools. Use More tools to reveal the next set, swipe or scroll horizontally, or use arrow keys to move between tools; press Enter or Space to select.">
             <button class="tool-button is-selected" data-tool="select" data-tool-label="Move" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
             <button class="tool-button" data-tool="scale" data-tool-label="Scale" aria-pressed="false" tabindex="-1" title="Scale (K) · scale layers, strokes, effects, and text together" aria-label="Scale layers and their appearance"><span data-icon="scale"></span><kbd>K</kbd></button>
             <button class="tool-button" data-tool="lasso" data-tool-label="Lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
@@ -197,6 +198,8 @@
             <button class="tool-button hand-tool" data-tool="hand" data-tool-label="Hand" aria-pressed="false" tabindex="-1" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button" data-tool="comment" data-tool-label="Comment" aria-pressed="false" tabindex="-1" title="Comment (C) · click objects to select; click or tap the same spot again to choose a nested frame or component; click empty canvas to comment; drag to pan" aria-label="Comment · click objects to select; click or tap the same spot again to choose a nested frame or component; click empty canvas to comment or drag to pan; Alt/Option-click or use the layer menu to comment"><span data-icon="comment"></span><kbd>C</kbd></button>
+            </div>
+            <button class="toolbar-more-tools" id="toolbar-more-tools" type="button" aria-controls="bottom-toolbar" aria-label="Show more design tools" title="Show more design tools" hidden>More tools ›</button>
           </div>
           <div class="canvas-status"><span id="selection-status" role="status" aria-live="polite" aria-atomic="true">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
         </main>
@@ -261,6 +264,7 @@
             <button class="quick-action-suggestion" type="button" data-quick-action-query="How do I crop an image?">Crop an image</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="remove image background">Remove background</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="add text">Add text</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="How do I create a component?">Create a component</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="apply recipe to selected images">Apply an image recipe</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="export page as PDF">Export PDF</button>
           </div>

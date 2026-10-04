@@ -15,6 +15,7 @@ const [html, main, styles, readme] = await Promise.all([
 const actions = [
   { id: 'add-image', label: 'Add image', description: 'Choose a photo from this device.', keywords: ['images', 'photo', 'photos', 'picture', 'pictures', 'import', 'crop image'] },
   { id: 'crop-image', label: 'Crop image', description: 'Drag over the part to keep, then finish the crop.', keywords: ['trim', 'cut', 'photo', 'photos', 'image', 'images', 'cropping'] },
+  { id: 'create-component', label: 'Create a component from this layer', description: 'Turn the selected layer and its children into a reusable component.', keywords: ['component', 'components', 'make component', 'reusable component', 'create reusable'] },
   { id: 'add-text', label: 'Add text', description: 'Choose the text tool, then click or drag on the canvas.', keywords: ['type', 'label', 'title', 'copy'] },
   { id: 'export-pdf', label: 'Export page as PDF', description: 'Choose a paper size and save a local PDF.', keywords: ['print', 'document'] },
   { id: 'erase-image-object', label: 'Erase an object from an image', description: 'Brush over the object, then finish erasing.', keywords: ['erase object', 'erase objects', 'remove object', 'remove objects', 'remove person', 'remove people', 'magic erase'] },
@@ -29,6 +30,7 @@ test('action search understands full questions, aliases, and accented text', () 
   assert.equal(normalizeActionSearchText('  Cómo recortar — IMAGE!  '), 'como recortar image');
   assert.deepEqual(searchActions(actions, 'How do I crop an image?').map(action => action.id), ['crop-image', 'add-image']);
   assert.deepEqual(searchActions(actions, 'How do you crop an image?').map(action => action.id), ['crop-image', 'add-image']);
+  assert.deepEqual(searchActions(actions, 'How do I create a component?').map(action => action.id), ['create-component']);
   assert.deepEqual(searchActions(actions, 'crop images').map(action => action.id), ['crop-image', 'add-image']);
   assert.deepEqual(searchActions(actions, 'cropping photos').map(action => action.id), ['crop-image']);
   assert.deepEqual(searchActions(actions, 'photo').map(action => action.id), ['add-image', 'crop-image', 'remove-image-background', 'expand-image', 'boost-image-resolution']);
@@ -160,6 +162,10 @@ test('the editor exposes image cropping through searchable keyboard and menu act
   assert.match(main, /id: 'crop-image',[\s\S]*?keywords: \[[^\]]*'images'[^\]]*'cropping'/);
   assert.match(main, /Select an image layer first, or choose Add image if none is on this page\./);
   assert.match(main, /id: 'add-image', label: 'Add image'[\s\S]*?Add an image before cropping it[\s\S]*?keywords: \[[^\]]*'crop image'/);
+  assert.match(main, /const componentSource = selection\.length === 1 \? selection\[0\] : null[\s\S]*?const componentCreationReason = batchReason[\s\S]*?Detach this component instance before creating a main component\./,
+    'component help should only run when the selected layer can become a main component');
+  assert.match(main, /id: 'create-component', label: 'Create a component from this layer'[\s\S]*?Place copies later from Assets → Components\.[\s\S]*?run: \(\) => makeComponent\(componentSource\.id\)/,
+    'component search results should explain both creation and where to place reusable copies');
   assert.match(main, /id: 'save-image-recipe'[\s\S]*?saveRecipeFor\(selectedImage\.id\)/);
   assert.match(main, /id: 'apply-image-recipe'[\s\S]*?image-context-recipe/);
   assert.match(main, /function openImageAiControls\(nodeId, controlSelector\)[\s\S]*?state\.imageAiToolsExpandedNodeIds\.add\(nodeId\)[\s\S]*?control\?\.focus/);
@@ -189,7 +195,7 @@ test('task help is directly reachable on touch and keeps the full instructions v
   const descriptionRule = styles.match(/\.quick-action-option-description\s*\{([^}]*)\}/)?.[1] || '';
   assert.doesNotMatch(descriptionRule, /(?:overflow:\s*hidden|white-space:\s*nowrap|text-overflow:\s*ellipsis)/,
     'action instructions should not be cut off at the end of one line');
-  assert.match(html, /id="quick-actions-suggestions"[^>]*aria-label="Suggested tasks"[\s\S]*?Crop an image[\s\S]*?Remove background[\s\S]*?Add text[\s\S]*?Apply an image recipe[\s\S]*?Export PDF/,
+  assert.match(html, /id="quick-actions-suggestions"[^>]*aria-label="Suggested tasks"[\s\S]*?Crop an image[\s\S]*?Remove background[\s\S]*?Add text[\s\S]*?Create a component[\s\S]*?Apply an image recipe[\s\S]*?Export PDF/,
     'the help screen should show concrete starter tasks before the user knows what to search for');
   assert.match(main, /const normalizedQuery = normalizeActionSearchText\(query\)[\s\S]*?suggestions\.hidden = Boolean\(normalizedQuery\)[\s\S]*?const actions = normalizedQuery \? searchActions\(quickActionCatalog\(\), query, \{ limit: 20 \}\) : \[\]/,
     'the initial help screen should stay focused on suggestions until a task is searched');
@@ -201,10 +207,19 @@ test('task help is directly reachable on touch and keeps the full instructions v
     'a starter task should fill the search without running it unexpectedly');
   assert.match(styles, /\.quick-action-suggestion\s*\{[^}]*min-height:\s*44px/,
     'starter tasks should have touch-sized targets on small screens');
-  assert.match(html, /aria-label="Design tools\. Swipe or scroll horizontally to reveal all tools/,
-    'the mobile toolbar should announce how to reach tools outside its first viewport');
-  assert.match(styles, /\.bottom-toolbar::after\s*\{[^}]*content:\s*"More ›"/,
-    'the phone toolbar should visibly label its horizontal overflow');
+  assert.match(html, /class="bottom-toolbar bottom-toolbar-shell"[^>]*role="group"[^>]*aria-label="Design tools"/);
+  assert.match(html, /id="bottom-toolbar"[^>]*role="toolbar"[^>]*aria-label="Canvas tools\. Use More tools to reveal the next set, swipe or scroll horizontally/,
+    'the mobile tool region should announce its tap, swipe, and scroll ways to reach hidden tools');
+  assert.match(html, /id="toolbar-more-tools"[^>]*aria-label="Show more design tools"[^>]*hidden>More tools ›<\/button>/,
+    'the phone toolbar should expose a real, tappable control rather than a passive overflow hint');
+  assert.match(main, /function installDesignToolOverflowControl\(\)[\s\S]*?toolbarOverflowState[\s\S]*?toolbarOverflowDestination[\s\S]*?toolbar\.scrollTo\(/,
+    'the overflow button should reveal the next group of tools and return to the first group at the end');
+  assert.match(html, /class="bottom-toolbar-viewport" id="bottom-toolbar"[\s\S]*?<\/div>\s*<button class="toolbar-more-tools"/,
+    'the overflow button should sit beside the scroll viewport so it cannot cover tool buttons');
+  assert.match(styles, /\.bottom-toolbar-viewport\s*\{[^}]*overflow-x:\s*auto/,
+    'only the tool viewport should scroll horizontally');
+  assert.match(styles, /\.bottom-toolbar \.toolbar-more-tools:not\(\[hidden\]\)\s*\{[^}]*min-height:\s*44px/,
+    'the visible phone overflow control should meet the touch target minimum');
 });
 
 test('empty canvas offers direct start actions and explains pages versus fixed-size frames', () => {
@@ -233,7 +248,17 @@ test('crop help distinguishes standalone photos from photos placed inside shapes
   assert.match(main, /Visible source edges · %/);
   assert.match(main, /Visible crop \$\{edge\} edge, percent of source/);
   assert.match(styles, /\.canvas-scroll:has\(#image-crop-toolbar\[data-crop-mode="true"\]\) #scene-canvas\s*\{\s*cursor:\s*crosshair/);
-  assert.match(readme, /To crop a photo inside a shape: select the shape, search \*\*Crop image\*\*/);
+  assert.match(readme, /To crop a photo inside a shape: select the shape and choose \*\*Crop \/ position image\*\* from its canvas action bar, or search \*\*Crop image\*\*/);
+});
+
+test('component help is reachable as a natural-language task and explains where to place copies', () => {
+  assert.match(html, /data-quick-action-query="How do I create a component\?">Create a component/,
+    'the first-use help screen should show reusable components as a concrete task');
+  assert.match(main, /components\.append\(createAssetEmptyState\('components-empty', '◇', 'Select a layer, then choose Create component in Design properties or its layer menu\.'\)\)/,
+    'the empty Components section should point to the actual creation controls');
+  assert.deepEqual(searchActions(actions, 'make a reusable component').map(action => action.id), ['create-component']);
+  assert.match(main, /componentCreationReason = batchReason \|\| \(!componentSource[\s\S]*?Slices are export regions and cannot become components\.[\s\S]*?This layer is already a main component\./,
+    'the task should tell users why component creation is unavailable for their current selection');
 });
 
 test('PDF export is a visible peer to image export and opens the page-size controls', () => {

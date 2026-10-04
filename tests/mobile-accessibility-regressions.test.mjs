@@ -39,7 +39,7 @@ test('canvas selection and tool changes are announced without reading live coord
 });
 
 test('canvas tool buttons expose the active tool at startup and when it changes', () => {
-  const toolbar = html.match(/<div class="bottom-toolbar" id="bottom-toolbar"[\s\S]*?<\/div>/)?.[0] || '';
+  const toolbar = html.match(/<div class="bottom-toolbar-viewport" id="bottom-toolbar"[\s\S]*?<\/div>/)?.[0] || '';
   const toolButtons = [...toolbar.matchAll(/<button\b[^>]*>/g)].map(([tag]) => ({
     tag,
     className: tag.match(/\bclass="([^"]*)"/)?.[1] || '',

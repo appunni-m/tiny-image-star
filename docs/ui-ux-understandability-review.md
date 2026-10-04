@@ -6,20 +6,20 @@ Scope: first-use navigation, image editing, task discovery, recipes, export, col
 
 ## Method and limits
 
-This review traces the current source-defined flows, user-facing copy, responsive rules, and existing UX tests. I also inspected the open local preview's accessibility tree and compared its served HTML with the checked-out source. The loaded tab does not list the current **? Help** or crop toolbar, while the server response includes them; this mismatch makes the tab inconclusive as a view of the current source. Browser smoke remains deferred until the feature batch is complete, as requested. Source and automated tests establish that instructions and routes exist; they cannot establish that unfamiliar users notice them or complete tasks unaided.
+This review combines source and UX-test inspection with a fresh local preview of the current checkout at desktop size and a 390 × 844 phone viewport. I opened **? Help**, tried the “Crop an image” suggestion, and checked how the empty page and mobile tool strip present next steps. I did not import a photo into the preview, so the selected-image crop interaction is confirmed from source and focused tests rather than an end-to-end user gesture. Browser smoke remains deferred until the feature batch is complete, as requested. This is a source-led review, not a study with unfamiliar users; the UI and tests cannot establish that people notice controls or complete tasks unaided.
 
 ## Direct answer: can a new user figure out how to crop?
 
-There is no separate Crop icon. Cropping is a contextual image action. For a photo layer, the current source gives a clear sequence:
+There is no separate Crop tool in the bottom strip. Cropping a regular photo is a contextual image action. The empty Layers and Properties states say to select an image and choose **Crop image**. Once a user selects one photo layer, its action bar gives the next steps and the **Crop image**, **Adjust image**, and **Save recipe** actions:
 
 1. Choose **Add image** from the empty Layers or Properties state, or from the new empty-canvas start card.
-2. Select the photo with **Move / Select**. The image action bar shows **Crop image** and explains that the user should drag across the part to keep.
+2. Select the photo with **Move / Select**. The image action bar says **Crop image** and instructs the user to drag across the part to keep.
 3. In crop mode, the on-canvas instructions explain edge/corner adjustment, **Undo crop**, and **Finish crop**. A crosshair now signals that the canvas is in crop mode.
 4. If the user asks **? Help** “How do I crop an image?”, the action search returns the crop flow. If no image is selected, it explains the prerequisite and offers **Add image**.
 
-That flow is explicit in the source and UX tests, but has not been validated with first-time users. A photo used as a shape fill is a different task: select the shape, choose **Fill**, then **Crop / position image** to move or zoom the photo inside the shape. Help also exposes **Crop image inside shape** for that selection and explains when the fill must first be changed to **Fill**. The control now uses the word “crop” as well as “position” so the visible label matches the way users are likely to describe the task.
+The fresh phone preview showed that the **Crop an image** Help suggestion opens a readable, step-by-step result and offers **Add image** when no image layer exists. That makes the “where do I start?” case clear. For a photo used as a shape fill, select a shape with one visible image fill and use **Crop / position image** in the canvas action bar; drag, pinch, or use Zoom to position the photo inside the shape. If the fill uses **Fit** or **Tile**, the bar explains that **Fill** must be selected first. Help also exposes **Crop image inside shape**. When a shape has multiple image fills, the Inspector keeps explicit target controls so the editor does not guess which photo to move.
 
-In this run, all 35 tests in `action-search.test.mjs`, `image-context-actions.test.mjs`, and `image-crop-geometry.test.mjs` passed. They verify natural-language crop queries, the crop gesture instructions, separate photo-fill guidance, crop coordinate behavior, and the direct PDF export entry. This confirms that the route and instructions are wired; it does not prove users understand them without help.
+The focused action-search, image-action, crop-geometry, and mobile-overflow checks passed: 40 tests. They verify natural-language crop queries, the crop gesture instructions, separate photo-fill guidance, crop coordinate behavior, and the mobile overflow control. This confirms that the routes and instructions are wired; it does not prove users understand them without help.
 
 ## Changes made during this review
 
@@ -34,6 +34,8 @@ In this run, all 35 tests in `action-search.test.mjs`, `image-context-actions.te
 - The Layers control now says **Select multiple** instead of the jargon **Multi-select**. Once active, its visible instructions explain click/tap selection and the remaining steps to apply one saved recipe to the selected images.
 - On phones, entering the Frame tool with nothing selected opens Properties to the frame-size presets; its instruction says to close Properties before drawing a custom frame.
 - The Inspector export group now gives **Export image** (which changes to **Export ZIP** or **Export selection** when appropriate) and **Export PDF** separate, visible buttons. **Export PDF** opens the page-size and orientation controls. A saved recipe is explicitly described as a reusable image preset.
+- The Help suggestions now include **Create a component**, and its result explains how to make one layer reusable and where to place copies. The empty **Assets → Components** state points to the creation controls and the task result explains why an unsupported selection cannot be converted.
+- The mobile tool strip now has a real **More tools** / **First tools** control that moves through the horizontally overflowing tools; this replaces a passive overflow label that could not be tapped.
 
 ## Task review
 
@@ -41,28 +43,28 @@ In this run, all 35 tests in `action-search.test.mjs`, `image-context-actions.te
 | --- | --- | --- |
 | Add a photo | Empty-canvas card or empty Layers/Properties state → **Add image** | Direct and visible, including when phone side panels start closed. |
 | Crop a photo layer | Select image → **Crop image** → drag area to keep → refine → **Finish crop** | Clearly named and guided in the canvas bar; first-time completion still needs observation. |
-| Crop a photo inside a shape | Select shape → search **Crop image** → **Crop image inside shape**, or Design properties → Fill → **Crop / position image** | The interaction is explained, but the direct control is deeper in the inspector than the standalone image action. Still needs first-time observation. |
+| Crop a photo inside a shape | Select a shape with one image fill → **Crop / position image** in the canvas action bar → drag/pinch/zoom → **Done positioning**. With multiple fills, target one explicitly in Design properties. | The common case has a direct canvas action; unavailable **Fit/Tile** cases say to switch to **Fill**. User success still needs observation. |
 | Make a fixed-size design | Empty-canvas card → **Draw a frame**; on phones, Properties opens to presets, or close it and drag a custom frame | Page/frame distinction is explained at first use and the mobile preset path is surfaced. Confirm drawer behavior on a phone. |
 | Apply a recipe to multiple images | Open **Layers** → **Select multiple** → click/tap image layers → **Done** → choose saved recipe/preset → **Apply to N images** | The mode explains the gesture, effect, and unchanged non-image layers. The Layers drawer and row selection still need a phone usability check. |
 | Export a PDF | In **Properties**, choose **Export PDF** beside **Export image**, then set paper size and orientation; Help search and File menu remain alternate paths | Directly visible beside image export. The PDF dialog shows paper size, orientation, output dimensions, and fit behavior; choosing raster versus editable vector may still need help. |
-| Identify canvas tools | Desktop hover/focus tooltip; touch toolbar labels; **? Help** for task search | Every touch tool now has a visible label through 820 px, and ambiguous “Image”/“Color” labels were changed to “Add image”/“Pick color.” The long tool strip still needs a real-device check. |
+| Identify canvas tools | Desktop hover/focus tooltip; touch toolbar labels and **More tools**; **? Help** for task search | Phone tools show their names, and the overflow control is actionable. Confirm target placement and swipe/tap behavior on real devices. |
+| Create reusable components | Select one layer → **Create component** in Design properties or its layer menu; Help search offers the same task; place copies from **Assets → Components**. | Now described in Help and the empty Components state; actual first-use success remains unobserved. |
 | Understand image editing scope | Select image → **Adjust image**; crop is a direct canvas action, local AI tools are under **More image tools** | The direct crop path is separate from the long adjustment list. The remaining controls still need clearer grouping for people exploring beyond the common actions. |
 | Share a design live | **Share** → send owner link → guest chooses a folder and returns a reply link → owner accepts/connects | The UI states that no sharing server is used and explains the reply step. This is an unavoidable extra step in the current serverless handshake and remains less simple than a single-link join. |
 
 ## Remaining findings
 
-1. **High — actual task success is unknown.** Existing tests verify copy, query matches, responsive rules, and event wiring; they do not show whether an unfamiliar person finds the controls unaided. The crop route is explicitly described, but a first-time user may still miss the contextual image bar or Help entry point. Do not call the editor easy to learn until this is observed.
-2. **Medium — cropping a photo inside a shape takes more discovery.** A standalone image gets a direct canvas action bar after selection. For a shape fill, the user must find Design properties → Fill → **Crop / position image**, or know to search **? Help**. Consider surfacing the same contextual canvas action when a shape with one image fill is selected.
-3. **Medium — image adjustment controls still form a long inspector run.** The standalone crop action is direct, but crop/transform, color sliders, tonal effects, and AI tools remain a lot to scan when a user chooses **Adjust image**. Group common edits separately from fine-tuning after the task study confirms where people hesitate.
-4. **Medium — live sharing carries a comprehension cost.** With no server, the guest must return a reply link and the owner must accept it. The oversized-invite state does have a visible **Share invite details** action; verify that users understand who sends each link and when the connection is live.
+1. **High — actual task success is unknown.** Tests confirm copy, query matching, responsive rules, and wiring, and the local preview confirms how empty-state help is presented. None of that proves an unfamiliar person will find the contextual image bar after selecting a photo or finish a task without coaching. Do not call the editor easy to learn until this is observed.
+2. **Medium — the crop action is contextual.** The regular photo route is clearly described, but its main button appears only after image selection. The phone preview surfaced the first step and Help route; a first-time task study should verify users discover the selected-image bar without being pointed to it.
+3. **Medium — image adjustment controls still form a long inspector run.** Crop is separate and direct, but crop/transform, color sliders, tonal effects, and local AI tools remain a lot to scan under **Adjust image**. Group common edits separately from fine-tuning after task observations show where people hesitate.
+4. **Medium — live sharing carries a comprehension cost.** With no server, the guest must return a reply link and the owner must accept it. Verify that users understand who sends each link and when the connection is live.
 5. **Medium — mobile recipe-bar coverage is structural, not observational.** The speed hint and touch-sized controls have responsive tests, but check portrait and landscape with a real image to see whether progress obscures too much of the work.
-6. **Low — desktop drawing tools still rely on hover/focus or task search.** Touch users see labels; desktop starts with icons. Keep this if participants find the names and instructions quickly, otherwise add persistent labels to the common tools.
 
 ## What a new user should do to crop
 
 For a regular photo layer: choose **Add image**, select the photo on the canvas, choose **Crop image** in its action bar, drag over the area to keep, adjust the handles if needed, and choose **Finish crop**. The crop is reversible with **Undo crop**.
 
-For a photo inside a shape: select the shape, open **Design** properties, find its **Fill** controls, choose **Crop / position image**, drag the photo within the shape (or pinch/use Zoom on touch), and choose **Done positioning**. The shape remains the crop boundary. If a user asks in their own words, the **? Help** search offers **Crop image inside shape** for this selection.
+For a photo inside a shape: select the shape and choose **Crop / position image** from its canvas action bar, then drag the photo within the shape (or pinch/use Zoom on touch) and choose **Done positioning**. The shape remains the crop boundary. If the fill is set to **Fit** or **Tile**, change it to **Fill** in Design properties first. If a user asks in their own words, the **? Help** search offers **Crop image inside shape** for this selection.
 
 The current source communicates these steps. A first-time user study is still needed to answer whether people understand them: give participants only the canvas and the goal “crop this photo to keep the subject,” record their first action and detours, then repeat for the photo-inside-shape case on desktop and phone. Do not coach them or point out **? Help**; discovering it is part of the result.
 

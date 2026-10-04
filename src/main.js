@@ -149,6 +149,7 @@ import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVarian
 import { createThemePreferenceController } from './theme-preference.js';
 import { contextMenuActionByLabel, contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
 import { toolbarNavigationTarget } from './toolbar-keyboard.js';
+import { toolbarOverflowDestination, toolbarOverflowState } from './toolbar-overflow.js';
 import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { defaultImageRecipeConcurrency } from './bulk-recipe-concurrency.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
@@ -1759,6 +1760,37 @@ function installDesignToolToolbarKeyboard() {
     target.focus({ preventScroll: true });
     target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   });
+}
+function installDesignToolOverflowControl() {
+  const toolbar = $('#bottom-toolbar');
+  const control = $('#toolbar-more-tools');
+  if (!toolbar || !control) return;
+
+  const sync = () => {
+    const state = toolbarOverflowState({
+      scrollLeft: toolbar.scrollLeft,
+      clientWidth: toolbar.clientWidth,
+      scrollWidth: toolbar.scrollWidth
+    });
+    control.hidden = !state.hasOverflow;
+    control.textContent = state.atEnd ? 'First tools ‹' : 'More tools ›';
+    const label = state.atEnd ? 'Show the first design tools' : 'Show more design tools';
+    control.setAttribute('aria-label', label);
+    control.title = label;
+  };
+
+  toolbar.addEventListener('scroll', sync, { passive: true });
+  window.addEventListener('resize', sync, { passive: true });
+  control.addEventListener('click', () => {
+    const left = toolbarOverflowDestination({
+      scrollLeft: toolbar.scrollLeft,
+      clientWidth: toolbar.clientWidth,
+      scrollWidth: toolbar.scrollWidth
+    });
+    const behavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    toolbar.scrollTo({ left, behavior });
+  });
+  sync();
 }
 function installDesignToolTooltips() {
   const toolbar = $('#bottom-toolbar');
@@ -4753,7 +4785,7 @@ function renderAssetsTab() {
   const componentSetItems = state.document.componentSets || [];
   const groupedComponentIds = new Set(componentSetItems.flatMap(set => set.componentIds));
   if (!componentItems.length) {
-    components.append(createAssetEmptyState('components-empty', '◇', 'Create a component from any layer.'));
+    components.append(createAssetEmptyState('components-empty', '◇', 'Select a layer, then choose Create component in Design properties or its layer menu.'));
   }
   for (const set of componentSetItems) {
     const wrapper = document.createElement('div');
@@ -14452,6 +14484,12 @@ function quickActionCatalog() {
   const rootIds = rootSelectedIds();
   const currentPageLayerRows = pageLayerRows();
   const selectedGroup = selection.length === 1 && selection[0].type === 'group' ? selection[0] : null;
+  const componentSource = selection.length === 1 ? selection[0] : null;
+  const componentCreationReason = batchReason || (!componentSource
+    ? selection.length > 1 ? 'Choose one layer to make reusable.' : 'Select a layer first.'
+    : componentSource.type === 'slice' ? 'Slices are export regions and cannot become components.'
+      : componentInstanceRoot(componentSource.id) ? 'Detach this component instance before creating a main component.'
+        : componentSource.isComponent ? 'This layer is already a main component.' : '');
   const canGroupSelection = canGroupLayers(state.document, rootIds);
   const canUngroupSelection = Boolean(selectedGroup && canUngroupLayers(state.document, selectedGroup.id));
   const exportRoots = orderedRootSelection().map(id => findNode(state.document, id)?.node).filter(Boolean);
@@ -14522,6 +14560,13 @@ function quickActionCatalog() {
       id: 'create-frame', label: 'Create a frame', description: 'Choose the frame tool, then drag on the canvas or select a preset.',
       keywords: ['artboard', 'size', 'phone screen', 'layout'], disabled: Boolean(batchReason),
       unavailableReason: batchReason, run: () => setTool('frame'),
+    },
+    {
+      id: 'create-component', label: 'Create a component from this layer',
+      description: 'Turn the selected layer and its children into a reusable component. Place copies later from Assets → Components.',
+      keywords: ['component', 'components', 'make component', 'reusable component', 'create reusable', 'make reusable', 'component instance'],
+      disabled: Boolean(componentCreationReason), unavailableReason: componentCreationReason,
+      run: () => makeComponent(componentSource.id),
     },
     {
       id: 'add-text', label: 'Add text', description: 'Choose the text tool, then click or drag on the canvas.',
@@ -21293,6 +21338,7 @@ function initEvents() {
   $$('.sidebar-tabs, .inspector-tabs').forEach(installHorizontalTabListKeyboard);
   for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
   installDesignToolToolbarKeyboard();
+  installDesignToolOverflowControl();
   installDesignToolTooltips();
   window.addEventListener('tiny-image-star:share-live', event => {
     event.preventDefault();
