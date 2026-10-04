@@ -8,6 +8,7 @@ import { MAX_SHADOW_SPREAD, supportsShadowSpread } from './layer-effects.js';
 import { createStroke, isValidStroke, strokeSideNames, syncLegacyStrokeFields } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
+import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgPath } from './corner-radii.js';
 import {
   MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS, isValidVertexRadii,
   regularShapeVertices, roundedPolygonSvgPath
@@ -39,6 +40,8 @@ const ELLIPSE_ARC_METADATA_ATTRIBUTE = 'data-tiny-image-star-ellipse-arc-v1';
 const MAX_ELLIPSE_ARC_METADATA_LENGTH = 512;
 const ROUNDED_SHAPE_METADATA_ATTRIBUTE = 'data-tiny-image-star-rounded-shape-v1';
 const MAX_ROUNDED_SHAPE_METADATA_LENGTH = 4096;
+const ROUNDED_RECTANGLE_METADATA_ATTRIBUTE = 'data-tiny-image-star-rounded-rectangle-v1';
+const MAX_ROUNDED_RECTANGLE_METADATA_LENGTH = 1024;
 const MAX_CORNER_RADIUS = 100_000;
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
@@ -2718,6 +2721,29 @@ function matchesEditorRoundedShape(type, metadata, shape) {
   return shape.attrs.d === roundedPolygonSvgPath(vertices, radius, metadata.cornerSmoothing);
 }
 
+function readEditorRoundedRectangleMetadata(group) {
+  const serialized = group.attrs[ROUNDED_RECTANGLE_METADATA_ATTRIBUTE];
+  if (typeof serialized !== 'string' || serialized.length > MAX_ROUNDED_RECTANGLE_METADATA_LENGTH) return null;
+  let value;
+  try { value = JSON.parse(serialized); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== 'cornerRadii,cornerSmoothing,height,version,width'
+    || value.version !== 1 || !Number.isFinite(value.width) || value.width <= 0 || value.width > MAX_COORDINATE
+    || !Number.isFinite(value.height) || value.height <= 0 || value.height > MAX_COORDINATE
+    || !isValidCornerRadii(value.cornerRadii)
+    || !Number.isFinite(value.cornerSmoothing) || value.cornerSmoothing < 0 || value.cornerSmoothing > 1) return null;
+  const clamped = clampCornerRadii(value.width, value.height, value.cornerRadii);
+  if (!cornerRadiusKeys.every(key => clamped[key] === value.cornerRadii[key])) return null;
+  return value;
+}
+
+function matchesEditorRoundedRectangle(metadata, shape) {
+  if (!metadata || shape.tag !== 'path' || Object.hasOwn(shape.attrs, 'transform')) return false;
+  return shape.attrs.d === roundedRectSvgPath(
+    metadata.width, metadata.height, metadata.cornerRadii, metadata.cornerSmoothing
+  );
+}
+
 function editorLineGeometryFromSvgPath(shape) {
   const reader = new PathTokenReader(shape.attrs.d || '', shape.tag);
   if (reader.next() !== 'M') return null;
@@ -2974,9 +3000,13 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
   const lineShape = type === 'line';
   const regularShape = type === 'star' || type === 'polygon';
   const roundedShapeMetadata = regularShape ? readEditorRoundedShapeMetadata(node, type) : null;
+  const hasRoundedRectangleMetadata = Object.hasOwn(node.attrs, ROUNDED_RECTANGLE_METADATA_ATTRIBUTE);
+  const roundedRectangleMetadata = type === 'rectangle' && hasRoundedRectangleMetadata
+    ? readEditorRoundedRectangleMetadata(node) : null;
+  if (hasRoundedRectangleMetadata && !roundedRectangleMetadata) return null;
   const ellipseArcMetadata = type === 'ellipse' ? readEditorEllipseArcMetadata(node) : null;
   const ellipseArcShapeTag = editorEllipseArcShapeTag(ellipseArcMetadata);
-  const shapeTag = rectangularLayer ? 'rect' : type === 'ellipse' ? ellipseArcShapeTag || 'ellipse'
+  const shapeTag = roundedRectangleMetadata ? 'path' : rectangularLayer ? 'rect' : type === 'ellipse' ? ellipseArcShapeTag || 'ellipse'
     : regularShape ? roundedShapeMetadata ? 'path' : 'polygon' : lineShape ? 'path' : null;
   if (!shapeTag || style.clipPathRef || style.maskRef) return null;
   const phasedPaintMarker = node.attrs['data-tiny-image-star-paint-phases'];
@@ -3026,6 +3056,7 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
   checkElementAttributes(shape);
   if (ellipseArcMetadata && !matchesEditorEllipseArcShape(ellipseArcMetadata, shape)) return null;
   if (roundedShapeMetadata && !matchesEditorRoundedShape(type, roundedShapeMetadata, shape)) return null;
+  if (roundedRectangleMetadata && !matchesEditorRoundedRectangle(roundedRectangleMetadata, shape)) return null;
   let shapeStyle = parseStyle(shape, fillStageStyle || style, gradients);
   let importedFillStack = null;
   if (phasedPaint) {
@@ -3085,7 +3116,10 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
 
   let x; let y; let width; let height; let radius = 0; let regularShapeGeometry = null; let lineGeometry = null;
   let importedSideStroke = null;
-  if (rectangularLayer) {
+  if (roundedRectangleMetadata) {
+    x = 0; y = 0;
+    width = roundedRectangleMetadata.width; height = roundedRectangleMetadata.height;
+  } else if (rectangularLayer) {
     x = coordinateLength(shape.attrs.x, 'rect x', shape.tag);
     y = coordinateLength(shape.attrs.y, 'rect y', shape.tag);
     width = length(shape.attrs.width, 'rect width', shape.tag);
@@ -3173,6 +3207,11 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
     ...(importedFillStack ? { fills: importedFillStack } : {}),
     fillRule: shapeStyle.fillRule || 'nonzero',
     ...(rectangularLayer ? { radius } : {}),
+    ...(roundedRectangleMetadata ? {
+      cornerRadii: Object.fromEntries(cornerRadiusKeys.map(key =>
+        [key, Number((roundedRectangleMetadata.cornerRadii[key] * scale).toPrecision(12))])),
+      cornerSmoothing: roundedRectangleMetadata.cornerSmoothing
+    } : {}),
     ...(ellipseArcMetadata ? { arcData: ellipseArcMetadata.arcData } : {}),
     ...(regularShapeGeometry ? {
       points: regularShapeGeometry.points,

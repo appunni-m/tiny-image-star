@@ -875,6 +875,79 @@ test('individual drop-shadow blend modes composite onto the live backdrop before
     assert.equal(destination.draws[0].operation, 'screen');
     assert.ok(Math.abs(destination.draws[0].alpha - 0.15) < 1e-12, 'effect and layer opacity multiply before backdrop blending');
     assert.deepEqual(destination.draws[0].args.slice(1), [7, 7, 40, 30], 'the shadow uses the padded layer bounds');
+
+    const isolatedSource = new RecordingCanvas(40, 30);
+    const isolatedDestination = new RecordingCanvas(80, 60);
+    renderer.drawDropShadowsWithBlendMode(isolatedDestination.context, isolatedSource, { type: 'rectangle' }, [
+      { id: 'isolated-multiply', type: 'drop-shadow', visible: true, blendMode: 'multiply', color: '#112233',
+        opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: 0, showShadowBehindNode: true }
+    ], 1, 40, 30, 11, 13, 4, 6, 40, 30, 0.5, null, true);
+    assert.equal(isolatedDestination.draws.length, 0,
+      'layer blur/unclipped texture keeps the effect blend off the live scene backdrop');
+    const isolatedBlend = isolatedSource.draws.find(draw => draw.operation === 'multiply');
+    assert.ok(isolatedBlend, 'the shadow blend is composited into the layer effect surface');
+    assert.equal(isolatedBlend.alpha, 0.4, 'layer opacity remains reserved for the final layer composite');
+    assert.deepEqual(isolatedBlend.args.slice(1), [0, 0, 40, 30], 'isolated shadows align in surface pixel space');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('layer blur and unclipped texture isolate drop-shadow blend modes from the live backdrop', () => {
+  const document = createDocument();
+  const previousCanvas = globalThis.OffscreenCanvas;
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      const stack = [];
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none',
+        save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, filter: this.filter }); },
+        restore() { Object.assign(this, stack.pop()); },
+        setTransform() {}, clearRect() {}, drawImage() {},
+        fillRect() {}
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    for (const { name, topEffect, isolated } of [
+      { name: 'layer blur', topEffect: { id: 'blur', type: 'layer-blur', visible: true, radius: 2 }, isolated: true },
+      { name: 'unclipped texture', topEffect: { id: 'texture', type: 'texture', visible: true,
+        sizeX: 4, sizeY: 4, radius: 3, clipToShape: false }, isolated: true },
+      { name: 'clipped texture', topEffect: { id: 'texture', type: 'texture', visible: true,
+        sizeX: 4, sizeY: 4, radius: 3, clipToShape: true }, isolated: false }
+    ]) {
+      canvases.length = 0;
+      const dropShadow = { id: 'blended-shadow', type: 'drop-shadow', visible: true, blendMode: 'multiply',
+        color: '#000000', opacity: 0.5, offsetX: 0, offsetY: 1, blur: 2, showShadowBehindNode: true };
+      const node = createNode('rectangle', { width: 20, height: 12, effects: [topEffect, dropShadow] });
+      addNode(document, node);
+      const renderer = Object.create(SceneRenderer.prototype);
+      renderer.getState = () => ({ document, zoom: 1 });
+      renderer.drawNode = () => {};
+      renderer.applyLayerBlurEffect = () => true;
+      renderer.applyTextureEffects = () => {};
+      renderer.applyInnerShadows = () => {};
+      let observed = null;
+      renderer.drawDropShadowsWithBlendMode = (...args) => {
+        observed = { source: args[1], isolate: args.at(-1) };
+        return true;
+      };
+      const parent = new RecordingCanvas(80, 60);
+      parent.context.getTransform = () => ({ a: 1, b: 0 });
+
+      renderer.drawNodeWithEffects(parent.context, node, 0, 0, new Map(), node.effects);
+
+      assert.ok(observed, `${name}: the blended shadow path runs`);
+      assert.equal(observed.source, canvases[1], `${name}: the layer's own effect surface is available`);
+      assert.equal(observed.isolate, isolated, `${name}: Figma's backdrop-isolation rule is respected`);
+    }
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;

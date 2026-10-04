@@ -289,6 +289,21 @@ function roundedRegularShapeRoundTripMetadata(document, node) {
   return ` data-tiny-image-star-rounded-shape-v1="${escapeXml(metadata)}"`;
 }
 
+function roundedRectangleRoundTripMetadata(document, node) {
+  if (node?.type !== 'rectangle') return '';
+  const radii = cornerRadii(document, node);
+  const smoothing = cornerSmoothing(node);
+  if (!smoothing && cornerRadiusKeys.every(key => radii[key] === radii.topLeft)) return '';
+  const metadata = JSON.stringify({
+    version: 1,
+    width: Number(node.width),
+    height: Number(node.height),
+    cornerRadii: radii,
+    cornerSmoothing: smoothing
+  });
+  return ` data-tiny-image-star-rounded-rectangle-v1="${escapeXml(metadata)}"`;
+}
+
 function hasPlainRegularShapeGeometry(node, document = emptyDocument) {
   if (!['star', 'polygon'].includes(node?.type)) return false;
   const radius = Number(getNodePropertyValue(document, node, 'radius') ?? node.radius ?? 0);
@@ -1709,7 +1724,6 @@ function canExportPhasedLayerPaint(node, document = emptyDocument) {
   const regularShape = ['star', 'polygon'].includes(node.type);
   if (!['rectangle', 'ellipse', 'path', 'star', 'polygon'].includes(node.type) || node.children?.length || node.mask
     || node.type === 'path' && !hasOnlyClosedRenderablePathContours(node)
-    || node.type === 'rectangle' && (node.cornerRadii || Number(node.cornerSmoothing) > 0)
     || regularShape && !hasPlainRegularShapeGeometry(node, document)) return false;
   const effects = (node.effects || []).filter(effect => effect.visible !== false);
   if (!effects.some(effect => effect.type === 'inner-shadow')
@@ -1942,7 +1956,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
-    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}`;
+    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}`;
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);

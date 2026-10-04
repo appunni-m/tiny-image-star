@@ -22462,7 +22462,10 @@ function initEvents() {
     if (copy) { void copyLiveField(copy.dataset.copyField); return; }
   });
   const liveDialogElement = $('#live-collaboration-dialog');
-  bindDialogDismissal(liveDialogElement, [$('#live-collaboration-close')]);
+  bindDialogDismissal(liveDialogElement, [
+    $('#live-collaboration-close'),
+    $('#live-collaboration-close-action')
+  ]);
   const frameQuickAddControls = $('#frame-quick-add-controls');
   frameQuickAddControls.addEventListener('pointerenter', () => {
     window.clearTimeout(frameQuickAddHideTimer);

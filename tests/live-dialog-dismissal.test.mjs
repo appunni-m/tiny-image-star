@@ -346,7 +346,7 @@ test('sharing panels use the compatible open and close helpers', async () => {
 
 test('the live collaboration panel uses normal Escape dismissal without changing session state', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(source, /bindDialogDismissal\(liveDialogElement, \[\$\('#live-collaboration-close'\)\]\)/);
+  assert.match(source, /bindDialogDismissal\(liveDialogElement, \[\s*\$\('#live-collaboration-close'\),\s*\$\('#live-collaboration-close-action'\)\s*\]\)/);
   assert.match(source, /activeSession\?\.role === 'guest' && !liveTerminal\(activeSession\.status\)\) openLiveDialog\('guest'\)/,
     'the Share toolbar action should reopen an active guest session after its dialog is dismissed');
   assert.doesNotMatch(source, /Wait for the guest to connect or stop sharing before closing this panel/);

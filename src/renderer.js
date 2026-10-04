@@ -2306,7 +2306,7 @@ export class SceneRenderer {
   }
 
   drawDropShadowsWithBlendMode(ctx, source, node, effects, rasterScale, pixelWidth, pixelHeight,
-    x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask = null) {
+    x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask = null, isolateFromBackdrop = false) {
     const shadows = effects.filter(effect => effect?.type === 'drop-shadow' && effect.visible !== false && effect.opacity > 0);
     if (!shadows.length) return false;
     let working = createTextSurface(pixelWidth, pixelHeight);
@@ -2345,14 +2345,23 @@ export class SceneRenderer {
       blurContext.restore();
       if (effect.showShadowBehindNode !== true) removeShadowBehindGeometry(blurred, shadowGeometryMask);
 
-      // A drop shadow blends with the scene beneath the layer. Apply it to the
-      // live destination before the foreground layer is drawn over it.
-      ctx.save();
-      ctx.globalAlpha *= nodeOpacity * Math.max(0, Math.min(1, effect.opacity));
-      ctx.globalCompositeOperation = canvasBlendOperation(effect.blendMode || 'normal');
-      ctx.filter = 'none';
-      ctx.drawImage(blurred, x - padX, y - padY, logicalWidth, logicalHeight);
-      ctx.restore();
+      // Layer blur and unclipped texture isolate effect blends from the live
+      // backdrop. In that case blend into this layer's completed paint surface;
+      // the node opacity is applied once when that surface is drawn to its parent.
+      const blendContext = isolateFromBackdrop ? source.getContext?.('2d') : ctx;
+      if (!blendContext) return false;
+      blendContext.save();
+      blendContext.globalCompositeOperation = canvasBlendOperation(effect.blendMode || 'normal');
+      blendContext.filter = 'none';
+      if (isolateFromBackdrop) {
+        blendContext.setTransform(1, 0, 0, 1, 0, 0);
+        blendContext.globalAlpha = Math.max(0, Math.min(1, effect.opacity));
+        blendContext.drawImage(blurred, 0, 0, pixelWidth, pixelHeight);
+      } else {
+        blendContext.globalAlpha *= nodeOpacity * Math.max(0, Math.min(1, effect.opacity));
+        blendContext.drawImage(blurred, x - padX, y - padY, logicalWidth, logicalHeight);
+      }
+      blendContext.restore();
 
       // Keep the source silhouette plus prior shadows without mutating the
       // foreground surface used for the final layer draw. Destination-over
@@ -3067,8 +3076,11 @@ export class SceneRenderer {
       : effects;
     const hasBlendedDropShadow = shadowEffects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
       && effect.opacity > 0 && effect.blendMode && effect.blendMode !== 'normal');
+    const isolateDropShadowBlend = effects.some(effect => effect.visible !== false
+      && (effect.type === 'layer-blur' || effect.type === 'texture' && effect.clipToShape === false));
     if (hasBlendedDropShadow) this.drawDropShadowsWithBlendMode(ctx, surface, node, shadowEffects,
-      rasterScale, pixelWidth, pixelHeight, x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask);
+      rasterScale, pixelWidth, pixelHeight, x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask,
+      isolateDropShadowBlend);
     // If the bounded shadow surface cannot be allocated, omit this non-normal
     // effect instead of silently rendering it with the wrong blend mode.
     const spreadDropShadowSurface = hasBlendedDropShadow

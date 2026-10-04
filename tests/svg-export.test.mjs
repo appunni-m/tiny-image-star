@@ -952,6 +952,24 @@ test('exports inner shadows as editable SVG alpha-mask filter primitives', () =>
   assert.match(svg, /filter="url\(#tis-effect-0\)"/);
 });
 
+test('exports independently rounded rectangles through editable inner-shadow paint phases', () => {
+  const rounded = createNode('rectangle', {
+    id: 'phased-rounded-card', width: 120, height: 80,
+    cornerRadii: { topLeft: 4, topRight: 12, bottomRight: 20, bottomLeft: 8 },
+    cornerSmoothing: 0.35, fill: '#ffffff', stroke: '#123456', strokeWidth: 2,
+    effects: [{ id: 'rounded-inner', type: 'inner-shadow', visible: true,
+      color: '#102030', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5 }]
+  });
+
+  const svg = exportNodeToSvg(rounded);
+  assert.match(svg, /data-tiny-image-star-rounded-rectangle-v1=/,
+    'custom corner controls are tagged so import can validate their exact path');
+  assert.match(svg, /<g data-tiny-image-star-paint-stage="fill"[^>]*><path d="/,
+    'fill remains an editable path inside the inner-shadow stage');
+  assert.match(svg, /<g data-tiny-image-star-paint-stage="stroke"><path d="/,
+    'stroke remains a separate editable path stage');
+});
+
 test('exports signed shadow spread with morphology while keeping zero-spread SVG compact', () => {
   const expanded = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',

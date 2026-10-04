@@ -877,6 +877,53 @@ test('round-trips phased editor stars and polygons with native controls and orde
   }
 });
 
+test('round-trips phased rounded rectangles as native editable controls only for exact geometry', () => {
+  const original = createNode('rectangle', {
+    id: 'rounded-phase', name: 'Phased rounded card', x: 18, y: 22, width: 120, height: 80,
+    rotation: 11, cornerRadii: { topLeft: 4, topRight: 12, bottomRight: 20, bottomLeft: 8 },
+    cornerSmoothing: 0.35, fill: '#345678', stroke: '#abcdef', strokeWidth: 2,
+    effects: [
+      { id: 'rounded-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#112233', opacity: 0.3,
+        offsetX: 4, offsetY: -2, blur: 5 },
+      { id: 'rounded-inner', type: 'inner-shadow', visible: true, color: '#abcdef', opacity: 0.45,
+        offsetX: -2, offsetY: 3, blur: 4 },
+      { id: 'rounded-blur', type: 'layer-blur', visible: true, radius: 2 }
+    ]
+  });
+  const sourceSvg = exportNodeToSvg(original);
+  const imported = allNodes(importSvgToLayers(sourceSvg).nodes).find(node => node.name === original.name);
+
+  assert.equal(imported?.type, 'rectangle');
+  assert.deepEqual(imported.cornerRadii, original.cornerRadii);
+  assert.equal(imported.cornerSmoothing, original.cornerSmoothing);
+  for (const property of ['width', 'height', 'rotation', 'strokeWidth']) {
+    assert.ok(Math.abs(imported[property] - original[property]) < 1e-5, `${property} is retained`);
+  }
+  assert.deepEqual(imported.effects.map(effect => effect.type), ['inner-shadow', 'layer-blur', 'drop-shadow']);
+
+  const fillPath = sourceSvg.match(/(<g data-tiny-image-star-paint-stage="fill"[^>]*>\s*<path d=")([^"]+)/u);
+  assert.ok(fillPath, 'the editor effect export contains its rounded fill geometry');
+  const editedPath = fillPath[2].replace(/^M (-?[\d.]+) (-?[\d.]+)/u,
+    (_match, x, y) => `M ${Number(x) + 0.01} ${y}`);
+  const editedSvg = sourceSvg.replace(fillPath[0], `${fillPath[1]}${editedPath}`);
+  const fallbackNodes = allNodes(importSvgToLayers(editedSvg).nodes);
+  assert.equal(fallbackNodes.some(node => node.name === original.name && node.type === 'rectangle'), false,
+    'edited rounded paths must not regain rectangle controls from stale metadata');
+  assert.ok(fallbackNodes.some(node => node.type === 'path'),
+    'edited rounded geometry remains editable as vector paths');
+
+  const malformedMetadataSvg = sourceSvg.replace(
+    'data-tiny-image-star-rounded-rectangle-v1="{&quot;version&quot;:1',
+    'data-tiny-image-star-rounded-rectangle-v1="{&quot;version&quot;:2'
+  );
+  assert.notEqual(malformedMetadataSvg, sourceSvg, 'the exporter emits the versioned rectangle metadata');
+  const malformedNodes = allNodes(importSvgToLayers(malformedMetadataSvg).nodes);
+  assert.equal(malformedNodes.some(node => node.name === original.name && node.type === 'rectangle'), false,
+    'unknown rectangle metadata versions cannot restore native controls');
+  assert.ok(malformedNodes.some(node => node.type === 'path'),
+    'unknown-version rounded geometry remains editable as paths');
+});
+
 test('edited or malformed phased regular-shape metadata stays editable vector geometry', () => {
   const original = createNode('star', {
     name: 'Phased edited star', width: 80, height: 72, points: 6, innerRadius: 0.4,

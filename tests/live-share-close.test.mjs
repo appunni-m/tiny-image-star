@@ -43,9 +43,9 @@ test('the sharing close button dismisses the panel without stopping the active s
   assert.equal(session.status, 'connected');
 });
 
-test('the live sharing panel binds dismissal directly to its close button', async () => {
+test('the live sharing panel binds dismissal directly to both close controls', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(source, /bindDialogDismissal\(liveDialogElement, \[\$\('#live-collaboration-close'\)\]\)/);
+  assert.match(source, /bindDialogDismissal\(liveDialogElement, \[\s*\$\('#live-collaboration-close'\),\s*\$\('#live-collaboration-close-action'\)\s*\]\)/);
   assert.doesNotMatch(source, /Wait for the guest to connect or stop sharing before closing this panel/);
   assert.doesNotMatch(source, /Leave the live session first so Tiny Image Star can save your local fork/);
 });
