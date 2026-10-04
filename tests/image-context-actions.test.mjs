@@ -32,8 +32,12 @@ test('image cropping explains the complete gesture before the user enters crop m
     'crop mode should explain what to drag, how to keep the result, and where to find Undo');
   assert.match(html, /title="Drag over the part of the image to keep, then choose Finish crop"/,
     'the Crop image action should explain its result before entering crop mode');
-  assert.match(main, /Fill crops the image to this shape\. Choose Position image to move or zoom what shows; use the Crop values below for precise adjustments\./,
-    'image fills should distinguish positioning within a shape from cropping a standalone image');
+  const fillControls = main.match(/function imageFillControls\(node, imageFill = node\.imageFill, fillId = ''\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(fillControls, 'expected the image-fill controls');
+  assert.match(fillControls, /'Crop \/ position image'[\s\S]*?Fill crops the image to this shape\. Choose Crop \/ position image to move or zoom what shows; use the Crop values below for precise adjustments\./,
+    'the shape-fill control should use the word crop and explain that it changes which part of the image shows');
+  assert.match(fillControls, /aria-label="\$\{fillCropActive \? 'Finish positioning image fill' : 'Crop or position image fill on canvas'\}"/,
+    'the image-fill action should expose its crop and positioning purpose to assistive technology');
 });
 
 test('selected images provide a direct route to their edit controls, including on phones', () => {
