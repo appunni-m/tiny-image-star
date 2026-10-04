@@ -78,6 +78,50 @@ test('the owner has a one-link invite, and scanning fills the same guest paste f
   assert.match(qrUi, /joinActions\.append\(scanInvitationButton\)/);
 });
 
+test('oversized invite links surface the full-message fallback', () => {
+  const fieldsStart = main.indexOf('function setLiveHostInviteFields(controller)');
+  const fieldsEnd = main.indexOf('\nfunction renderLiveHostPeers', fieldsStart);
+  assert.ok(fieldsStart >= 0 && fieldsEnd > fieldsStart);
+  const fields = main.slice(fieldsStart, fieldsEnd);
+  assert.ok(fields.indexOf("$('#live-share-message-value').value = formatLiveShareMessage")
+    < fields.indexOf('createLiveInvitationLink('), 'the full invite must be ready before URL-size handling');
+  assert.match(fields, /catch \(error\) \{\s*if \(!\(error instanceof RangeError\)\) throw error;[\s\S]*?\$\('#live-invite-share-url'\)\.value = '';[\s\S]*?urlWrap\.hidden = true;[\s\S]*?\$\('#live-invite-size-note'\)\.hidden = false;[\s\S]*?shareButton\.textContent = 'Share invite details'/);
+
+  const shareStart = main.indexOf('async function shareLiveCapsules()');
+  const shareEnd = main.indexOf('\nasync function shareLiveAnswer', shareStart);
+  assert.ok(shareStart >= 0 && shareEnd > shareStart);
+  const share = main.slice(shareStart, shareEnd);
+  assert.match(share, /const text = url\s*\?[\s\S]*?: \$\('#live-share-message-value'\)\.value\.trim\(\)/);
+  assert.match(share, /navigator\.clipboard\.writeText\(url \|\| text\)/);
+});
+
+test('initial host invite setup closes its controller if invite-field preparation fails', () => {
+  const start = main.indexOf('async function startLiveHost()');
+  const end = main.indexOf('\nasync function addLiveHostGuest()', start);
+  assert.ok(start >= 0 && end > start);
+  const host = main.slice(start, end);
+  assert.ok(host.indexOf('session.controller = controller') < host.indexOf('setLiveHostInviteFields(controller)'));
+  const catchStart = host.lastIndexOf('} catch (error) {');
+  const catchEnd = host.indexOf('} finally', catchStart);
+  assert.ok(catchStart >= 0 && catchEnd > catchStart);
+  const cleanup = host.slice(catchStart, catchEnd);
+  assert.match(cleanup, /failedSession\?\.controller[\s\S]*?await failedSession\.controller\.revoke\(\)[\s\S]*?catch \{ failedSession\.controller\.close\?\.\(\); \}/);
+  assert.match(cleanup, /if \(failedSession\) state\.liveCollaboration = null/);
+});
+
+test('subsequent guest invite setup closes and removes a peer if invite-field preparation fails', () => {
+  const start = main.indexOf('async function addLiveHostGuest()');
+  const end = main.indexOf('\nasync function ensureLiveReplicaDesign', start);
+  assert.ok(start >= 0 && end > start);
+  const addGuest = main.slice(start, end);
+  assert.ok(addGuest.indexOf('peer.controller = controller') < addGuest.indexOf('setLiveHostInviteFields(controller)'));
+  const catchStart = addGuest.lastIndexOf('} catch (error) {');
+  const catchEnd = addGuest.indexOf('} finally', catchStart);
+  assert.ok(catchStart >= 0 && catchEnd > catchStart);
+  const cleanup = addGuest.slice(catchStart, catchEnd);
+  assert.match(cleanup, /peer\.controller\?\.close\(\);\s*peer\.controller = null;\s*peer\.status = 'failed';\s*refreshLiveHostRoomUi\(session\)/);
+});
+
 test('host collaboration exposes a guest roster, selectable answers, independent offers, and per-peer disconnect controls', async () => {
   assert.match(html, /id="live-add-guest"/);
   assert.match(html, /id="live-peer-list"[^>]+aria-live="polite"/);

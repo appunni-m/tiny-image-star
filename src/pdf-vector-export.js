@@ -16,9 +16,9 @@ const LIMITS = Object.freeze({
  * It keeps supported geometry as PDF paths and shading functions (never
  * screenshots the page). Paths, solid paints, gradients, clips, and embedded
  * PNG/JPEG image XObjects and isolated group-opacity forms remain editable PDF
- * objects. Simple single-line ASCII text uses the standard Helvetica PDF fonts;
- * custom fonts, rich text, gradient strokes, filters, luminance masks, and blend
- * modes are rejected with feature-specific errors.
+ * objects. Printable ASCII text with simple positioned lines uses standard
+ * Helvetica PDF fonts; custom fonts, rich text, gradient strokes, filters,
+ * luminance masks, and blend modes are rejected with feature-specific errors.
  */
 export class PdfVectorExportError extends TypeError {
   constructor(feature, detail = '') {
@@ -499,7 +499,7 @@ function textFont(attributes, context) {
   const families = String(attributes['font-family'] || 'Helvetica').split(',')
     .map(family => family.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
   if (!families.length || families.some(family => !['arial', 'helvetica', 'sans-serif'].includes(family))) {
-    fail('custom text fonts', 'only Arial, Helvetica, or sans-serif can use the built-in PDF font');
+    fail('custom text fonts', 'only Arial, Helvetica, or sans-serif can use the built-in PDF font; use raster PDF to preserve other fonts');
   }
   const weight = String(attributes['font-weight'] || '400').toLowerCase();
   const style = String(attributes['font-style'] || 'normal').toLowerCase();
@@ -519,13 +519,93 @@ function paintText(node, inheritedOpacity, context) {
   const attrs = node.attributes;
   assertAttributes(node, new Set([
     'x', 'y', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor',
-    'fill', 'fill-opacity', 'xml:space',
+    'fill', 'fill-opacity', 'stroke', 'stroke-opacity', 'stroke-width', 'xml:space',
+    'dominant-baseline', 'letter-spacing', 'text-transform',
   ]));
+  if ((attrs.stroke != null && attrs.stroke !== 'none') || Number(attrs['stroke-width'] || 0) > 0
+    || (attrs['stroke-opacity'] != null && parseOpacity(attrs['stroke-opacity'], 'text stroke opacity') !== 0)) {
+    fail('text strokes', 'outlined text requires glyph paths; use raster PDF');
+  }
   if (attrs['text-anchor'] != null && attrs['text-anchor'] !== 'start') {
     fail('text alignment', 'only start-aligned SVG text is supported');
   }
+  if (attrs['text-transform'] != null) {
+    fail('text transformations', 'the text must already contain its final characters; use raster PDF to preserve transformed text');
+  }
   if (attrs['xml:space'] != null && attrs['xml:space'] !== 'preserve') {
     fail('SVG text whitespace', 'only preserved SVG text whitespace is supported');
+  }
+  const letterSpacing = finite(attrs['letter-spacing'] ?? 0, 'text letter spacing');
+  if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF text subset currently requires zero letter spacing');
+  const hasPositionedLines = node.children.some(child => child.name === 'tspan');
+  const hasEditorTextMetrics = attrs['data-tiny-image-star-pdf-ascent'] != null;
+  if (hasPositionedLines && !hasEditorTextMetrics) {
+    fail('rich text', 'nested tspans need font shaping and run layout');
+  }
+  if (hasEditorTextMetrics && !hasPositionedLines) {
+    fail('text line metrics', 'editor text metrics require positioned line spans');
+  }
+  if (hasPositionedLines && hasEditorTextMetrics) {
+    if (attrs['dominant-baseline'] !== 'text-before-edge') {
+      fail('text baseline placement', 'positioned editor text needs dominant-baseline="text-before-edge"');
+    }
+    const ascent = finite(attrs['data-tiny-image-star-pdf-ascent'], 'measured text ascent');
+    if (ascent <= 0) fail('text baseline placement', 'the editor did not provide a positive standard-font ascent; use raster PDF');
+    if (node.children.some(child => child.name !== 'tspan')) {
+      fail('rich text', 'positioned lines cannot mix direct text and nested spans');
+    }
+    const size = finite(attrs['font-size'] ?? 16, 'font size');
+    if (size <= 0) throw new TypeError('SVG text font size must be positive.');
+    const fill = colorOperator(attrs.fill ?? '#000000', 'fill');
+    if (!fill) return '';
+    const alpha = inheritedOpacity * parseOpacity(attrs['fill-opacity'], 'text fill opacity');
+    const state = alphaState(alpha, 1, context.stateNames);
+    const font = textFont(attrs, context);
+    const commands = [];
+    for (const line of node.children) {
+      assertAttributes(line, new Set(['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust']));
+      if (line.attributes['data-tiny-image-star-list-marker'] != null) {
+        fail('paragraph lists', 'list marker spans need rich text positioning');
+      }
+      if (line.children.some(child => child.name !== '#text')) {
+        fail('rich text', 'nested styled spans need font shaping and per-run positioning');
+      }
+      if (line.attributes['text-anchor'] != null && line.attributes['text-anchor'] !== 'start') {
+        fail('text alignment', 'only left-aligned positioned lines are supported; use raster PDF for other alignments');
+      }
+      const value = line.children.map(child => child.text).join('');
+      if (!value) continue;
+      const literal = pdfTextLiteral(value);
+      const x = finite(line.attributes.x, 'text line x');
+      const y = finite(line.attributes.y, 'text line y') + ascent;
+      let horizontalScale = 100;
+      if (line.attributes.textLength != null) {
+        if (line.attributes.lengthAdjust !== 'spacingAndGlyphs') {
+          fail('text length adjustment', 'only spacingAndGlyphs can map to a PDF text scale');
+        }
+        const desiredWidth = finite(line.attributes.textLength, 'text line width');
+        if (line.attributes['data-tiny-image-star-pdf-width'] == null) {
+          fail('text line metrics', 'the editor did not provide the built-in Helvetica width; use raster PDF');
+        }
+        const standardFontWidth = finite(line.attributes['data-tiny-image-star-pdf-width'], 'standard-font text width');
+        if (desiredWidth <= 0 || standardFontWidth <= 0) {
+          fail('text line metrics', 'the editor could not provide positive standard-font line measurements; use raster PDF');
+        }
+        horizontalScale = desiredWidth / standardFontWidth * 100;
+        if (!Number.isFinite(horizontalScale) || horizontalScale < 1 || horizontalScale > 10_000) {
+          fail('text line metrics', 'the requested line width is outside the supported PDF text scale');
+        }
+      }
+      // SVG positions lines from the top edge. The editor supplies the
+      // standard Helvetica ascent measured in the same browser, and the PDF
+      // text matrix then places the alphabetic baseline at that resolved point.
+      commands.push(
+        'q', `1 0 0 -1 0 ${pdfNumber(2 * y)} cm`, fill, state,
+        'BT', `/${font} ${pdfNumber(size)} Tf`, `${pdfNumber(horizontalScale)} Tz`,
+        `1 0 0 1 ${pdfNumber(x)} ${pdfNumber(y)} Tm`, `${literal} Tj`, 'ET', 'Q'
+      );
+    }
+    return commands.flat().filter(Boolean).join('\n');
   }
   if (node.children.some(child => child.name !== '#text')) {
     fail('rich text', 'nested tspans and text paths need font shaping and run layout');

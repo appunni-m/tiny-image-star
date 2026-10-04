@@ -1307,12 +1307,20 @@ function textMarkup(node, document, measureText, {
     const lineTextAnchorOverride = lineTextAnchor === svgTextAnchor(node.align || 'left') ? '' : ` text-anchor="${lineTextAnchor}"`;
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 && !line.justify ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
+    const pdfWidth = typeof measureText?.pdfNaturalWidth === 'function'
+      ? Number(measureText.pdfNaturalWidth(displayText, resolvedNode)) : NaN;
+    const pdfWidthAttribute = Number.isFinite(pdfWidth) && pdfWidth > 0
+      ? ` data-tiny-image-star-pdf-width="${number(pdfWidth)}"` : '';
     const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
     return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
-      + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
+      + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${pdfWidthAttribute}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
   const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
-  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
+  const pdfAscent = typeof measureText?.pdfBaselineOffset === 'function'
+    ? Number(measureText.pdfBaselineOffset(resolvedNode)) : NaN;
+  const pdfAscentAttribute = Number.isFinite(pdfAscent) && pdfAscent > 0
+    ? ` data-tiny-image-star-pdf-ascent="${number(pdfAscent)}"` : '';
+  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap"${pdfAscentAttribute}>${tspans}</text>`;
   const decoration = ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : null;
   const textColor = fillValue === undefined ? color(document, node, 'text') : fillValue;
   const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;

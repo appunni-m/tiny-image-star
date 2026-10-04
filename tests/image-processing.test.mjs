@@ -8,6 +8,8 @@ import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
 import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
 import { DecodedSourceCache } from '../src/decoded-source-cache.js';
+import { addNode, createDocument, createNode, findNode } from '../src/model.js';
+import { imagePreviewKey, imagePreviewRenderSettingsForNode } from '../src/image-preview-runtime.js';
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -485,12 +487,19 @@ test('warm decoded-source cache keeps previews and exports anchored to immutable
   await pillow.default();
   const sourceBytes = fourColorBmp();
   const sourceSnapshot = sourceBytes.slice();
+  const document = createDocument();
+  const layer = createNode('image', {
+    id: 'edited-layer', assetId: 'edited-layer-asset', adjustments: {}, transforms: {}
+  });
+  addNode(document, layer);
+  const originalLayer = findNode(document, layer.id).node;
+  const previewKey = imagePreviewKey(layer.id);
   const cache = new DecodedSourceCache({ pixelBudget: 4 });
-  cache.setActive('edited-layer-asset');
+  cache.setActive(layer.assetId);
   let decodeCount = 0;
 
   const renderFromCache = (adjustments, transforms, render) => cache.withSource(
-    'edited-layer-asset',
+    layer.assetId,
     () => {
       decodeCount += 1;
       return decodeOriginal(pillow, sourceBytes);
@@ -505,28 +514,53 @@ test('warm decoded-source cache keeps previews and exports anchored to immutable
 
   try {
     const previewCases = [
-      [{ invert: true }, {}, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
-      [{ brightness: 24, saturation: -15 }, { rotation: 90 }, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
-      [{ blur: 2, temperature: 35 }, { crop: { left: 0, top: 0, right: 0.5, bottom: 1 } }, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
+      { adjustments: { invert: true }, transforms: {} },
+      { adjustments: { brightness: 24, saturation: -15 }, transforms: { rotation: 90 } },
+      { adjustments: { blur: 2, temperature: 35 }, transforms: { crop: { left: 0, top: 0, right: 0.5, bottom: 1 } } },
     ];
-    for (const [adjustments, transforms, renderer] of previewCases) {
-      const warm = renderFromCache(adjustments, transforms, renderer);
-      const expected = renderFresh(adjustments, transforms, renderer);
+    for (const { adjustments, transforms } of previewCases) {
+      // This is the inspector's in-place update shape: edit properties on the
+      // existing layer while leaving its node ID and source asset untouched.
+      layer.adjustments = { ...layer.adjustments, ...adjustments };
+      layer.transforms = transforms;
+      const currentLayer = findNode(document, layer.id).node;
+      assert.equal(currentLayer, originalLayer, 'an adjustment edit keeps the same node object in the document');
+      assert.equal(currentLayer.id, 'edited-layer');
+      assert.equal(currentLayer.assetId, 'edited-layer-asset');
+      assert.equal(imagePreviewKey(currentLayer.id), previewKey, 'successive edits reuse the same per-layer preview slot');
+      const current = imagePreviewRenderSettingsForNode(currentLayer, previewKey);
+      const renderer = (source, currentAdjustments, currentTransforms) =>
+        renderImage(source, currentAdjustments, currentTransforms, pillow);
+      const warm = renderFromCache(current.adjustments, current.transforms, renderer);
+      const expected = renderFresh(current.adjustments, current.transforms, renderer);
       assert.deepEqual(warm.result.bytes, expected.bytes,
         'a warm-cache preview matches a fresh decode rendered from the original asset bytes');
       assert.equal(warm.retained, true);
     }
 
-    const outputSettings = [{ brightness: -18, contrast: 12 }, { rotation: 270 }];
-    const warmOutput = renderFromCache(...outputSettings, (source, adjustments, transforms) =>
+    layer.adjustments = { ...layer.adjustments, brightness: -18, contrast: 12 };
+    layer.transforms = { rotation: 270 };
+    assert.equal(findNode(document, layer.id).node, originalLayer);
+    const outputSettings = imagePreviewRenderSettingsForNode(layer, previewKey);
+    const warmOutput = renderFromCache(outputSettings.adjustments, outputSettings.transforms, (source, adjustments, transforms) =>
       renderImageOutput(source, adjustments, transforms, pillow, { format: 'png' }));
-    const freshOutput = renderFresh(...outputSettings, (source, adjustments, transforms) =>
+    const freshOutput = renderFresh(outputSettings.adjustments, outputSettings.transforms, (source, adjustments, transforms) =>
       renderImageOutput(source, adjustments, transforms, pillow, { format: 'png' }));
     assert.deepEqual(warmOutput.result.bytes, freshOutput.bytes,
       'a full-resolution export also starts from the original asset, independent of prior previews');
     assert.equal(warmOutput.retained, true);
     assert.equal(decodeCount, 1, 'all fitting edits reuse one warm decoded source');
     assert.deepEqual(sourceBytes, sourceSnapshot, 'worker-style decoding leaves the editor-owned asset bytes unchanged');
+
+    const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+    const inputStart = mainSource.indexOf('function updateInspectorInput(event)');
+    const inputEnd = mainSource.indexOf('\nfunction ', inputStart + 10);
+    assert.ok(inputStart >= 0 && inputEnd > inputStart, 'the inspector update handler is present');
+    const inputHandler = mainSource.slice(inputStart, inputEnd);
+    assert.match(inputHandler, /node\.adjustments = \{ \.\.\.node\.adjustments, \[key\]: value \}/,
+      'the live inspector mutates adjustment state on the existing image node');
+    assert.match(inputHandler, /schedulePreview\(node\)/,
+      'the same image node is passed to its stable-key preview scheduler');
   } finally {
     cache.clear();
   }

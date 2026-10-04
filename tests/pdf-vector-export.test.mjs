@@ -92,6 +92,13 @@ function assertValidXref(bytes) {
   }
 }
 
+function pdfTextMeasurer() {
+  const measure = text => [...String(text)].length * 8;
+  measure.pdfNaturalWidth = text => [...String(text)].length * 8;
+  measure.pdfBaselineOffset = () => 12;
+  return measure;
+}
+
 test('exports editor SVG paths as vector PDF while retaining geometry, transforms, opacity, and clipping', () => {
   const svg = '<!-- generated --><svg xmlns="http://www.w3.org/2000/svg" width="100px" height="60px" viewBox="10 20 200 120">'
     + '<defs><clipPath id="clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="50" height="30" rx="4" ry="4"/></clipPath></defs>'
@@ -486,15 +493,49 @@ test('simple text rejects font-dependent or shaped SVG cases instead of substitu
     error => error instanceof PdfVectorExportError && error.feature === 'rich text');
 });
 
-test('editor text SVG stays unsupported by vector PDF until its positioned runs can be preserved', () => {
+test('exports editor-generated simple ASCII text with measured line placement and standard font styling', () => {
   const editorTextSvg = exportNodeToSvg(createNode('text', {
-    text: 'Hello', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 100, height: 25,
-  }), { measureText: () => 30 });
+    text: 'Hello\nPDF', fontFamily: 'Arial, sans-serif', fontWeight: 700, fontStyle: 'italic',
+    fontSize: 16, lineHeight: 1.25, width: 100, height: 50,
+  }), { measureText: pdfTextMeasurer() });
+  assert.match(editorTextSvg, /dominant-baseline="text-before-edge"/);
+  assert.match(editorTextSvg, /data-tiny-image-star-pdf-ascent="12"/,
+    'the app records the browser-measured standard-font ascent used to preserve editor top placement');
+  assert.match(editorTextSvg, /<tspan x="0" y="20" textLength="24" lengthAdjust="spacingAndGlyphs" data-tiny-image-star-pdf-width="24">PDF<\/tspan>/,
+    'wrapped lines carry their measured positions and standard-font width');
+  const pdf = createVectorPdf(editorTextSvg);
+  const text = pdfText(pdf);
+  assert.match(text, /\/BaseFont \/Helvetica-BoldOblique/);
+  assert.match(text, /100 Tz\n1 0 0 1 0 12 Tm\n\(Hello\) Tj/);
+  assert.match(text, /100 Tz\n1 0 0 1 0 32 Tm\n\(PDF\) Tj/);
+  assertValidXref(pdf);
+});
 
-  assert.match(editorTextSvg, /<tspan\b[^>]*textLength=/,
-    'the app emits an explicitly positioned and measured text run');
-  assert.throws(() => createVectorPdf(editorTextSvg), PdfVectorExportError,
-    'the low-level writer must reject the app SVG instead of silently changing text layout');
+test('editor-generated text rejects custom fonts and unsupported alignment with actionable errors', () => {
+  const measureText = pdfTextMeasurer();
+  const customFont = exportNodeToSvg(createNode('text', {
+    text: 'Hello', fontFamily: 'Inter, Arial, sans-serif', fontSize: 16, width: 100, height: 25,
+  }), { measureText });
+  assert.throws(() => createVectorPdf(customFont), error => error instanceof PdfVectorExportError
+    && error.feature === 'custom text fonts' && /raster PDF/.test(error.message));
+  const centered = exportNodeToSvg(createNode('text', {
+    text: 'Hello', fontFamily: 'Arial, sans-serif', align: 'center', fontSize: 16, width: 100, height: 25,
+  }), { measureText });
+  assert.throws(() => createVectorPdf(centered), error => error instanceof PdfVectorExportError
+    && error.feature === 'text alignment');
+});
+
+test('positioned PDF text fails closed when transforms or font metrics cannot be preserved', () => {
+  const svg = body => `<svg width="40px" height="20px" viewBox="0 0 40 20">${body}</svg>`;
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14" text-transform="uppercase">hello</text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'text transformations' && /raster PDF/.test(error.message));
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="0" dominant-baseline="text-before-edge" data-tiny-image-star-pdf-ascent="12" font-family="Arial" font-size="16"><tspan x="0" y="0" textLength="24" lengthAdjust="spacingAndGlyphs">PDF</tspan></text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'text line metrics' && /built-in Helvetica width/.test(error.message));
+  const spacedText = exportNodeToSvg(createNode('text', {
+    text: 'Hello', fontFamily: 'Arial, sans-serif', letterSpacing: 1, fontSize: 16, width: 100, height: 25,
+  }), { measureText: pdfTextMeasurer() });
+  assert.throws(() => createVectorPdf(spacedText), error => error instanceof PdfVectorExportError
+    && error.feature === 'letter spacing');
 });
 
 test('fails closed with specific errors for unsupported rendered SVG features', () => {
