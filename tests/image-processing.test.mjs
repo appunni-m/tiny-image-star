@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
 import * as pillow from '../wasm/pillow_rs_js.js';
@@ -210,6 +211,32 @@ test('bounded Pillow-RS previews scale blur after geometry while exports stay fu
     try { assert.deepEqual([reopened.width, reopened.height], [64, 128]); }
     finally { reopened.free(); }
   } finally { original.free(); }
+});
+
+test('latest Pillow-RS RGBA thumbnail resize preserves pixels from the previous pinned runtime', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const image = new pillow.Image('RGBA', 37, 29, null);
+  let seed = 0x41524742;
+  const nextByte = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed >>> 24;
+  };
+  try {
+    for (let y = 0; y < image.height; y += 1) {
+      for (let x = 0; x < image.width; x += 1) {
+        image.putpixel(x, y, nextByte(), nextByte(), nextByte(), nextByte());
+      }
+    }
+    image.thumbnail(11, 11);
+    const pixels = Array.from({ length: image.height }, (_, y) =>
+      Array.from({ length: image.width }, (_, x) => [...image.getpixel(x, y)])
+    );
+    const digest = createHash('sha256').update(JSON.stringify(pixels)).digest('hex');
+    assert.deepEqual([image.width, image.height], [11, 9]);
+    assert.equal(digest, 'f4d0fe91245ff188fdb31bffa232b047028c2507ff02e1f12ae3cf98d47a17ea',
+      'RGBA downsampling stays byte-identical to the previous pinned Pillow-RS build');
+  } finally { image.free(); }
 });
 
 test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG bytes', async () => {

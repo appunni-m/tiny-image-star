@@ -119,7 +119,7 @@ The same rebuilt runtime was also exercised at 1600 × 1200 with eight source im
 
 Four and eight requested workers instantiate the same three-worker pool because of memory admission. They delivered equal rates in that run; hashes match across all counts. Compared with the earlier same-host run that initialized eight runtimes despite admitting only three renders, this run makes the pool-allocation target explicit. It remains a Node worker-thread diagnostic and says nothing about browser or phone peak memory.
 
-The previous vendored WASM tracked upstream `main` at [`09a988e`](https://github.com/appunni-m/pillow-rs/commit/09a988eaffb2322a566b97def7d75039ac41e557), package version `12.2.0-alpha.5`. The current pin is [`d9891d1`](https://github.com/appunni-m/pillow-rs/commit/d9891d19656ea6efd634e6a19da56ef3fd00f435), whose byte-payload path can retain shared immutable `Bytes` instead of copying supported `putdata` payloads. Tiny Image Star rebuilt it with both local quality/mask patches and Rust 1.96.1 / wasm-pack 0.15.0; the browser JS package still exposes no `BatchExecutor` and does not enable the GPU feature, so app image jobs remain on bounded WASM CPU workers.
+The previous vendored WASM tracked upstream `main` at [`09a988e`](https://github.com/appunni-m/pillow-rs/commit/09a988eaffb2322a566b97def7d75039ac41e557), package version `12.2.0-alpha.5`. The subsequent [`d9891d1`](https://github.com/appunni-m/pillow-rs/commit/d9891d19656ea6efd634e6a19da56ef3fd00f435) byte-payload path can retain shared immutable `Bytes` instead of copying supported `putdata` payloads. The latest pin is [`97ca5dc`](https://github.com/appunni-m/pillow-rs/commit/97ca5dc94ab6093e72a36eaf159c04a89cadec20), which narrows bounded RGBA resize alpha accumulators to i32 in CPU and SIMD paths while preserving their pixel results. Tiny Image Star rebuilt this exact commit with both local quality/mask patches and Rust 1.96.1 / wasm-pack 0.15.0; the browser JS package still exposes no `BatchExecutor` and does not enable the GPU feature, so app image jobs remain on bounded WASM CPU workers.
 
 The RGBA adjustment/sharpness probe on the prior `ab5c862` runtime produced these results on 2026-10-04 using Node 24.18.0 / Apple M3 Pro. All 24 output hashes matched across worker counts:
 
@@ -161,7 +161,7 @@ The eight-worker run delivered 5.65× the single-worker warm rate on this deskto
 
 The larger working set admits only three simultaneous renders, so requesting eight creates no extra workers and yields no meaningful speed gain over requesting four. These are isolated Node worker-thread diagnostics of the previous vendored WASM, not browser or phone results; the high process RSS figures are not the application's render-budget accounting or a low-memory-device guarantee.
 
-The current upstream [`d9891d1`](https://github.com/appunni-m/pillow-rs/commit/d9891d19656ea6efd634e6a19da56ef3fd00f435) WASM build was measured on 2026-10-05 with the same Node 24.18.0 / Apple M3 Pro diagnostic. For 24 RGBA images at 1024 × 768, output hashes were identical at each worker count:
+The previous upstream [`d9891d1`](https://github.com/appunni-m/pillow-rs/commit/d9891d19656ea6efd634e6a19da56ef3fd00f435) WASM build was measured on 2026-10-05 with the same Node 24.18.0 / Apple M3 Pro diagnostic. For 24 RGBA images at 1024 × 768, output hashes were identical at each worker count:
 
 | Images | Requested / admitted workers | Render rate | Warm render time | Sampled peak process RSS while workers live | Identical output hashes |
 | ---: | ---: | ---: | ---: | ---: | --- |
@@ -169,9 +169,9 @@ The current upstream [`d9891d1`](https://github.com/appunni-m/pillow-rs/commit/d
 | 24 | 2 / 2 | 8.37 images/s | 2.87 s | 716.7 MiB | Yes |
 | 24 | 4 / 4 | 15.84 images/s | 1.51 s | 920.9 MiB | Yes |
 
-This desktop run confirms deterministic outputs under concurrent workers; it does not establish a stable speedup from the previous build or measure browser/mobile performance. Peak RSS is sampled every 5 ms and is process memory, not app budget accounting. The 1600 × 1200 diagnostic below keeps the app's 256 MiB active-render limit in view.
+This desktop run confirms deterministic outputs under concurrent workers; it does not establish a stable speedup from the earlier build or measure browser/mobile performance. Peak RSS is sampled every 5 ms and is process memory, not app budget accounting. The 1600 × 1200 diagnostic below keeps the app's 256 MiB active-render limit in view.
 
-The same current build processed eight 1600 × 1200 images under the 256 MiB active-render budget, which admits three simultaneous renders for the 65.9 MiB estimated per-image working set. Hashes matched across requested worker counts:
+The same previous build processed eight 1600 × 1200 images under the 256 MiB active-render budget, which admits three simultaneous renders for the 65.9 MiB estimated per-image working set. Hashes matched across requested worker counts:
 
 | Images | Requested / admitted workers | Render rate | Warm render time | Sampled peak process RSS while workers live | Identical output hashes |
 | ---: | ---: | ---: | ---: | ---: | --- |
@@ -182,4 +182,15 @@ The same current build processed eight 1600 × 1200 images under the 256 MiB act
 
 The requested 4- and 8-worker runs both use a three-worker pool; their throughput varied substantially in this short sample. Treat the measurements as deterministic-output and admission evidence, not a speed promise. Node worker threads do not establish browser or phone latency or peak-memory safety.
 
-Historical probe on the previous Pillow-RS pin [`7d61926`](https://github.com/appunni-m/pillow-rs/commit/7d619266e9058d0d7274dd57703ab5b7b02c8073): the same 24-image, 1024 × 768 RGBA workload on Node 24.18.0 / Apple M3 Pro measured 4.38, 8.20, and 13.87 images/s at 1, 2, and 4 admitted workers respectively; warm render times were 5.49 s, 2.93 s, and 1.73 s. All 24 output hashes matched across worker counts, and four workers delivered 3.17× the single-worker rate. This RGBA batch probe confirms deterministic concurrency on that prior WASM build but does not measure the current pin or upstream `main`'s RGB-only resize optimization. It is still a Node diagnostic, not browser or device evidence.
+The latest upstream [`97ca5dc`](https://github.com/appunni-m/pillow-rs/commit/97ca5dc94ab6093e72a36eaf159c04a89cadec20) build was measured with the same Node 24.18.0 / Apple M3 Pro probe. The 24-image RGBA workload at 1024 × 768 produced equivalent output hashes at every requested worker count:
+
+| Images | Requested / admitted workers | Render rate | Warm render time | Sampled peak process RSS while workers live | Identical output hashes |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 24 | 1 / 1 | 4.41 images/s | 5.45 s | 554.3 MiB | Yes |
+| 24 | 2 / 2 | 8.23 images/s | 2.92 s | 681.4 MiB | Yes |
+| 24 | 4 / 4 | 15.46 images/s | 1.55 s | 904.1 MiB | Yes |
+| 24 | 8 / 8 | 20.10 images/s | 1.19 s | 1,317.0 MiB | Yes |
+
+The 1-, 2-, and 4-worker rates are close to the previous pin's short sample and do not demonstrate a throughput increase from narrowing the resize accumulator. The 8-worker run delivered 4.56× the 1-worker rate while sampled process RSS reached 1.29 GiB. These measurements only verify output equality and worker execution on this desktop; they are not browser/mobile performance or memory guarantees. A fixed RGBA thumbnail fixture also retains the previous pin's exact pixel digest (`f4d0fe91245ff188fdb31bffa232b047028c2507ff02e1f12ae3cf98d47a17ea`).
+
+Historical probe on the previous Pillow-RS pin [`7d61926`](https://github.com/appunni-m/pillow-rs/commit/7d619266e9058d0d7274dd57703ab5b7b02c8073): the same 24-image, 1024 × 768 RGBA workload on Node 24.18.0 / Apple M3 Pro measured 4.38, 8.20, and 13.87 images/s at 1, 2, and 4 admitted workers respectively; warm render times were 5.49 s, 2.93 s, and 1.73 s. All 24 output hashes matched across worker counts, and four workers delivered 3.17× the single-worker rate. This RGBA batch probe confirms deterministic concurrency on that prior WASM build but does not measure the current pin or its RGBA resize-accumulator change. It is still a Node diagnostic, not browser or device evidence.
