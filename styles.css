@@ -560,10 +560,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .comment-thread-actions { display: flex; align-items: center; justify-content: space-between; }
 .comment-thread-actions .secondary-button, .comment-delete-button { min-height: 32px; }
 .comment-delete-button { padding: 0 8px; border: 1px solid #eee; border-radius: 6px; color: #a33a3a; font-size: 10px; }
-.inspector-footer { height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px; border-top: 1px solid var(--border); }
+.inspector-footer { height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-top: 1px solid var(--border); }
+.inspector-footer .export-button { min-width: 0; flex: 1 1 0; }
 .export-button { height: 29px; padding: 0 12px; border: 1px solid #e2e2e2; border-radius: 5px; background: #fff; font-size: 11px; font-weight: 550; }
 .export-button:hover { background: #f7f7f7; }
-.export-hint { color: #999; font-size: 10px; }
 .inspector-empty { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 52px 24px; color: #888; text-align: center; }
 .inspector-empty.has-start-actions { padding: 24px 16px 10px; }
 .inspector-empty .empty-layer-icon { width: 40px; height: 40px; font-size: 18px; }
@@ -2526,7 +2526,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .comments-empty strong,
   :root[data-theme="dark"] .comment-message time,
   :root[data-theme="dark"] .comment-message p,
-  :root[data-theme="dark"] .export-hint,
   :root[data-theme="dark"] .fill-type-row,
   :root[data-theme="dark"] .image-fill-source,
   :root[data-theme="dark"] .gradient-stop-row label,

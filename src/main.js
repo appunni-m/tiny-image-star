@@ -2134,16 +2134,14 @@ function framePresetPicker() {
 }
 function syncQuickExportControl() {
   const button = $('#export-selection');
-  const hint = $('.export-hint');
   if (!button) return;
   const selected = orderedRootSelection().map(id => findNode(state.document, id)?.node).filter(Boolean);
   const imageArchive = selected.length > 1 && selected.every(node => node.type === 'image');
   button.disabled = selected.length === 0;
   button.textContent = imageArchive ? 'Export ZIP' : selected.length > 1 ? 'Export selection' : 'Export image';
   button.title = imageArchive
-    ? 'Download the selected images together as a ZIP. To make a PDF, choose ? Help and search “Export page as PDF.”'
-    : 'Download the selected artwork as an image file. To make a PDF, choose ? Help and search “Export page as PDF.”';
-  if (hint) hint.textContent = 'Image / ZIP · PDF via ? Help';
+    ? 'Download the selected images together as a ZIP.'
+    : 'Download the selected artwork as an image file.';
 }
 function framePresetResizeSection(node) {
   const entry = findNode(state.document, node.id);
@@ -22561,6 +22559,7 @@ function initEvents() {
   });
   $$('.sidebar-tab').forEach(tab => tab.addEventListener('click', () => { state.sidebarTab = tab.dataset.sidebarTab; syncSidebarTabAccessibility(); }));
   $('#export-selection').addEventListener('click', exportSelectionPng);
+  $('#export-page-pdf-button').addEventListener('click', openPagePdfDialog);
   $('#recipe-dialog').addEventListener('close', () => {
     const pending = pendingRecipeAction;
     pendingRecipeAction = null;

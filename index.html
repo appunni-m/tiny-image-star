@@ -210,7 +210,10 @@
             <button class="inspector-tab" id="inspector-tab-motion" data-inspector-tab="motion" role="tab" aria-controls="inspector-content" aria-selected="false" tabindex="-1">Motion</button>
           </div>
           <div class="inspector-content" id="inspector-content" role="tabpanel" aria-labelledby="inspector-tab-design" tabindex="0"></div>
-          <div class="inspector-footer"><button id="export-selection" class="export-button" title="Download the selected artwork as an image file. To make a PDF, choose ? Help and search Export page as PDF." disabled>Export image</button><span class="export-hint">Image / ZIP · PDF via ? Help</span></div>
+          <div class="inspector-footer" role="group" aria-label="Export artwork">
+            <button id="export-selection" class="export-button" title="Download the selected artwork as an image file." disabled>Export image</button>
+            <button id="export-page-pdf-button" class="export-button" type="button" title="Export the current page as a PDF. Choose paper size and orientation.">Export PDF</button>
+          </div>
         </aside>
       </div>
 

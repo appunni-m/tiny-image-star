@@ -203,3 +203,14 @@ test('crop help distinguishes standalone photos from photos placed inside shapes
   assert.match(styles, /\.canvas-scroll:has\(#image-crop-toolbar\[data-crop-mode="true"\]\) #scene-canvas\s*\{\s*cursor:\s*crosshair/);
   assert.match(readme, /To crop a photo inside a shape: select the shape, search \*\*Crop image\*\*/);
 });
+
+test('PDF export is a visible peer to image export and opens the page-size controls', () => {
+  assert.match(html, /<div class="inspector-footer" role="group" aria-label="Export artwork">[\s\S]*?id="export-selection"[\s\S]*?>Export image<\/button>[\s\S]*?id="export-page-pdf-button"[\s\S]*?>Export PDF<\/button>/,
+    'users should not have to search Help to find PDF export beside image export');
+  assert.match(main, /\$\('#export-page-pdf-button'\)\.addEventListener\('click', openPagePdfDialog\)/,
+    'the visible PDF action should open the existing page export flow');
+  assert.match(html, /id="page-pdf-size"[^>]*aria-label="PDF paper size"[\s\S]*?Custom size/,
+    'the PDF flow should expose its existing paper-size choices');
+  assert.match(readme, /choose \*\*Export PDF\*\* beside \*\*Export image\*\*[\s\S]*?paper size and orientation/i,
+    'the user guide should match the new direct export route');
+});
