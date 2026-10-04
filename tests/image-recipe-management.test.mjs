@@ -61,6 +61,8 @@ test('an image context menu opens one recipe chooser to refresh the chosen recip
 
 test('the recipe rename dialog exposes a labeled mobile-friendly save flow', () => {
   assert.match(html, /<p class="modal-copy" id="recipe-dialog-copy">/);
+  assert.match(html, /An image recipe is a reusable preset\./,
+    'new users should see that a recipe is a reusable image preset');
   assert.match(html, /<div id="recipe-name-fields"><label class="field-label" for="recipe-name">Recipe name/);
   assert.match(html, /<div class="recipe-output-controls" id="recipe-output-controls">/);
   assert.match(source, /\$\('#recipe-dialog-title'\)\.textContent = renaming \? 'Rename recipe' : updating \? 'Refresh saved recipe' : 'Save recipe'/);

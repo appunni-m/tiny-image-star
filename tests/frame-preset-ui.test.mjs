@@ -15,7 +15,7 @@ function functionBody(name, nextName) {
 }
 
 test('the empty-selection Frame tool inspector renders grouped, named, dimensioned preset buttons', () => {
-  const picker = functionBody('framePresetPicker', 'propertyFieldLabelClass');
+  const picker = functionBody('framePresetPicker', 'syncQuickExportControl');
   assert.match(picker, /groupFramePresetsByCategory\(\)/);
   assert.match(picker, /groups\.map\(group => `<details class="frame-preset-group"/);
   assert.match(picker, /escapeHtml\(group\.name\)/);
@@ -30,6 +30,12 @@ test('the empty-selection Frame tool inspector renders grouped, named, dimension
   const inspector = source.slice(inspectorStart, inspectorEnd);
   assert.match(inspector, /if \(!entries\.length\)[\s\S]*?state\.tool === 'frame' \? framePresetPicker\(\) : ''/,
     'presets are shown for the Frame tool only when no layer is selected');
+
+  const setTool = functionBody('setTool', 'applyEyedropperColor');
+  assert.match(setTool, /tool === 'frame' && !state\.selectedIds\.length && innerWidth <= 820[\s\S]*?toggleMobilePanel\('right'\)/,
+    'on phones, entering the empty-selection Frame tool should reveal the drawer containing the preset picker');
+  assert.match(picker, /Choose a preset below\. To draw a custom frame, close Properties and drag on the canvas\./,
+    'the phone hint must explain how to return to the canvas before drawing');
 });
 
 test('choosing a preset creates and selects a top-level frame centered in the visible canvas world', () => {

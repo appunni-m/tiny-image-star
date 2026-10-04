@@ -1898,6 +1898,12 @@ function setTool(tool) {
   state.tool = tool;
   if (tool !== 'select') state.emptyCanvasGuideDismissedPageId = activePage()?.id || null;
   if (tool === 'frame' && !state.selectedIds.length && state.inspectorTab !== 'design') setInspectorTab('design');
+  if (tool === 'frame' && !state.selectedIds.length && innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) {
+    // On phones, frame presets live in Properties. Reveal them when the user
+    // enters the empty-selection Frame tool so the advertised preset path is
+    // available without first discovering the hidden drawer.
+    toggleMobilePanel('right');
+  }
   // Mobile panels make the canvas inert while open. Entering Comment mode
   // requires canvas taps to select objects or place a pin, so dismiss the
   // panel here; beginCommentAt() will reopen it when the user needs to type.
@@ -2003,16 +2009,19 @@ function syncLayerSelectionModeControl() {
   const selectMode = $('#layer-select-mode');
   if (!selectMode) return;
   const selectionHint = $('#layer-selection-hint');
-  selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Multi-select';
+  selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select multiple';
   selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting layers' : 'Select multiple layers');
   selectMode.title = state.layerSelectionMode
-    ? 'Tap canvas objects or layer rows to add or remove them from the selection.'
-    : 'Choose multiple image or design layers from the canvas or Layers list.';
+    ? 'Click or tap canvas objects or layer rows to add or remove them. To apply a recipe, select the images, choose Done, then choose a recipe.'
+    : 'Select image layers to apply a saved image preset (recipe) to all of them, or choose other layers for shared actions.';
   selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
-  if (selectionHint) selectionHint.hidden = !state.layerSelectionMode;
+  if (selectionHint) {
+    selectionHint.textContent = 'A recipe is a reusable image preset. Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe. Other selected layers stay unchanged.';
+    selectionHint.hidden = !state.layerSelectionMode;
+  }
   canvas?.setAttribute('aria-label', state.layerSelectionMode
-    ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
+    ? 'Design canvas. Select mode is active. Click or tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
       ? 'Design canvas. Click or tap to select a component or frame; click or tap the same spot again to switch between nested frames and components. Shift-click selects the nearest frame. Click empty canvas to add a comment; drag empty canvas to pan. Alt/Option-click or use the layer menu to comment on an object.'
       : 'Design canvas');
@@ -2118,7 +2127,23 @@ function framePresetPicker() {
   const preferredCategory = innerWidth <= 820 ? 'phone' : 'desktop';
   const groups = groupFramePresetsByCategory();
   const markup = groups.map(group => `<details class="frame-preset-group"${group.id === preferredCategory ? ' open' : ''}><summary><span>${escapeHtml(group.name)}</span><span class="frame-preset-count">${group.presets.length}</span></summary><div class="frame-preset-options">${group.presets.map(preset => `<button class="frame-preset-option" type="button" data-action="create-frame-preset" data-preset-id="${escapeHtml(preset.id)}" aria-label="Create ${escapeHtml(preset.name)} frame, ${preset.width} by ${preset.height} pixels"><span>${escapeHtml(preset.name)}</span><span class="frame-preset-dimensions">${preset.width} × ${preset.height}</span></button>`).join('')}</div></details>`).join('');
-  return section('Frame presets', `<p class="image-properties-note frame-preset-hint">Choose a preset or drag on the canvas to draw a custom frame.</p><div class="frame-preset-picker">${markup}</div>`);
+  const hint = innerWidth <= 820
+    ? 'Choose a preset below. To draw a custom frame, close Properties and drag on the canvas.'
+    : 'Choose a preset or drag on the canvas to draw a custom frame.';
+  return section('Frame presets', `<p class="image-properties-note frame-preset-hint">${hint}</p><div class="frame-preset-picker">${markup}</div>`);
+}
+function syncQuickExportControl() {
+  const button = $('#export-selection');
+  const hint = $('.export-hint');
+  if (!button) return;
+  const selected = orderedRootSelection().map(id => findNode(state.document, id)?.node).filter(Boolean);
+  const imageArchive = selected.length > 1 && selected.every(node => node.type === 'image');
+  button.disabled = selected.length === 0;
+  button.textContent = imageArchive ? 'Export ZIP' : selected.length > 1 ? 'Export selection' : 'Export image';
+  button.title = imageArchive
+    ? 'Download the selected images together as a ZIP. To make a PDF, choose ? Help and search “Export page as PDF.”'
+    : 'Download the selected artwork as an image file. To make a PDF, choose ? Help and search “Export page as PDF.”';
+  if (hint) hint.textContent = 'Image / ZIP · PDF via ? Help';
 }
 function framePresetResizeSection(node) {
   const entry = findNode(state.document, node.id);
@@ -4306,6 +4331,7 @@ function submitCommentForm(form) {
 
 function renderInspector() {
   syncImageCropToolbar();
+  syncQuickExportControl();
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
@@ -14385,7 +14411,7 @@ function quickActionCatalog() {
       : selectedImageFill.imageFill?.fit !== 'cover' ? 'In Design properties, change Scale to Fill before positioning this image.'
         : !selectedImageFillCropContext ? 'The image source or dimensions are not ready yet.' : '');
   const recipeDisabledReason = batchReason || (!imageLayers.length
-    ? 'Choose Multi-select in Layers, then tap the image layers you want to update.'
+    ? 'Choose Select multiple in Layers, then click or tap the image layers you want to update.'
     : !hasRecipes ? 'Save a recipe from an edited image first.' : '');
   const drawingAndNavigationActions = createEditorToolActions({ setTool, disabledReason: batchReason });
   const layerActions = createEditorLayerActions({
@@ -14511,7 +14537,7 @@ function quickActionCatalog() {
     },
     {
       id: 'save-image-recipe', label: 'Save selected image as a recipe',
-      description: 'Save this image’s current look to reuse it on other images.',
+      description: 'Save this image’s current look as a reusable image preset, then apply it to other images.',
       keywords: ['preset', 'save preset', 'reuse edits', 'image recipe'],
       disabled: Boolean(batchReason || selectedImage?.type !== 'image'),
       unavailableReason: batchReason || (selectedImage?.type !== 'image' ? 'Select one edited image layer first.' : ''),

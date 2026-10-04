@@ -43,8 +43,8 @@
             <div id="pages-list" class="pages-list" role="list" aria-label="Pages"></div>
           </section>
           <section class="layers-section" id="layers-section" role="tabpanel" aria-labelledby="sidebar-tab-layers" tabindex="0">
-            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Multi-select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
-            <p class="layer-selection-hint" id="layer-selection-hint" hidden>Tap canvas objects or layer rows to add or remove them from the selection. Choose Done when finished.</p>
+            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Select multiple</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
+            <p class="layer-selection-hint" id="layer-selection-hint" hidden>A recipe is a reusable image preset. Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe. Other selected layers stay unchanged.</p>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
           <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or create a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button></div></div>
@@ -210,7 +210,7 @@
             <button class="inspector-tab" id="inspector-tab-motion" data-inspector-tab="motion" role="tab" aria-controls="inspector-content" aria-selected="false" tabindex="-1">Motion</button>
           </div>
           <div class="inspector-content" id="inspector-content" role="tabpanel" aria-labelledby="inspector-tab-design" tabindex="0"></div>
-          <div class="inspector-footer"><button id="export-selection" class="export-button" title="Export selected layer">Export</button><span class="export-hint">Local export</span></div>
+          <div class="inspector-footer"><button id="export-selection" class="export-button" title="Download the selected artwork as an image file. To make a PDF, choose ? Help and search Export page as PDF." disabled>Export image</button><span class="export-hint">Image / ZIP · PDF via ? Help</span></div>
         </aside>
       </div>
 
@@ -316,7 +316,7 @@
       <dialog class="modal" id="recipe-dialog" aria-labelledby="recipe-dialog-title">
         <form method="dialog" id="recipe-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2 id="recipe-dialog-title">Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
-          <p class="modal-copy" id="recipe-dialog-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
+          <p class="modal-copy" id="recipe-dialog-copy">An image recipe is a reusable preset. Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
           <div id="recipe-name-fields"><label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required /></div>
           <div class="recipe-update-fields" id="recipe-update-fields" hidden><label class="field-label" for="recipe-update-target">Saved recipe to refresh</label><select id="recipe-update-target" class="select-field recipe-update-picker" aria-label="Choose a saved recipe to refresh" required disabled></select></div>
           <div class="recipe-output-controls" id="recipe-output-controls"><label class="field-label" for="recipe-format">Output format</label><select id="recipe-format" class="select-field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select><label class="field-label" for="recipe-quality">Quality <output id="recipe-quality-value">90%</output></label><input id="recipe-quality" type="range" min="1" max="100" step="1" value="90" aria-label="Recipe output quality" /></div>

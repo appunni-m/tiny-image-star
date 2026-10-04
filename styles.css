@@ -94,7 +94,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layers-heading { padding: 0 8px; }
 .layer-selection-hint { margin: 2px 8px 4px; padding: 7px 8px; border-radius: 6px; background: var(--surface-subtle); color: var(--muted); font-size: 11px; line-height: 1.4; }
 .layer-selection-hint[hidden] { display: none; }
-.layer-select-mode { min-width: 74px; min-height: 23px; padding: 0 7px; border: 1px solid #e5e5e5; border-radius: 5px; color: #555; font-size: 9px; }
+.layer-select-mode { min-width: 94px; min-height: 23px; padding: 0 7px; border: 1px solid #e5e5e5; border-radius: 5px; color: #555; font-size: 9px; white-space: nowrap; }
 .layer-select-mode:hover { background: #f5f5f5; }
 .layer-select-mode.is-active { border-color: #a9d9ff; background: #e9f5ff; color: #087dcc; }
 .layer-search-wrap { padding: 4px 5px 6px; }
@@ -1261,7 +1261,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layers-heading { min-height: 44px; }
   .layers-heading .heading-actions { align-items: center; gap: 3px; }
   .layers-heading .tiny-icon-button { width: 40px; height: 40px; }
-  .layer-select-mode { min-width: 80px; min-height: 40px; padding: 0 8px; font-size: 10px; }
+  .layer-select-mode { min-width: 96px; min-height: 40px; padding: 0 8px; font-size: 10px; }
   .add-fill { height: auto; min-height: 40px; font-size: 12px; }
   .delete-layer-button { min-height: 44px; }
   .vector-point-actions .add-fill { min-height: 44px; }

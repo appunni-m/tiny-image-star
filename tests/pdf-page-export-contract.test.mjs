@@ -6,6 +6,13 @@ const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
 test('PDF sheet export distinguishes printable paper size from fixed frame dimensions', () => {
+  assert.match(html, /id="export-selection"[^>]*>Export image<\/button>/,
+    'the Inspector quick export must identify itself as an image download rather than imply PDF export');
+  assert.match(html, /Image \/ ZIP · PDF via \? Help/);
+  assert.match(main, /function syncQuickExportControl\(\)[\s\S]*?button\.textContent = imageArchive \? 'Export ZIP' : selected\.length > 1 \? 'Export selection' : 'Export image'[\s\S]*?search “Export page as PDF/,
+    'the quick export should identify multi-image ZIP output and direct PDF users to the visible Help action');
+  assert.match(main, /function renderInspector\(\)[\s\S]*?syncQuickExportControl\(\)/,
+    'the quick export label should track the current selection');
   assert.match(html, /id="page-pdf-dialog"[\s\S]*?id="page-pdf-size"[\s\S]*?value="custom"/);
   assert.match(html, /id="page-pdf-orientation"[\s\S]*?portrait[\s\S]*?landscape/);
   assert.match(html, /id="page-pdf-custom-width"[\s\S]*?id="page-pdf-custom-height"/);

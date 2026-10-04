@@ -62,9 +62,9 @@ test('crop and image-fill modes expose Undo only when the selected image changed
 });
 
 test('the recipe apply bar explains how to start and what the in-place batch changes', () => {
-  assert.match(main, /state\.layerSelectionMode \? 'Done' : 'Multi-select'/,
+  assert.match(main, /state\.layerSelectionMode \? 'Done' : 'Select multiple'/,
     'the Layers action should name its multi-selection purpose');
-  assert.match(main, /Choose Multi-select in Layers, then tap the image layers you want to update\./,
+  assert.match(main, /Choose Select multiple in Layers, then click or tap the image layers you want to update\./,
     'the disabled recipe action should explain how to get the needed selection');
   assert.match(main, /Apply the same saved edits to every selected image\./,
     'the task finder should explain what this action does');

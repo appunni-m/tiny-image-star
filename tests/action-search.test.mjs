@@ -153,7 +153,7 @@ test('the editor exposes image cropping through searchable keyboard and menu act
     assert.match(main, new RegExp(`id: '${action}'`), `the action finder should expose ${action}`);
   }
   assert.match(main, /openImageAiControls\(selectedImage\.id, '\[data-action="toggle-image-background-removal"\]'\)/);
-  assert.match(main, /function syncLayerSelectionModeControl\(\)[\s\S]*?state\.layerSelectionMode \? 'Done' : 'Multi-select'/);
+  assert.match(main, /function syncLayerSelectionModeControl\(\)[\s\S]*?state\.layerSelectionMode \? 'Done' : 'Select multiple'/);
   assert.match(main, /Apply the same saved edits to every selected image\./);
   assert.match(main, /'multi select', 'multiple images', 'choose images'/);
   assert.match(main, /const exportingImageArchive = exportRoots\.length > 1 && exportRoots\.every\(node => node\.type === 'image'\)/);
@@ -183,10 +183,10 @@ test('empty canvas offers direct start actions and explains pages versus fixed-s
     assert.match(html, new RegExp(`data-empty-canvas-action="${action}"`), `empty canvas should offer ${action}`);
   }
   assert.match(html, /A Page is an open workspace; frames set the size of a design/);
-  assert.match(html, /id="layer-selection-hint"[^>]*hidden>Tap canvas objects or layer rows/);
+  assert.match(html, /id="layer-selection-hint"[^>]*hidden>A recipe is a reusable image preset\./);
   assert.match(main, /function syncEmptyCanvasGuide\(\)[\s\S]*?Boolean\(page\.children\?\.length\)[\s\S]*?state\.emptyCanvasGuideDismissedPageId === page\.id/);
   assert.match(main, /\$\('#empty-canvas-guide'\)\.addEventListener\('click'[\s\S]*?setTool\('frame'\)[\s\S]*?setTool\('text'\)/);
-  assert.match(main, /if \(selectionHint\) selectionHint\.hidden = !state\.layerSelectionMode/);
+  assert.match(main, /selectionHint\.hidden = !state\.layerSelectionMode/);
   assert.match(main, /A Page is an open workspace\. Frames are fixed-size areas inside it\./);
   assert.match(styles, /\.empty-canvas-guide\s*\{[^}]*pointer-events:\s*none/);
   assert.match(styles, /\.empty-canvas-card\s*\{[^}]*pointer-events:\s*auto/);

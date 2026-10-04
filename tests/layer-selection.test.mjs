@@ -64,9 +64,10 @@ test('canvas Select mode toggles layers by tap before handles, anchor editing, d
     'pointer-up coordinates must enforce touch slop even when no pointer-move event was observed');
 });
 
-test('mobile Select mode tells people how canvas selection behaves and exposes it accessibly', () => {
-  assert.match(source, /Tap canvas objects or layer rows to add or remove them from the selection\./);
-  assert.match(source, /Design canvas\. Select mode is active\. Tap layers to add or remove them from the selection\./);
+test('Select mode explains the click or tap gesture and the saved-recipe batch flow', () => {
+  assert.match(source, /A recipe is a reusable image preset\./);
+  assert.match(source, /Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe\./);
+  assert.match(source, /Design canvas\. Select mode is active\. Click or tap layers to add or remove them from the selection\./);
   assert.match(source, /selected · tap to add\/remove/);
 });
 
