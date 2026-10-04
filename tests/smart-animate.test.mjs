@@ -1576,13 +1576,13 @@ test('smart animation snaps rich-text styles when unchanged text has incompatibl
 test('smart animation interpolates compatible drop-shadow and layer-blur effects with exact immutable endpoints', () => {
   const fromEffects = [
     createLayerEffect('drop-shadow', {
-      id: 'shadow-before', color: '#000000', opacity: 0.2, offsetX: 2, offsetY: 4, blur: 2, visible: true
+      id: 'shadow-before', color: '#000000', opacity: 0.2, offsetX: 2, offsetY: 4, blur: 2, spread: -4, visible: true
     }),
     createLayerEffect('layer-blur', { id: 'blur-before', radius: 2 })
   ];
   const toEffects = [
     createLayerEffect('drop-shadow', {
-      id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 10, offsetY: -4, blur: 10, visible: true
+      id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 10, offsetY: -4, blur: 10, spread: 8, visible: true
     }),
     createLayerEffect('layer-blur', { id: 'blur-after', radius: 10 })
   ];
@@ -1606,8 +1606,10 @@ test('smart animation interpolates compatible drop-shadow and layer-blur effects
   near(quarter[0].offsetX, 4);
   near(quarter[0].offsetY, 2);
   near(quarter[0].blur, 4);
+  near(quarter[0].spread, -1);
   near(quarter[1].radius, 4);
   near(threeQuarter[0].opacity, 0.65);
+  near(threeQuarter[0].spread, 5);
   near(threeQuarter[0].offsetX, 8);
   near(threeQuarter[0].offsetY, -2);
   near(threeQuarter[0].blur, 8);
@@ -1729,10 +1731,10 @@ test('smart animation interpolates background-blur radius and effect insertion c
 
 test('smart animation interpolates compatible inner-shadow color and geometry without mutating or leaking non-serializable values', () => {
   const fromEffect = createLayerEffect('inner-shadow', {
-    id: 'inner-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2
+    id: 'inner-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2, spread: 0
   });
   const toEffect = createLayerEffect('inner-shadow', {
-    id: 'inner-after', color: '#ffffff', opacity: 0.8, offsetX: 8, offsetY: -6, blur: 10
+    id: 'inner-after', color: '#ffffff', opacity: 0.8, offsetX: 8, offsetY: -6, blur: 10, spread: 12
   });
   const from = createNode('frame', { children: [createNode('rectangle', { effects: [fromEffect] })] });
   const to = createNode('frame', { children: [createNode('rectangle', { effects: [toEffect] })] });
@@ -1747,6 +1749,7 @@ test('smart animation interpolates compatible inner-shadow color and geometry wi
   assert.equal(quarter.offsetX, 2);
   assert.equal(quarter.offsetY, 0);
   assert.equal(quarter.blur, 4);
+  assert.equal(quarter.spread, 3);
   const threeQuarter = interpolateSmartFrame(from, to, 0.75).children[0].effects[0];
   assert.equal(threeQuarter.id, 'inner-after');
   assert.equal(threeQuarter.color, '#bfbfbf');
@@ -1754,6 +1757,7 @@ test('smart animation interpolates compatible inner-shadow color and geometry wi
   assert.equal(threeQuarter.offsetX, 6);
   assert.equal(threeQuarter.offsetY, -4);
   assert.equal(threeQuarter.blur, 8);
+  assert.equal(threeQuarter.spread, 9);
   assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].effects, [fromEffect]);
   assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].effects, [toEffect]);
   assert.deepEqual(JSON.parse(JSON.stringify(quarterFrame)), quarterFrame, 'a rendered keyframe round-trips as ordinary JSON');

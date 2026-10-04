@@ -21,6 +21,68 @@ function textContext({ nativeTracking = false } = {}) {
   return context;
 }
 
+class ShadowPixelCanvas {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.pixels = new Uint8ClampedArray(width * height * 4);
+    const canvas = this;
+    const stack = [];
+    this.context = {
+      globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none', fillStyle: '#000000',
+      save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, filter: this.filter, fillStyle: this.fillStyle }); },
+      restore() { Object.assign(this, stack.pop()); },
+      setTransform() {},
+      clearRect(x, y, widthToClear, heightToClear) {
+        const left = Math.max(0, Math.floor(x)); const top = Math.max(0, Math.floor(y));
+        const right = Math.min(canvas.width, Math.ceil(x + widthToClear)); const bottom = Math.min(canvas.height, Math.ceil(y + heightToClear));
+        for (let py = top; py < bottom; py += 1) for (let px = left; px < right; px += 1) {
+          canvas.pixels.fill(0, (py * canvas.width + px) * 4, (py * canvas.width + px + 1) * 4);
+        }
+      },
+      fillRect(x, y, widthToFill, heightToFill) {
+        const color = this.fillStyle.match(/^#([0-9a-f]{6})$/i)?.[1] || '000000';
+        const rgba = [0, 2, 4].map(offset => Number.parseInt(color.slice(offset, offset + 2), 16)).concat(255);
+        const left = Math.max(0, Math.floor(x)); const top = Math.max(0, Math.floor(y));
+        const right = Math.min(canvas.width, Math.ceil(x + widthToFill)); const bottom = Math.min(canvas.height, Math.ceil(y + heightToFill));
+        for (let py = top; py < bottom; py += 1) for (let px = left; px < right; px += 1) this.blend(px, py, rgba);
+      },
+      drawImage(source, x, y, widthToDraw = source.width, heightToDraw = source.height) {
+        const left = Math.floor(x); const top = Math.floor(y);
+        for (let py = 0; py < heightToDraw; py += 1) for (let px = 0; px < widthToDraw; px += 1) {
+          const dx = left + px; const dy = top + py;
+          if (dx < 0 || dy < 0 || dx >= canvas.width || dy >= canvas.height) continue;
+          const sourceOffset = (py * source.width + px) * 4;
+          this.blend(dx, dy, source.pixels.subarray(sourceOffset, sourceOffset + 4));
+        }
+      },
+      getImageData(x, y, widthToRead, heightToRead) {
+        assert.deepEqual([x, y, widthToRead, heightToRead], [0, 0, canvas.width, canvas.height]);
+        return { data: Uint8ClampedArray.from(canvas.pixels), width: canvas.width, height: canvas.height };
+      },
+      putImageData(imageData) { canvas.pixels = Uint8ClampedArray.from(imageData.data); },
+      blend(x, y, sourceColor) {
+        const offset = (y * canvas.width + x) * 4;
+        const sourceAlpha = sourceColor[3] / 255 * this.globalAlpha;
+        const destinationAlpha = canvas.pixels[offset + 3] / 255;
+        let outputAlpha;
+        if (this.globalCompositeOperation === 'destination-in') outputAlpha = destinationAlpha * sourceAlpha;
+        else if (this.globalCompositeOperation === 'destination-out') outputAlpha = destinationAlpha * (1 - sourceAlpha);
+        else outputAlpha = sourceAlpha + destinationAlpha * (1 - sourceAlpha);
+        if (this.globalCompositeOperation === 'source-over' && sourceAlpha > 0) {
+          for (let channel = 0; channel < 3; channel += 1) {
+            const sourcePremultiplied = sourceColor[channel] / 255 * sourceAlpha;
+            const destinationPremultiplied = canvas.pixels[offset + channel] / 255 * destinationAlpha * (1 - sourceAlpha);
+            canvas.pixels[offset + channel] = outputAlpha > 0 ? (sourcePremultiplied + destinationPremultiplied) / outputAlpha * 255 : 0;
+          }
+        } else if (outputAlpha <= 0) canvas.pixels.fill(0, offset, offset + 4);
+        canvas.pixels[offset + 3] = outputAlpha * 255;
+      }
+    };
+  }
+  getContext() { return this.context; }
+}
+
 test('group transform handles follow non-zero selection bounds while keeping rotation available', () => {
   const regular = selectionGroupHandles({ x: 10, y: 20, width: 30, height: 40 });
   assert.deepEqual(Object.keys(regular.resize), ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']);
@@ -675,6 +737,57 @@ test('inner-shadow raster composition clips a shifted blurred mask back to the s
   }
 });
 
+test('spread shadows alter the raster silhouette before blur while retaining source paint above drop shadows', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = ShadowPixelCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    const node = createNode('rectangle', { id: 'spread-rectangle', width: 5, height: 5 });
+    const source = new ShadowPixelCanvas(5, 5);
+    source.pixels.set([10, 20, 30, 255], (2 * 5 + 2) * 4);
+    const result = renderer.applyDropShadows(source, node, [
+      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 1 }
+    ], 1, 5, 5);
+    const pixel = (canvas, x, y) => Array.from(canvas.pixels.subarray((y * canvas.width + x) * 4, (y * canvas.width + x + 1) * 4));
+    assert.deepEqual(pixel(result, 1, 1), [255, 0, 0, 255], 'positive spread paints the expanded shadow silhouette');
+    assert.deepEqual(pixel(result, 2, 2), [10, 20, 30, 255], 'the source artwork remains above its drop shadow');
+    assert.equal(renderer.applyDropShadows(source, node, [
+      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 0 }
+    ], 1, 5, 5), null, 'zero-spread stacks keep the native CSS filter path');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('positive inner-shadow spread contracts the shadow and still clips it to the original shape', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = ShadowPixelCanvas;
+  try {
+    const makeShape = () => {
+      const shape = new ShadowPixelCanvas(5, 5);
+      for (let y = 1; y <= 3; y += 1) for (let x = 1; x <= 3; x += 1) {
+        const offset = (y * 5 + x) * 4;
+        shape.pixels.set([255, 255, 255, 255], offset);
+      }
+      return shape;
+    };
+    const makeRenderer = () => Object.create(SceneRenderer.prototype);
+    const plain = makeShape();
+    const spread = makeShape();
+    const baseEffect = { type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 1, offsetY: 0, blur: 0 };
+    makeRenderer().applyInnerShadows(plain, [{ ...baseEffect, spread: 0 }], 1, 5, 5);
+    makeRenderer().applyInnerShadows(spread, [{ ...baseEffect, spread: 1 }], 1, 5, 5);
+    const leftEdge = canvas => Array.from(canvas.pixels.subarray((2 * 5 + 1) * 4, (2 * 5 + 2) * 4));
+    assert.deepEqual(leftEdge(plain), [128, 128, 128, 255], 'the unspread offset casts an inner edge shadow');
+    assert.deepEqual(leftEdge(spread), [255, 255, 255, 255], 'positive spread expands the exclusion mask and contracts the inner shadow');
+    assert.deepEqual(Array.from(spread.pixels.subarray(0, 4)), [0, 0, 0, 0], 'inner effects do not escape the original silhouette');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('layer blur processes the current surface at raster scale and copies it back inside the padded budget', () => {
   const canvases = [];
   class RecordingCanvas {
@@ -774,6 +887,8 @@ test('foreground effect rendering preserves top-stack order before inner and dro
     { id: 'hidden-grain', type: 'noise', visible: false }
   ];
   const node = createNode('rectangle', { id: 'effect-order', width: 30, height: 20, effects });
+  node.stroke = '#ff0000';
+  node.strokeWidth = 1;
   addNode(document, node);
   const events = [];
   const canvases = [];
@@ -794,7 +909,7 @@ test('foreground effect rendering preserves top-stack order before inner and dro
   try {
     const renderer = Object.create(SceneRenderer.prototype);
     renderer.getState = () => ({ document, zoom: 1 });
-    renderer.drawNode = () => events.push('paint');
+    renderer.drawNode = (_context, _node, _x, _y, _assets, _draft, _maskMode, options) => events.push(`paint:${options.effectPaintStage}`);
     renderer.applyLayerBlurEffect = (_surface, effect) => { events.push(effect.id); return true; };
     renderer.applyNoiseEffects = (_surface, _node, [effect]) => events.push(effect.id);
     renderer.applyTextureEffects = (_surface, _node, [effect]) => events.push(effect.id);
@@ -804,9 +919,140 @@ test('foreground effect rendering preserves top-stack order before inner and dro
 
     renderer.drawNodeWithEffects(destination.context, node, 0, 0, new Map(), effects.filter(effect => effect.visible));
 
-    assert.deepEqual(events, ['paint', 'grain-a', 'soften', 'grain-b', 'edge', 'inner-phase']);
+    assert.deepEqual(events, [
+      'paint:fill', 'paint:stroke', 'inner-phase', 'paint:stroke',
+      'grain-a', 'soften', 'grain-b', 'edge'
+    ], 'inner shadow sits between fill and stroke, then top effects run over both paints in authored order');
     assert.match(destination.context.filter, /^drop-shadow\(/, 'drop shadows run after the ordered top stack and inner shadows');
     assert.doesNotMatch(destination.context.filter, /blur\(/, 'an applied layer blur must not be repeated in the final pass');
+
+    events.length = 0;
+    const group = createNode('group', { width: 30, height: 20, effects: [
+      { id: 'group-noise', type: 'noise', visible: true },
+      { id: 'group-inner', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 0, offsetY: 0, blur: 0 }
+    ] });
+    addNode(document, group);
+    renderer.drawNodeWithEffects(destination.context, group, 0, 0, new Map(), group.effects);
+    assert.deepEqual(events, ['paint:undefined', 'group-noise', 'inner-phase'],
+      'groups keep their established flattened effect path until group-specific paint staging is implemented');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('ordinary shape inner shadow is composed between fills and strokes at pixel level', () => {
+  class PixelCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.pixels = new Uint8ClampedArray(width * height * 4);
+      const canvas = this;
+      const stack = [];
+      this.context = {
+        globalAlpha: 1,
+        globalCompositeOperation: 'source-over',
+        filter: 'none',
+        fillStyle: '#000000',
+        _transform: [1, 0, 0, 1, 0, 0],
+        save() {
+          stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation,
+            filter: this.filter, fillStyle: this.fillStyle, transform: [...this._transform] });
+        },
+        restore() {
+          const saved = stack.pop();
+          Object.assign(this, saved);
+          this._transform = saved.transform;
+        },
+        setTransform(...transform) { this._transform = transform; },
+        clearRect(x, y, widthToClear, heightToClear) {
+          const [a, , , d, e, f] = this._transform;
+          const left = Math.max(0, Math.floor(x * a + e));
+          const top = Math.max(0, Math.floor(y * d + f));
+          const right = Math.min(canvas.width, Math.ceil((x + widthToClear) * a + e));
+          const bottom = Math.min(canvas.height, Math.ceil((y + heightToClear) * d + f));
+          for (let py = top; py < bottom; py += 1) for (let px = left; px < right; px += 1) {
+            canvas.pixels.fill(0, (py * canvas.width + px) * 4, (py * canvas.width + px + 1) * 4);
+          }
+        },
+        fillRect(x, y, rectWidth, rectHeight) {
+          const [a, , , d, e, f] = this._transform;
+          const left = Math.max(0, Math.floor(x * a + e));
+          const top = Math.max(0, Math.floor(y * d + f));
+          const right = Math.min(canvas.width, Math.ceil((x + rectWidth) * a + e));
+          const bottom = Math.min(canvas.height, Math.ceil((y + rectHeight) * d + f));
+          const color = this.fillStyle.match(/^#([0-9a-f]{6})$/i)?.[1] || '000000';
+          const rgba = [0, 2, 4].map(offset => Number.parseInt(color.slice(offset, offset + 2), 16)).concat(255);
+          for (let py = top; py < bottom; py += 1) for (let px = left; px < right; px += 1) this.blend(px, py, rgba);
+        },
+        drawImage(source, x, y, widthToDraw = source.width, heightToDraw = source.height) {
+          const [a, , , d, e, f] = this._transform;
+          const left = Math.floor(x * a + e);
+          const top = Math.floor(y * d + f);
+          const targetWidth = Math.max(1, Math.ceil(widthToDraw * a));
+          const targetHeight = Math.max(1, Math.ceil(heightToDraw * d));
+          for (let py = 0; py < targetHeight; py += 1) for (let px = 0; px < targetWidth; px += 1) {
+            const dx = left + px;
+            const dy = top + py;
+            if (dx < 0 || dy < 0 || dx >= canvas.width || dy >= canvas.height) continue;
+            const sx = Math.min(source.width - 1, Math.floor(px * source.width / targetWidth));
+            const sy = Math.min(source.height - 1, Math.floor(py * source.height / targetHeight));
+            const sourceOffset = (sy * source.width + sx) * 4;
+            this.blend(dx, dy, source.pixels.subarray(sourceOffset, sourceOffset + 4));
+          }
+        },
+        blend(x, y, sourceColor) {
+          const offset = (y * canvas.width + x) * 4;
+          const sourceAlpha = sourceColor[3] / 255 * this.globalAlpha;
+          const destinationAlpha = canvas.pixels[offset + 3] / 255;
+          let outputAlpha;
+          if (this.globalCompositeOperation === 'destination-out') outputAlpha = destinationAlpha * (1 - sourceAlpha);
+          else if (this.globalCompositeOperation === 'destination-in') outputAlpha = destinationAlpha * sourceAlpha;
+          else outputAlpha = sourceAlpha + destinationAlpha * (1 - sourceAlpha);
+          if (this.globalCompositeOperation === 'source-over' || this.globalCompositeOperation === 'source-atop') {
+            for (let channel = 0; channel < 3; channel += 1) {
+              const sourcePremultiplied = sourceColor[channel] / 255 * sourceAlpha;
+              const destinationPremultiplied = canvas.pixels[offset + channel] / 255 * destinationAlpha * (1 - sourceAlpha);
+              canvas.pixels[offset + channel] = outputAlpha > 0 ? (sourcePremultiplied + destinationPremultiplied) / outputAlpha * 255 : 0;
+            }
+          } else if (outputAlpha <= 0) canvas.pixels.fill(0, offset, offset + 4);
+          canvas.pixels[offset + 3] = outputAlpha * 255;
+        }
+      };
+    }
+    getContext() { return this.context; }
+  }
+
+  const document = createDocument();
+  const node = createNode('rectangle', {
+    id: 'staged-inner-shadow', width: 4, height: 3, fill: '#0000ff',
+    stroke: '#ff0000', strokeWidth: 1,
+    effects: [{ id: 'inset', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 1, offsetY: 0, blur: 0 }]
+  });
+  addNode(document, node);
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PixelCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1 });
+    renderer.drawNode = (context, _renderedNode, _x, _y, _assets, _draft, _maskMode, options) => {
+      if (options.effectPaintStage === 'fill') {
+        context.fillStyle = '#0000ff';
+        context.fillRect(0, 0, 4, 3);
+      } else if (options.effectPaintStage === 'stroke') {
+        context.fillStyle = '#ff0000';
+        context.fillRect(0, 0, 4, 1);
+      } else throw new Error('The test expects explicit fill/stroke paint stages.');
+    };
+    const destination = new PixelCanvas(8, 8);
+    destination.context.getTransform = () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+
+    renderer.drawNodeWithEffects(destination.context, node, 0, 0, new Map(), node.effects);
+
+    const pixel = (x, y) => Array.from(destination.pixels.subarray((y * destination.width + x) * 4, (y * destination.width + x + 1) * 4));
+    assert.deepEqual(pixel(0, 0), [255, 0, 0, 255], 'the stroke is repainted above the inner shadow');
+    assert.deepEqual(pixel(0, 1), [0, 0, 128, 255], 'the fill receives the inner shadow between the fill and stroke stages');
+    assert.deepEqual(pixel(1, 1), [0, 0, 255, 255], 'the offset leaves the neighboring fill pixel unchanged');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;

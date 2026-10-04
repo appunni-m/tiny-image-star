@@ -438,8 +438,8 @@ try {
 
   click(app.querySelector('#file-menu-button'));
   const vectorPagePdfButton = [...app.querySelectorAll('#context-menu button')]
-    .find(button => button.textContent.includes('multipage vector PDF'));
-  assert(vectorPagePdfButton, 'The file menu should offer multipage vector PDF export.');
+    .find(button => button.textContent.includes('Current page · editable vector, one page per frame'));
+  assert(vectorPagePdfButton, 'The file menu should offer an editable vector PDF page for each frame.');
   click(vectorPagePdfButton);
   await waitFor(() => downloads.length === 14, 'current-page multipage vector PDF');
   assert(downloads[13].filename === 'Page 1-frames.pdf' && downloads[13].blob?.type === 'application/pdf',
@@ -584,7 +584,7 @@ try {
     `The fractional slice edge must retain only cropped green artwork, excluding red artwork just outside the crop; got ${Array.from(fractionalEdgePixel).join(',')}.`);
   click(app.querySelector('#file-menu-button'));
   const pagePdfMenuItem = [...app.querySelectorAll('#context-menu button')]
-    .find(button => button.textContent.includes('Fit page artwork to a PDF sheet'));
+    .find(button => button.textContent.includes('Current page · fit artwork to paper'));
   assert(pagePdfMenuItem, 'The file menu should offer a paper-sized PDF export for the current page.');
   click(pagePdfMenuItem);
   const pagePdfDialog = app.querySelector('#page-pdf-dialog');

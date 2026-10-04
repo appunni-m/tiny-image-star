@@ -4,6 +4,7 @@ import { isValidGradientBasis } from './fills.js';
 import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
 import { isValidFontFeatureValues, parseFontFeatureSettings } from './font-features.js';
 import { normalizeStrokeDashArray } from './stroke-style.js';
+import { MAX_SHADOW_SPREAD, supportsShadowSpread } from './layer-effects.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -33,9 +34,10 @@ const MAX_GRADIENT_HANDLE_COORDINATE = 1_000_000;
 const MAX_CLIP_PATHS = 1_000;
 const MAX_MASKS = 1_000;
 const MAX_FILTERS = 1_000;
-const MAX_FILTER_EFFECTS = 8;
-// One editable inner shadow is represented by six SVG filter primitives.
-const MAX_FILTER_PRIMITIVES = MAX_FILTER_EFFECTS * 6;
+const MAX_FILTER_EFFECTS = 17;
+// Spread shadows use at most seven primitives per effect; Figma allows up to
+// eight drop shadows, eight inner shadows, and one foreground blur.
+const MAX_FILTER_PRIMITIVES = MAX_FILTER_EFFECTS * 7;
 const MAX_TEXT_LENGTH = 100_000;
 const unsafeSvgElements = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
 const initialStyle = {
@@ -695,6 +697,79 @@ function parseFilter(node, ids) {
   };
   for (let index = 0; index < node.children.length;) {
     const primitive = node.children[index];
+    if (primitive.tag === 'feMorphology') {
+      const currentInput = previousResult;
+      assertPrimitiveAttributes(primitive, new Set(['in', 'operator', 'radius', 'result']));
+      if (primitive.attrs.in !== currentInput) {
+        fail('unsupported-filter-graph', 'Spread morphology must read the current image in the editor’s shadow filter chain.', primitive.tag);
+      }
+      const operator = primitive.attrs.operator;
+      if (!['dilate', 'erode'].includes(operator)) {
+        fail('unsupported-filter-graph', 'Shadow spread morphology must use a flat dilate or erode operator.', primitive.tag);
+      }
+      const radius = filterNumber(primitive.attrs.radius, 'morphology radius', primitive, { min: Number.EPSILON, max: 1000 });
+      const spread = operator === 'dilate' ? radius : -radius;
+      const morphologyResult = reserveResult(primitive);
+      const spreadInnerTags = ['feGaussianBlur', 'feOffset', 'feComposite', 'feFlood', 'feComposite', 'feComposite'];
+      const spreadDropTags = ['feGaussianBlur', 'feOffset', 'feFlood', 'feComposite', 'feComposite'];
+      const follows = tags => node.children.slice(index + 1, index + 1 + tags.length)
+        .every((item, itemIndex) => item?.tag === tags[itemIndex])
+        && node.children.length >= index + 1 + tags.length;
+
+      if (follows(spreadInnerTags)) {
+        const [blur, offset, cutout, floodPrimitive, tint, composite] = node.children.slice(index + 1, index + 1 + spreadInnerTags.length);
+        assertPrimitiveAttributes(blur, new Set(['in', 'stdDeviation', 'result']));
+        assertPrimitiveAttributes(offset, new Set(['in', 'dx', 'dy', 'result']));
+        assertPrimitiveAttributes(cutout, new Set(['in', 'in2', 'operator', 'result']));
+        assertPrimitiveAttributes(floodPrimitive, new Set(['flood-color', 'flood-opacity', 'result']));
+        assertPrimitiveAttributes(tint, new Set(['in', 'in2', 'operator', 'result']));
+        assertPrimitiveAttributes(composite, new Set(['in', 'in2', 'operator', 'result']));
+        if (blur.attrs.in !== morphologyResult || offset.attrs.in !== blur.attrs.result
+          || cutout.attrs.in !== currentInput || cutout.attrs.in2 !== offset.attrs.result || cutout.attrs.operator !== 'out'
+          || tint.attrs.in !== floodPrimitive.attrs.result || tint.attrs.in2 !== cutout.attrs.result || tint.attrs.operator !== 'in'
+          || composite.attrs.in !== tint.attrs.result || composite.attrs.in2 !== currentInput || composite.attrs.operator !== 'over') {
+          fail('unsupported-filter-graph', 'Only the editor’s exact spread, Gaussian-blur, offset, alpha-cutout and color-composite inner-shadow chain can be represented as an editable effect.', primitive.tag);
+        }
+        const blurRadius = filterDeviation(blur.attrs.stdDeviation, blur.tag, blur);
+        const offsetX = filterNumber(offset.attrs.dx, 'dx', offset);
+        const offsetY = filterNumber(offset.attrs.dy, 'dy', offset);
+        const flood = color(floodPrimitive.attrs['flood-color'], floodPrimitive.tag);
+        const opacity = parseAlpha(floodPrimitive.attrs['flood-opacity'], 'filter flood-opacity', floodPrimitive.tag);
+        reserveResult(blur); reserveResult(offset); reserveResult(cutout);
+        reserveResult(floodPrimitive); reserveResult(tint);
+        previousResult = reserveResult(composite);
+        effects.push({ type: 'inner-shadow', color: flood.value ?? '#000000', opacity: flood.alpha * opacity,
+          offsetX, offsetY, blur: blurRadius, spread });
+        index += 1 + spreadInnerTags.length;
+        continue;
+      }
+
+      if (follows(spreadDropTags)) {
+        const [blur, offset, floodPrimitive, tint, composite] = node.children.slice(index + 1, index + 1 + spreadDropTags.length);
+        assertPrimitiveAttributes(blur, new Set(['in', 'stdDeviation', 'result']));
+        assertPrimitiveAttributes(offset, new Set(['in', 'dx', 'dy', 'result']));
+        assertPrimitiveAttributes(floodPrimitive, new Set(['flood-color', 'flood-opacity', 'result']));
+        assertPrimitiveAttributes(tint, new Set(['in', 'in2', 'operator', 'result']));
+        assertPrimitiveAttributes(composite, new Set(['in', 'in2', 'operator', 'result']));
+        if (blur.attrs.in !== morphologyResult || offset.attrs.in !== blur.attrs.result
+          || tint.attrs.in !== floodPrimitive.attrs.result || tint.attrs.in2 !== offset.attrs.result || tint.attrs.operator !== 'in'
+          || composite.attrs.in !== currentInput || composite.attrs.in2 !== tint.attrs.result || composite.attrs.operator !== 'over') {
+          fail('unsupported-filter-graph', 'Only the editor’s exact spread, Gaussian-blur, offset, and color-composite drop-shadow chain can be represented as an editable effect.', primitive.tag);
+        }
+        const blurRadius = filterDeviation(blur.attrs.stdDeviation, blur.tag, blur);
+        const offsetX = filterNumber(offset.attrs.dx, 'dx', offset);
+        const offsetY = filterNumber(offset.attrs.dy, 'dy', offset);
+        const flood = color(floodPrimitive.attrs['flood-color'], floodPrimitive.tag);
+        const opacity = parseAlpha(floodPrimitive.attrs['flood-opacity'], 'filter flood-opacity', floodPrimitive.tag);
+        reserveResult(blur); reserveResult(offset); reserveResult(floodPrimitive); reserveResult(tint);
+        previousResult = reserveResult(composite);
+        effects.push({ type: 'drop-shadow', color: flood.value ?? '#000000', opacity: flood.alpha * opacity,
+          offsetX, offsetY, blur: blurRadius, spread });
+        index += 1 + spreadDropTags.length;
+        continue;
+      }
+      fail('unsupported-filter-graph', 'SVG spread morphology is editable only as part of the editor’s exact shadow spread chain.', primitive.tag);
+    }
     const possibleInnerShadow = node.children.slice(index, index + innerShadowTags.length);
     if (possibleInnerShadow.length === innerShadowTags.length
       && possibleInnerShadow.every((item, itemIndex) => item.tag === innerShadowTags[itemIndex])) {
@@ -1757,8 +1832,9 @@ function effectPadding(effects) {
       x += effect.radius * 3;
       y += effect.radius * 3;
     } else if (effect.type === 'drop-shadow') {
-      x += Math.abs(effect.offsetX) + effect.blur * 3;
-      y += Math.abs(effect.offsetY) + effect.blur * 3;
+      const spread = Math.max(0, effect.spread ?? 0);
+      x += Math.abs(effect.offsetX) + effect.blur * 3 + spread;
+      y += Math.abs(effect.offsetY) + effect.blur * 3 + spread;
     }
   }
   return { x, y };
@@ -1831,8 +1907,9 @@ function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) 
   const scale = matrixScale(matrix);
   const effects = filter.effects.map((effect, index) => {
     const blur = effect.type === 'layer-blur' ? effect.radius : effect.blur;
-    if (blur > 0 && scale == null) {
-      fail('unsupported-filter-transform', 'SVG blur under a non-uniform or skewed transform cannot be represented as an editable isotropic blur.', element);
+    const spread = effect.spread ?? 0;
+    if ((blur > 0 || spread !== 0) && scale == null) {
+      fail('unsupported-filter-transform', 'SVG blur or shadow spread under a non-uniform or skewed transform cannot be represented faithfully as an editable effect.', element);
     }
     const mappedBlur = blur * (scale ?? 1);
     const mapped = effect.type === 'layer-blur'
@@ -1843,13 +1920,15 @@ function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) 
         opacity: effect.opacity,
         offsetX: matrix[0] * effect.offsetX + matrix[2] * effect.offsetY,
         offsetY: matrix[1] * effect.offsetX + matrix[3] * effect.offsetY,
-        blur: mappedBlur
+        blur: mappedBlur,
+        ...(spread !== 0 ? { spread: spread * (scale ?? 1) } : {})
       };
     if (mapped.type === 'layer-blur'
       ? !Number.isFinite(mapped.radius) || mapped.radius < 0 || mapped.radius > 100
       : !Number.isFinite(mapped.blur) || mapped.blur < 0 || mapped.blur > 100
         || !Number.isFinite(mapped.offsetX) || Math.abs(mapped.offsetX) > 1000
-        || !Number.isFinite(mapped.offsetY) || Math.abs(mapped.offsetY) > 1000) {
+        || !Number.isFinite(mapped.offsetY) || Math.abs(mapped.offsetY) > 1000
+        || Math.abs(mapped.spread ?? 0) > MAX_SHADOW_SPREAD) {
       fail('unsupported-filter-range', 'Transformed SVG filter values exceed the editor’s editable effect limits.', element);
     }
     return { id: `${prefix}-effect-${serial}-${index}`, visible: true, ...mapped };
@@ -2455,7 +2534,14 @@ function resolveNodeFilter(style, filters, matrix, sourceNodes, prefix, node, na
   const filter = filters.get(style.filterRef);
   if (!filter) fail('missing-filter', `SVG layer references missing filter “${style.filterRef}”.`, node.tag);
   if (filter.alphaInversion) fail('unsupported-filter-graph', 'SVG alpha-inversion filters are supported only inside editor Boolean cutout masks.', node.tag);
-  return mapFilterEffects(filter, matrix, sourceNodes, prefix, node.serial, name);
+  const effects = mapFilterEffects(filter, matrix, sourceNodes, prefix, node.serial, name);
+  if (effects.some(effect => effect.spread != null && effect.spread !== 0)
+    && (sourceNodes.length !== 1 || !supportsShadowSpread(sourceNodes[0]))) {
+    fail('unsupported-shadow-spread-target',
+      'This SVG uses nonzero shadow spread on geometry that imports as editable vector paths. The editor cannot preserve that spread on this layer type; remove the spread or export the shadow as part of the artwork before importing.',
+      node.tag);
+  }
+  return effects;
 }
 
 function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients, filters, clipPaths, masks) {

@@ -257,8 +257,18 @@ try {
   // Layer rows are stacked in reverse insertion order, so save the recipe from
   // the first import while the pixel assertion below samples the third import.
   tap(app, app.querySelector(`[data-layer-id="${imageIds[2]}"]`));
-  tap(app, app.querySelector('#inspector-toggle'));
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitFor(() => !app.querySelector('#left-panel')?.classList.contains('is-open'), 'close Layers before image edit');
+  const adjustImageButton = app.querySelector('#image-context-adjustments');
+  assert(adjustImageButton && !adjustImageButton.hidden, 'the selected image should show a direct Adjust image action on the canvas.');
+  assertTouchTarget(app, adjustImageButton, 'Adjust image action', 44);
+  tap(app, adjustImageButton);
   await waitForPhonePanel(app, '#right-panel', 'right');
+  await waitFor(() => {
+    const section = app.querySelector('[data-property-section="image-adjustments"]');
+    const panel = app.querySelector('#inspector-content');
+    return section && panel && section.getBoundingClientRect().top < panel.getBoundingClientRect().top + 100;
+  }, 'scroll to image adjustment controls');
   const brightness = app.querySelector('[data-prop="adjustments.brightness"]');
   assert(brightness, 'the selected phone image should expose local WASM adjustments.');
   assertTouchTarget(app, brightness, 'Brightness control', 44);

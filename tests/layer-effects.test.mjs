@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createLayerEffect, createNode, addNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding, moveLayerEffect } from '../src/layer-effects.js';
+import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding, moveLayerEffect, supportsShadowSpread } from '../src/layer-effects.js';
 
 test('drop shadows and layer blur are saved as editable layer effects', () => {
   const document = createDocument();
@@ -42,6 +42,31 @@ test('inner shadows are validated, serialized, and excluded from outer filter pa
   assert.equal(buildLayerEffectFilter([inner]), 'none');
   assert.equal(buildLayerEffectBoxShadow([inner]), 'inset 3px -2px 6px rgba(0, 0, 0, 0.4)');
   assert.deepEqual(layerEffectPadding([inner]), { x: 0, y: 0 });
+});
+
+test('shadow spread defaults to zero, validates legacy values, and expands only outer effect bounds', () => {
+  const drop = createLayerEffect('drop-shadow', { offsetX: 2, offsetY: -3, blur: 4, spread: 5 });
+  const inner = createLayerEffect('inner-shadow', { offsetX: 3, offsetY: -2, blur: 6, spread: -4 });
+  assert.equal(createLayerEffect('drop-shadow').spread, 0);
+  assert.equal(createLayerEffect('inner-shadow').spread, 0);
+  assert.equal(isValidLayerEffects([{ ...drop, spread: undefined }]), true, 'older documents without the optional field remain valid');
+  assert.equal(isValidLayerEffects([{ ...drop, spread: -1000 }]), true);
+  assert.equal(isValidLayerEffects([{ ...drop, spread: 1000.01 }]), false);
+  assert.equal(isValidLayerEffects([{ ...drop, spread: Infinity }]), false);
+  assert.deepEqual(layerEffectPadding([drop, inner]), { x: 19, y: 20 }, 'only positive drop-shadow spread expands the padded surface');
+});
+
+test('Figma spread eligibility matches shape and clipped visible-fill requirements', () => {
+  assert.equal(supportsShadowSpread({ type: 'rectangle' }), true);
+  assert.equal(supportsShadowSpread({ type: 'ellipse' }), true);
+  assert.equal(supportsShadowSpread({ type: 'path' }), false);
+  assert.equal(supportsShadowSpread({ type: 'frame', clip: false, fill: '#ffffff' }), false);
+  assert.equal(supportsShadowSpread({ type: 'frame', clip: true, fill: '#ffffff', fillOpacity: 0.009 }), false);
+  assert.equal(supportsShadowSpread({ type: 'frame', clip: true, fill: '#ffffff', fillOpacity: 0.01 }), true);
+  assert.equal(supportsShadowSpread({ type: 'frame', clip: true, fill: 'transparent' }), false);
+  assert.equal(supportsShadowSpread({ type: 'group', clip: true, isInstance: true, fills: [
+    { id: 'visible', type: 'solid', visible: true, opacity: 0.5, color: '#ffffff' }
+  ] }), true);
 });
 
 test('effect validation allows eight shadows of each kind and one mutually exclusive blur', () => {

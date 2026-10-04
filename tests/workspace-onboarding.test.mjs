@@ -11,14 +11,16 @@ test('workspace onboarding describes only storage choices available on this brow
   const folder = workspaceOnboardingCopy({ folderPickerAvailable: true });
   assert.match(folder.description, /Choose a folder/);
   assert.match(folder.description, /local files/);
+  assert.match(folder.description, /required for live sharing/);
   assert.doesNotMatch(folder.description, /browser profile/);
 
   const browser = workspaceOnboardingCopy({ folderPickerAvailable: false });
   assert.match(browser.description, /local profile/);
-  assert.match(browser.description, /Export a local design file/);
-  assert.match(browser.status, /cannot choose a writable folder/);
+  assert.match(browser.description, /Live sharing needs a writable folder/);
+  assert.match(browser.status, /Continue with browser storage for solo editing/);
+  assert.match(browser.status, /export a local design file from File/);
   assert.match(browser.status, /stay in this browser profile/);
-  assert.match(folder.status, /continue with browser storage instead/);
+  assert.match(folder.status, /choose browser storage for solo editing/);
 });
 
 test('folder permission recovery keeps File navigation available and canvas editing blocked', () => {

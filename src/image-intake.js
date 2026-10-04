@@ -14,6 +14,17 @@ export function requiresPillowFallback(sourceBytes) {
   return format === 'tiff' || ((format === 'jpeg' || format === 'webp') && rasterOrientation(sourceBytes) !== 1);
 }
 
+/**
+ * Prefer the local Pillow-RS decoder for supported still-image formats so the
+ * initial canvas bitmap follows the same pixel path as subsequent edits.
+ * GIF stays on the browser decoder because this editor does not model frames.
+ */
+export function shouldPreferPillowFallback(sourceBytes) {
+  const format = identifyRasterContainer(sourceBytes);
+  return requiresPillowFallback(sourceBytes)
+    || ['png', 'jpeg', 'webp', 'bmp', 'tiff'].includes(format);
+}
+
 /** Turn a local Pillow failure into a useful action for TIFF variants. */
 export function imageDecodeFailureMessage(sourceBytes, error) {
   if (identifyRasterContainer(sourceBytes) === 'tiff') {

@@ -3,7 +3,8 @@ import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, requiresComplexTextShaping, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
-import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
+import { buildLayerEffectFilter, layerEffectPadding, supportsShadowSpread } from './layer-effects.js';
+import { morphShadowAlpha } from './shadow-spread.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLASS_AXIS, MAX_GLASS_PIXELS, refractGlassBackdrop } from './glass-effect.js';
@@ -36,6 +37,7 @@ export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
+const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path']);
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
 const MAX_FONT_OUTLINE_PATH_ENTRIES = 4096;
@@ -433,6 +435,28 @@ function createTextSurface(width, height) {
   canvas.width = width;
   canvas.height = height;
   return canvas;
+}
+
+function createShadowSpreadSurface(source, spread) {
+  if (!source || !Number.isFinite(spread) || spread === 0) return source;
+  const width = source.width;
+  const height = source.height;
+  const sourceContext = source.getContext?.('2d');
+  if (!sourceContext?.getImageData) return null;
+  let imageData;
+  try { imageData = sourceContext.getImageData(0, 0, width, height); }
+  catch { return null; }
+  const alpha = new Uint8Array(width * height);
+  for (let pixel = 0; pixel < alpha.length; pixel += 1) alpha[pixel] = imageData.data[pixel * 4 + 3];
+  let spreadAlpha;
+  try { spreadAlpha = morphShadowAlpha(alpha, width, height, spread); }
+  catch { return null; }
+  for (let pixel = 0; pixel < spreadAlpha.length; pixel += 1) imageData.data[pixel * 4 + 3] = spreadAlpha[pixel];
+  const result = createTextSurface(width, height);
+  const resultContext = result?.getContext?.('2d');
+  if (!resultContext?.putImageData) return null;
+  resultContext.putImageData(imageData, 0, 0);
+  return result;
 }
 
 function resizeTextSurface(surface, width, height) {
@@ -1574,7 +1598,6 @@ export class SceneRenderer {
       ctx.setLineDash(crossing ? [4 / state.zoom, 3 / state.zoom] : []);
       ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
-    if (!page.children.length) this.drawEmptyHint(cssWidth, cssHeight, dpr, state);
     if (!state.presenting && state.showRulers && Array.isArray(page.guides)) this.drawRulerGuides(ctx, page.guides, state, cssWidth, cssHeight);
     this.onDraw?.(state, { cssWidth, cssHeight, dpr });
   }
@@ -1670,6 +1693,9 @@ export class SceneRenderer {
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
+    const effectPaintStage = renderOptions.effectPaintStage;
+    const drawFillPaint = effectPaintStage !== 'stroke';
+    const drawStrokePaint = effectPaintStage !== 'fill';
     ctx.save();
     if (!vectorMask && blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
     if (!vectorMask) ctx.globalAlpha *= opacity ?? 1;
@@ -1789,7 +1815,7 @@ export class SceneRenderer {
     }
 
     if (node.type === 'image') {
-      if (node.__smartAnimateImageTransition) {
+      if (drawFillPaint && node.__smartAnimateImageTransition) {
         ctx.save();
         ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing); ctx.clip();
         const drawn = this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageTransition, assets, state, x, y, width, height);
@@ -1799,7 +1825,7 @@ export class SceneRenderer {
           ctx.fillText('Updating image…', cx, cy);
         }
         ctx.restore();
-      } else {
+      } else if (drawFillPaint) {
         const asset = assets.get(node.assetId);
         const cropOverlay = cropEditing ? state.imageCropOverlay : null;
         const sourceImage = cropOverlay ? asset?.bitmap : null;
@@ -1836,7 +1862,7 @@ export class SceneRenderer {
           }
         }
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius, cornerSmoothing), maskMode);
+      if (drawStrokePaint) drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius, cornerSmoothing), maskMode);
     } else if (node.type === 'text') {
       if (Array.isArray(node.fills) && !maskMode) {
         const surfaces = this.textPaintSurfaces || (this.textPaintSurfaces = { glyph: null, paint: null });
@@ -1932,8 +1958,8 @@ export class SceneRenderer {
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
     } else {
-      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode, 0, null, this);
-      drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode);
+      if (drawFillPaint && node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode, 0, null, this);
+      if (drawStrokePaint) drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode);
     }
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
@@ -2004,7 +2030,7 @@ export class SceneRenderer {
     ctx.restore();
   }
 
-  applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight) {
+  applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, alphaSurface = surface) {
     const innerShadows = effects.filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
     if (!innerShadows.length) return;
     const overlay = typeof OffscreenCanvas === 'function'
@@ -2012,8 +2038,15 @@ export class SceneRenderer {
       : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
     const overlayContext = overlay.getContext('2d');
     const surfaceContext = surface.getContext('2d');
-    if (!overlayContext || !surfaceContext) return;
+    if (!overlayContext || !surfaceContext || !alphaSurface) return;
+    const spreadMasks = new Map();
     for (const effect of innerShadows) {
+      const spread = (effect.spread ?? 0) * rasterScale;
+      let shadowSource = alphaSurface;
+      if (spread) {
+        if (!spreadMasks.has(spread)) spreadMasks.set(spread, createShadowSpreadSurface(alphaSurface, spread));
+        shadowSource = spreadMasks.get(spread) || alphaSurface;
+      }
       overlayContext.save();
       overlayContext.setTransform(1, 0, 0, 1, 0, 0);
       overlayContext.globalAlpha = 1;
@@ -2024,10 +2057,10 @@ export class SceneRenderer {
       overlayContext.fillRect(0, 0, pixelWidth, pixelHeight);
       overlayContext.globalCompositeOperation = 'destination-out';
       overlayContext.filter = `blur(${Math.max(0, effect.blur) * rasterScale}px)`;
-      overlayContext.drawImage(surface, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
+      overlayContext.drawImage(shadowSource, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
       overlayContext.globalCompositeOperation = 'destination-in';
       overlayContext.filter = 'none';
-      overlayContext.drawImage(surface, 0, 0);
+      overlayContext.drawImage(alphaSurface, 0, 0);
       overlayContext.restore();
 
       surfaceContext.save();
@@ -2038,6 +2071,60 @@ export class SceneRenderer {
       surfaceContext.drawImage(overlay, 0, 0);
       surfaceContext.restore();
     }
+  }
+
+  applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight) {
+    const shadows = effects.filter(effect => effect?.type === 'drop-shadow' && effect.visible !== false && effect.opacity > 0);
+    if (!shadows.some(effect => supportsShadowSpread(node) && (effect.spread ?? 0) !== 0)) return null;
+    let current = surface;
+    let spare = createTextSurface(pixelWidth, pixelHeight);
+    const colorMask = createTextSurface(pixelWidth, pixelHeight);
+    const blurred = createTextSurface(pixelWidth, pixelHeight);
+    const spareContext = spare?.getContext?.('2d');
+    const colorContext = colorMask?.getContext?.('2d');
+    const blurContext = blurred?.getContext?.('2d');
+    if (!spareContext || !colorContext || !blurContext || typeof blurContext.filter !== 'string') return null;
+    for (const effect of shadows) {
+      const spread = supportsShadowSpread(node) ? (effect.spread ?? 0) * rasterScale : 0;
+      const mask = spread ? createShadowSpreadSurface(current, spread) : current;
+      if (!mask) return null;
+
+      colorContext.save();
+      colorContext.setTransform(1, 0, 0, 1, 0, 0);
+      colorContext.globalAlpha = 1;
+      colorContext.globalCompositeOperation = 'source-over';
+      colorContext.filter = 'none';
+      colorContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      colorContext.fillStyle = effect.color;
+      colorContext.fillRect(0, 0, pixelWidth, pixelHeight);
+      colorContext.globalCompositeOperation = 'destination-in';
+      colorContext.drawImage(mask, 0, 0);
+      colorContext.restore();
+
+      blurContext.save();
+      blurContext.setTransform(1, 0, 0, 1, 0, 0);
+      blurContext.globalAlpha = 1;
+      blurContext.globalCompositeOperation = 'source-over';
+      blurContext.filter = `blur(${Math.max(0, effect.blur) * rasterScale}px)`;
+      blurContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      blurContext.drawImage(colorMask, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
+      blurContext.restore();
+
+      spareContext.save();
+      spareContext.setTransform(1, 0, 0, 1, 0, 0);
+      spareContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      spareContext.globalCompositeOperation = 'source-over';
+      spareContext.globalAlpha = Math.max(0, Math.min(1, effect.opacity));
+      spareContext.drawImage(blurred, 0, 0);
+      spareContext.globalAlpha = 1;
+      spareContext.drawImage(current, 0, 0);
+      spareContext.restore();
+
+      const previous = current;
+      current = spare;
+      spare = previous;
+    }
+    return current;
   }
 
   applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight) {
@@ -2491,7 +2578,61 @@ export class SceneRenderer {
     delete copy.variableBindings.opacity;
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
-    this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+    // Plain shape and image layers use the layer paint phases: fill, inner
+    // shadow, stroke, then the top-effect stack. Containers and text retain
+    // their established flattened paths until their own phase models exist.
+    const stagePaints = !node.mask && !(node.children?.length)
+      && EFFECT_PAINT_STAGEABLE_TYPES.has(node.type);
+    const hasInnerShadow = effects.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
+    const hasVisibleStroke = stagePaints && strokeStackForNode(node).some(stroke => {
+      if (stroke.visible === false || stroke.opacity <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return false;
+      const sideWidths = strokeSideWidths(stroke);
+      return Math.max(Number(stroke.width) || 0, ...strokeSideNames.map(side => Number(sideWidths?.[side]) || 0)) > 0;
+    });
+    const drawPaintStage = (context, stage) => this.drawNode(context, copy, 0, 0, assets, false, false, {
+      ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id, effectPaintStage: stage
+    });
+    let stagedPaints = false;
+    if (stagePaints) {
+      drawPaintStage(effectContext, 'fill');
+      let shadowAlphaSurface = surface;
+      if (hasInnerShadow && hasVisibleStroke) {
+        let silhouette = null;
+        try {
+          silhouette = typeof OffscreenCanvas === 'function'
+            ? new OffscreenCanvas(pixelWidth, pixelHeight)
+            : (surface.ownerDocument || globalThis.document)?.createElement
+              ? Object.assign((surface.ownerDocument || globalThis.document).createElement('canvas'), { width: pixelWidth, height: pixelHeight })
+              : null;
+        } catch { /* Fall back to the existing combined-paint renderer below. */ }
+        const silhouetteContext = silhouette?.getContext('2d');
+        if (silhouetteContext) {
+          silhouetteContext.drawImage(surface, 0, 0);
+          silhouetteContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
+          drawPaintStage(silhouetteContext, 'stroke');
+          shadowAlphaSurface = silhouette;
+          stagedPaints = true;
+        }
+      } else stagedPaints = true;
+
+      if (stagedPaints) {
+        if (hasInnerShadow) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, shadowAlphaSurface);
+        drawPaintStage(effectContext, 'stroke');
+      } else {
+        // Preserve the established appearance if a mixed-paint shadow cannot
+        // allocate its bounded silhouette surface.
+        effectContext.save();
+        effectContext.setTransform(1, 0, 0, 1, 0, 0);
+        effectContext.clearRect(0, 0, pixelWidth, pixelHeight);
+        effectContext.restore();
+        effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
+        this.drawNode(effectContext, copy, 0, 0, assets, false, false, {
+          ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
+        });
+      }
+    } else {
+      this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+    }
     const topEffects = effects.filter(effect => ['layer-blur', 'noise', 'texture'].includes(effect.type));
     const deferredLayerBlurIds = new Set();
     for (const effect of topEffects) {
@@ -2502,13 +2643,17 @@ export class SceneRenderer {
           Math.max(1, Math.ceil(node.width * rasterScale)), Math.max(1, Math.ceil(node.height * rasterScale)), padX, padY, renderOptions);
       } else this.applyTextureEffects(surface, node, [effect], pixelWidth, pixelHeight, rasterScale, renderOptions);
     }
-    this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
+    if (!stagedPaints) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
+    const spreadDropShadowSurface = this.applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight);
+    const renderedSurface = spreadDropShadowSurface || surface;
+    const customDropShadowsApplied = Boolean(spreadDropShadowSurface);
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
     ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
-    ctx.filter = buildLayerEffectFilter(effects.filter(effect => effect.type === 'drop-shadow' || deferredLayerBlurIds.has(effect.id)), displayScale);
+    ctx.filter = buildLayerEffectFilter(effects.filter(effect => deferredLayerBlurIds.has(effect.id)
+      || (effect.type === 'drop-shadow' && !customDropShadowsApplied)), displayScale);
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
-    ctx.drawImage(surface, x - padX, y - padY, logicalWidth, logicalHeight);
+    ctx.drawImage(renderedSurface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
   }
 
@@ -3488,16 +3633,6 @@ export class SceneRenderer {
       ctx.strokeRect(target.x - 4 / state.zoom, target.y - 4 / state.zoom, target.width + 8 / state.zoom, target.height + 8 / state.zoom);
       ctx.restore();
     }
-  }
-
-  drawEmptyHint(width, height, dpr, state) {
-    const ctx = this.context;
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = 'rgba(30,30,30,.52)'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '500 13px Inter, Arial, sans-serif';
-    ctx.fillText('Create a frame, draw a shape, or drop an image to begin', width / 2, height - 34);
-    ctx.restore();
   }
 
   destroy() { cancelAnimationFrame(this.frame); this.resizeObserver.disconnect(); }

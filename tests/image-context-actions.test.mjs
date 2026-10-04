@@ -5,25 +5,69 @@ import { readFile } from 'node:fs/promises';
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+const imageLibrary = await readFile(new URL('../src/image-library-view.js', import.meta.url), 'utf8');
 
 test('the canvas image action bar exposes crop, save-recipe, and batch-recipe controls', () => {
-  assert.match(html, /id="image-crop-toolbar" role="toolbar" aria-label="Image actions"/);
+  assert.match(html, /id="image-crop-toolbar" role="toolbar" aria-label="Image actions" aria-describedby="image-crop-toolbar-hint"/);
+  assert.match(html, /id="image-context-adjustments"[^>]*>Adjust image<\/button>/);
   assert.match(html, /id="image-context-save-recipe"[^>]*>Save recipe<\/button>/);
+  assert.match(html, /id="image-crop-toolbar-undo"[^>]*hidden>Undo crop<\/button>/);
   assert.match(html, /id="image-crop-toolbar-done"[^>]*>Crop image<\/button>/);
   assert.match(html, /id="image-context-recipe"[^>]*aria-label="Choose a saved recipe to apply to selected images"/);
   assert.match(html, /id="image-context-apply-recipe"[^>]*disabled>Apply recipe<\/button>/);
-  assert.match(html, /Crop: tap Crop image, drag over the part to keep, then tap Finish crop\./);
+  assert.match(html, /Choose Crop image, drag across what to keep, then Finish crop\./);
+  assert.match(main, /Choose Crop image, drag across what to keep, then Finish crop\./);
+  assert.match(main, /Unlock this image to crop it\. Adjust image opens controls; Save recipe reuses edits\./,
+    'a locked image should explain why the crop action is unavailable');
+  assert.match(css, /\.image-crop-toolbar-copy span \{[^}]*font-size: 12px;[^}]*line-height: 1\.4/,
+    'the crop gesture instructions should be readable on desktop as well as mobile');
 });
 
 test('image cropping explains the complete gesture before the user enters crop mode', () => {
   assert.match(html, /To crop, select an image and choose Crop image\./,
     'the empty Layers state should tell the user where cropping starts');
-  assert.match(main, /To crop an image, select it, choose Crop image, drag over what you want to keep, then choose Finish crop\./,
+  assert.match(main, /To crop a photo, select it and choose Crop image\./,
     'the empty inspector should explain the end-to-end crop flow');
-  assert.match(main, /Drag across the part you want to keep\. Drag an edge or corner to adjust it\. Tap Finish crop; Undo restores the previous crop\./,
-    'crop mode should explain what to drag and how to finish or recover');
+  assert.match(main, /Drag across the part you want to keep\. Drag an edge or corner to adjust it\. Undo crop reverses the last step; Finish crop keeps it\./,
+    'crop mode should explain what to drag, how to keep the result, and where to find Undo');
+  assert.match(html, /title="Drag over the part of the image to keep, then choose Finish crop"/,
+    'the Crop image action should explain its result before entering crop mode');
   assert.match(main, /Fill crops the image to this shape\. Choose Position image to move or zoom what shows; use the Crop values below for precise adjustments\./,
     'image fills should distinguish positioning within a shape from cropping a standalone image');
+});
+
+test('selected images provide a direct route to their edit controls, including on phones', () => {
+  assert.match(main, /function openImageAdjustments\(nodeId\)[\s\S]*?setInspectorTab\('design'\)[\s\S]*?toggleMobilePanel\('right'\)[\s\S]*?data-property-section="image-adjustments"[\s\S]*?scrollIntoView/,
+    'Adjust image should open Properties and scroll directly to the image controls');
+  assert.match(main, /section\('Image adjustments', body, null, 'image-adjustments'\)/);
+  assert.match(main, /\$\('#image-context-adjustments'\)\.addEventListener\('click',[\s\S]*?openImageAdjustments\(node\.id\)/);
+  assert.match(css, /\.image-context-adjustments, \.image-context-save-recipe, \.image-context-undo \{[^}]*flex: 0 0 auto/);
+  assert.match(css, /\.image-context-single \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); \}/,
+    'the three common phone actions should remain visible together');
+  assert.match(css, /\.image-context-adjustments, \.image-context-save-recipe, \.image-context-undo, \.image-context-recipe-picker[^}]*min-height: 44px/,
+    'all image actions must keep finger-sized touch targets');
+});
+
+test('crop and image-fill modes expose Undo only when the selected image changed', () => {
+  assert.match(main, /const previousDocument = history\.undoStack\.at\(-1\)\?\.document/);
+  assert.match(main, /const canUndoCurrentAdjustment = Boolean\(active && currentImageTarget && previousImageTarget/);
+  assert.match(main, /undoCropAction\.hidden = !canUndoCurrentAdjustment/);
+  assert.match(main, /\$\('#image-crop-toolbar-undo'\)\.addEventListener\('click',[\s\S]*?undo\(\)/);
+  assert.match(css, /\.image-context-single\[data-crop-mode="true"\]\[data-crop-undo-available="true"\][^}]*grid-template-columns: repeat\(2/,
+    'the phone bar should give Undo and Finish crop equal-width targets when Undo is available');
+});
+
+test('the recipe apply bar explains how to start and what the in-place batch changes', () => {
+  assert.match(main, /state\.layerSelectionMode \? 'Done' : 'Multi-select'/,
+    'the Layers action should name its multi-selection purpose');
+  assert.match(main, /Choose Multi-select in Layers, then tap the image layers you want to update\./,
+    'the disabled recipe action should explain how to get the needed selection');
+  assert.match(main, /Apply the same saved edits to every selected image\./,
+    'the task finder should explain what this action does');
+  assert.match(main, /'multi select', 'multiple images', 'choose images'/,
+    'the action finder should find the recipe flow from multi-selection language');
+  assert.match(main, /This recipe updates these image layers in place\. Other selected layers are left unchanged\./);
+  assert.match(main, /Select an edited image and choose Save recipe, then select the images to update and choose the saved recipe\./);
 });
 
 test('Assets keeps image work visible and groups secondary design-system tools', () => {
@@ -37,6 +81,10 @@ test('Assets keeps image work visible and groups secondary design-system tools',
   for (const id of ['assets-list', 'placed-image-assets', 'image-library-root', 'components-list', 'variable-collections-list', 'font-assets-list']) {
     assert.match(assets, new RegExp(`id="${id}"`), `keep the existing ${id} render target inside its group`);
   }
+  assert.match(assets, /role="heading" aria-level="3"><span>On this page<\/span>/,
+    'distinguish image layers placed on the active page from reusable originals');
+  assert.match(imageLibrary, /<strong>Reusable images<\/strong><small>Original files for this design<\/small>/,
+    'name the reusable-source library and explain that its items are originals');
 });
 
 test('mobile tool status and tooltips teach an action instead of only naming the tool', () => {
@@ -95,7 +143,7 @@ test('single-image and multi-image canvas actions route to the existing recipe a
   assert.match(sync, /const singleImage = state\.selectedIds\.length === 1 && isImage/);
   assert.match(sync, /const batchImages = selectedImages\.length > 1/);
   assert.match(sync, /Apply to \$\{selectedImages\.length\} images/);
-  assert.match(sync, /Other selected layers stay unchanged/);
+  assert.match(sync, /Other selected layers are left unchanged/);
   assert.match(sync, /Boolean\(state\.bulk\)/, 'avoid stacking the context bar on top of the active batch bar');
 
   const actionsStart = main.indexOf("$('#image-context-save-recipe').addEventListener");
@@ -109,7 +157,7 @@ test('single-image and multi-image canvas actions route to the existing recipe a
 });
 
 test('floating recipe controls retain finger-sized touch targets on mobile', () => {
-  assert.match(css, /\.image-context-save-recipe, \.image-context-recipe-picker, \.image-context-apply-recipe, \.image-crop-toolbar-done\s*\{[^}]*min-height:\s*44px/);
+  assert.match(css, /\.image-context-adjustments, \.image-context-save-recipe, \.image-context-undo, \.image-context-recipe-picker, \.image-context-apply-recipe, \.image-crop-toolbar-done\s*\{[^}]*min-height:\s*44px/);
 });
 
 test('the top-bar Share action opens live invitations and File keeps local package sharing', () => {

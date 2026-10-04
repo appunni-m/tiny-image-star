@@ -95,12 +95,19 @@ export async function createFallbackImage(source, {
  * PNG. This keeps TIFF and EXIF-oriented JPEGs on the same decoder and pixel
  * orientation as subsequent edits without changing the retained source bytes.
  */
-export async function createPillowFallbackImage(renderPreview, options = {}) {
+export async function createPillowFallbackImage(renderPreview, { sourceDimensions, ...options } = {}) {
   if (typeof renderPreview !== 'function') throw new TypeError('A local Pillow-RS preview renderer is required.');
   const rendered = await renderPreview();
   if (!rendered?.bytes || !Number.isSafeInteger(rendered.width) || !Number.isSafeInteger(rendered.height)) {
     throw new TypeError('The local Pillow-RS preview is missing valid image bytes or dimensions.');
   }
   const source = new Blob([rendered.bytes], { type: rendered.mimeType || 'image/png' });
-  return createFallbackImage(source, options);
+  const fallback = await createFallbackImage(source, options);
+  if (sourceDimensions === undefined) return fallback;
+  if (!Number.isSafeInteger(sourceDimensions?.width) || sourceDimensions.width < 1
+    || !Number.isSafeInteger(sourceDimensions?.height) || sourceDimensions.height < 1) {
+    fallback.bitmap.close?.();
+    throw new TypeError('The verified source image dimensions are required for a Pillow-RS fallback.');
+  }
+  return { ...fallback, sourceWidth: sourceDimensions.width, sourceHeight: sourceDimensions.height };
 }

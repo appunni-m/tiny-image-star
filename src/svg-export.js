@@ -5,7 +5,7 @@ import { glassVectorExportBlockReason } from './glass-effect.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { imageCropPixels, isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDimensions, isValidImageTileScale } from './image-tile.js';
-import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
+import { isValidLayerEffects, layerEffectPadding, supportsShadowSpread } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
 import { isUniformStrokeSideWidths, isValidStrokeStack, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
@@ -1506,11 +1506,13 @@ function effectDefinition(node, index, document, measureText) {
   ];
   const primitives = orderedEffects.map((effect, effectIndex) => {
     const result = `${id}-result-${effectIndex}`;
+    const spread = supportsShadowSpread(node) ? (effect.spread ?? 0) : 0;
     let primitive;
     if (effect.type === 'layer-blur') {
       primitive = `<feGaussianBlur in="${input}" stdDeviation="${number(effect.radius)}" result="${result}"/>`;
     } else if (effect.type === 'inner-shadow') {
       const blurred = `${result}-blur`;
+      const spreadResult = `${result}-spread`;
       const offset = `${result}-offset`;
       const shape = `${result}-shape`;
       const paint = `${result}-paint`;
@@ -1518,9 +1520,22 @@ function effectDefinition(node, index, document, measureText) {
       // Inner shadows are applied sequentially to the evolving surface by the
       // Canvas renderer. Use the current filter input for both its alpha mask
       // and blurred offset so each later shadow includes earlier shadows.
-      primitive = `<feGaussianBlur in="${input}" stdDeviation="${number(effect.blur)}" result="${blurred}"/><feOffset in="${blurred}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" result="${offset}"/><feComposite in="${input}" in2="${offset}" operator="out" result="${shape}"/><feFlood flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${paint}"/><feComposite in="${paint}" in2="${shape}" operator="in" result="${shadow}"/><feComposite in="${shadow}" in2="${input}" operator="over" result="${result}"/>`;
+      const spreadInput = spread ? spreadResult : input;
+      const morphology = spread
+        ? `<feMorphology in="${input}" operator="${spread > 0 ? 'dilate' : 'erode'}" radius="${number(Math.abs(spread))}" result="${spreadResult}"/>`
+        : '';
+      primitive = `${morphology}<feGaussianBlur in="${spreadInput}" stdDeviation="${number(effect.blur)}" result="${blurred}"/><feOffset in="${blurred}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" result="${offset}"/><feComposite in="${input}" in2="${offset}" operator="out" result="${shape}"/><feFlood flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${paint}"/><feComposite in="${paint}" in2="${shape}" operator="in" result="${shadow}"/><feComposite in="${shadow}" in2="${input}" operator="over" result="${result}"/>`;
     } else {
-      primitive = `<feDropShadow in="${input}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" stdDeviation="${number(effect.blur)}" flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${result}"/>`;
+      if (!spread) {
+        primitive = `<feDropShadow in="${input}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" stdDeviation="${number(effect.blur)}" flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${result}"/>`;
+      } else {
+        const spreadResult = `${result}-spread`;
+        const blurred = `${result}-blur`;
+        const offset = `${result}-offset`;
+        const paint = `${result}-paint`;
+        const shadow = `${result}-shadow`;
+        primitive = `<feMorphology in="${input}" operator="${spread > 0 ? 'dilate' : 'erode'}" radius="${number(Math.abs(spread))}" result="${spreadResult}"/><feGaussianBlur in="${spreadResult}" stdDeviation="${number(effect.blur)}" result="${blurred}"/><feOffset in="${blurred}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" result="${offset}"/><feFlood flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${paint}"/><feComposite in="${paint}" in2="${offset}" operator="in" result="${shadow}"/><feComposite in="${input}" in2="${shadow}" operator="over" result="${result}"/>`;
+      }
     }
     input = result;
     return primitive;

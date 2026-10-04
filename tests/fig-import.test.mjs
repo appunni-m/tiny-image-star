@@ -1728,12 +1728,14 @@ test('keeps supported effects editable while explicitly reporting effect feature
 
   assert.equal(layer.effects.length, 9, 'eight shadows and one blur fit the local stack');
   assert.equal(layer.effects.filter(effect => effect.type === 'drop-shadow').length, 8);
+  assert.equal(layer.effects[0].spread, 5, 'supported shadow spread stays editable instead of being reset');
+  assert.equal(imported.report.flattenedTypes.EFFECT_SPREAD || 0, 0, 'supported spread is preserved without a loss warning');
   assert.equal(layer.effects.filter(effect => effect.type === 'layer-blur').length, 1);
   assert.equal(layer.effects.some(effect => effect.type === 'background-blur'), false,
     'the local model permits only one foreground or background blur');
   assert.equal(imported.report.unsupportedTypes.EFFECT_STACK, 2, 'the ninth shadow and competing blur are reported');
   assert.equal(imported.report.unsupportedTypes.REPEAT, 1, 'unsupported effect types are omitted and identified');
-  for (const warningType of ['EFFECT_SPREAD', 'EFFECT_BLEND', 'EFFECT_ORDER']) {
+  for (const warningType of ['EFFECT_BLEND', 'EFFECT_ORDER']) {
     assert.equal(imported.report.flattenedTypes[warningType], 1, `${warningType} loss is reported`);
   }
   assert.equal(parseDocument(serializeDocument(imported.document)).pages[0].children[0].effects.length, 9);

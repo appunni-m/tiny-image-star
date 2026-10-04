@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage } from '../src/image-processing.js';
 import { createPillowFallbackImage } from '../src/fallback-image-bitmap.js';
-import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from '../src/image-intake.js';
+import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback, shouldPreferPillowFallback } from '../src/image-intake.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions } from '../src/image-engine.js';
 import { assertImagePayloadMatchesPreflight } from '../src/image-memory-budget.js';
 
 await pillow.default({ module_or_path: await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url)) });
+const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
 test('mobile raster files with an empty browser MIME still reach safe format preflight', () => {
   for (const name of ['photo.HEIC', 'photo.heif', 'scan.tif', 'scan.tiff', 'photo.avif']) {
@@ -16,6 +17,39 @@ test('mobile raster files with an empty browser MIME still reach safe format pre
   }
   assert.equal(isImageImportCandidate({ name: 'archive.zip', type: '' }), false);
   assert.equal(isImageImportCandidate({ name: 'blob', type: 'IMAGE/JPEG' }), true);
+});
+
+test('supported still-image imports prefer Pillow-RS while animated GIF keeps the browser decode path', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const jpeg = new Uint8Array([0xff, 0xd8]);
+  const bmp = new Uint8Array([0x42, 0x4d]);
+  const tiff = new Uint8Array([0x49, 0x49]);
+  const pnm = new Uint8Array([0x50, 0x36]);
+  const gif = new Uint8Array(Buffer.from('GIF89a'));
+  const webp = Buffer.alloc(12);
+  webp.write('RIFF', 0, 'ascii'); webp.writeUInt32LE(4, 4); webp.write('WEBP', 8, 'ascii');
+
+  for (const [format, bytes] of Object.entries({ png, jpeg, webp: new Uint8Array(webp), bmp, tiff })) {
+    assert.equal(shouldPreferPillowFallback(bytes), true, `${format} should enter the local Pillow-RS preview path`);
+  }
+  assert.equal(requiresPillowFallback(png), false, 'ordinary PNG remains a preferred, recoverable Pillow path');
+  assert.equal(shouldPreferPillowFallback(gif), false, 'GIF frame behavior stays with the browser decoder');
+  assert.equal(shouldPreferPillowFallback(pnm), false, 'PNM stays off the WASM path until its decoder is verified');
+  assert.equal(shouldPreferPillowFallback(new Uint8Array([1, 2, 3])), false);
+});
+
+test('new imports and restored images use a bounded Pillow-RS preview before the original-image edit path', () => {
+  const importStart = mainSource.indexOf('async function importImageFiles(');
+  const restoreStart = mainSource.indexOf('async function restoreImageAssets(');
+  assert.ok(importStart >= 0 && restoreStart > importStart);
+  const importPath = mainSource.slice(importStart, restoreStart);
+  const restorePath = mainSource.slice(restoreStart, mainSource.indexOf('\nfunction ', restoreStart + 1));
+  for (const path of [importPath, restorePath]) {
+    assert.match(path, /const pillowPreferred = shouldPreferPillowFallback\(sourceBytes\)/);
+    assert.match(path, /previewMaxDimension: FALLBACK_IMAGE_MAX_EDGE/);
+    assert.match(path, /sourceDimensions: (?:verifiedDimensions|actualDimensions)/);
+    assert.match(path, /createFallbackImage\(/, 'a non-required Pillow decode failure retains the browser-decoder fallback');
+  }
 });
 
 function rgbTiff(orientation = 1) {
@@ -244,6 +278,27 @@ test('Pillow-RS rendered fallback follows its local TIFF decoder and remains bou
   assert.deepEqual([fallback.sourceWidth, fallback.sourceHeight], [1, 2]);
   assert.deepEqual([fallback.bitmap.width, fallback.bitmap.height], [1, 2]);
   assert.deepEqual(sourceBytes, retainedSource, 'fallback decode must not rewrite or detach retained originals');
+  fallback.bitmap.close();
+});
+
+test('bounded Pillow-RS fallback keeps original dimensions distinct from its retained canvas bitmap', async () => {
+  const original = new pillow.Image('RGB', 2400, 1200, null);
+  let rendered;
+  try { rendered = renderImage(original, {}, {}, pillow, { previewMaxDimension: 1200 }); }
+  finally { original.free(); }
+  assert.deepEqual([rendered.width, rendered.height], [1200, 600]);
+  const bitmap = { width: rendered.width, height: rendered.height, closed: false, close() { this.closed = true; } };
+  const fallback = await createPillowFallbackImage(async () => rendered, {
+    sourceDimensions: { width: 2400, height: 1200 },
+    createBitmap: async input => {
+      assert.ok(input instanceof Blob);
+      return bitmap;
+    },
+  });
+  assert.equal(fallback.bitmap, bitmap);
+  assert.deepEqual([fallback.bitmap.width, fallback.bitmap.height], [1200, 600]);
+  assert.deepEqual([fallback.sourceWidth, fallback.sourceHeight], [2400, 1200]);
+  assert.equal(bitmap.closed, false);
   fallback.bitmap.close();
 });
 

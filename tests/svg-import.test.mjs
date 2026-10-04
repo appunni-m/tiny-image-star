@@ -463,6 +463,33 @@ test('round-trips editor-exported inner-shadow filter chains as editable ordered
   ]);
 });
 
+test('rejects shadow spread when SVG geometry would import as a layer type that cannot preserve it', () => {
+  const original = createNode('rectangle', {
+    id: 'spread-card', width: 100, height: 60, fill: '#ffffff',
+    effects: [
+      { id: 'outer', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, spread: 4.5 },
+      { id: 'inner', type: 'inner-shadow', visible: true, color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: -2.25 }
+    ]
+  });
+  const svg = exportNodeToSvg(original);
+  importFailure(svg, 'unsupported-shadow-spread-target');
+
+  const zeroSpread = createNode('rectangle', {
+    id: 'zero-spread-card', width: 100, height: 60, fill: '#ffffff',
+    effects: original.effects.map(effect => ({ ...effect, spread: 0 }))
+  });
+  const importedZeroSpread = importSvgToLayers(exportNodeToSvg(zeroSpread));
+  const layer = allNodes(importedZeroSpread.nodes).find(node => node.effects?.length);
+  assert.deepEqual(layer.effects.map(effect => effect.type), ['inner-shadow', 'drop-shadow']);
+  assert.ok(layer.effects.every(effect => effect.spread == null || effect.spread === 0),
+    'ordinary zero-spread shadow filters remain editable on imported paths');
+
+  const malformed = svg.replace('operator="over" result="tis-effect-0-result-0"', 'operator="xor" result="tis-effect-0-result-0"');
+  assert.throws(() => importSvgToLayers(malformed), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter-graph',
+  'near-matching spread chains are rejected before target-layer compatibility is considered');
+});
+
 test('rejects near-matching inner-shadow graphs instead of importing them as editable effects', () => {
   const markup = `<svg width="100" height="80"><defs><filter id="inner" filterUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="100">
     <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blurred"/>

@@ -3720,7 +3720,7 @@ export function autocontrastFn(img, cutoff) {
 }
 
 /**
- * List backends that exist on this machine.
+ * List backend implementations compiled into this module.
  * @returns {string[]}
  */
 export function available_backends() {
@@ -4026,7 +4026,8 @@ export function effectSpreadFn(img, distance) {
 }
 
 /**
- * Activate a compute backend. Returns true if the backend exists.
+ * Enable a backend route for future automatic image routing.
+ * Returns true if this call changed the backend from inactive to active.
  * @param {string} name
  * @returns {boolean}
  */

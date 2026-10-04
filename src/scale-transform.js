@@ -55,7 +55,7 @@ function scaledAppearance(node, factor) {
     }));
   }
   if (Array.isArray(node.effects)) {
-    const dimensions = ['radius', 'blur', 'offsetX', 'offsetY', 'sizeX', 'sizeY'];
+    const dimensions = ['radius', 'blur', 'offsetX', 'offsetY', 'spread', 'sizeX', 'sizeY'];
     patch.effects = node.effects.map(effect => ({
       ...effect,
       ...Object.fromEntries(dimensions.filter(key => Number.isFinite(effect?.[key]) && effect[key] !== 0)

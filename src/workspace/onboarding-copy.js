@@ -2,12 +2,12 @@
 export function workspaceOnboardingCopy({ folderPickerAvailable = false } = {}) {
   if (folderPickerAvailable) {
     return {
-      description: 'Choose a folder to keep your designs as local files. Existing browser designs are copied and verified before editing.',
-      status: 'Choose a folder to create or reconnect your workspace. If folder setup is unavailable here, you can continue with browser storage instead.'
+      description: 'Choose a folder to save your designs as local files. A folder is required for live sharing; browser storage is for editing on this device.',
+      status: 'Existing browser designs are copied and checked before editing. You can choose browser storage for solo editing and add a folder later.'
     };
   }
   return {
-    description: 'This browser can keep your designs in its local profile. Export a local design file from the File menu for backup or transfer.',
-    status: 'This browser cannot choose a writable folder. You can continue with browser-profile storage; your designs will stay in this browser profile.'
+    description: 'This browser can keep designs in its local profile for editing on this device. Live sharing needs a writable folder, which this browser cannot select.',
+    status: 'Continue with browser storage for solo editing. Your designs stay in this browser profile; export a local design file from File for backup or transfer.'
   };
 }

@@ -1,8 +1,10 @@
 import { isValidNoiseEffect } from './noise-effect.js';
 import { isValidTextureEffect } from './texture-effect.js';
 import { isValidGlassEffect, MAX_GLASS_EFFECTS_PER_LAYER } from './glass-effect.js';
+import { fillStackForNode } from './fills.js';
 
 export { MAX_GLASS_EFFECTS_PER_LAYER };
+export const MAX_SHADOW_SPREAD = 1000;
 export const layerEffectTypes = new Set(['drop-shadow', 'inner-shadow', 'layer-blur', 'background-blur', 'noise', 'texture', 'glass']);
 export const MAX_DROP_SHADOWS_PER_LAYER = 8;
 export const MAX_INNER_SHADOWS_PER_LAYER = 8;
@@ -51,7 +53,8 @@ export function isValidLayerEffects(effects) {
       || !Number.isFinite(effect.opacity) || effect.opacity < 0 || effect.opacity > 1
       || !Number.isFinite(effect.offsetX) || Math.abs(effect.offsetX) > 1000
       || !Number.isFinite(effect.offsetY) || Math.abs(effect.offsetY) > 1000
-      || !Number.isFinite(effect.blur) || effect.blur < 0 || effect.blur > 100) return false;
+      || !Number.isFinite(effect.blur) || effect.blur < 0 || effect.blur > 100
+      || (effect.spread != null && (!Number.isFinite(effect.spread) || Math.abs(effect.spread) > MAX_SHADOW_SPREAD))) return false;
   }
   // Match the source editor's mutually exclusive, single blur effect slot.
   return dropShadowCount <= MAX_DROP_SHADOWS_PER_LAYER
@@ -62,6 +65,27 @@ export function isValidLayerEffects(effects) {
     && textureCount <= MAX_TEXTURE_EFFECTS_PER_LAYER
     && glassCount <= MAX_GLASS_EFFECTS_PER_LAYER
     && !(layerBlurCount && backgroundBlurCount);
+}
+
+/**
+ * Figma only applies shadow spread to rectangles and ellipses, and to clipped
+ * frames/components/instances that have a visible fill. Keep stored values on
+ * unsupported nodes so changing their type does not destroy authored data.
+ */
+export function supportsShadowSpread(node) {
+  if (!node) return false;
+  if (node.type === 'rectangle' || node.type === 'ellipse') return true;
+  if (!(node.type === 'frame' || node.isComponent || node.isInstance) || node.clip !== true) return false;
+  return fillStackForNode(node).some(fill => {
+    if (!fill || fill.visible === false) return false;
+    const opacity = Number.isFinite(fill.opacity) ? fill.opacity : 1;
+    if (opacity < 0.01 || (fill.type === 'solid' && (!fill.color || fill.color === 'transparent'))) return false;
+    if (['linear', 'radial', 'angular'].includes(fill.type)) {
+      return Array.isArray(fill.gradient?.stops)
+        && fill.gradient.stops.some(stop => (stop?.opacity ?? 1) * opacity >= 0.01);
+    }
+    return true;
+  });
 }
 
 /** Move one effect within its authored stack without changing the stack's entries. */
@@ -105,8 +129,9 @@ export function layerEffectPadding(effects) {
     if (effect.type === 'layer-blur') {
       x += effect.radius * 3; y += effect.radius * 3;
     } else if (effect.type === 'drop-shadow') {
-      x += Math.abs(effect.offsetX) + effect.blur * 3;
-      y += Math.abs(effect.offsetY) + effect.blur * 3;
+      const spread = Math.max(0, effect.spread ?? 0);
+      x += Math.abs(effect.offsetX) + effect.blur * 3 + spread;
+      y += Math.abs(effect.offsetY) + effect.blur * 3 + spread;
     } else if (effect.type === 'texture' && !effect.clipToShape) {
       x += effect.radius + 1;
       y += effect.radius + 1;

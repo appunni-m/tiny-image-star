@@ -74,7 +74,7 @@ test('image adjustment sliders have accessible names and locked layers reject ed
   const slider = main.match(/function sliderField\([\s\S]*?\n\}/)?.[0] || '';
   assert.match(slider, /aria-label="\$\{escapeHtml\(label\)\}"/, 'the shared inspector range helper names each slider');
   assert.match(slider, /disabled \? ' disabled' : ''/, 'the shared inspector range helper can disable locked images');
-  const imageSection = main.match(/function imageAdjustmentsSection\(node\) \{[\s\S]*?return section\('Image adjustments', body\);\n\}/)?.[0] || '';
+  const imageSection = main.match(/function imageAdjustmentsSection\(node\) \{[\s\S]*?return section\('Image adjustments', body, null, 'image-adjustments'\);\n\}/)?.[0] || '';
   assert.match(imageSection, /sliderField\('Exposure',[\s\S]*?node\.locked\)/);
   assert.match(imageSection, /sliderField\('Temperature',[\s\S]*?node\.locked\)/);
   assert.match(imageSection, /sliderField\('Tint',[\s\S]*?node\.locked\)/);

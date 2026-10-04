@@ -10,7 +10,8 @@ test('a single friendly invite message round-trips as one link and one short-liv
   const message = formatLiveShareMessage(invitation, code);
   assert.match(message, /Open this Tiny Image Star design/);
   assert.match(message, /Use this code within 5 minutes/);
-  assert.match(message, /send your reply back to me/);
+  assert.match(message, /send that reply back to me/);
+  assert.match(message, /you are connected after I accept it/);
   assert.deepEqual(parseLiveShareMessage(message), { invitation, sessionCode: code });
 });
 
@@ -27,6 +28,7 @@ test('a single owner URL carries the invitation and offer through the same paste
 test('the owner can paste a whole phone-shared reply or the raw code', () => {
   const message = formatLiveReplyMessage(code);
   assert.match(message, /Send this whole message to the owner/);
+  assert.match(message, /choose Connect guest/);
   assert.equal(parseLiveReplyMessage(message), code);
   assert.equal(parseLiveReplyMessage(code), code);
   assert.throws(() => parseLiveReplyMessage(`${code}\n${code.replace(/a/g, 'b')}`), /more than one reply/);

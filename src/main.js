@@ -15,8 +15,9 @@ import { imagePreviewMaxDimensionForNode } from './image-preview-surface.js';
 import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFromDisplayRect, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
 import { imageErasePointFromDisplay, imageEraseRadiusFraction, imageEraseRadiusLocal } from './image-erase-geometry.js';
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
-import { createFallbackImage, createPillowFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
-import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from './image-intake.js';
+import { createFallbackImage, createPillowFallbackImage, FALLBACK_IMAGE_MAX_EDGE, fallbackImageDimensions } from './fallback-image-bitmap.js';
+import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback, shouldPreferPillowFallback } from './image-intake.js';
+import { searchActions } from './action-search.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
@@ -26,7 +27,7 @@ import { beginCanvasDragAfterSlop } from './canvas-drag-slop.js';
 import { createPageNodeIndex } from './page-node-index.js';
 import { selectLayersWithSameEffects, selectLayersWithSameFont, selectLayersWithSameInstance, selectLayersWithSamePaint } from './select-similar-layers.js';
 import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount, componentPropertyExposureGroups, componentPropertyTargetInstanceId } from './component-property-exposure.js';
-import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
+import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_SHADOW_SPREAD, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect, supportsShadowSpread } from './layer-effects.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight } from './text-layout.js';
@@ -188,7 +189,7 @@ const state = {
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   imageAiToolsExpandedNodeIds: new Set(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
-  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic',
+  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic', emptyCanvasGuideDismissedPageId: null,
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
@@ -200,6 +201,7 @@ const state = {
   documentSaveConflict: null, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
+  pagePdfAbortController: null,
   localPackageBuilding: false,
   pendingLocalShare: null,
   pendingLocalShareTimer: 0,
@@ -231,6 +233,7 @@ const state = {
 let liveViewOnlyInertState = null;
 let liveViewSyncTimer = 0;
 let livePresenceSyncTimer = 0;
+let quickActionActions = new Map();
 let liveReplyHandoff = null;
 let pendingLiveReplyLink = null;
 const history = new History(120);
@@ -1891,6 +1894,7 @@ function setTool(tool) {
     state.commentPlacementArmed = false;
   }
   state.tool = tool;
+  if (tool !== 'select') state.emptyCanvasGuideDismissedPageId = activePage()?.id || null;
   if (tool === 'frame' && !state.selectedIds.length && state.inspectorTab !== 'design') setInspectorTab('design');
   // Mobile panels make the canvas inert while open. Entering Comment mode
   // requires canvas taps to select objects or place a pin, so dismiss the
@@ -1907,6 +1911,7 @@ function setTool(tool) {
   if (tool === 'comment') syncInspectorTabAccessibility('comments');
   if (tool === 'comment') syncLayerSelectionModeControl();
   updateSelectionStatus();
+  syncEmptyCanvasGuide();
   renderInspector();
 }
 
@@ -1995,13 +2000,15 @@ function renderPageList() {
 function syncLayerSelectionModeControl() {
   const selectMode = $('#layer-select-mode');
   if (!selectMode) return;
-  selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select';
+  const selectionHint = $('#layer-selection-hint');
+  selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Multi-select';
   selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting layers' : 'Select multiple layers');
   selectMode.title = state.layerSelectionMode
     ? 'Tap canvas objects or layer rows to add or remove them from the selection.'
-    : 'Select multiple layers from the canvas or Layers list.';
+    : 'Choose multiple image or design layers from the canvas or Layers list.';
   selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
+  if (selectionHint) selectionHint.hidden = !state.layerSelectionMode;
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
@@ -2101,8 +2108,9 @@ function renderLayers() {
   $('#layers-list').hidden = latestPageLayerIds.length === 0;
 }
 
-function section(title, body, iconName = null) {
-  return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
+function section(title, body, iconName = null, sectionName = null) {
+  const sectionAttribute = sectionName ? ` data-property-section="${escapeHtml(sectionName)}"` : '';
+  return `<section class="property-section"${sectionAttribute}><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
 }
 function framePresetPicker() {
   const preferredCategory = innerWidth <= 820 ? 'phone' : 'desktop';
@@ -2499,9 +2507,9 @@ function imageTransformControls(transforms, target, disabled = false, fillId = '
   const cropTool = target === 'layer'
     ? `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" aria-pressed="${state.imageCropMode && state.selectedIds[0] === nodeId}"${disabled || !cropAvailable ? ' disabled' : ''}>${state.imageCropMode && state.selectedIds[0] === nodeId ? 'Finish crop' : 'Crop image'}</button>${state.imageCropMode && state.selectedIds[0] === nodeId ? '<div class="image-properties-note image-crop-mode-hint">Drag on the image to choose what stays visible. Drag an edge or corner to fine-tune. Changes apply as you release; press Escape or Finish crop to leave. Undo reverses the last change.</div>' : ''}`
     : '';
-  const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
-    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="0.01" value="${formatInspectorNumber(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
-  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div>${cropTool}<div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><div class="property-inline"><button class="add-fill" type="button" data-action="flip-image" data-direction="horizontal" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipHorizontal)}"${disabled ? ' disabled' : ''}>⇋ Flip horizontal</button><button class="add-fill" type="button" data-action="flip-image" data-direction="vertical" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipVertical)}"${disabled ? ' disabled' : ''}>⇵ Flip vertical</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation && !transforms?.flipHorizontal && !transforms?.flipVertical) ? ' disabled' : ''}>Reset image transforms</button><div class="image-properties-note">Crop, rotation, and flips stay editable and are included in saved recipes.</div></div>`;
+  const edges = [['left', 'Left edge'], ['top', 'Top edge'], ['right', 'Right edge'], ['bottom', 'Bottom edge']].map(([edge, label]) =>
+    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="0.01" value="${formatInspectorNumber(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Visible crop ${edge} edge, percent of source"${disabled ? ' disabled' : ''} /></label>`).join('');
+  return `<div class="image-transform-controls"><div class="property-heading">Visible source edges · %</div><p class="image-properties-note">These values mark the edges of the image area that stays visible. Left and top start at 0%; right and bottom end at 100%.</p><div class="property-grid">${edges}</div>${cropTool}<div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><div class="property-inline"><button class="add-fill" type="button" data-action="flip-image" data-direction="horizontal" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipHorizontal)}"${disabled ? ' disabled' : ''}>⇋ Flip horizontal</button><button class="add-fill" type="button" data-action="flip-image" data-direction="vertical" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipVertical)}"${disabled ? ' disabled' : ''}>⇵ Flip vertical</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation && !transforms?.flipHorizontal && !transforms?.flipVertical) ? ' disabled' : ''}>Reset image transforms</button><div class="image-properties-note">Crop, rotation, and flips stay editable and are included in saved recipes.</div></div>`;
 }
 function transformSection(node) {
   const geometry = resolvedGeometry(node);
@@ -2698,7 +2706,22 @@ function imageAdjustmentsSection(node) {
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
   const body = `${imageTransformControls(node.transforms, 'layer', node.locked, '', node.id)}${sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked)}${sliderField('Temperature', 'adjustments.temperature', adjustments.temperature, -100, 100, 1, node.locked)}${sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked)}${sliderField('Highlights', 'adjustments.highlights', adjustments.highlights, -100, 100, 1, node.locked)}${sliderField('Shadows', 'adjustments.shadows', adjustments.shadows, -100, 100, 1, node.locked)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
-  return section('Image adjustments', body);
+  return section('Image adjustments', body, null, 'image-adjustments');
+}
+function openImageAdjustments(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry || entry.node.type !== 'image') return false;
+  if (state.selectedIds.length !== 1 || state.selectedIds[0] !== nodeId) {
+    setSelection([nodeId], { source: 'programmatic' });
+  }
+  if (state.inspectorTab === 'design') renderInspector();
+  else setInspectorTab('design');
+  if (innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) toggleMobilePanel('right');
+  requestAnimationFrame(() => {
+    const section = $('#inspector-content [data-property-section="image-adjustments"]');
+    section?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+  return true;
 }
 function isActiveImageRecipeTarget(nodeId) {
   return isImageRecipeBatchActive(state.bulk) && state.bulk.targets.includes(nodeId);
@@ -2765,7 +2788,7 @@ function layerEffectsSection(node) {
       : effect.type === 'glass'
       ? glassFields
       : ['drop-shadow', 'inner-shadow'].includes(effect.type)
-      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 0.01, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 0.01, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 0.01, 0, 100)}</div>`
+      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 0.01, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 0.01, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 0.01, 0, 100)}${effectNumberField('Spread', effect, 'spread', 0.01, -MAX_SHADOW_SPREAD, MAX_SHADOW_SPREAD, locked || !supportsShadowSpread(node))}</div>${supportsShadowSpread(node) ? '' : '<div class="image-properties-note">Spread applies to rectangles and ellipses, or to clipped frames and components with a visible fill.</div>'}`
       : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 0.01, 0, 100)}</div>`;
     return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="up" aria-label="Move ${name.toLowerCase()} up" title="Move up"${locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="down" aria-label="Move ${name.toLowerCase()} down" title="Move down"${locked || index === effects.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${locked ? ' disabled' : ''}>×</button></div>${fields}</div>`;
   }).join('');
@@ -4298,7 +4321,7 @@ function renderInspector() {
   if (!entries.length) {
     const page = activePage();
     const framePresets = state.tool === 'frame' ? framePresetPicker() : '';
-    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, frame, or text. To crop an image, select it, choose Crop image, drag over what you want to keep, then choose Finish crop.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div>`)}`;
+    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, draw a frame, or add text. To crop a photo, select it and choose Crop image.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><p class="image-properties-note">A Page is an open workspace. Frames are fixed-size areas inside it. Choose a paper size when exporting a PDF.</p>`)}`;
     return;
   }
   if (entries.length > 1) {
@@ -4766,12 +4789,22 @@ function renderAssetsTab() {
   else state.imageLibraryView.refresh(state.document);
 }
 
+function syncEmptyCanvasGuide() {
+  const guide = $('#empty-canvas-guide');
+  if (!guide) return;
+  const page = activePage();
+  guide.hidden = !page || Boolean(page.children?.length)
+    || state.presenting
+    || state.emptyCanvasGuideDismissedPageId === page.id;
+}
+
 function renderUI() {
   syncActiveImageSource();
   syncImageCropOverlay();
   $('#document-name').value = state.document.name;
   $('#canvas-file-name').textContent = state.document.name;
   renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
+  syncEmptyCanvasGuide();
   syncLiveViewDock();
   renderer?.invalidate();
 }
@@ -8772,7 +8805,11 @@ function updateLayerEffectInput(input) {
     effect[field] = Math.max(0, Math.min(maximum, Number(input.value)));
     input.value = String(effect[field]);
     if (input.nextElementSibling?.tagName === 'OUTPUT') input.nextElementSibling.value = `${Math.round(effect[field])}${field === 'lightAngle' ? '°' : '%'}`;
-  } else if (['offsetX', 'offsetY', 'blur', 'radius'].includes(field) && Number.isFinite(Number(input.value))) effect[field] = Number(input.value);
+  } else if (['offsetX', 'offsetY', 'blur', 'radius', 'spread'].includes(field) && Number.isFinite(Number(input.value))) {
+    const value = Number(input.value);
+    effect[field] = field === 'spread' ? Math.max(-MAX_SHADOW_SPREAD, Math.min(MAX_SHADOW_SPREAD, value)) : value;
+    input.value = String(effect[field]);
+  }
   else return;
   recordNodeComponentOverrides(node, ['effects']);
   renderer.invalidate();
@@ -8981,6 +9018,7 @@ function syncImageCropToolbar() {
   const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
   const isImage = node?.type === 'image';
   const active = Boolean(state.imageCropMode && node && (isImage || state.imageFillCropTarget?.nodeId === node.id));
+  toolbar.dataset.cropMode = String(active);
   const singleImage = state.selectedIds.length === 1 && isImage;
   const batchImages = selectedImages.length > 1;
   toolbar.hidden = Boolean(state.bulk) || !(active || singleImage || batchImages);
@@ -8989,10 +9027,33 @@ function syncImageCropToolbar() {
   const action = $('#image-crop-toolbar-done');
   const singleActions = $('#image-context-single');
   const batchActions = $('#image-context-batch');
+  const adjustAction = $('#image-context-adjustments');
   const saveRecipeAction = $('#image-context-save-recipe');
+  const undoCropAction = $('#image-crop-toolbar-undo');
   singleActions.hidden = !(active || singleImage);
+  adjustAction.hidden = active;
+  adjustAction.disabled = Boolean(node?.locked || active);
   saveRecipeAction.hidden = active;
   batchActions.hidden = active || !batchImages;
+  const adjustingFill = Boolean(state.imageFillCropTarget);
+  const currentImageTarget = active
+    ? adjustingFill ? imageFillTarget(node, state.imageFillCropTarget.fillId) : node
+    : null;
+  const previousDocument = history.undoStack.at(-1)?.document;
+  const previousNode = previousDocument && node ? findNode(previousDocument, node.id)?.node : null;
+  const previousImageTarget = adjustingFill
+    ? imageFillTarget(previousNode, state.imageFillCropTarget?.fillId)
+    : previousNode;
+  const defaultCrop = createImageTransforms().crop;
+  const cropValue = target => JSON.stringify(target?.transforms?.crop || defaultCrop);
+  const canUndoCurrentAdjustment = Boolean(active && currentImageTarget && previousImageTarget
+    && cropValue(currentImageTarget) !== cropValue(previousImageTarget));
+  singleActions.dataset.cropMode = String(active);
+  singleActions.dataset.cropUndoAvailable = String(canUndoCurrentAdjustment);
+  undoCropAction.hidden = !canUndoCurrentAdjustment;
+  undoCropAction.disabled = !canUndoCurrentAdjustment;
+  undoCropAction.textContent = adjustingFill ? 'Undo position' : 'Undo crop';
+  undoCropAction.title = adjustingFill ? 'Undo the most recent position or zoom change' : 'Undo the most recent crop change';
 
   if (batchImages && !active) {
     const recipes = state.document.recipes || [];
@@ -9004,25 +9065,33 @@ function syncImageCropToolbar() {
     apply.textContent = `Apply to ${selectedImages.length} images`;
     $('#image-crop-toolbar-title').textContent = `Apply a recipe to ${selectedImages.length} images`;
     $('#image-crop-toolbar-hint').textContent = recipes.length
-      ? 'The recipe runs on these image layers in place. Other selected layers stay unchanged.'
-      : 'Select one edited image and choose Save recipe first, then return here to apply it.';
+      ? 'This recipe updates these image layers in place. Other selected layers are left unchanged.'
+      : 'Select an edited image and choose Save recipe, then select the images to update and choose the saved recipe.';
     return;
   }
 
   if (!active && singleImage) {
+    const cropContext = imageCropContext(node);
     $('#image-crop-toolbar-title').textContent = 'Edit image';
-    $('#image-crop-toolbar-hint').textContent = 'Crop: tap Crop image, drag over the part to keep, then tap Finish crop. Save recipe reuses these edits on other images.';
+    $('#image-crop-toolbar-hint').textContent = node.locked
+      ? 'Unlock this image to crop it. Adjust image opens controls; Save recipe reuses edits.'
+      : cropContext
+        ? 'Choose Crop image, drag across what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.'
+        : 'Cropping is unavailable because this image’s dimensions are missing.';
     action.textContent = 'Crop image';
-    action.disabled = node.locked || !imageCropContext(node);
+    action.title = node.locked ? 'Unlock this image to crop it' : 'Drag over the part of the image to keep, then choose Finish crop';
+    action.disabled = node.locked || !cropContext;
     return;
   }
   if (!active) return;
-  const adjustingFill = Boolean(state.imageFillCropTarget);
   $('#image-crop-toolbar-title').textContent = adjustingFill ? 'Adjust image fill' : 'Crop image';
   $('#image-crop-toolbar-hint').textContent = adjustingFill
-    ? 'Drag to reposition the image, or pinch / use Zoom to resize it. Tap Done positioning when ready; Undo restores the previous position.'
-    : 'Drag across the part you want to keep. Drag an edge or corner to adjust it. Tap Finish crop; Undo restores the previous crop.';
+    ? 'Drag to reposition the image, or pinch / use Zoom to resize it. Undo position reverses the last step; Done positioning keeps it.'
+    : 'Drag across the part you want to keep. Drag an edge or corner to adjust it. Undo crop reverses the last step; Finish crop keeps it.';
   action.textContent = adjustingFill ? 'Done positioning' : 'Finish crop';
+  action.title = adjustingFill
+    ? 'Keep this image position and return to the canvas'
+    : 'Keep this crop and exit crop mode; Undo crop reverses the last step';
   action.disabled = false;
 }
 
@@ -12155,19 +12224,33 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: file.size, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
       assetReservation = reserveImageMemory(assetBytes, { kind: 'asset-pending' });
       if (!assetReservation) throw retainedImageLimitMessage();
-      decodeReservation = reserveImageMemory(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
-      if (!decodeReservation) throw retainedImageLimitMessage();
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
       const verifiedDimensions = assertSafeRasterDimensions(sourceBytes);
       assertImagePayloadMatchesPreflight({ expectedDimensions: sourceDimensions, expectedByteLength: file.size, actualDimensions: verifiedDimensions, actualByteLength: sourceBytes.byteLength });
+      const pillowRequired = requiresPillowFallback(sourceBytes);
+      const pillowPreferred = shouldPreferPillowFallback(sourceBytes);
+      const boundedDimensions = fallbackImageDimensions(verifiedDimensions.width, verifiedDimensions.height);
+      const decodeDimensions = pillowPreferred ? boundedDimensions : verifiedDimensions;
+      decodeReservation = reserveImageMemory(estimateBitmapBytes(decodeDimensions.width, decodeDimensions.height), { kind: 'decode-transient' });
+      if (!decodeReservation) throw retainedImageLimitMessage();
       let fallback;
-      if (requiresPillowFallback(sourceBytes)) {
+      if (pillowPreferred) {
         pillowFallbackUsed = true;
         try {
-          fallback = await createPillowFallbackImage(() => imageEngine.render(assetId, sourceBytes, {}, {}));
+          fallback = await createPillowFallbackImage(
+            () => imageEngine.render(assetId, sourceBytes, {}, {}, { previewMaxDimension: FALLBACK_IMAGE_MAX_EDGE }),
+            { sourceDimensions: verifiedDimensions }
+          );
         } catch (error) {
-          if (error instanceof ImageMemoryLimitError) throw error;
-          throw new Error(imageDecodeFailureMessage(sourceBytes, error));
+          if (error instanceof ImageMemoryLimitError || pillowRequired) {
+            if (error instanceof ImageMemoryLimitError) throw error;
+            throw new Error(imageDecodeFailureMessage(sourceBytes, error));
+          }
+          imageEngine.dispose(assetId);
+          imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+          decodeReservation = reserveImageMemory(estimateBitmapBytes(verifiedDimensions.width, verifiedDimensions.height), { kind: 'decode-transient' });
+          if (!decodeReservation) throw retainedImageLimitMessage();
+          fallback = await createFallbackImage(file);
         }
       } else fallback = await createFallbackImage(file);
       if (fallback.sourceWidth !== verifiedDimensions.width || fallback.sourceHeight !== verifiedDimensions.height) {
@@ -12319,8 +12402,6 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
       const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: metadata.byteLength, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
       reservations.assetReservation = reserveImageMemory(assetBytes, { kind: 'asset-pending', excludeAssetIds: [assetId] });
       if (!reservations.assetReservation) throw retainedImageLimitMessage();
-      reservations.decodeReservation = reserveImageMemory(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient', excludeAssetIds: [assetId] });
-      if (!reservations.decodeReservation) throw retainedImageLimitMessage();
       const saved = await loadActiveImageAsset(assetId);
       if (generation !== state.documentGeneration) { releaseImageMemoryReservations(imageMemoryBudget, reservations); return; }
       if (!saved) { releaseImageMemoryReservations(imageMemoryBudget, reservations); state.imageStatus.set(previewKey, 'Original image missing'); continue; }
@@ -12332,14 +12413,31 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
         actualDimensions,
         actualByteLength: sourceBytes.byteLength
       });
+      const pillowRequired = requiresPillowFallback(sourceBytes);
+      const pillowPreferred = shouldPreferPillowFallback(sourceBytes);
+      const boundedDimensions = fallbackImageDimensions(actualDimensions.width, actualDimensions.height);
+      const decodeDimensions = pillowPreferred ? boundedDimensions : actualDimensions;
+      reservations.decodeReservation = reserveImageMemory(estimateBitmapBytes(decodeDimensions.width, decodeDimensions.height), { kind: 'decode-transient', excludeAssetIds: [assetId] });
+      if (!reservations.decodeReservation) throw retainedImageLimitMessage();
       let fallback;
-      if (requiresPillowFallback(sourceBytes)) {
+      if (pillowPreferred) {
         pillowFallbackUsed = true;
         try {
-          fallback = await createPillowFallbackImage(() => imageEngine.render(assetId, sourceBytes, {}, {}));
+          fallback = await createPillowFallbackImage(
+            () => imageEngine.render(assetId, sourceBytes, {}, {}, { previewMaxDimension: FALLBACK_IMAGE_MAX_EDGE }),
+            { sourceDimensions: actualDimensions }
+          );
         } catch (error) {
-          if (error instanceof ImageMemoryLimitError) throw error;
-          throw new Error(imageDecodeFailureMessage(sourceBytes, error));
+          if (error instanceof ImageMemoryLimitError || pillowRequired) {
+            if (error instanceof ImageMemoryLimitError) throw error;
+            throw new Error(imageDecodeFailureMessage(sourceBytes, error));
+          }
+          imageEngine.dispose(assetId);
+          imageMemoryBudget.releaseReservation(reservations.decodeReservation);
+          reservations.decodeReservation = null;
+          reservations.decodeReservation = reserveImageMemory(estimateBitmapBytes(actualDimensions.width, actualDimensions.height), { kind: 'decode-transient', excludeAssetIds: [assetId] });
+          if (!reservations.decodeReservation) throw retainedImageLimitMessage();
+          fallback = await createFallbackImage(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
         }
       } else fallback = await createFallbackImage(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
       if (fallback.sourceWidth !== actualDimensions.width || fallback.sourceHeight !== actualDimensions.height) {
@@ -12793,8 +12891,8 @@ function renderBulkBar() {
   speedValue.dataset.activeWorkers = String(activeBatchWorkers);
   speedValue.dataset.workersReady = String(engineMetrics.workersReady);
   const localAiWorkerDescription = bulk.localAiRequired ? `; ${localAiCpuReservationDescription(bulk)} is included in the CPU budget` : '';
-  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum in-flight jobs; ${activeBatchWorkers} active workers in this batch; ${engineMetrics.active} active render jobs total; ${engineMetrics.workersReady} ready${localAiWorkerDescription}`);
-  speedValue.title = `Engine limit: ${engineMetrics.concurrency} render worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} in-flight job${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued render jobs.${bulk.localAiRequired ? ` A serialized local AI worker may run alongside render jobs and reserves up to ${bulk.localAiCpuSlots} CPU slot${bulk.localAiCpuSlots === 1 ? '' : 's'}; image rate includes both stages.` : ''} Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+  speedValue.setAttribute('aria-label', `Up to ${bulk.concurrency} images at once; ${activeBatchWorkers} active in this batch; ${engineMetrics.active} active image renders total; ${engineMetrics.workersReady} render workers ready${localAiWorkerDescription}`);
+  speedValue.title = `${activeBatchWorkers} of up to ${bulk.concurrency} images processing now. Memory limits or local image-model work may affect the speed.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
@@ -14233,15 +14331,329 @@ function bakeSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
   } catch (error) { showToast(error.message || 'This Boolean group cannot be baked exactly.'); }
 }
 
+function openImageAiControls(nodeId, controlSelector) {
+  if (!openImageAdjustments(nodeId)) return false;
+  state.imageAiToolsExpandedNodeIds.add(nodeId);
+  requestAnimationFrame(() => {
+    const disclosure = $('#inspector-content .image-ai-tools');
+    if (!disclosure) return;
+    disclosure.open = true;
+    const control = disclosure.querySelector(controlSelector);
+    (control || disclosure).scrollIntoView({ block: 'center', behavior: 'smooth' });
+    control?.focus({ preventScroll: true });
+  });
+  return true;
+}
+
+function quickActionCatalog() {
+  const selection = selectedNodes();
+  const batchReason = isImageRecipeBatchActive(state.bulk)
+    ? 'Finish or cancel the current image batch first.' : '';
+  const selectedImage = state.selectedIds.length === 1
+    ? findNode(state.document, state.selectedIds[0])?.node
+    : null;
+  const selectedImageEntry = selectedImage ? findNode(state.document, selectedImage.id) : null;
+  const selectedImageLocked = Boolean(selectedImage?.locked || selectedImageEntry?.parents.some(parent => parent.locked));
+  const selectedImageFills = selectedImage && selectedImage.type !== 'image'
+    ? fillStackForNode(selectedImage).filter(fill => fill.type === 'image' && fill.visible !== false && (fill.opacity ?? 1) > 0)
+    : [];
+  const selectedImageFill = selectedImageFills.length === 1 ? selectedImageFills[0] : null;
+  const selectedImageFillCropContext = selectedImageFill ? imageFillCropContext(selectedImage, selectedImageFill.id) : null;
+  const imageAiUnavailableReason = batchReason || (selectedImage?.type !== 'image'
+    ? 'Select one image layer first.'
+    : selectedImageLocked
+      ? 'Unlock this image and its parent layers before using local image tools.' : '');
+  const imageLayers = [...new Map(selection.filter(node => node.type === 'image').map(node => [node.id, node])).values()];
+  const exportRoots = orderedRootSelection().map(id => findNode(state.document, id)?.node).filter(Boolean);
+  const exportingImageArchive = exportRoots.length > 1 && exportRoots.every(node => node.type === 'image');
+  const hasRecipes = (state.document.recipes || []).length > 0;
+  const cropContext = selectedImage?.type === 'image' ? imageCropContext(selectedImage) : null;
+  const cropDisabledReason = batchReason || (selectedImage?.type !== 'image'
+    ? selectedImageFills.length ? 'This photo is inside a shape. Use Crop image inside shape below.' : 'Select an image layer first, or choose Add image if none is on this page.'
+    : selectedImage.locked ? 'Unlock the image before cropping it.'
+      : !cropContext ? 'The image source or dimensions are not ready yet.' : '');
+  const imageFillCropUnavailableReason = batchReason || (selectedImageFills.length !== 1
+    ? 'Choose one visible image fill in Design properties.'
+    : selectedImageLocked ? 'Unlock this shape and its parent layers before positioning its image.'
+      : selectedImageFill.imageFill?.fit !== 'cover' ? 'In Design properties, change Scale to Fill before positioning this image.'
+        : !selectedImageFillCropContext ? 'The image source or dimensions are not ready yet.' : '');
+  const recipeDisabledReason = batchReason || (!imageLayers.length
+    ? 'Choose Multi-select in Layers, then tap the image layers you want to update.'
+    : !hasRecipes ? 'Save a recipe from an edited image first.' : '');
+  return [
+    {
+      id: 'crop-image', label: 'Crop image',
+      description: cropContext
+        ? 'Drag across the area to keep, adjust its edges, then choose Finish crop.'
+        : selectedImageFills.length
+          ? 'This photo is inside a shape. Choose Crop image inside shape to position or zoom it.'
+          : 'Select an image, choose Crop image, drag over the area to keep, then choose Finish crop.',
+      keywords: ['trim', 'cut', 'photo', 'photos', 'picture', 'pictures', 'image', 'images', 'cropping', 'crop tool'],
+      disabled: Boolean(cropDisabledReason), unavailableReason: cropDisabledReason,
+      run: () => toggleSelectedImageCropMode(),
+    },
+    ...(selectedImageFills.length ? [{
+      id: 'crop-image-fill', label: 'Crop image inside shape',
+      description: selectedImageFillCropContext
+        ? 'Drag the photo inside its shape to choose what shows. Pinch or use Zoom to resize it.'
+        : 'Select a shape with one visible image fill. Choose Fill in Design properties before positioning it.',
+      keywords: ['crop image', 'crop photo in shape', 'position image', 'reposition photo', 'image fill', 'image inside shape'],
+      disabled: Boolean(imageFillCropUnavailableReason),
+      unavailableReason: imageFillCropUnavailableReason,
+      run: () => {
+        setInspectorTab('design');
+        applyInspectorAction('toggle-image-crop-mode', { transformTarget: 'fill', fillId: selectedImageFill.id });
+      },
+    }] : []),
+    {
+      id: 'add-image', label: 'Add image', description: 'Choose image files from this device and place them on the canvas. Add an image before cropping it.',
+      keywords: ['images', 'photo', 'photos', 'picture', 'pictures', 'import', 'upload image', 'crop image'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: chooseImageFiles,
+    },
+    {
+      id: 'create-frame', label: 'Create a frame', description: 'Choose the frame tool, then drag on the canvas or select a preset.',
+      keywords: ['artboard', 'size', 'phone screen', 'layout'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: () => setTool('frame'),
+    },
+    {
+      id: 'add-text', label: 'Add text', description: 'Choose the text tool, then click or drag on the canvas.',
+      keywords: ['type', 'label', 'title', 'copy'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: () => setTool('text'),
+    },
+    {
+      id: 'adjust-image', label: 'Adjust selected image',
+      description: 'Open image controls for exposure, color, crop, erase, and local enhancement.',
+      keywords: ['edit photo', 'brightness', 'contrast', 'image adjustments'],
+      disabled: Boolean(batchReason || selectedImage?.type !== 'image' || selectedImage.locked),
+      unavailableReason: batchReason || (selectedImage?.type !== 'image' ? 'Select one image layer first.' : selectedImage.locked ? 'Unlock the image before editing it.' : ''),
+      run: () => openImageAdjustments(selectedImage.id),
+    },
+    {
+      id: 'erase-image-object', label: 'Erase an object from an image',
+      description: selectedImage?.type === 'image'
+        ? `${selectedImageLocked ? 'Unlock the image first. ' : ''}Open local Object erase, brush over the object, then choose Done erasing. The original stays available.`
+        : 'Select an image to open Object erase, brush over the object, then choose Done erasing.',
+      keywords: ['erase object', 'erase objects', 'remove object', 'remove objects', 'remove person', 'remove people', 'erase person', 'inpaint', 'magic erase', 'object eraser'],
+      disabled: Boolean(imageAiUnavailableReason && selectedImage?.type !== 'image' || batchReason),
+      unavailableReason: imageAiUnavailableReason,
+      run: () => openImageAiControls(selectedImage.id, '[data-action="toggle-image-erase-mode"]'),
+    },
+    {
+      id: 'isolate-image-subject', label: 'Cut out or isolate a subject',
+      description: selectedImage?.type === 'image'
+        ? `${selectedImageLocked ? 'Unlock the image first. ' : ''}Open Select area, draw a lasso or add Include/Exclude marks, then choose Isolate. The cutout becomes a new transparent layer.`
+        : 'Select an image to mark a subject with a lasso or Include/Exclude strokes, then create a transparent layer.',
+      keywords: ['select subject', 'select subjects', 'isolate subject', 'isolate subjects', 'cut out subject', 'remove subject', 'transparent cutout', 'magic touch'],
+      disabled: Boolean(imageAiUnavailableReason && selectedImage?.type !== 'image' || batchReason),
+      unavailableReason: imageAiUnavailableReason,
+      run: () => openImageAiControls(selectedImage.id, '[data-action="toggle-object-isolation-mode"]'),
+    },
+    {
+      id: 'remove-image-background',
+      label: selectedImage?.backgroundRemoved ? 'Restore original image background' : 'Remove image background',
+      description: selectedImage?.backgroundRemoved
+        ? 'Open the local background controls and restore the original image background.'
+        : `${selectedImageLocked ? 'Unlock the image first. ' : ''}Open the local background-removal control. It makes this image transparent and keeps the original available for Undo.`,
+      keywords: ['remove background', 'remove backgrounds', 'background remover', 'transparent background', 'background removal', 'photo background', 'image background', 'knock out background'],
+      disabled: Boolean(imageAiUnavailableReason && selectedImage?.type !== 'image' || batchReason),
+      unavailableReason: imageAiUnavailableReason,
+      run: () => openImageAiControls(selectedImage.id, '[data-action="toggle-image-background-removal"]'),
+    },
+    {
+      id: 'expand-image',
+      label: selectedImage?.imageExpansion ? 'Restore original image size' : 'Expand image edges',
+      description: selectedImage?.imageExpansion
+        ? 'Open the local expansion controls and restore the exact original image and size.'
+        : `${selectedImageLocked ? 'Unlock the image first. ' : ''}Open local Expand controls, set how much canvas to add at each edge, then choose Expand image. Original pixels remain recoverable.`,
+      keywords: ['expand image', 'expand images', 'extend image', 'extend images', 'uncrop', 'outpaint', 'add canvas around photo', 'extend photo edges'],
+      disabled: Boolean(imageAiUnavailableReason && selectedImage?.type !== 'image' || batchReason),
+      unavailableReason: imageAiUnavailableReason,
+      run: () => openImageAiControls(selectedImage.id, selectedImage?.imageExpansion
+        ? '[data-action="restore-image-expansion"]' : '[data-image-expansion-side="top"]'),
+    },
+    {
+      id: 'boost-image-resolution',
+      label: selectedImage?.resolutionBoosted ? 'Restore original resolution' : 'Boost image resolution 4×',
+      description: selectedImage?.resolutionBoosted
+        ? 'Open local resolution controls and restore the original image resolution.'
+        : `${selectedImageLocked ? 'Unlock the image first. ' : ''}Open local 4× resolution boost controls. The source image stays available for Undo and recipe replay.`,
+      keywords: ['upscale image', 'upscale images', 'upscale photo', 'upscale photos', 'increase resolution', 'higher resolution', 'super resolution', 'resolution boost', 'enhance resolution'],
+      disabled: Boolean(imageAiUnavailableReason && selectedImage?.type !== 'image' || batchReason),
+      unavailableReason: imageAiUnavailableReason,
+      run: () => openImageAiControls(selectedImage.id, '[data-action="toggle-image-resolution-boost"]'),
+    },
+    {
+      id: 'save-image-recipe', label: 'Save selected image as a recipe',
+      description: 'Save this image’s current look to reuse it on other images.',
+      keywords: ['preset', 'save preset', 'reuse edits', 'image recipe'],
+      disabled: Boolean(batchReason || selectedImage?.type !== 'image'),
+      unavailableReason: batchReason || (selectedImage?.type !== 'image' ? 'Select one edited image layer first.' : ''),
+      run: () => saveRecipeFor(selectedImage.id),
+    },
+    {
+      id: 'apply-image-recipe',
+      label: `Apply a recipe to selected image${imageLayers.length === 1 ? '' : 's'}`,
+      description: imageLayers.length > 1
+        ? `Choose a saved recipe to process ${imageLayers.length} selected image layers in place.`
+        : imageLayers.length === 1
+          ? 'Choose a saved recipe to apply to the selected image layer.'
+          : 'Apply the same saved edits to every selected image.',
+      keywords: ['batch', 'bulk', 'preset', 'process images', 'apply edits', 'multi select', 'multiple images', 'choose images'],
+      disabled: Boolean(recipeDisabledReason), unavailableReason: recipeDisabledReason,
+      run: () => {
+        if (imageLayers.length > 1) $('#image-context-recipe')?.focus({ preventScroll: true });
+        else {
+          openImageAdjustments(imageLayers[0].id);
+          requestAnimationFrame(() => $('#selection-image-recipe')?.focus({ preventScroll: true }));
+        }
+      },
+    },
+    {
+      id: 'undo', label: 'Undo', description: 'Reverse the last design change.', keywords: ['back', 'revert'],
+      shortcut: '⌘Z', disabled: !history.canUndo || isImageRecipeBatchActive(state.bulk), run: undo,
+    },
+    {
+      id: 'redo', label: 'Redo', description: 'Restore the last change you undid.', keywords: ['forward', 'repeat'],
+      shortcut: '⌘⇧Z', disabled: !history.canRedo || isImageRecipeBatchActive(state.bulk), run: redo,
+    },
+    {
+      id: 'add-page', label: 'Add page', description: 'Create a new open canvas page in this design.',
+      keywords: ['new page', 'canvas'], disabled: Boolean(batchReason), unavailableReason: batchReason, run: addPage,
+    },
+    {
+      id: 'export-selection',
+      label: exportingImageArchive ? `Export ${exportRoots.length} images as ZIP` : 'Export selection as PNG',
+      description: exportingImageArchive
+        ? `Download the ${exportRoots.length} selected images together in a ZIP archive.`
+        : 'Download the selected layer or image layers as PNG.',
+      keywords: ['save image', 'download', 'export selected image', 'zip', 'archive'], disabled: Boolean(batchReason || !state.selectedIds.length),
+      unavailableReason: batchReason || (!state.selectedIds.length ? 'Select at least one layer first.' : ''), run: exportSelectionPng,
+    },
+    {
+      id: 'export-edited-image', label: 'Download edited image at original resolution',
+      description: 'Export the selected image’s crop, rotation, adjustments, and erase edits from its original source.',
+      keywords: ['full resolution', 'high resolution', 'download edited original', 'save full size photo'],
+      disabled: Boolean(batchReason || selectedImage?.type !== 'image'),
+      unavailableReason: batchReason || (selectedImage?.type !== 'image' ? 'Select one image layer first.' : ''),
+      run: () => exportEditedImageSource(selectedImage.id).catch(error => showToast(error.message || 'Could not export the edited image.')),
+    },
+    {
+      id: 'export-page-pdf', label: 'Export page as PDF', description: 'Choose paper size and save the visible artwork as a PDF.',
+      keywords: ['print', 'paper', 'pdf', 'document'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: openPagePdfDialog,
+    },
+    {
+      id: 'present-prototype', label: 'Present prototype', description: 'Preview this design’s interactive prototype.',
+      keywords: ['preview', 'play', 'presentation'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: () => startPresentation(),
+    },
+    {
+      id: 'open-designs', label: 'Open your designs', description: 'Browse locally saved designs on this device.',
+      keywords: ['files', 'recent', 'open design'], disabled: Boolean(batchReason),
+      unavailableReason: batchReason, run: openDesignLibrary,
+    },
+  ];
+}
+
+function renderQuickActionResults(query = $('#quick-actions-search').value) {
+  const results = $('#quick-actions-results');
+  const empty = $('#quick-actions-empty');
+  quickActionActions = new Map();
+  results.replaceChildren();
+  const actions = searchActions(quickActionCatalog(), query, { limit: 20 });
+  empty.hidden = actions.length > 0;
+  for (const [index, action] of actions.entries()) {
+    quickActionActions.set(action.id, action);
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'quick-action-option';
+    option.id = `quick-action-option-${index}`;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', 'false');
+    option.disabled = Boolean(action.disabled);
+    const copy = document.createElement('span');
+    copy.className = 'quick-action-option-copy';
+    const title = document.createElement('span');
+    title.className = 'quick-action-option-title';
+    title.textContent = action.label;
+    const description = document.createElement('span');
+    description.className = 'quick-action-option-description';
+    description.textContent = action.disabled && action.unavailableReason
+      ? `${action.description} ${action.unavailableReason}` : action.description;
+    copy.append(title, description);
+    option.append(copy);
+    if (action.shortcut) {
+      const shortcut = document.createElement('span');
+      shortcut.className = 'quick-action-option-shortcut';
+      shortcut.textContent = action.shortcut;
+      option.append(shortcut);
+    }
+    option.addEventListener('click', () => runQuickAction(action.id));
+    results.append(option);
+  }
+  const firstEnabled = results.querySelector('.quick-action-option:not(:disabled)');
+  if (firstEnabled) setQuickActionActive(firstEnabled);
+  else $('#quick-actions-search').removeAttribute('aria-activedescendant');
+}
+
+function setQuickActionActive(option) {
+  const results = $('#quick-actions-results');
+  const options = [...results.querySelectorAll('.quick-action-option:not(:disabled)')];
+  const index = options.indexOf(option);
+  if (index < 0) return false;
+  for (const item of results.querySelectorAll('.quick-action-option')) {
+    item.setAttribute('aria-selected', String(item === option));
+  }
+  $('#quick-actions-search').setAttribute('aria-activedescendant', option.id);
+  option.scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+function moveQuickActionSelection(direction) {
+  const options = [...$('#quick-actions-results').querySelectorAll('.quick-action-option:not(:disabled)')];
+  if (!options.length) return false;
+  const current = options.findIndex(option => option.getAttribute('aria-selected') === 'true');
+  const next = current < 0 ? 0 : (current + direction + options.length) % options.length;
+  return setQuickActionActive(options[next]);
+}
+
+function runQuickAction(actionId) {
+  const action = quickActionActions.get(actionId);
+  if (!action || action.disabled) return false;
+  const dialog = $('#quick-actions-dialog');
+  if (dialog.open) dialog.close('run');
+  action.run?.();
+  return true;
+}
+
+function openQuickActions(query = '') {
+  const dialog = $('#quick-actions-dialog');
+  if (document.querySelector('dialog[open]') && !dialog.open) return false;
+  const menu = $('#context-menu');
+  const menuReturnFocus = !menu.hidden ? menu._returnFocusElement : null;
+  if (!menu.hidden) closeMenu();
+  if (menuReturnFocus?.isConnected && !menuReturnFocus.closest('[inert]')) menuReturnFocus.focus({ preventScroll: true });
+  if (!dialog.open) dialog.showModal();
+  const input = $('#quick-actions-search');
+  input.value = query;
+  input.setAttribute('aria-expanded', 'true');
+  renderQuickActionResults(query);
+  input.focus({ preventScroll: true });
+  input.select();
+  return true;
+}
+
 function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
   const exportIds = orderedRootSelection();
   const exportNodes = exportIds.map(id => findNode(state.document, id)?.node).filter(Boolean);
   const selectedFrame = exportIds.length === 1 && exportNodes.length === 1 && exportNodes[0].type === 'frame';
   const exportLabel = exportNodes.length > 1 && exportNodes.length === exportIds.length && exportNodes.every(node => node.type === 'image')
     ? `Export ${exportNodes.length} images as ZIP`
-    : 'Export selected layer as PNG';
+    : exportNodes.length > 1 ? 'Export selection as PNG' : 'Export selected layer as PNG';
   showMenu([
     ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
+    { label: 'Search actions…', shortcut: '⌘K', action: () => openQuickActions() },
+    { separator: true },
     { label: 'Your designs…', action: openDesignLibrary },
     { label: 'Version history…', action: openVersionHistory },
     { label: state.workspace ? `Folder workspace · ${state.workspaceHandle?.name || 'active'}` : 'Choose folder workspace…', action: chooseWorkspaceFolder },
@@ -14258,14 +14670,18 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     { label: 'Cut selected layers', shortcut: '⌘X', action: cutSelected, disabled: !rootSelectedIds().length },
     { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
     { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
+    { separator: true },
+    { labelOnly: true, label: 'Export' },
     { label: exportLabel, action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
-    { label: 'Export selected frame · raster PDF at design size', action: () => { exportSelectedFrameRasterPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a raster PDF.')); }, disabled: !selectedFrame },
-    { label: 'Fit page artwork to a PDF sheet…', action: openPagePdfDialog },
-    { label: 'Export each frame as a raster PDF page', action: () => { exportActivePageRasterPdf().catch(error => showToast(error.message || 'Could not export this page as a raster PDF.')); } },
-    { label: 'Export selected frame · editable vector PDF', action: () => { exportSelectedFrameVectorPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as a vector PDF.')); }, disabled: !selectedFrame },
-    { label: 'Export each frame as an editable vector PDF page', action: () => { exportActivePageVectorPdf().catch(error => showToast(error.message || 'Could not export this page as a vector PDF.')); } },
-    { label: 'Export selected layer as SVG', action: () => { exportSelectedNodeSvg(rootSelectedIds()[0]).catch(error => showToast(error.message || 'Could not export this layer as SVG.')); }, disabled: rootSelectedIds().length !== 1 },
-    { label: 'Export current page as SVG', action: () => { exportActivePageSvg().catch(error => showToast(error.message || 'Could not export this page as SVG.')); } },
+    { labelOnly: true, label: 'PDF' },
+    { label: 'Selected frame · exact size, image-based', action: () => { exportSelectedFrameRasterPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as an image-based PDF.')); }, disabled: !selectedFrame },
+    { label: 'Current page · fit artwork to paper…', action: openPagePdfDialog },
+    { label: 'Current page · image-based PDF, one page per frame', action: () => { exportActivePageRasterPdf().catch(error => showToast(error.message || 'Could not export this page as an image-based PDF.')); } },
+    { label: 'Selected frame · editable vector', action: () => { exportSelectedFrameVectorPdf(exportIds[0]).catch(error => showToast(error.message || 'Could not export this frame as an editable PDF.')); }, disabled: !selectedFrame },
+    { label: 'Current page · editable vector, one page per frame', action: () => { exportActivePageVectorPdf().catch(error => showToast(error.message || 'Could not export this page as an editable PDF.')); } },
+    { labelOnly: true, label: 'SVG' },
+    { label: 'Selected layer', action: () => { exportSelectedNodeSvg(rootSelectedIds()[0]).catch(error => showToast(error.message || 'Could not export this layer as SVG.')); }, disabled: rootSelectedIds().length !== 1 },
+    { label: 'Current page', action: () => { exportActivePageSvg().catch(error => showToast(error.message || 'Could not export this page as SVG.')); } },
     { separator: true },
     { label: `${state.showLayoutGuides ? '✓' : '○'} Layout guides`, shortcut: '⇧G', action: toggleLayoutGuides },
     { separator: true },
@@ -14419,6 +14835,11 @@ function refreshLiveHostRoomUi(session) {
     liveStatus('host', liveHostStatusCopy(latest));
     setLiveEditorBlocked(false);
   }
+  const openPeerCount = peers.filter(peer => !liveTerminal(peer.status)).length;
+  $('#live-add-guest').disabled = openPeerCount >= 4;
+  $('#live-add-guest').title = openPeerCount >= 4
+    ? 'Four guests are already active. Disconnect one to invite another.'
+    : 'Create a separate invite link for another person.';
   renderLiveHostPeers(session);
   syncLiveViewDock();
 }
@@ -14579,7 +15000,12 @@ function openLiveDialog(role) {
 async function prepareLiveWorkspace() {
   if (state.workspace) return true;
   await chooseWorkspaceFolder();
-  if (!state.workspace) throw new Error('Choose a writable folder workspace before starting live collaboration.');
+  if (!state.workspace) {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      throw new Error('Live sharing needs a writable folder. This browser cannot select one, so you can edit here but cannot host or join a shared design.');
+    }
+    throw new Error('Choose a writable folder to host or join a shared design. Browser storage is for solo editing.');
+  }
   return true;
 }
 function assertLiveShareReady() {
@@ -14648,14 +15074,14 @@ async function shareLiveAnswer() {
   if (link) {
     const shareData = {
       title: 'Tiny Image Star reply link',
-      text: 'Open this link in the browser where the design owner started sharing to complete the shared context.',
+      text: 'Send this reply link to the design owner. They must accept it in Tiny Image Star before you connect.',
       url: link
     };
     if (typeof navigator.share === 'function') {
       try { await navigator.share(shareData); return; }
       catch (error) { if (error?.name === 'AbortError') return; }
     }
-    try { await navigator.clipboard.writeText(link); showToast('Reply link copied. Send it to the design owner to complete the shared context.'); }
+    try { await navigator.clipboard.writeText(link); showToast('Reply link copied. Send it to the owner; they must accept it before you connect.'); }
     catch { $('#live-guest-reply-link').focus(); $('#live-guest-reply-link').select(); showToast('Your reply link is selected. Copy and send it to the design owner.'); }
     return;
   }
@@ -14795,7 +15221,9 @@ async function addLiveHostGuest() {
     peer.status = 'failed';
     refreshLiveHostRoomUi(session);
     showToast(error.message || 'Could not prepare another invite.');
-  } finally { $('#live-add-guest').disabled = false; }
+  } finally {
+    $('#live-add-guest').disabled = session.peerSessions.filter(item => !liveTerminal(item.status)).length >= 4;
+  }
 }
 
 async function ensureLiveReplicaDesign(session) {
@@ -15096,7 +15524,7 @@ async function startLiveGuest() {
     $('#live-copy-answer').textContent = replyLink ? 'Share reply link' : 'Share reply code';
     $('#live-stop-guest').hidden = false;
     liveStatus('guest', replyLink
-      ? 'Reply ready. Share this URL with the owner to complete the shared context.'
+      ? 'Not connected yet. Share your reply link with the owner; they must accept it.'
       : 'Reply ready. The URL is too large to share reliably; use the manual reply code.');
     controller.ready.then(() => liveStatus('guest', 'Connected to the owner. Saving a local copy…'))
       .catch(error => liveStatus('guest', error.message || 'Could not connect to the owner.'));
@@ -15167,7 +15595,7 @@ function startJoinFromStableLink() {
     liveStatus('guest', 'Invite opened. Connecting to the owner…');
     void startLiveGuest();
   } else if (combinedInvite) {
-    liveStatus('guest', 'Invite ready. Choose where to save your local copy, then tap Join design.');
+    liveStatus('guest', 'Invite ready. Choose a folder for your local copy, then create a reply link to send to the owner.');
   } else {
     liveStatus('guest', 'This is the design link. Ask the owner for their one-step invite link to join.');
   }
@@ -18757,6 +19185,15 @@ function pagePdfPlanFromDialog() {
   });
 }
 
+function setPagePdfExportBusy(busy) {
+  const dialog = $('#page-pdf-dialog');
+  const fields = [$('#page-pdf-size'), $('#page-pdf-orientation'), $('#page-pdf-custom-width'), $('#page-pdf-custom-height')];
+  for (const field of fields) field.disabled = busy;
+  $('#page-pdf-export').disabled = busy;
+  $('#page-pdf-cancel').textContent = busy ? 'Cancel export' : 'Cancel';
+  dialog.setAttribute('aria-busy', String(busy));
+}
+
 function updatePagePdfDialog() {
   const custom = $('#page-pdf-size').value === 'custom';
   $('#page-pdf-custom-size').hidden = !custom;
@@ -18785,6 +19222,7 @@ function openPagePdfDialog() {
   $('#page-pdf-orientation').value = 'portrait';
   $('#page-pdf-custom-width').value = String(PDF_PAGE_PRESETS.a4.widthMm);
   $('#page-pdf-custom-height').value = String(PDF_PAGE_PRESETS.a4.heightMm);
+  setPagePdfExportBusy(false);
   updatePagePdfDialog();
   const dialog = $('#page-pdf-dialog');
   if (!dialog.open) dialog.showModal();
@@ -18820,9 +19258,13 @@ async function exportActivePagePdf(pagePlan) {
     }
   };
   state.imageExportAbortController = controller;
+  state.pagePdfAbortController = controller;
   controller.signal.addEventListener('abort', () => imageEngine.cancelQueuedByKey(queueKey), { once: true });
   try {
     assertCurrent();
+    const status = $('#page-pdf-status');
+    status.textContent = 'Rendering the current page locally… Large designs may take a moment.';
+    status.classList.remove('is-error');
     showToast(`Preparing ${page.name || 'page'} for ${pagePlan.label} PDF at ${pagePlan.dpi} DPI… Press Escape to cancel.`, 5000);
     const artwork = await renderExportBlob(rootIds, {
       format: 'png', quality: 100, scale: renderScale, suffix: ''
@@ -18835,6 +19277,7 @@ async function exportActivePagePdf(pagePlan) {
       rawPng: true,
     });
     assertCurrent();
+    status.textContent = 'Preparing the PDF page…';
     if (typeof createImageBitmap !== 'function') throw new Error('This browser cannot prepare the page image for PDF export.');
     sourceBitmap = await createImageBitmap(artwork.blob);
     assertCurrent();
@@ -18857,6 +19300,7 @@ async function exportActivePagePdf(pagePlan) {
     assertCurrent();
     pageRasterBytes = new Uint8Array(await composedPng.arrayBuffer());
     assertCurrent();
+    status.textContent = 'Encoding the page with local Pillow-RS…';
     renderedOutput = await imageEngine.renderOutput(rasterAssetId, pageRasterBytes, {}, {}, {
       format: 'jpeg', quality: 92, replaceKey: queueKey, queueGroup
     });
@@ -18876,11 +19320,13 @@ async function exportActivePagePdf(pagePlan) {
       pdfHeight: pagePlan.heightPt,
     }], { maxAggregateJpegBytes: PDF_EXPORT_JPEG_LIMIT });
     assertCurrent();
+    status.textContent = 'Saving the PDF…';
     const filename = `${safeExportName(page.name || 'Page')}.pdf`;
     downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), filename);
     showToast(`Downloaded ${pagePlan.label} PDF · ${pagePlan.widthMm.toFixed(1)} × ${pagePlan.heightMm.toFixed(1)} mm · ${filename}.`);
+    return true;
   } catch (error) {
-    if (error?.name === 'AbortError') showToast('Page PDF export canceled. No PDF was downloaded.');
+    if (error?.name === 'AbortError') return false;
     else throw error;
   } finally {
     sourceBitmap?.close?.();
@@ -18890,6 +19336,7 @@ async function exportActivePagePdf(pagePlan) {
     pdfBytes?.fill(0);
     imageEngine.dispose(rasterAssetId);
     if (state.imageExportAbortController === controller) state.imageExportAbortController = null;
+    if (state.pagePdfAbortController === controller) state.pagePdfAbortController = null;
   }
 }
 
@@ -20590,7 +21037,7 @@ function updateImageEngineState(metrics) {
     output.dataset.activeWorkers = String(activeBatchWorkers);
     output.dataset.workersReady = String(metrics.workersReady);
     const localAiWorkerDescription = state.bulk.localAiRequired ? `; ${localAiCpuReservationDescription(state.bulk)} is included in the CPU budget` : '';
-    output.setAttribute('aria-label', `${state.bulk.concurrency} maximum in-flight jobs; ${activeBatchWorkers} active workers in this batch; ${metrics.active} active render jobs total; ${metrics.workersReady} ready${localAiWorkerDescription}`);
+    output.setAttribute('aria-label', `Up to ${state.bulk.concurrency} images at once; ${activeBatchWorkers} active in this batch; ${metrics.active} active image renders total; ${metrics.workersReady} render workers ready${localAiWorkerDescription}`);
     output.title = `Engine limit: ${metrics.concurrency} render worker${metrics.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready.${state.bulk.localAiRequired ? ` A serialized local AI worker may run alongside render jobs and reserves up to ${state.bulk.localAiCpuSlots} CPU slot${state.bulk.localAiCpuSlots === 1 ? '' : 's'}.` : ''} Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   }
 }
@@ -20714,8 +21161,8 @@ function initEvents() {
       $('#live-join-offer').value = offer;
       $('#live-join-message').value = formatLiveShareMessage(invitation, offer);
       $('#live-guest-join-step').hidden = false;
-      liveStatus('guest', 'Invite scanned. Tap Join design to continue.');
-      showToast('Invite scanned. Tap Join design to continue.');
+      liveStatus('guest', 'Invite scanned. Choose Create reply link to continue.');
+      showToast('Invite scanned. Choose Create reply link to continue.');
     },
     onHostAnswer: answer => {
       const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
@@ -21624,7 +22071,21 @@ function initEvents() {
     if (!form) return;
     event.preventDefault(); submitCommentForm(form);
   });
+  $('#empty-canvas-guide').addEventListener('click', event => {
+    const action = event.target.closest('[data-empty-canvas-action]')?.dataset.emptyCanvasAction;
+    if (!action) return;
+    if (action === 'add-image') { chooseImageFiles(); return; }
+    if (action === 'create-frame') setTool('frame');
+    else if (action === 'add-text') setTool('text');
+  });
   $('#image-crop-toolbar-done').addEventListener('click', toggleSelectedImageCropMode);
+  $('#image-crop-toolbar-undo').addEventListener('click', () => {
+    if (!$('#image-crop-toolbar-undo').hidden) undo();
+  });
+  $('#image-context-adjustments').addEventListener('click', () => {
+    const node = state.selectedIds.length === 1 ? selectedNodes()[0] : null;
+    if (node?.type === 'image') openImageAdjustments(node.id);
+  });
   $('#pen-drawing-finish').addEventListener('click', () => {
     if (finishPenPath(false)) canvas.focus({ preventScroll: true });
   });
@@ -21892,6 +22353,26 @@ function initEvents() {
   });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45, null, event.currentTarget));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45, null, event.currentTarget));
+  $('#help-actions-button').addEventListener('click', () => openQuickActions());
+  $('#quick-actions-close').addEventListener('click', () => $('#quick-actions-dialog').close('close'));
+  $('#quick-actions-search').addEventListener('input', event => renderQuickActionResults(event.currentTarget.value));
+  $('#quick-actions-search').addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault(); moveQuickActionSelection(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault(); moveQuickActionSelection(-1);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      const active = $('#quick-actions-results [role="option"][aria-selected="true"]:not(:disabled)')
+        || $('#quick-actions-results .quick-action-option:not(:disabled)');
+      active?.click();
+    }
+  });
+  $('#quick-actions-dialog').addEventListener('close', () => {
+    $('#quick-actions-search').setAttribute('aria-expanded', 'false');
+    $('#quick-actions-search').removeAttribute('aria-activedescendant');
+    quickActionActions.clear();
+  });
   $('#workspace-onboarding-dialog').addEventListener('cancel', event => event.preventDefault());
   $('#workspace-onboarding-choose-folder').addEventListener('click', async event => {
     const button = event.currentTarget;
@@ -21917,18 +22398,47 @@ function initEvents() {
       status.textContent = 'Browser storage could not be prepared. Your existing local designs were preserved; retry or choose a writable folder.';
     }
   });
-  $('#page-pdf-cancel').addEventListener('click', () => $('#page-pdf-dialog').close());
+  $('#page-pdf-cancel').addEventListener('click', () => {
+    if (state.pagePdfAbortController) {
+      $('#page-pdf-status').textContent = 'Canceling the PDF export…';
+      state.pagePdfAbortController.abort();
+      return;
+    }
+    $('#page-pdf-dialog').close();
+  });
+  $('#page-pdf-dialog').addEventListener('cancel', event => {
+    if (!state.pagePdfAbortController) return;
+    event.preventDefault();
+    $('#page-pdf-status').textContent = 'Canceling the PDF export…';
+    state.pagePdfAbortController.abort();
+  });
   $('#page-pdf-size').addEventListener('change', updatePagePdfDialog);
   $('#page-pdf-orientation').addEventListener('change', updatePagePdfDialog);
   $('#page-pdf-custom-width').addEventListener('input', updatePagePdfDialog);
   $('#page-pdf-custom-height').addEventListener('input', updatePagePdfDialog);
-  $('#page-pdf-form').addEventListener('submit', event => {
+  $('#page-pdf-form').addEventListener('submit', async event => {
     event.preventDefault();
     let pagePlan;
     try { pagePlan = pagePdfPlanFromDialog(); }
-    catch (error) { updatePagePdfDialog(); showToast(error.message || 'Choose a supported PDF page size.'); return; }
-    $('#page-pdf-dialog').close();
-    exportActivePagePdf(pagePlan).catch(error => showToast(error.message || 'Could not export this page as a PDF.'));
+    catch (error) {
+      updatePagePdfDialog();
+      $('#page-pdf-status').textContent = error.message || 'Choose a supported PDF page size.';
+      $('#page-pdf-status').classList.add('is-error');
+      return;
+    }
+    setPagePdfExportBusy(true);
+    try {
+      const downloaded = await exportActivePagePdf(pagePlan);
+      setPagePdfExportBusy(false);
+      if (downloaded) $('#page-pdf-dialog').close();
+      else $('#page-pdf-status').textContent = 'PDF export canceled. No file was downloaded. You can change the page size or try again.';
+    } catch (error) {
+      setPagePdfExportBusy(false);
+      updatePagePdfDialog();
+      const status = $('#page-pdf-status');
+      status.textContent = `Could not create the PDF: ${error.message || 'Unexpected export error.'} Your design is unchanged. You can retry or choose a smaller paper size.`;
+      status.classList.add('is-error');
+    }
   });
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50, null, event.currentTarget));
   $('#design-library-close').addEventListener('click', () => $('#design-library-dialog').close());
@@ -22295,6 +22805,12 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (mod && !event.altKey && !event.shiftKey && key === 'k' && !event.repeat
+    && !document.querySelector('dialog[open]')) {
+    event.preventDefault();
+    openQuickActions();
+    return;
+  }
   if (mod && event.altKey && event.shiftKey && key === 'r') {
     if (selectedEntries().length === 1 && selectedEntries()[0].node.type === 'frame') {
       event.preventDefault();

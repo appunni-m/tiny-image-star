@@ -787,8 +787,8 @@ export function deleteLayoutGuideStyle(document, styleId) {
 }
 
 export function createLayerEffect(type, overrides = {}) {
-  if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
-  if (type === 'inner-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
+  if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, spread: 0, ...overrides };
+  if (type === 'inner-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, spread: 0, ...overrides };
   if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, radius: 4, ...overrides };
   if (type === 'background-blur') return { id: createId('effect'), type, visible: true, radius: 12, ...overrides };
   if (type === 'noise') return { id: createId('effect'), type, visible: true, mode: 'mono', sizeX: 1, sizeY: 1, density: 40, color: '#000000', color2: '#ffffff', opacity: 0.18, ...overrides };

@@ -15,10 +15,12 @@ test('live sharing reveals one clear next step for each person', () => {
   assert.match(html, /id="live-accept-answer"[^>]*>Connect guest<\/button>/);
   assert.doesNotMatch(html, /id="live-manual-answer-options"/);
   assert.match(html, /id="live-guest-join-step"/);
+  assert.match(html, /1 · Open or paste the owner’s invite/);
   assert.match(html, /id="live-join-message"/);
-  assert.match(html, /id="live-join-session"[^>]*>Join design<\/button>/);
-  assert.match(html, /2 · Share this link to complete the shared context/);
-  assert.match(html, /Send this URL back to the owner/);
+  assert.match(html, /id="live-join-session"[^>]*>Create reply link<\/button>/);
+  assert.match(html, /2 · You’re not connected yet/);
+  assert.match(html, /They paste it into their sharing window and choose Connect guest/);
+  assert.match(html, /Share this reply link with the owner/);
   assert.match(html, /id="live-copy-answer"[^>]*>Share reply link<\/button>/);
   assert.match(html, /id="live-guest-reply-link"/);
   assert.match(html, /id="live-reply-link-panel"/);
@@ -124,6 +126,8 @@ test('subsequent guest invite setup closes and removes a peer if invite-field pr
 
 test('host collaboration exposes a guest roster, selectable answers, independent offers, and per-peer disconnect controls', async () => {
   assert.match(html, /id="live-add-guest"/);
+  assert.match(html, /<span>Up to 4 guests<\/span>/);
+  assert.ok(html.indexOf('id="live-add-guest"') < html.indexOf('<details class="live-advanced">'), 'inviting another person should be visible without opening More options');
   assert.match(html, /id="live-peer-list"[^>]+aria-live="polite"/);
   const script = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(script, /addGuestSession\(/);

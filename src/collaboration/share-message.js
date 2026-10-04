@@ -20,7 +20,7 @@ export function formatLiveShareMessage(invitationUrl, sessionCode) {
     'Use this code within 5 minutes:',
     offer,
     '',
-    'In Tiny Image Star, paste this whole message and tap Join design. Then send your reply back to me.'
+    'In Tiny Image Star, paste this whole message and choose Create reply link. Then send that reply back to me; you are connected after I accept it.'
   ].join('\n');
 }
 
@@ -33,7 +33,7 @@ export function formatLiveReplyMessage(sessionCode) {
     '',
     code,
     '',
-    'Send this whole message to the owner. They will paste it to finish connecting you.'
+    'Send this whole message to the owner. They paste it into Share this design and choose Connect guest.'
   ].join('\n');
 }
 

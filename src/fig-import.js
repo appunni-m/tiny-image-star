@@ -9,7 +9,7 @@ import { createAutoLayout } from './layout-engine.js';
 import { nodeToParentTransform, transformPoint } from './transform-geometry.js';
 import {
   MAX_BACKGROUND_BLURS_PER_LAYER, MAX_DROP_SHADOWS_PER_LAYER,
-  MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER
+  MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER, MAX_SHADOW_SPREAD
 } from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
@@ -486,9 +486,7 @@ function mapLayerEffects(effects, node, report) {
       effect.offsetX = boundedEffectMetric(offset.x, 0, -1000, 1000, report, node.name, 'effect offset x');
       effect.offsetY = boundedEffectMetric(offset.y, 0, -1000, 1000, report, node.name, 'effect offset y');
       effect.blur = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
-      if (source.spread != null && (!Number.isFinite(Number(source.spread)) || Number(source.spread) !== 0)) {
-        warn(report, 'flattened', 'EFFECT_SPREAD', node.name, 'Shadow spread is not supported locally and was reset to zero.');
-      }
+      effect.spread = boundedEffectMetric(source.spread, 0, -MAX_SHADOW_SPREAD, MAX_SHADOW_SPREAD, report, node.name, 'shadow spread');
       if (source.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(source.blendMode).toUpperCase())) {
         warn(report, 'flattened', 'EFFECT_BLEND', node.name, 'The effect blend mode was reset to normal.');
       }

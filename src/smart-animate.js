@@ -408,8 +408,10 @@ function interpolateEffectPair(from, to, progress) {
   const categoricalSource = progress < 0.5 ? from : to;
   const result = structuredClone(categoricalSource);
   if (to.type === 'drop-shadow' || to.type === 'inner-shadow') {
-    for (const property of ['opacity', 'offsetX', 'offsetY', 'blur']) {
-      result[property] = from[property] + (to[property] - from[property]) * progress;
+    for (const property of ['opacity', 'offsetX', 'offsetY', 'blur', 'spread']) {
+      const start = from[property] ?? 0;
+      const end = to[property] ?? 0;
+      result[property] = start + (end - start) * progress;
     }
     result.color = interpolateColor(from.color, to.color, progress) || result.color;
   } else if (to.type === 'layer-blur' || to.type === 'background-blur') {

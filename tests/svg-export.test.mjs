@@ -806,6 +806,35 @@ test('exports inner shadows as editable SVG alpha-mask filter primitives', () =>
   assert.match(svg, /filter="url\(#tis-effect-0\)"/);
 });
 
+test('exports signed shadow spread with morphology while keeping zero-spread SVG compact', () => {
+  const expanded = createNode('rectangle', {
+    width: 80, height: 40, fill: '#ffffff',
+    effects: [{ id: 'expanded', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+      offsetX: 2, offsetY: 3, blur: 4, spread: 5 }]
+  });
+  const contracted = createNode('ellipse', {
+    width: 40, height: 20, fill: '#ffffff',
+    effects: [{ id: 'contracted', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.4,
+      offsetX: 1, offsetY: -2, blur: 3, spread: 2.5 }]
+  });
+  const negative = createNode('rectangle', {
+    width: 80, height: 40, fill: '#ffffff',
+    effects: [{ id: 'negative', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+      offsetX: 0, offsetY: 0, blur: 1, spread: -2 }]
+  });
+  const zero = createNode('rectangle', {
+    width: 80, height: 40, fill: '#ffffff',
+    effects: [{ id: 'zero', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+      offsetX: 0, offsetY: 0, blur: 1, spread: 0 }]
+  });
+  assert.match(exportNodeToSvg(expanded), /<feMorphology in="SourceGraphic" operator="dilate" radius="5" result="tis-effect-0-result-0-spread"\/>/);
+  assert.match(exportNodeToSvg(contracted), /<feMorphology in="SourceGraphic" operator="dilate" radius="2\.5" result="tis-effect-0-result-0-spread"\/>/);
+  assert.match(exportNodeToSvg(negative), /<feMorphology in="SourceGraphic" operator="erode" radius="2" result="tis-effect-0-result-0-spread"\/>/);
+  assert.doesNotMatch(exportNodeToSvg(zero), /feMorphology/);
+  assert.match(exportNodeToSvg(expanded), /<filter id="tis-effect-0" filterUnits="userSpaceOnUse" x="-19" y="-20" width="118" height="80">/,
+    'positive outer spread is included in the SVG filter region');
+});
+
 test('orders SVG effects in Figma paint phases while preserving order within each phase', () => {
   const shape = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',

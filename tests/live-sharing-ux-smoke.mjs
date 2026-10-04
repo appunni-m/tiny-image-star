@@ -42,11 +42,11 @@ try {
   await waitFor(() => dialog.open && !app.querySelector('#live-guest-panel').hidden, 'join design dialog');
   assert(app.querySelector('#live-collaboration-title').textContent === 'Join a design', 'The joining dialog should use plain language.');
   assert(app.querySelector('#live-join-message')?.placeholder === 'Paste the whole invite message here', 'The default join flow should ask for one complete message.');
-  assert(app.querySelector('#live-join-session')?.textContent.trim() === 'Join design', 'The join action should be clear.');
+  assert(app.querySelector('#live-join-session')?.textContent.trim() === 'Create reply link', 'The join action should explain that the guest must create a reply link.');
   assert([...app.querySelectorAll('#live-guest-panel .live-advanced')].every(details => !details.open), 'Advanced sharing details should start collapsed.');
   const join = app.querySelector('#live-join-session');
   const scan = app.querySelector('#live-scan-invitation-qr');
-  assertFitsPhone(app, join, 'Join design');
+  assertFitsPhone(app, join, 'Create reply link');
   assertFitsPhone(app, scan, 'Scan invite QR');
   assert(app.querySelector('#live-join-actions').getBoundingClientRect().right <= app.defaultView.innerWidth,
     'The join and scan actions should fit within a narrow phone layout.');

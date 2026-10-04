@@ -43,7 +43,8 @@
             <div id="pages-list" class="pages-list" role="list" aria-label="Pages"></div>
           </section>
           <section class="layers-section" id="layers-section" role="tabpanel" aria-labelledby="sidebar-tab-layers" tabindex="0">
-            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
+            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Multi-select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
+            <p class="layer-selection-hint" id="layer-selection-hint" hidden>Tap canvas objects or layer rows to add or remove them from the selection. Choose Done when finished.</p>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
           <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or create a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button></div></div>
@@ -54,6 +55,7 @@
               <div class="assets-group-content">
                 <button class="asset-section-action asset-place-button assets-group-action" id="place-image-assets" type="button" aria-label="Add an image to this page from this device" title="Choose image files from this device to add them to the page">＋ Add image</button>
                 <div id="assets-list" class="assets-list">
+                  <div class="section-heading" role="heading" aria-level="3"><span>On this page</span></div>
                   <div id="placed-image-assets" class="placed-image-assets" aria-label="Images used on this page"></div>
                   <div id="image-library-root" class="image-library-root"></div>
                 </div>
@@ -95,18 +97,32 @@
         <main class="canvas-region" id="canvas-region" aria-label="Design canvas">
           <div class="canvas-topline">
             <div class="canvas-breadcrumb"><span class="crumb-file" id="canvas-file-name">Untitled</span><span class="crumb-separator">/</span><span id="canvas-page-name">Page 1</span><span class="crumb-chevron">⌄</span></div>
-            <div class="canvas-top-actions"><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Show rulers and guides" aria-label="Toggle rulers and guides" aria-pressed="false">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
+            <div class="canvas-top-actions"><button class="canvas-action-button" id="help-actions-button" type="button" title="Find a task, such as cropping an image" aria-label="Help and find an action">? Help</button><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Show rulers and guides" aria-label="Toggle rulers and guides" aria-pressed="false">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
           </div>
           <div class="canvas-scroll" id="canvas-scroll">
             <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
-            <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" hidden>
+            <section class="empty-canvas-guide" id="empty-canvas-guide" aria-labelledby="empty-canvas-guide-title" hidden>
+              <div class="empty-canvas-card">
+                <span class="modal-eyebrow">START HERE</span>
+                <h2 id="empty-canvas-guide-title">Start designing</h2>
+                <p>Add a photo, draw a fixed-size frame, or add text. A Page is an open workspace; frames set the size of a design such as a phone screen or social post.</p>
+                <div class="empty-canvas-actions">
+                  <button class="primary-button" type="button" data-empty-canvas-action="add-image">＋ Add image</button>
+                  <button class="secondary-button" type="button" data-empty-canvas-action="create-frame">▧ Draw a frame</button>
+                  <button class="secondary-button" type="button" data-empty-canvas-action="add-text">T Add text</button>
+                </div>
+              </div>
+            </section>
+            <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" aria-describedby="image-crop-toolbar-hint" hidden>
               <div class="image-crop-toolbar-copy">
                 <strong id="image-crop-toolbar-title">Edit image</strong>
-                <span id="image-crop-toolbar-hint">Crop: tap Crop image, drag over the part to keep, then tap Finish crop. Save recipe reuses these edits on other images.</span>
+                <span id="image-crop-toolbar-hint">Choose Crop image, drag across what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.</span>
               </div>
               <div class="image-context-single" id="image-context-single">
+                <button class="secondary-button image-context-adjustments" id="image-context-adjustments" type="button" title="Open the image adjustment controls">Adjust image</button>
                 <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button" title="Save these image edits to reuse them on other images">Save recipe</button>
-                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Draw a crop on the image, then finish to keep it">Crop image</button>
+                <button class="secondary-button image-context-undo" id="image-crop-toolbar-undo" type="button" hidden>Undo crop</button>
+                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Drag over the part of the image to keep, then choose Finish crop">Crop image</button>
               </div>
               <div class="image-context-batch" id="image-context-batch" hidden>
                 <select class="select-field image-context-recipe-picker" id="image-context-recipe" aria-label="Choose a saved recipe to apply to selected images"></select>
@@ -208,7 +224,7 @@
       <div class="bulk-bar" id="bulk-bar" role="region" aria-label="Image recipe batch controls" tabindex="-1" hidden>
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span><span id="bulk-rate" class="bulk-rate" aria-live="off" aria-label="Batch processing speed and estimated time remaining">Starting…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
-        <label class="speed-control" for="bulk-speed"><span>Workers</span><input id="bulk-speed" type="range" min="1" max="4" value="2" aria-label="Maximum concurrent image workers" /><output id="bulk-speed-value" aria-label="2 maximum workers; 0 active; 0 ready">2 workers</output></label>
+        <label class="speed-control" for="bulk-speed"><span>Images at once</span><input id="bulk-speed" type="range" min="1" max="4" value="2" aria-label="Maximum images processing at once" aria-describedby="bulk-speed-help" title="More images at once can finish sooner, but may use more memory." /><output id="bulk-speed-value" aria-label="2 images at once; 0 active; 0 ready">2 at once</output><small class="speed-help" id="bulk-speed-help">Higher limits may use more memory.</small></label>
         <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action" id="bulk-retry" hidden>Retry failed</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
         <span class="sr-only" id="bulk-announcer" role="status" aria-live="polite" aria-atomic="true"></span>
       </div>
@@ -232,10 +248,22 @@
         </section>
       </dialog>
 
+      <dialog class="modal quick-actions-dialog" id="quick-actions-dialog" aria-labelledby="quick-actions-title" aria-describedby="quick-actions-help">
+        <div class="quick-actions-content">
+          <div class="quick-actions-heading"><div><span class="modal-eyebrow">TINY IMAGE STAR</span><h2 id="quick-actions-title">Find an action</h2></div><button class="icon-button" id="quick-actions-close" type="button" aria-label="Close action search">×</button></div>
+          <label class="sr-only" for="quick-actions-search">Search actions</label>
+          <input class="text-field quick-actions-search" id="quick-actions-search" type="search" role="combobox" aria-autocomplete="list" aria-controls="quick-actions-results" aria-expanded="false" autocomplete="off" placeholder="Try “How do I crop an image?”" />
+          <p class="quick-actions-help" id="quick-actions-help">Type a task or question in your own words, such as “How do you crop an image?”</p>
+          <div class="quick-actions-results" id="quick-actions-results" role="listbox" aria-label="Matching actions"></div>
+          <p class="quick-actions-empty" id="quick-actions-empty" role="status" aria-live="polite" hidden>No matching action. Try a shorter word such as crop, image, recipe, text, or export.</p>
+          <div class="quick-actions-footer"><span>↑ ↓ Choose</span><span>Enter Open</span><span>Esc Close</span><kbd>⌘K / Ctrl+K</kbd></div>
+        </div>
+      </dialog>
+
       <dialog class="modal page-pdf-dialog" id="page-pdf-dialog" aria-labelledby="page-pdf-title">
         <form id="page-pdf-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">PDF SHEET</span><h2 id="page-pdf-title">Export artwork to PDF</h2></div></div>
-          <p class="modal-copy">Choose the printed sheet size. This uses visible artwork on the current design page and scales it inside the margins. To set a fixed design size, create or select a frame and set its width and height in Design properties.</p>
+          <p class="modal-copy">Choose the printed sheet size. This creates an image-based PDF of visible artwork on the current design page and scales it inside the margins. To set a fixed design size, create or select a frame and set its width and height in Design properties. For editable vector output, choose an editable PDF export from File.</p>
           <div class="page-pdf-controls">
             <label class="page-pdf-field"><span>Paper size</span><select class="select-field" id="page-pdf-size" aria-label="PDF paper size">
               <option value="a4">A4</option><option value="letter">US Letter</option><option value="legal">US Legal</option><option value="a3">A3</option><option value="custom">Custom size</option>
@@ -340,14 +368,15 @@
           <p class="modal-copy" id="live-collaboration-copy">Your device saves the original design.</p>
           <section id="live-host-panel" hidden>
             <div id="live-host-start" class="live-share-step">
-              <p class="live-collaboration-note">Invite someone to edit with you. Your folder keeps the saved design.</p>
+              <p class="live-collaboration-note">Your workspace folder saves the original design. Browser storage supports solo editing only; it cannot host a shared design.</p>
               <button class="primary-button live-join-button" id="live-start-host" type="button">Start sharing</button>
             </div>
             <p class="live-status" id="live-host-status" role="status" aria-live="polite"></p>
             <div id="live-host-active" hidden>
+              <p class="live-collaboration-note">While a guest is connected, your canvas follows their changes and is read-only. Stop sharing to edit again.</p>
               <div class="live-share-step" id="live-host-invite-step">
                 <span class="live-step-label">1 · Send your invite</span>
-                <p class="live-collaboration-note">Tiny Image Star has no sharing server. Send this one link; they open it, save a local copy, then send you a reply link. Keep this tab open.</p>
+                <p class="live-collaboration-note">Send this link to the other person. They choose a folder, open the link, then share a reply link back. Paste it below and choose Connect guest. Keep this tab open. Tiny Image Star has no sharing server.</p>
                 <div id="live-invite-url-wrap">
                   <label class="field-label" for="live-invite-share-url">Your share link</label>
                   <textarea class="text-field live-capsule-field live-share-url" id="live-invite-share-url" readonly spellcheck="false" aria-label="One link to share this design"></textarea>
@@ -363,12 +392,15 @@
                 <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste the guest’s reply link here" aria-label="Guest reply link or one-time code"></textarea>
                 <div class="live-action-row" id="live-answer-actions"><button class="primary-button" id="live-accept-answer" type="button">Connect guest</button></div>
               </div>
-              <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
+              <div class="live-peer-list-wrap">
+                <div class="live-peer-list-heading"><strong>People in this design</strong><span>Up to 4 guests</span></div>
+                <button class="secondary-button live-add-guest-button" id="live-add-guest" type="button" hidden>＋ Invite another person</button>
+                <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
+              </div>
               <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
               <details class="live-advanced">
                 <summary>More options</summary>
                 <div class="live-advanced-content">
-                  <button class="secondary-button" id="live-add-guest" type="button" hidden>Invite another person</button>
                   <label class="field-label" for="live-share-message-value">Full invite message for manual copy</label>
                   <textarea class="text-field live-capsule-field live-join-message" id="live-share-message-value" readonly spellcheck="false" aria-label="Full invitation message"></textarea>
                   <button class="secondary-button live-copy-button" type="button" data-copy-field="live-share-message-value">Copy full invite</button>
@@ -387,10 +419,11 @@
           </section>
           <section id="live-guest-panel" hidden>
             <div id="live-guest-join-step">
-              <p class="live-collaboration-note">Open the owner’s share link to join. If you were sent the separate invite details, paste them here or scan the QR code.</p>
+              <span class="live-step-label">1 · Open or paste the owner’s invite</span>
+              <p class="live-collaboration-note">Open the owner’s share link, then create a reply link and send it back. You connect after the owner accepts it. If you were sent separate invite details, paste them here or scan the QR code.</p>
               <label class="field-label" for="live-join-message">Invite message</label>
               <textarea class="text-field live-capsule-field live-join-message" id="live-join-message" spellcheck="false" autocomplete="off" placeholder="Paste the whole invite message here"></textarea>
-              <div class="live-action-row live-join-actions" id="live-join-actions"><button class="primary-button" id="live-join-session" type="button">Join design</button></div>
+              <div class="live-action-row live-join-actions" id="live-join-actions"><button class="primary-button" id="live-join-session" type="button">Create reply link</button></div>
               <details class="live-advanced">
                 <summary>More options</summary>
                 <div class="live-advanced-content">
@@ -403,8 +436,8 @@
               </details>
             </div>
             <div id="live-guest-reply" class="live-share-step" hidden>
-              <span class="live-step-label">2 · Share this link to complete the shared context</span>
-              <p class="live-collaboration-note">Send this URL back to the owner. They can paste it into the sharing panel, or open it in a new tab in this same browser to connect automatically. Keep this page open until they’re connected.</p>
+              <span class="live-step-label">2 · You’re not connected yet</span>
+              <p class="live-collaboration-note">Share this reply link with the owner. They paste it into their sharing window and choose Connect guest. You’ll connect after they accept it. Keep this page open.</p>
               <label class="field-label" for="live-guest-reply-link">Your reply link</label>
               <textarea class="text-field live-capsule-field" id="live-guest-reply-link" readonly spellcheck="false" aria-label="Your one-time reply link"></textarea>
               <div class="live-action-row"><button class="primary-button live-copy-button" id="live-copy-answer" type="button" hidden>Share reply link</button></div>
