@@ -191,6 +191,7 @@ const state = {
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   imageAiToolsExpandedNodeIds: new Set(),
+  imageAdjustmentDisclosureByNodeId: new Map(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic', emptyCanvasGuideDismissedPageId: null,
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
@@ -2762,7 +2763,28 @@ function imageAdjustmentsSection(node) {
   const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${imageTransformControls(node.transforms, 'layer', node.locked, '', node.id)}${sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked)}${sliderField('Temperature', 'adjustments.temperature', adjustments.temperature, -100, 100, 1, node.locked)}${sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked)}${sliderField('Highlights', 'adjustments.highlights', adjustments.highlights, -100, 100, 1, node.locked)}${sliderField('Shadows', 'adjustments.shadows', adjustments.shadows, -100, 100, 1, node.locked)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const savedDisclosures = state.imageAdjustmentDisclosureByNodeId.get(node.id) || {};
+  const disclosure = (key, title, hint, content, initiallyOpen = false) => {
+    const open = savedDisclosures[key] ?? initiallyOpen;
+    return `<details class="image-adjustment-group" data-image-adjustment-group="${key}" data-image-adjustment-node-id="${escapeHtml(node.id)}"${open ? ' open' : ''}><summary><span>${title}</span><small>${hint}</small></summary><div class="image-adjustment-group-content">${content}</div></details>`;
+  };
+  const transformControls = disclosure('crop-transform', 'Crop & transform', 'Choose what shows · rotate · flip', imageTransformControls(node.transforms, 'layer', node.locked, '', node.id), true);
+  const lightAndColor = disclosure('light-color', 'Light & color', 'Exposure · brightness · contrast · color', [
+    sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked),
+    sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked),
+    sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked),
+    sliderField('Highlights', 'adjustments.highlights', adjustments.highlights, -100, 100, 1, node.locked),
+    sliderField('Shadows', 'adjustments.shadows', adjustments.shadows, -100, 100, 1, node.locked),
+    sliderField('Temperature', 'adjustments.temperature', adjustments.temperature, -100, 100, 1, node.locked),
+    sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked),
+    sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked),
+  ].join(''), true);
+  const detailAndEffects = disclosure('detail-effects', 'Detail & effects', 'Sharpness · blur · stylized effects', [
+    sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked),
+    sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked),
+    imageToneControls(adjustments, { disabled: node.locked }),
+  ].join(''));
+  const body = `${transformControls}${lightAndColor}${detailAndEffects}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body, null, 'image-adjustments');
 }
 function openImageAdjustments(nodeId) {
@@ -22161,6 +22183,14 @@ function initEvents() {
   $('#inspector-content').addEventListener('pointercancel', finishGradientStopPointer);
   $('#inspector-content').addEventListener('lostpointercapture', finishGradientStopPointer);
   $('#inspector-content').addEventListener('toggle', event => {
+    const adjustmentDisclosure = event.target.closest?.('.image-adjustment-group[data-image-adjustment-node-id]');
+    if (adjustmentDisclosure) {
+      const groups = state.imageAdjustmentDisclosureByNodeId.get(adjustmentDisclosure.dataset.imageAdjustmentNodeId) || {};
+      state.imageAdjustmentDisclosureByNodeId.set(adjustmentDisclosure.dataset.imageAdjustmentNodeId, {
+        ...groups,
+        [adjustmentDisclosure.dataset.imageAdjustmentGroup]: adjustmentDisclosure.open,
+      });
+    }
     const disclosure = event.target.closest?.('.image-ai-tools[data-image-ai-node-id]');
     if (!disclosure) return;
     if (disclosure.open) state.imageAiToolsExpandedNodeIds.add(disclosure.dataset.imageAiNodeId);

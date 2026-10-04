@@ -166,14 +166,14 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       const offer = offerField.value.trim();
       validateInvitation(invitation);
       const shown = await showTransfer(createLiveInvitationQrPayload(invitation, offer), 'Show your invite',
-        'Have the other person open Join a design and scan this screen. Keep it open while their camera reads the changing code.');
+        'On their device, choose File → Join a shared design, then Scan invite QR. Keep this screen visible while their camera reads the changing code.');
       if (shown) onInvitationShown();
     } catch (error) { notify(error.message || 'The live invitation is not ready to share.'); }
   }
   async function showAnswer() {
     try {
       await showTransfer(createLiveAnswerQrPayload(answerField.value.trim()), 'Show your reply',
-        'Have the design owner scan this screen to finish connecting. Keep it open while their camera reads the changing code.');
+        'Ask the design owner to choose Scan reply QR in their sharing window. Keep this screen visible until it says connected.');
     } catch (error) { notify(error.message || 'The guest answer is not ready to share.'); }
   }
   async function openScanner(target) {

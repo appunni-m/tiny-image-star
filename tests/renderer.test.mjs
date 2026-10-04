@@ -1009,10 +1009,47 @@ test('foreground effect rendering preserves top-stack order before inner and dro
     renderer.drawNodeWithEffects(destination.context, group, 0, 0, new Map(), group.effects);
     assert.deepEqual(events, ['paint:undefined', 'group-noise', 'inner-phase'],
       'groups keep their established flattened effect path until group-specific paint staging is implemented');
+
+    events.length = 0;
+    const text = createNode('text', { width: 30, height: 20, stroke: '#ff0000', strokeWidth: 1, effects: [
+      { id: 'text-inner', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 0, offsetY: 0, blur: 0 }
+    ] });
+    addNode(document, text);
+    renderer.drawNodeWithEffects(destination.context, text, 0, 0, new Map(), text.effects);
+    assert.deepEqual(events, ['paint:fill', 'paint:stroke', 'inner-phase', 'paint:stroke'],
+      'text shadows are applied after glyph fills and before glyph strokes, matching shape paint phases');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
   }
+});
+
+test('text paint stages keep glyph fills and outlines separate for layer effects', () => {
+  const document = createDocument();
+  const calls = [];
+  const context = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    font: '', textAlign: 'left', textBaseline: 'top', lineWidth: 1,
+    save() {}, restore() {}, beginPath() {}, rect() {}, setLineDash() {},
+    measureText(value) { return { width: String(value).length * 5 }; },
+    fillText(value) { calls.push(['fill', value]); },
+    strokeText(value) { calls.push(['stroke', value]); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, outlineMode: false, presenting: false, zoom: 1 });
+  const text = createNode('text', {
+    width: 80, height: 24, text: 'Hello', textFit: 'fixed', fontSize: 12,
+    stroke: '#ff0000', strokeWidth: 1
+  });
+
+  renderer.drawNode(context, text, 0, 0, new Map(), false, false, { effectPaintStage: 'fill' });
+  assert.ok(calls.some(([paint]) => paint === 'fill'), 'fill phase paints glyph interiors');
+  assert.equal(calls.some(([paint]) => paint === 'stroke'), false, 'fill phase excludes the text outline');
+
+  calls.length = 0;
+  renderer.drawNode(context, text, 0, 0, new Map(), false, false, { effectPaintStage: 'stroke' });
+  assert.ok(calls.some(([paint]) => paint === 'stroke'), 'stroke phase paints glyph outlines');
+  assert.equal(calls.some(([paint]) => paint === 'fill'), false, 'stroke phase does not repaint glyph interiors');
 });
 
 test('ordinary shape inner shadow is composed between fills and strokes at pixel level', () => {

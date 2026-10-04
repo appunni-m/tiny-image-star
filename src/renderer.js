@@ -38,7 +38,7 @@ export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
-const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path']);
+const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path', 'text']);
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
 const MAX_FONT_OUTLINE_PATH_ENTRIES = 4096;
@@ -1867,20 +1867,22 @@ export class SceneRenderer {
       }
       if (drawStrokePaint) drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius, cornerSmoothing), maskMode);
     } else if (node.type === 'text') {
-      if (Array.isArray(node.fills) && !maskMode) {
+      if (drawFillPaint && Array.isArray(node.fills) && !maskMode) {
         const surfaces = this.textPaintSurfaces || (this.textPaintSurfaces = { glyph: null, paint: null });
         const rendered = drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces, this);
         if (!rendered && node.fills.length) {
           // Keep text visible if a browser cannot allocate an auxiliary surface.
           drawTextLayerContent(ctx, node, document, x, y, width, height, { shapeText: state.shapeLocalTextRun });
         }
-      } else {
+      } else if (drawFillPaint && !Array.isArray(node.fills)) {
         drawTextLayerContent(ctx, node, document, x, y, width, height, { shapeText: state.shapeLocalTextRun });
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
-        outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
-          fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
-        }));
+      if (drawStrokePaint) {
+        drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
+          outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
+            fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
+          }));
+      }
     } else if (node.type === 'network') {
       if (vectorMask) {
         const hasVisibleFill = fillStackForNode(node).some(fill => fill.visible);

@@ -59,6 +59,8 @@ test('live sharing offers a bundled QR handoff and a local answer scanner withou
   assert.match(qrUi, /readLiveSharingQrImage\(file\)/);
   assert.match(qrUi, /dialog\.addEventListener\('close'/);
   assert.match(qrUi, /Show your invite/);
+  assert.match(qrUi, /File → Join a shared design, then Scan invite QR/);
+  assert.match(qrUi, /choose Scan reply QR in their sharing window/);
   assert.match(qrUi, /Scan the owner’s invite/);
   assert.match(qrUi, /onInvitationShown\(\)/);
   assert.match(qrCss, /@media \(max-width: 600px\)/);

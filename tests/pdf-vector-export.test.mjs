@@ -481,12 +481,25 @@ test('exports simple single-line ASCII text with editable standard PDF fonts', (
   assertValidXref(pdf);
 });
 
+test('exports WinAnsi Latin text using one-byte Helvetica glyph codes', () => {
+  const svg = '<svg width="180px" height="40px" viewBox="0 0 180 40">'
+    + '<text x="8" y="24" font-family="Helvetica" font-size="16">Crème — “local” €</text></svg>';
+  const pdf = createVectorPdf(svg);
+  const text = pdfText(pdf);
+
+  assert.match(text, /\/Encoding \/WinAnsiEncoding/);
+  assert.ok(text.includes('BT\n/F1 16 Tf\n1 0 0 1 8 24 Tm\n<4372E86D65209720936C6F63616C942080> Tj\nET'),
+    'accented Latin, typographic quotes/dash, and euro sign map to their single WinAnsi character codes');
+  assertValidXref(pdf);
+});
+
 test('simple text rejects font-dependent or shaped SVG cases instead of substituting silently', () => {
   const svg = body => `<svg width="40px" height="20px" viewBox="0 0 40 20">${body}</svg>`;
   assert.throws(() => createVectorPdf(svg('<text x="0" y="14" font-family="Inter">Hello</text>')),
     error => error instanceof PdfVectorExportError && error.feature === 'custom text fonts');
-  assert.throws(() => createVectorPdf(svg('<text x="0" y="14">café</text>')),
-    error => error instanceof PdfVectorExportError && error.feature === 'non-ASCII text');
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="14">漢字</text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'text glyph coverage'
+      && /raster PDF/.test(error.message));
   assert.throws(() => createVectorPdf(svg('<text x="0" y="14" text-anchor="middle">Hello</text>')),
     error => error instanceof PdfVectorExportError && error.feature === 'text alignment');
   assert.throws(() => createVectorPdf(svg('<text x="0" y="14"><tspan>Rich</tspan></text>')),
@@ -508,6 +521,19 @@ test('exports editor-generated simple ASCII text with measured line placement an
   assert.match(text, /\/BaseFont \/Helvetica-BoldOblique/);
   assert.match(text, /100 Tz\n1 0 0 1 0 12 Tm\n\(Hello\) Tj/);
   assert.match(text, /100 Tz\n1 0 0 1 0 32 Tm\n\(PDF\) Tj/);
+  assertValidXref(pdf);
+});
+
+test('editor-generated positioned lines preserve WinAnsi characters and alignment in vector PDF', () => {
+  const editorSvg = exportNodeToSvg(createNode('text', {
+    text: 'Crème €', fontFamily: 'Arial, sans-serif', align: 'center', fontSize: 16, width: 100, height: 25,
+  }), { measureText: pdfTextMeasurer() });
+  const pdf = createVectorPdf(editorSvg);
+  const text = pdfText(pdf);
+
+  assert.match(editorSvg, /Crème €/, 'SVG keeps the authored Unicode text');
+  assert.ok(text.includes('1 0 0 1 22 12 Tm\n<4372E86D652080> Tj'),
+    'editor line measurements and centered placement survive encoded vector text output');
   assertValidXref(pdf);
 });
 
