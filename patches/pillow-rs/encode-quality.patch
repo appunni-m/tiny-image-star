@@ -30,16 +30,12 @@ diff --git a/pillow-rs/src/image.rs b/pillow-rs/src/image.rs
 index 4ef4834c..337bc57f 100644
 --- a/pillow-rs/src/image.rs
 +++ b/pillow-rs/src/image.rs
-@@ -29,7 +29,8 @@
- //! [`Image::tobytes`] forces decoding and pipeline execution.
- 
+@@ -31,3 +31,4 @@
  use image_slash_star::{
 -    Decoded, DecodedImage, EncodedImage, ImageFormat, ImageInfo, ImageMode, ImagePalette,
 +    Decoded, DecodedImage, EncodeOptions, EncodedImage, ImageFormat, ImageInfo, ImageMode,
 +    ImagePalette,
  };
- use std::borrow::Cow;
- use std::sync::{Arc, OnceLock};
 @@ -3997,9 +3998,43 @@ impl Image {
      /// Returns [`PilError`] when the format is unsupported or image
      /// materialization or encoding fails.

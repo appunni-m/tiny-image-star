@@ -834,6 +834,52 @@ test('prototype overlays open, close, preserve navigation history, and survive l
   assert.equal(applyPrototypeInteraction(reloaded, session, close), false);
 });
 
+test('manual prototype overlays persist trigger-relative offsets and anchor to the action source', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home', width: 400, height: 700 });
+  const trigger = createNode('rectangle', { name: 'Menu button', x: 24, y: 36, width: 40, height: 40 });
+  const overlay = createNode('frame', { name: 'Menu', width: 220, height: 300 });
+  home.children.push(trigger);
+  addNode(document, home);
+  addNode(document, overlay);
+
+  const interaction = addPrototypeInteraction(document, trigger.id, overlay.id, {
+    action: 'open-overlay', overlayPosition: 'manual', overlayRelativePosition: { x: 12.5, y: 44 }
+  });
+  assert.deepEqual(interaction.overlayRelativePosition, { x: 12.5, y: 44 });
+  validateDocument(document);
+
+  const reloaded = parseDocument(serializeDocument(document));
+  const savedInteraction = findNode(reloaded, trigger.id).node.interactions[0];
+  const session = createPrototypeSession({ page: reloaded.pages[0], frame: findNode(reloaded, home.id).node });
+  assert.equal(applyPrototypeInteraction(reloaded, session, savedInteraction, { sourceNodeId: trigger.id }), 'overlay-opened');
+  assert.deepEqual(session.overlays[0], {
+    pageId: reloaded.activePageId,
+    frameId: overlay.id,
+    position: 'manual',
+    anchorId: trigger.id,
+    relativePosition: { x: 12.5, y: 44 },
+    outsideClick: true,
+    background: true,
+    backgroundColor: '#000000',
+    backgroundOpacity: 0.32,
+    transition: 'instant',
+    easing: 'ease-in-out',
+    duration: 300
+  });
+
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, overlay.id, {
+    action: 'open-overlay', overlayPosition: 'manual', overlayRelativePosition: { x: Infinity, y: 0 }
+  }), /finite X and Y offsets/);
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, overlay.id, {
+    action: 'navigate', overlayRelativePosition: { x: 0, y: 0 }
+  }), /Only open-overlay actions/);
+
+  const invalid = structuredClone(reloaded);
+  findNode(invalid, trigger.id).node.interactions[0].overlayPosition = 'center';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interaction/);
+});
+
 test('swap overlay replaces the top overlay in place without adding history', () => {
   const document = createDocument();
   const home = createNode('frame', { name: 'Home' });

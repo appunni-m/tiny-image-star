@@ -7,7 +7,7 @@ import {
 } from '../src/model.js';
 import { addPrototypeInteraction } from '../src/prototype.js';
 import { createAutoLayout } from '../src/layout-engine.js';
-import { componentPropertyExposureGroups, componentPropertyTargetInstanceId } from '../src/component-property-exposure.js';
+import { componentPropertyExposureGroups, componentPropertyTargetInstanceId, componentPropertyTargetInstanceIds } from '../src/component-property-exposure.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
   const document = createDocument();
@@ -263,6 +263,22 @@ test('component shape geometry overrides persist and validate against the source
   assert.throws(() => validateDocument(document), /Invalid component shape point-count override/);
   instance.componentOverrides[master.id] = { points: 8, innerRadius: 1.01 };
   assert.throws(() => validateDocument(document), /Invalid component star inner-radius override/);
+});
+
+test('ellipse arc component overrides persist and validate against the source ellipse', () => {
+  const document = createDocument();
+  const master = createNode('ellipse', { name: 'Pie', arcData: { startingAngle: 0, endingAngle: Math.PI, innerRadius: 0 } });
+  addNode(document, master);
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  instance.componentOverrides[master.id] = { arcData: { startingAngle: Math.PI / 2, endingAngle: Math.PI * 2, innerRadius: .35 } };
+
+  assert.equal(validateDocument(document), true);
+  assert.deepEqual(parseDocument(serializeDocument(document)).pages[0].children[1].componentOverrides[master.id].arcData,
+    { startingAngle: Math.PI / 2, endingAngle: Math.PI * 2, innerRadius: .35 });
+
+  instance.componentOverrides[master.id].arcData.innerRadius = 1.1;
+  assert.throws(() => validateDocument(document), /Invalid component ellipse arc override/);
 });
 
 test('component vector-path point overrides validate and survive document reload', () => {
@@ -827,6 +843,8 @@ test('nested component instances expose all properties on an owner and remain so
   const nestedB = outerInstance.children.find(node => node.componentSourceId === secondNested.id);
   assert.equal(componentPropertyTargetInstanceId(outerInstance, firstNested.id), nestedA.id,
     'a parent property can highlight the selected nested instance itself');
+  assert.deepEqual(componentPropertyTargetInstanceIds(outerInstance, [firstNested.id, secondNested.id]), [nestedA.id, nestedB.id],
+    'a multi-target component property maps every source layer to its corresponding visible layer');
   assert.equal(componentPropertyTargetInstanceId(nestedA, innerText.id), nestedA.children[0].id,
     'an exposed nested property maps to its source layer inside that instance');
   assert.equal(componentPropertyTargetInstanceId(nestedB, innerText.id), nestedB.children[0].id,

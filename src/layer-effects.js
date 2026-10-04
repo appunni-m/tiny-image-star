@@ -3,6 +3,7 @@ import { isValidTextureEffect } from './texture-effect.js';
 import { isValidGlassEffect, MAX_GLASS_EFFECTS_PER_LAYER } from './glass-effect.js';
 import { fillStackForNode } from './fills.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { isValidProgressiveBlur } from './progressive-blur.js';
 
 export { MAX_GLASS_EFFECTS_PER_LAYER };
 export const MAX_SHADOW_SPREAD = 1000;
@@ -29,6 +30,8 @@ export function isValidLayerEffects(effects) {
   for (const effect of effects) {
     if (!effect || typeof effect.id !== 'string' || !effect.id || ids.has(effect.id)
       || !layerEffectTypes.has(effect.type) || typeof effect.visible !== 'boolean') return false;
+    if (Object.hasOwn(effect, 'showShadowBehindNode')
+      && (effect.type !== 'drop-shadow' || typeof effect.showShadowBehindNode !== 'boolean')) return false;
     if (effect.blendMode != null && (!layerEffectBlendTypes.has(effect.type) || !isValidLayerBlendMode(effect.blendMode))) return false;
     ids.add(effect.id);
     if (effect.type === 'drop-shadow') dropShadowCount += 1;
@@ -51,7 +54,8 @@ export function isValidLayerEffects(effects) {
       continue;
     }
     if (effect.type === 'layer-blur' || effect.type === 'background-blur') {
-      if (!Number.isFinite(effect.radius) || effect.radius < 0 || effect.radius > 100) return false;
+      if (!Number.isFinite(effect.radius) || effect.radius < 0 || effect.radius > 100
+        || !isValidProgressiveBlur(effect)) return false;
     } else if (!/^#[0-9a-f]{6}$/i.test(effect.color)
       || !Number.isFinite(effect.opacity) || effect.opacity < 0 || effect.opacity > 1
       || !Number.isFinite(effect.offsetX) || Math.abs(effect.offsetX) > 1000
@@ -112,7 +116,7 @@ export function buildLayerEffectFilter(effects, scale = 1) {
   // modes need the renderer's live backdrop and must never be approximated.
   const visible = (effects || []).filter(effect => effect?.visible !== false
     && (effect.blendMode == null || effect.blendMode === 'normal'));
-  const layerBlurs = visible.filter(effect => effect.type === 'layer-blur')
+  const layerBlurs = visible.filter(effect => effect.type === 'layer-blur' && effect.blurType !== 'PROGRESSIVE')
     .map(effect => `blur(${Math.max(0, effect.radius) * factor}px)`);
   const dropShadows = visible.filter(effect => effect.type === 'drop-shadow')
     .map(effect => `drop-shadow(${effect.offsetX * factor}px ${effect.offsetY * factor}px ${Math.max(0, effect.blur) * factor}px ${cssColorWithOpacity(effect.color, effect.opacity)})`);
@@ -134,7 +138,8 @@ export function layerEffectPadding(effects) {
     if (effect?.visible === false) continue;
     if (effect.type === 'background-blur') continue;
     if (effect.type === 'layer-blur') {
-      x += effect.radius * 3; y += effect.radius * 3;
+      const maximumBlur = effect.blurType === 'PROGRESSIVE' ? Math.max(effect.radius, effect.startRadius) : effect.radius;
+      x += maximumBlur * 3; y += maximumBlur * 3;
     } else if (effect.type === 'drop-shadow') {
       const spread = Math.max(0, effect.spread ?? 0);
       x += Math.abs(effect.offsetX) + effect.blur * 3 + spread;

@@ -118,3 +118,12 @@ export function componentPropertyTargetInstanceId(instance, targetSourceId) {
   visit(instance, true);
   return targetId;
 }
+
+/** Map several component-property source layers to their visible instance layer IDs. */
+export function componentPropertyTargetInstanceIds(instance, targetSourceIds) {
+  const sourceIds = Array.isArray(targetSourceIds) ? targetSourceIds : [targetSourceIds];
+  return [...new Set(sourceIds
+    .filter(sourceId => typeof sourceId === 'string' && sourceId)
+    .map(sourceId => componentPropertyTargetInstanceId(instance, sourceId))
+    .filter(Boolean))];
+}

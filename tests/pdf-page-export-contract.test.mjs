@@ -19,8 +19,8 @@ test('PDF sheet export distinguishes printable paper size from fixed frame dimen
   assert.match(html, /id="page-pdf-dialog"[\s\S]*?id="page-pdf-size"[\s\S]*?value="custom"/);
   assert.match(html, /id="page-pdf-orientation"[\s\S]*?portrait[\s\S]*?landscape/);
   assert.match(html, /id="page-pdf-custom-width"[\s\S]*?id="page-pdf-custom-height"/);
-  assert.match(main, /A Page is an open workspace\. Frames are fixed-size areas inside it\. Choose a paper size when exporting a PDF\./,
-    'the inspector should distinguish the open canvas from a fixed-size frame and printed PDF sheet');
+  assert.match(main, /Page is the workspace\. This frame sets the design width and height\. Export PDF sets the paper size\./,
+    'frame properties should distinguish the workspace, design dimensions, and PDF paper size in plain language');
   assert.match(html, /To set a fixed design size, create or select a frame and set its width and height in Design properties\./);
   assert.match(main, /\{ label: 'Current page · fit artwork to paper…', action: openPagePdfDialog \}/);
   assert.match(html, /image-based PDF[\s\S]*?For editable vector output/);

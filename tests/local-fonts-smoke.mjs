@@ -142,8 +142,12 @@ try {
   app.querySelector('#font-weight-value').value = '400';
   app.querySelector('#font-style-value').value = 'normal';
   click(app, app.querySelector('#font-import-confirm'));
-  await waitFor(() => [...app.querySelectorAll('#font-assets-list .local-font-row')]
-    .some(row => row.textContent.includes(variableFamily)), 'variable WOFF2 inspection and installation');
+  await waitFor(() => {
+    const row = [...app.querySelectorAll('#font-assets-list .local-font-row')]
+      .find(item => item.textContent.includes(variableFamily));
+    return row?.textContent.includes('opsz 14–32') && row.textContent.includes('wght 100–900')
+      && [...faceStub.faces].some(face => face.family === variableFamily && face.weight === '100 900');
+  }, 'background variable WOFF2 axis inspection and face upgrade', 75_000);
   const variableMetadata = (await readStore(app, 'fontMetadata')).find(record => record.family === variableFamily);
   variableFontId = variableMetadata?.id;
   assert(variableFontId, 'the variable WOFF2 font metadata was not stored.');

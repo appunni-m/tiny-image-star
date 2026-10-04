@@ -18,9 +18,10 @@ import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgP
 import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS, isValidVertexRadii, regularShapeVertices, roundedPolygonSvgPath } from './polygon-corners.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
-import { flattenTextPath, textPathCharacters, textPathSvgData } from './text-on-path.js';
+import { flattenTextPath, textPathSpans, textPathSvgData } from './text-on-path.js';
 import { fontVariationSettings } from './font-variation.js';
 import { fontFeatureSettings } from './font-features.js';
+import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -208,6 +209,11 @@ function hasOnlyClosedPathContours(node) {
   return contours.length > 0 && contours.every(contour => contour.closed === true && contour.points.length >= 2);
 }
 
+function hasOnlyClosedRenderablePathContours(node) {
+  const contours = vectorPathContours(node).filter(contour => contour.points.length > 0);
+  return contours.length > 0 && contours.every(contour => contour.closed === true && contour.points.length >= 2);
+}
+
 function escapeXml(value) {
   const text = String(value ?? '');
   for (const character of text) {
@@ -239,6 +245,55 @@ function number(value) {
   if (!Number.isFinite(result)) throw new TypeError('SVG export requires finite numeric values.');
   const rounded = Math.abs(result) < 1e-12 ? 0 : Number(result.toPrecision(12));
   return Object.is(rounded, -0) ? '0' : String(rounded);
+}
+
+function ellipseArcRoundTripMetadata(node) {
+  if (node?.type !== 'ellipse' || !isValidEllipseArcData(node.arcData)) return '';
+  const metadata = JSON.stringify({
+    version: 1,
+    width: Number(node.width),
+    height: Number(node.height),
+    arcData: {
+      startingAngle: node.arcData.startingAngle,
+      endingAngle: node.arcData.endingAngle,
+      innerRadius: node.arcData.innerRadius
+    }
+  });
+  return ` data-tiny-image-star-ellipse-arc-v1="${escapeXml(metadata)}"`;
+}
+
+function roundedRegularShapeRoundTripMetadata(document, node) {
+  if (!['star', 'polygon'].includes(node?.type)) return '';
+  const maximum = node.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS;
+  const defaultPoints = node.type === 'star' ? 5 : 6;
+  const points = Math.max(MIN_STAR_POINTS, Math.min(maximum, Math.ceil(Number(node.points) || defaultPoints)));
+  const innerRadius = node.type === 'star' ? Number(node.innerRadius ?? 0.48) : null;
+  const radius = Number(getNodePropertyValue(document, node, 'radius') ?? node.radius ?? 0);
+  const smoothing = cornerSmoothing(node);
+  if (!Number.isFinite(radius) || radius < 0 || radius > 100_000
+    || node.type === 'star' && (!Number.isFinite(innerRadius) || innerRadius < 0 || innerRadius > 1)
+    || node.vertexRadii != null && !isValidVertexRadii(node.type, points, node.vertexRadii)) {
+    throw new TypeError(`SVG export requires valid rounded ${node.type} geometry on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  if (!radius && !smoothing && !node.vertexRadii?.some(value => value > 0)) return '';
+  const metadata = JSON.stringify({
+    version: 1,
+    width: Number(node.width),
+    height: Number(node.height),
+    points,
+    ...(node.type === 'star' ? { innerRadius } : {}),
+    radius,
+    cornerSmoothing: smoothing,
+    vertexRadii: node.vertexRadii || null
+  });
+  return ` data-tiny-image-star-rounded-shape-v1="${escapeXml(metadata)}"`;
+}
+
+function hasPlainRegularShapeGeometry(node, document = emptyDocument) {
+  if (!['star', 'polygon'].includes(node?.type)) return false;
+  const radius = Number(getNodePropertyValue(document, node, 'radius') ?? node.radius ?? 0);
+  return Number.isFinite(radius) && radius === 0 && cornerSmoothing(node) === 0
+    && !node.vertexRadii?.some(value => Number(value) > 0);
 }
 
 function dimensions(node) {
@@ -451,7 +506,7 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
           : index === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
         return `<path d="${d}" fill="${escapeXml(fill || 'none')}" stroke="none" data-tiny-image-star-stroke-join="${escapeXml(stroke.join)}"/>`;
       }).join('');
-      markup = `<g data-tiny-image-star-stroke-side-widths="${encodedWidths}" opacity="${number(stroke.opacity)}">${paths}${joins}</g>`;
+      markup = `<g data-tiny-image-star-stroke-side-widths="${encodedWidths}" data-tiny-image-star-stroke-base-width="${number(stroke.width)}" data-tiny-image-star-stroke-original-cap="${escapeXml(stroke.cap)}" data-tiny-image-star-stroke-original-miter-limit="${number(stroke.miterLimit)}" opacity="${number(stroke.opacity)}">${paths}${joins}</g>`;
     }
     else if (sideWidths) {
       const uniformStroke = { ...stroke, width: sideWidths.top };
@@ -478,8 +533,11 @@ function strokeDecorationMarkup(node, document, stroke, strokeIndex, gradientId 
   const metadata = ` data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"${paintBlendStyle(stroke.blendMode)}`;
   const attributes = strokeAttributes(document, node, stroke, strokeIndex, gradientId).replace(/ stroke-dasharray="[^"]*"/, '');
   return decorations.map(item => {
-    const path = `M ${number(item.points[0].x)} ${number(item.points[0].y)}${item.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}${item.closed ? ' Z' : ''}`;
     const role = ` data-tiny-image-star-decoration="${item.type}" data-tiny-image-star-decoration-end="${item.side}"`;
+    if (item.type === 'circle') {
+      return `<circle${metadata}${role} cx="${number(item.center.x)}" cy="${number(item.center.y)}" r="${number(item.radius)}" fill="${escapeXml(value)}" fill-opacity="${number(stroke.opacity)}" stroke="none"/>`;
+    }
+    const path = `M ${number(item.points[0].x)} ${number(item.points[0].y)}${item.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}${item.closed ? ' Z' : ''}`;
     if (item.closed) {
       return `<path${metadata}${role} d="${path}" fill="${escapeXml(value)}" fill-opacity="${number(stroke.opacity)}" stroke="none"/>`;
     }
@@ -575,6 +633,19 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
     && !(node.type === 'path' && hasFillablePathContour(node))) return 'gradient fills';
   if (!Array.isArray(node.fills) && node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (node.effects?.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
+    && effect.opacity > 0 && effect.showShadowBehindNode !== true)
+    && !svgDropShadowClipIsRedundant(node, document)) {
+    return 'drop shadows hidden behind transparent node geometry (enable “Show behind transparent areas” for editable SVG export, or use raster export to preserve the current appearance)';
+  }
+  const hasVisiblePaintedStroke = strokeStackForNode(node).some(stroke => stroke?.visible !== false
+    && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
+    && (stroke.gradient || (stroke.color && stroke.color !== 'transparent')));
+  if (['star', 'polygon'].includes(node.type) && hasVisiblePaintedStroke
+    && node.effects?.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0)
+    && !canExportPhasedLayerPaint(node, document)) {
+    return 'inner shadows on regular shapes with incompatible fill, stroke, or corner geometry (use a plain shape with one compatible stroke, or raster export to preserve the current appearance)';
+  }
   if (node.effects?.some(effect => effect.visible !== false && effect.blendMode && effect.blendMode !== 'normal')) {
     return 'per-effect blend modes (editable SVG filters cannot blend an individual effect against the live scene backdrop; use raster export or reset the effect blend mode to Normal)';
   }
@@ -583,6 +654,9 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
   }
   if (node.effects?.some(effect => effect.type === 'texture' && effect.visible !== false)) {
     return 'texture effects (deterministic edge distress cannot be represented by editable SVG geometry; rasterize the layer or hide/remove the effect)';
+  }
+  if (node.effects?.some(effect => effect.type === 'layer-blur' && effect.visible !== false && effect.blurType === 'PROGRESSIVE')) {
+    return 'progressive layer blur (editable SVG filters cannot vary blur radius across a layer; use raster export or change the effect to Uniform)';
   }
   if (glassVectorExportBlockReason(node)) return `Glass effects (${glassVectorExportBlockReason(node)})`;
   if (node.effects?.some(effect => effect.type === 'background-blur' && effect.visible !== false)) {
@@ -607,6 +681,35 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
 
 function isNodeVisible(document, node) {
   return getNodePropertyValue(document, node, 'visible') !== false;
+}
+
+// Opaque vector paint fully covers the shadow wherever the geometry mask clips
+// it. In that restricted case an ordinary SVG drop-shadow (painted below the
+// shape) has the same visible result. Keep every alpha-bearing or more complex
+// paint path fail-closed.
+function svgDropShadowClipIsRedundant(node, document) {
+  const path = node.type === 'path';
+  const regularShape = ['star', 'polygon'].includes(node.type);
+  if (!['rectangle', 'ellipse', 'path', 'star', 'polygon'].includes(node.type)
+    || node.children?.length
+    || node.mask || node.maskSourceId
+    || Array.isArray(node.fills) || node.fillGradient || node.imageFill
+    || !path && !regularShape && ((node.strokes?.length ?? 0) > 0 || Number(node.strokeWidth ?? 0) !== 0)
+    || (getNodePropertyValue(document, node, 'opacity') ?? node.opacity ?? 1) !== 1
+    || (getNodePropertyValue(document, node, 'fillOpacity') ?? node.fillOpacity ?? 1) !== 1
+    || (node.blendMode != null && node.blendMode !== 'normal')
+    || hasNonNormalPaintBlend(node)
+    || node.effects?.some(effect => effect.visible !== false
+      && !['drop-shadow', 'inner-shadow', 'layer-blur'].includes(effect.type))) return false;
+  if (path && !svgPathDropShadowClipIsRedundant(node, document)) return false;
+  if (regularShape && !hasPlainRegularShapeGeometry(node, document)) return false;
+  if (regularShape && !svgVectorDropShadowClipIsRedundant(node, document)) return false;
+  if (node.type === 'ellipse' && (node.arcData
+    && (Math.abs(node.arcData.endingAngle - node.arcData.startingAngle - Math.PI * 2) > 1e-9
+      || node.arcData.innerRadius !== 0))) return false;
+  if (node.type === 'rectangle'
+    && (node.cornerRadii != null || (node.cornerSmoothing ?? 0) !== 0)) return false;
+  return color(document, node, 'fill') !== 'transparent';
 }
 
 const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'image', 'group', 'frame', 'section']);
@@ -700,8 +803,14 @@ function shapeMarkup(node, document, measureText, gradientId = null, { fillValue
     }
     case 'boolean':
       return `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="0" ry="0"${fill}${stroke}/>`;
-    case 'ellipse':
+    case 'ellipse': {
+      const arcPath = ellipseArcSvgPathData(node);
+      if (arcPath) return `<path d="${arcPath}" fill-rule="evenodd"${fill}${stroke}/>`;
+      if (node.arcData && Math.abs(node.arcData.endingAngle - node.arcData.startingAngle) <= 1e-9) {
+        return `<path d="" fill-rule="evenodd"${fill}${stroke}/>`;
+      }
       return `<ellipse cx="${number(node.width / 2)}" cy="${number(node.height / 2)}" rx="${number(node.width / 2)}" ry="${number(node.height / 2)}"${fill}${stroke}/>`;
+    }
     case 'line':
       return node.lineReverseY === true
         ? `<path d="M 0 ${number(node.height)} L ${number(node.width)} 0" fill="none"${stroke}/>`
@@ -912,7 +1021,7 @@ function isolatesSvgPaintBackdrop(document, node, maskSource = null) {
     || Boolean(node.effects?.some(effect => effect.visible !== false));
 }
 
-function renderShapeFillStack(node, document, context, index, measureText) {
+function renderShapeFillStack(node, document, context, index, measureText, { includeStrokes = true } = {}) {
   if (node.type === 'text') return renderTextFillStack(node, document, context, index, measureText);
   const fills = node.fills;
   let markup = '';
@@ -968,9 +1077,11 @@ function renderShapeFillStack(node, document, context, index, measureText) {
   }
   // Strokes belong to the shape, not to individual fills. Each ordered stroke
   // is emitted after the full fill stack so later strokes remain on top.
-  markup += Array.isArray(node.strokes)
-    ? shapeStrokeStackMarkup(node, document, measureText, null, context, index)
-    : shapeMarkup(node, document, measureText, null, { fillValue: 'transparent', fillOpacity: 0 });
+  if (includeStrokes) {
+    markup += Array.isArray(node.strokes)
+      ? shapeStrokeStackMarkup(node, document, measureText, null, context, index)
+      : shapeMarkup(node, document, measureText, null, { fillValue: 'transparent', fillOpacity: 0 });
+  }
   return markup;
 }
 
@@ -1241,14 +1352,18 @@ function textMarkup(node, document, measureText, {
     const length = flattenTextPath(node.textPath).at(-1)?.distance || 0;
     const currentRuns = Array.isArray(node.textRuns)
       && node.textRuns.map(run => run.text).join('') === sourceText;
-    const measured = typeof measureText === 'function'
-      ? currentRuns
-        ? textPathCharacters(sourceText, { ...resolvedNode, fontSize, fontWeight, letterSpacing }).reduce((width, item) => {
-          const glyphWidth = Number(measureText(item.text, { ...resolvedNode, textPathRunStyle: item.style }));
-          return width + glyphWidth + item.style.letterSpacing;
-        }, 0)
-        : Number(measureText(text, resolvedNode))
-      : [...text].length * fontSize * .6;
+    const measuredSpans = textPathSpans(sourceText, { ...resolvedNode, fontSize, fontWeight, letterSpacing });
+    const measured = measuredSpans.reduce((width, span, index) => {
+      const naturalWidth = typeof measureText === 'function'
+        ? Number(measureText(span.text, {
+          ...resolvedNode,
+          textPathRunStyle: { ...span.style, letterSpacing: 0 }
+        }))
+        : span.graphemeCount * span.style.fontSize * .6;
+      const tracking = Math.max(0, span.graphemeCount - 1) * span.style.letterSpacing
+        + (index < measuredSpans.length - 1 ? span.style.letterSpacing : 0);
+      return width + naturalWidth + tracking;
+    }, 0);
     const alignmentOffset = node.align === 'center' ? (length - measured) / 2 : node.align === 'right' ? length - measured : 0;
     const startOffset = number((Number(node.textPath.startOffset) || 0) + alignmentOffset);
     const pathText = currentRuns ? node.textRuns.map(run => {
@@ -1536,17 +1651,19 @@ function maskDefinition(group, source, index, document, measureText, context) {
   };
 }
 
-function effectDefinition(node, index, document, measureText) {
-  const effects = (node.effects || []).filter(effect => effect.visible !== false);
+function effectDefinition(node, index, document, measureText, { effects: sourceEffects = node.effects || [], id = `tis-effect-${index}` } = {}) {
+  const effects = (sourceEffects || []).filter(effect => effect.visible !== false);
   if (!effects.length) return null;
-  const id = `tis-effect-${index}`;
   const bounds = getBounds([node], { document, includePosition: false, measureText });
   let input = 'SourceGraphic';
-  // Figma renders layer blur in the top effect phase, then inner shadows, then
-  // drop shadows below the paints. Preserve authored order within each phase.
+  // The SVG source already combines a layer's fills and strokes. Apply inner
+  // shadows to that paint, then run the top effect phase over the composite so
+  // layer blur also softens the inner shadows, as it does on the Canvas. Drop
+  // shadows remain behind the painted result. Preserve authored order within
+  // each phase.
   const orderedEffects = [
-    ...effects.filter(effect => effect.type === 'layer-blur'),
     ...effects.filter(effect => effect.type === 'inner-shadow'),
+    ...effects.filter(effect => effect.type === 'layer-blur'),
     ...effects.filter(effect => effect.type === 'drop-shadow')
   ];
   const primitives = orderedEffects.map((effect, effectIndex) => {
@@ -1586,6 +1703,114 @@ function effectDefinition(node, index, document, measureText) {
     return primitive;
   }).join('');
   return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse" x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
+}
+
+function canExportPhasedLayerPaint(node, document = emptyDocument) {
+  const regularShape = ['star', 'polygon'].includes(node.type);
+  if (!['rectangle', 'ellipse', 'path', 'star', 'polygon'].includes(node.type) || node.children?.length || node.mask
+    || node.type === 'path' && !hasOnlyClosedRenderablePathContours(node)
+    || node.type === 'rectangle' && (node.cornerRadii || Number(node.cornerSmoothing) > 0)
+    || regularShape && !hasPlainRegularShapeGeometry(node, document)) return false;
+  const effects = (node.effects || []).filter(effect => effect.visible !== false);
+  if (!effects.some(effect => effect.type === 'inner-shadow')
+    || effects.some(effect => !['inner-shadow', 'layer-blur', 'drop-shadow'].includes(effect.type)
+      || effect.blendMode && effect.blendMode !== 'normal')) return false;
+
+  const fills = fillStackForNode(node);
+  if (!fills.length || fills.length > 32 || fills.some(fill => fill.type !== 'solid'
+    || fill.visible === false || !(Number(fill.opacity ?? 1) > 0)
+    || typeof fill.color !== 'string' || !/^(?:#(?:[\da-f]{3}|[\da-f]{6})|transparent)$/i.test(fill.color)
+    || fill.blendMode && fill.blendMode !== 'normal')) return false;
+
+  const strokes = strokeStackForNode(node);
+  if (strokes.length > 1) return false;
+  const stroke = strokes[0];
+  if (stroke && stroke.visible !== false && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0) {
+    if (stroke.gradient || typeof stroke.color !== 'string' || !/^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(stroke.color)
+      || stroke.blendMode && stroke.blendMode !== 'normal'
+      || stroke.startDecoration && stroke.startDecoration !== 'none'
+      || stroke.endDecoration && stroke.endDecoration !== 'none') return false;
+    if (node.type === 'rectangle' && !isUniformStrokeSideWidths(strokeSideWidths(stroke))) return false;
+  }
+  return true;
+}
+
+function svgPathDropShadowClipIsRedundant(node, document) {
+  if (!hasOnlyClosedRenderablePathContours(node)) return false;
+  const visibleStrokes = strokeStackForNode(node).filter(stroke => stroke?.visible !== false
+    && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
+    && (stroke.gradient || (stroke.color && stroke.color !== 'transparent')));
+  if (!visibleStrokes.length) return true;
+  if (visibleStrokes.length !== 1) return false;
+  const [stroke] = visibleStrokes;
+  const strokeColor = node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
+  return Number(stroke.opacity ?? 1) === 1 && !stroke.gradient
+    && (!stroke.blendMode || stroke.blendMode === 'normal')
+    && typeof strokeColor === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(strokeColor);
+}
+
+function svgVectorDropShadowClipIsRedundant(node, document) {
+  if (!hasPlainRegularShapeGeometry(node, document)) return false;
+  const visibleStrokes = strokeStackForNode(node).filter(stroke => stroke?.visible !== false
+    && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
+    && (stroke.gradient || (stroke.color && stroke.color !== 'transparent')));
+  if (!visibleStrokes.length) return true;
+  if (visibleStrokes.length !== 1) return false;
+  const [stroke] = visibleStrokes;
+  const strokeColor = node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
+  return Number(stroke.opacity ?? 1) === 1 && !stroke.gradient
+    && (!stroke.blendMode || stroke.blendMode === 'normal')
+    && typeof strokeColor === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(strokeColor);
+}
+
+function regularShapeStrokePadding(node) {
+  const count = Math.max(MIN_STAR_POINTS, Math.min(
+    node.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS,
+    Number(node.points) || (node.type === 'star' ? 5 : 6)
+  ));
+  const innerRadius = node.type === 'star' ? Number(node.innerRadius ?? 0.48) : null;
+  const vertices = regularShapeVertices(node.type, Number(node.width), Number(node.height), count, innerRadius);
+  let padding = 0;
+  for (const stroke of strokeStackForNode(node)) {
+    if (stroke?.visible === false || !(Number(stroke.opacity ?? 1) > 0) || !(Number(stroke.width) > 0)
+      || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
+    const width = Number(stroke.width);
+    const halfWidth = width / 2;
+    padding = Math.max(padding, halfWidth);
+    const join = stroke.join || node.strokeJoin || 'miter';
+    if (join !== 'miter') continue;
+    const miterLimit = Number(stroke.miterLimit ?? node.strokeMiterLimit ?? 10);
+    for (let index = 0; index < vertices.length; index += 1) {
+      const previous = vertices[(index + vertices.length - 1) % vertices.length];
+      const current = vertices[index];
+      const next = vertices[(index + 1) % vertices.length];
+      const incomingLength = Math.hypot(current.x - previous.x, current.y - previous.y);
+      const outgoingLength = Math.hypot(next.x - current.x, next.y - current.y);
+      if (!(incomingLength > 0) || !(outgoingLength > 0)) continue;
+      const incoming = { x: (current.x - previous.x) / incomingLength, y: (current.y - previous.y) / incomingLength };
+      const outgoing = { x: (next.x - current.x) / outgoingLength, y: (next.y - current.y) / outgoingLength };
+      const cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
+      if (Math.abs(cross) <= 1e-12) continue;
+      for (const side of [-1, 1]) {
+        const first = {
+          x: current.x - incoming.y * halfWidth * side,
+          y: current.y + incoming.x * halfWidth * side
+        };
+        const second = {
+          x: current.x - outgoing.y * halfWidth * side,
+          y: current.y + outgoing.x * halfWidth * side
+        };
+        const delta = { x: second.x - first.x, y: second.y - first.y };
+        const alongIncoming = (delta.x * outgoing.y - delta.y * outgoing.x) / cross;
+        const miter = { x: first.x + alongIncoming * incoming.x, y: first.y + alongIncoming * incoming.y };
+        const distance = Math.hypot(miter.x - current.x, miter.y - current.y);
+        // The stroke-width ratio is deliberately used as a conservative
+        // bound across SVG miter-limit implementations.
+        if (Number.isFinite(distance) && distance <= width * miterLimit) padding = Math.max(padding, distance);
+      }
+    }
+  }
+  return padding;
 }
 
 // Boolean operands contribute only their filled alpha silhouette in the editor.
@@ -1717,16 +1942,30 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
-    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}`;
+    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}`;
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
+    const phasedPaint = canExportPhasedLayerPaint(node, document);
     const booleanMask = node.type === 'boolean' ? booleanMaskDefinition(node, `tis-boolean-${index}`, document, measureText) : null;
     if (booleanMask) context.defs.push(...booleanMask.markups);
     // The canvas Boolean renderer paints the group's fill through the result
     // mask and does not draw a group outline.
     const paintNode = node.type === 'boolean' ? { ...node, stroke: null, strokeWidth: 0 } : node;
-    let ownShape = node.mask ? ''
+    let phasedPaintMarkup = null;
+    if (phasedPaint) {
+      const fillMarkup = hasFillStack
+        ? renderShapeFillStack(paintNode, document, context, index, measureText, { includeStrokes: false })
+        : shapeMarkup(paintNode, document, measureText, gradient?.id || null, { includeStroke: false });
+      const visibleStroke = strokeStackForNode(paintNode).some(stroke => stroke.visible !== false
+        && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
+        && (stroke.gradient || (stroke.color && stroke.color !== 'transparent')));
+      const strokeMarkup = !visibleStroke ? '' : Array.isArray(paintNode.strokes)
+        ? shapeStrokeStackMarkup(paintNode, document, measureText, gradient?.id || null, context, index)
+        : shapeMarkup(paintNode, document, measureText, gradient?.id || null, { fillValue: 'transparent', fillOpacity: 0 });
+      phasedPaintMarkup = { fillMarkup, strokeMarkup };
+    }
+    let ownShape = phasedPaint ? '' : node.mask ? ''
       : hasFillStack && node.type === 'network' ? renderNetworkFillStack(paintNode, document, context, index)
         : hasFillStack ? renderShapeFillStack(paintNode, document, context, index, measureText)
           : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null, { context, layerIndex: index })
@@ -1801,15 +2040,39 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     if (node.type === 'line' && !node.stroke) ownShape = ownShape.replace(/ stroke="none" stroke-width="[^"]*"\/>$/, ' stroke="none"/>');
     const childClipId = node.clip && !node.mask ? `tis-clip-${index}` : null;
     if (childClipId) context.defs.push(clipDefinition(document, childClipId, node));
-    const filter = effectDefinition(node, index, document, measureText);
+    const visibleEffects = (node.effects || []).filter(effect => effect.visible !== false);
+    const innerEffects = phasedPaint ? visibleEffects.filter(effect => effect.type === 'inner-shadow') : [];
+    const effectOrder = phasedPaint ? [
+      ...visibleEffects.filter(effect => effect.type === 'inner-shadow'),
+      ...visibleEffects.filter(effect => effect.type === 'layer-blur'),
+      ...visibleEffects.filter(effect => effect.type === 'drop-shadow')
+    ].map(effect => effect.type) : null;
+    const topEffects = phasedPaint ? visibleEffects.filter(effect => effect.type !== 'inner-shadow') : null;
+    const filter = phasedPaint
+      ? effectDefinition(node, index, document, measureText, { effects: topEffects, id: `tis-effect-${index}` })
+      : effectDefinition(node, index, document, measureText);
     if (filter) context.defs.push(filter.markup);
+    if (phasedPaintMarkup) {
+      const innerFilter = effectDefinition(node, index, document, measureText, {
+        effects: innerEffects,
+        id: `tis-effect-${index}${filter ? '-inner' : ''}`
+      });
+      if (innerFilter) context.defs.push(innerFilter.markup);
+      const fill = `<g data-tiny-image-star-paint-stage="fill"${innerFilter ? ` filter="url(#${innerFilter.id})"` : ''}>${phasedPaintMarkup.fillMarkup}</g>`;
+      const stroke = phasedPaintMarkup.strokeMarkup
+        ? `<g data-tiny-image-star-paint-stage="stroke">${phasedPaintMarkup.strokeMarkup}</g>` : '';
+      ownShape = fill + stroke;
+    }
     const visibleChildren = node.type === 'boolean' ? [] : maskSource ? node.children.filter(child => child !== maskSource) : node.children;
     const childNodes = visibleChildren?.length
       ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(visibleChildren, document, context, true, measureText)}</g>`
       : '';
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
     const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask ? ` mask="url(#${booleanMask.id})"` : '';
-    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}>${title}${ownShape}${childNodes}</g>`;
+    const paintPhaseMetadata = phasedPaintMarkup
+      ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}"`
+      : '';
+    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}>${title}${ownShape}${childNodes}</g>`;
   }
   return markup;
 }
@@ -1888,6 +2151,14 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
           const stroke = strokes[strokeIndex];
           if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
           for (const decoration of strokeEndpointDecorations(node, stroke, { x: 0, y: 0 })) {
+            if (decoration.type === 'circle') {
+              const { x, y } = decoration.center;
+              const radius = decoration.radius;
+              for (const point of [{ x: x - radius, y: y - radius }, { x: x + radius, y: y - radius }, { x: x + radius, y: y + radius }, { x: x - radius, y: y + radius }]) {
+                include(transformPoint(matrix, point.x, point.y), bounds);
+              }
+              continue;
+            }
             const strokeRadius = decoration.type === 'arrow' ? stroke.width / 2 : 0;
             for (const vertex of decoration.points) {
               for (const [x, y] of [[vertex.x - strokeRadius, vertex.y - strokeRadius], [vertex.x + strokeRadius, vertex.y - strokeRadius], [vertex.x + strokeRadius, vertex.y + strokeRadius], [vertex.x - strokeRadius, vertex.y + strokeRadius]]) {
@@ -1947,11 +2218,20 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         const strokeWidth = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
         if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
       }
+      const regularStrokePadding = ['star', 'polygon'].includes(node.type) ? regularShapeStrokePadding(node) : 0;
+      if (regularStrokePadding) {
+        for (const [x, y] of [
+          [-regularStrokePadding, -regularStrokePadding], [width + regularStrokePadding, -regularStrokePadding],
+          [width + regularStrokePadding, height + regularStrokePadding], [-regularStrokePadding, height + regularStrokePadding]
+        ]) include(transformPoint(matrix, x, y), bounds);
+      }
       const effectPadding = layerEffectPadding(node.effects);
       if (effectPadding.x || effectPadding.y) {
         for (const [x, y] of [
-          [-effectPadding.x, -effectPadding.y], [width + effectPadding.x, -effectPadding.y],
-          [width + effectPadding.x, height + effectPadding.y], [-effectPadding.x, height + effectPadding.y]
+          [-effectPadding.x - regularStrokePadding, -effectPadding.y - regularStrokePadding],
+          [width + effectPadding.x + regularStrokePadding, -effectPadding.y - regularStrokePadding],
+          [width + effectPadding.x + regularStrokePadding, height + effectPadding.y + regularStrokePadding],
+          [-effectPadding.x - regularStrokePadding, height + effectPadding.y + regularStrokePadding]
         ]) include(transformPoint(matrix, x, y), bounds);
       }
       const visibleBounds = intersectBounds(bounds, clipBounds);

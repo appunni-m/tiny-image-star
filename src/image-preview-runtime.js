@@ -121,6 +121,24 @@ export function imagePreviewRenderSettingsForNode(node, previewKey, assetId = un
   };
 }
 
+/** Fence a preview request that captured a source before yielding to async work. */
+export function imagePreviewSourceMatchesNode(node, previewKey, assetId) {
+  if (typeof assetId !== 'string' || !assetId) return false;
+  try {
+    return imagePreviewSettingsForNode(node, previewKey).assetId === assetId;
+  } catch {
+    return false;
+  }
+}
+
+/** Carry saved export settings with Pillow preview jobs without changing preview encoding. */
+export function imagePreviewOutputSettingsForNode(node) {
+  return {
+    format: node?.type === 'image' ? node.outputFormat ?? 'png' : 'png',
+    quality: node?.type === 'image' ? node.outputQuality ?? 90 : 90,
+  };
+}
+
 /** A retained bitmap is current only for the exact asset and render settings. */
 export function imagePreviewMatchesSettings(settings, previewAssetId, previewSignature) {
   return Boolean(settings?.assetId)

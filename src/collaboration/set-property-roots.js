@@ -10,7 +10,7 @@ const roots = new Set([
   'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
   'minHeight', 'maxHeight', 'gridCell', 'fillGradient', 'imageFill', 'fillVariableId',
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
-  'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'vertexRadii', 'edges',
+  'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'vertexRadii', 'edges',
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
   'interactions', 'fixedPositionWhenScrolling', 'scrollPosition', 'overflowBehavior', 'text',
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',

@@ -116,7 +116,8 @@ try {
   assert(zoom && !zoom.disabled && zoom.getAttribute('aria-label') === 'Image fill zoom', 'image-fill zoom should be available with an accessible label.');
   click(app, adjust);
   assert(app.querySelector(`[data-action="toggle-image-crop-mode"][data-transform-target="fill"][data-fill-id="${fillId}"]`)?.getAttribute('aria-pressed') === 'true', 'the image-fill adjustment button should expose active state.');
-  click(app, app.querySelector('#inspector-toggle'));
+  // Entering on-canvas photo positioning closes the phone Inspector so the
+  // image remains reachable; verify that automatic handoff directly.
   await waitFor(() => app.querySelector('#right-panel')?.inert, 'phone canvas space');
   await new Promise(resolve => setTimeout(resolve, 240));
 

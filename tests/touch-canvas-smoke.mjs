@@ -4,6 +4,7 @@ import { deleteStoredDocument } from '../src/storage.js';
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
 const documentId = `touch-canvas-${Date.now()}`;
+let diagnosticApp = null;
 
 function assert(value, message) { if (!value) throw new Error(message); }
 function waitFor(test, label, timeout = 15000) {
@@ -72,6 +73,9 @@ function canvasPixelAtWorld(app, canvas, x, y) {
   const pixelY = Math.max(0, Math.min(canvas.height - 1, Math.floor((screen.y - rect.top) * canvas.height / rect.height)));
   return [...canvas.getContext('2d').getImageData(pixelX, pixelY, 1, 1).data];
 }
+function pixelDistance(left, right) {
+  return left.reduce((sum, channel, index) => sum + Math.abs(channel - right[index]), 0);
+}
 async function waitForSave(app, label) {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${label} save completion`);
@@ -88,6 +92,7 @@ function findNode(nodes, id) {
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'phone editor startup', 45000);
   const app = frame.contentDocument;
+  diagnosticApp = app;
   assert(app.defaultView.innerWidth === 390 && app.defaultView.innerHeight === 844, 'The touch workflow should run at a 390×844 phone viewport.');
 
   const design = createDocument();
@@ -186,13 +191,14 @@ try {
   // Starting a pinch while drawing cancels the unfinished shape draft. The
   // canvas pixel check also catches the stale ghost preview that used to live
   // on after pinch-up even though no layer had been committed.
+  const pixelBeforeDraft = canvasPixelAtWorld(app, canvas, 125, 195);
   app.querySelector('[data-tool="rectangle"]').click();
   dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 100, 170), 502);
   dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 150, 220), 502);
-  await waitFor(() => canvasPixelAtWorld(app, canvas, 125, 195)[0] < 225, 'live rectangle draft');
+  await waitFor(() => pixelDistance(canvasPixelAtWorld(app, canvas, 125, 195), pixelBeforeDraft) > 24, 'live rectangle draft');
   dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 170, 250), 503);
   dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 170, 250), 503);
-  await waitFor(() => canvasPixelAtWorld(app, canvas, 125, 195)[0] >= 225, 'draft removal on pinch takeover');
+  await waitFor(() => pixelDistance(canvasPixelAtWorld(app, canvas, 125, 195), pixelBeforeDraft) <= 1, 'draft removal on pinch takeover');
   dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 100, 170), 502);
   dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 170, 250), 503);
   saved = await readStoredDesign(app);
@@ -215,9 +221,21 @@ try {
 
   result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchLayerTypesMultiSelect: true, canvasLayerMultiSelect: true, nearestOverlappingTouchHandle: true, touchResizeHitRegion: true, touchRotateHitRegion: true, interruptedDrawDraftCleared: true, interruptedMoveSaved: true })}`;
 } catch (error) {
-  result.textContent = `FAIL\n${error?.stack || error}`;
+  const canvas = diagnosticApp?.querySelector('#scene-canvas');
+  const diagnostics = canvas ? {
+    viewport: [diagnosticApp.defaultView.innerWidth, diagnosticApp.defaultView.innerHeight],
+    layers: [...diagnosticApp.querySelectorAll('.layer-row[data-layer-id]')].map(row => row.textContent.trim()),
+    draftPixel: canvasPixelAtWorld(diagnosticApp, canvas, 125, 195),
+    nearbyPixel: canvasPixelAtWorld(diagnosticApp, canvas, 170, 250),
+    tool: diagnosticApp.querySelector('[data-tool="rectangle"]')?.getAttribute('aria-pressed')
+  } : null;
+  result.textContent = `FAIL\n${error?.stack || error}${diagnostics ? `\nDEBUG ${JSON.stringify(diagnostics)}` : ''}`;
 } finally {
-  frame.src = 'about:blank';
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // Preserve the failed editor state in the isolated runner so visual and
+  // canvas-pixel diagnostics can inspect the first divergence.
+  if (result.textContent.startsWith('PASS\n')) {
+    frame.src = 'about:blank';
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
   await deleteStoredDocument(documentId).catch(() => {});
 }

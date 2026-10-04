@@ -17,6 +17,7 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 import { isValidPrototypeEasing } from './prototype-easing.js';
+import { isValidPrototypeOverlayPosition, isValidPrototypeOverlayRelativePosition } from './prototype-overlay-position.js';
 import { normalizePrototypeKeyboardKey, normalizePrototypeKeyModifiers } from './prototype-keyboard.js';
 import { createTextPathGeometry, isValidTextPathGeometry } from './text-on-path.js';
 import { isValidFontVariationValues } from './font-variation.js';
@@ -24,6 +25,8 @@ import { isValidFontFeatureValues } from './font-features.js';
 import { isValidVariableScopes, normalizeVariableScopes } from './variable-scopes.js';
 import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCount } from './component-property-exposure.js';
 import { isValidVertexRadii, MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
+import { isValidEllipseArcData } from './ellipse-arc.js';
+import { planTidyUp } from './tidy-up.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -255,7 +258,6 @@ const prototypeTransitions = new Set([
   ...prototypeTransitionDirections.map(direction => `slide-out-${direction}`),
   'smart-animate', 'scroll'
 ]);
-const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const prototypeNumericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
 const prototypeConditionOperators = new Set(['equals', 'not-equals', ...prototypeNumericConditionOperators]);
 function isValidPrototypeConditionOperator(operator, type) {
@@ -369,12 +371,14 @@ function hasInvalidPrototypeInteractions(interactions, document) {
         || !Number.isInteger(item.delay) || item.delay < 100 || item.delay > 10_000)
       : Object.hasOwn(item, 'delay')) return true;
     if (item.action === 'open-overlay') {
-      if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;
+      if (item.overlayPosition != null && !isValidPrototypeOverlayPosition(item.overlayPosition)) return true;
+      if (Object.hasOwn(item, 'overlayRelativePosition')
+        && (item.overlayPosition !== 'manual' || !isValidPrototypeOverlayRelativePosition(item.overlayRelativePosition))) return true;
       if (item.overlayOutsideClick != null && typeof item.overlayOutsideClick !== 'boolean') return true;
       if (item.overlayBackground != null && typeof item.overlayBackground !== 'boolean') return true;
       if (item.overlayBackgroundColor != null && !/^#[0-9a-f]{6}$/i.test(item.overlayBackgroundColor)) return true;
       if (item.overlayBackgroundOpacity != null && (!Number.isFinite(Number(item.overlayBackgroundOpacity)) || Number(item.overlayBackgroundOpacity) < 0 || Number(item.overlayBackgroundOpacity) > 1)) return true;
-    }
+    } else if (Object.hasOwn(item, 'overlayRelativePosition')) return true;
     if (item.actionProgram != null && hasInvalidPrototypeActionProgram(item.actionProgram, item, document)) return true;
     return false;
   });
@@ -382,7 +386,7 @@ function hasInvalidPrototypeInteractions(interactions, document) {
 
 const prototypeActionProgramActionFields = new Set([
   'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
-  'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
+  'overlayPosition', 'overlayRelativePosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
   'smartAnimateMatchingLayers', 'scrollPosition', 'key', 'keyModifiers'
@@ -539,7 +543,7 @@ const componentOverrideProperties = new Set([
   'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
   'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -787,10 +791,10 @@ export function deleteLayoutGuideStyle(document, styleId) {
 }
 
 export function createLayerEffect(type, overrides = {}) {
-  if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, blendMode: 'normal', color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, spread: 0, ...overrides };
+  if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, blendMode: 'normal', color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, spread: 0, showShadowBehindNode: false, ...overrides };
   if (type === 'inner-shadow') return { id: createId('effect'), type, visible: true, blendMode: 'normal', color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, spread: 0, ...overrides };
-  if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, radius: 4, ...overrides };
-  if (type === 'background-blur') return { id: createId('effect'), type, visible: true, radius: 12, ...overrides };
+  if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, blurType: 'NORMAL', radius: 4, ...overrides };
+  if (type === 'background-blur') return { id: createId('effect'), type, visible: true, blurType: 'NORMAL', radius: 12, ...overrides };
   if (type === 'noise') return { id: createId('effect'), type, visible: true, blendMode: 'normal', mode: 'mono', sizeX: 1, sizeY: 1, density: 40, color: '#000000', color2: '#ffffff', opacity: 0.18, ...overrides };
   if (type === 'texture') return { id: createId('effect'), type, visible: true, sizeX: 0.7, sizeY: 0.7, radius: 20, clipToShape: true, ...overrides };
   if (type === 'glass') return { id: createId('effect'), type, visible: true, lightAngle: 45, lightIntensity: 50, refraction: 50, depth: 50, dispersion: 0, frost: 0, splay: 0, ...overrides };
@@ -928,8 +932,9 @@ function liveTextPathSourceEntry(document, node) {
   const textEntry = findNodeAcrossPages(document, node.id);
   const sourceEntry = findNodeAcrossPages(document, sourceId);
   if (!textEntry || !sourceEntry || sourceEntry.page.id !== textEntry.page.id
-    || sourceEntry.parent !== textEntry.parent || sourceEntry.parent?.autoLayout
-    || sourceEntry.parent?.mask || sourceEntry.parent?.type === 'boolean'
+    || sourceEntry.parent !== textEntry.parent
+    || (sourceEntry.parent?.autoLayout && node.layoutPositioning !== 'absolute')
+    || sourceEntry.parent?.type === 'boolean'
     || !textPathSourceTypes.has(sourceEntry.node.type)) return null;
   return sourceEntry;
 }
@@ -1015,14 +1020,16 @@ function componentSlotMutationContext(document, entry) {
     if (!component) continue;
     for (const property of component.componentProperties || []) {
       if (property.type !== 'SLOT') continue;
-      const target = findInstancePropertyTarget(instance, property.targetSourceId);
-      const targetDepth = ancestry.indexOf(target);
-      if (!target || targetDepth < 0 || targetDepth > ancestry.length - 1) continue;
-      if (best && (instanceDepth < best.instanceDepth || (instanceDepth === best.instanceDepth && targetDepth <= best.targetDepth))) continue;
-      best = {
-        instance, component, property, target, instanceDepth, targetDepth,
-        overridden: Object.hasOwn(instance.componentPropertyValues || {}, property.id)
-      };
+      for (const targetSourceId of componentPropertyTargetSourceIds(property)) {
+        const target = findInstancePropertyTarget(instance, targetSourceId);
+        const targetDepth = ancestry.indexOf(target);
+        if (!target || targetDepth < 0 || targetDepth > ancestry.length - 1) continue;
+        if (best && (instanceDepth < best.instanceDepth || (instanceDepth === best.instanceDepth && targetDepth <= best.targetDepth))) continue;
+        best = {
+          instance, component, property, target, targetSourceId, instanceDepth, targetDepth,
+          overridden: Object.hasOwn(instance.componentPropertyValues || {}, property.id)
+        };
+      }
     }
   }
   return best;
@@ -1036,7 +1043,13 @@ function requireOverriddenSlotForMutation(context, action) {
 
 function syncSlotChildOrder(context, children) {
   if (!context?.overridden || context.target.children !== children) return;
-  context.instance.componentPropertyValues[context.property.id] = children.map(node => node.id);
+  const targets = componentPropertyTargetSourceIds(context.property);
+  if (targets.length === 1) {
+    context.instance.componentPropertyValues[context.property.id] = children.map(node => node.id);
+    return;
+  }
+  context.instance.componentPropertyValues[context.property.id] = targets.map(targetSourceId =>
+    (findInstancePropertyTarget(context.instance, targetSourceId)?.children || []).map(node => node.id));
 }
 
 function slotAwareSiblingMutation(document, entries) {
@@ -1304,9 +1317,9 @@ function visualBounds(node) {
   return { left: centerX - extentX, top: centerY - extentY, right: centerX + extentX, bottom: centerY + extentY };
 }
 
-/** Return whether the selected layers can be grouped without crossing containers. */
-export function canGroupLayers(document, nodeIds, pageId = document.activePageId) {
-  if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
+/** Return whether sibling layers can be wrapped without crossing containers. */
+export function canFrameSelection(document, nodeIds, pageId = document.activePageId) {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 1 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   if (entries.some(entry => !entry || entry.node.locked || entry.node.type === 'slice') || !slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
@@ -1314,6 +1327,46 @@ export function canGroupLayers(document, nodeIds, pageId = document.activePageId
   if (!entries.every(entry => entry.parent === parent)) return false;
   if (parent?.mask && nodeIds.includes(parent.maskSourceId)) return false;
   return true;
+}
+
+/** Return whether at least two sibling layers can be grouped without crossing containers. */
+export function canGroupLayers(document, nodeIds, pageId = document.activePageId) {
+  return Array.isArray(nodeIds) && nodeIds.length >= 2 && canFrameSelection(document, nodeIds, pageId);
+}
+
+/** Wrap sibling layers; fixed-position parents retain geometry and auto-layout parents may reflow. */
+export function frameSelection(document, nodeIds, pageId = document.activePageId) {
+  if (!canFrameSelection(document, nodeIds, pageId)) {
+    throw new Error('Select one or more unlocked sibling layers in the same container.');
+  }
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  detachTextPathLinksCrossingNodes(document, nodeIds);
+  const page = document.pages.find(item => item.id === pageId);
+  const parent = entries[0].parent;
+  const list = parent ? parent.children : page.children;
+  const selectedIds = new Set(nodeIds);
+  const selectedEntries = entries.map(entry => ({ ...entry, index: list.indexOf(entry.node) })).sort((a, b) => a.index - b.index);
+  const bounds = selectedEntries.map(entry => visualBounds(entry.node));
+  const left = Math.min(...bounds.map(item => item.left));
+  const top = Math.min(...bounds.map(item => item.top));
+  const right = Math.max(...bounds.map(item => item.right));
+  const bottom = Math.max(...bounds.map(item => item.bottom));
+  const children = selectedEntries.map(entry => {
+    entry.node.x -= left;
+    entry.node.y -= top;
+    return entry.node;
+  });
+  const frame = createNode('frame', {
+    name: 'Frame', x: left, y: top,
+    width: Math.max(1, right - left), height: Math.max(1, bottom - top),
+    fill: 'transparent', clip: true, children
+  });
+  const frontmostIndex = selectedEntries.at(-1).index;
+  const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
+  for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
+  list.splice(insertionIndex, 0, frame);
+  syncSlotChildOrder(slotAwareSiblingMutation(document, entries).context, list);
+  return frame;
 }
 
 /** Group sibling layers while preserving their stack order and page-space geometry. */
@@ -1439,6 +1492,75 @@ export function alignLayers(document, nodeIds, mode, pageId = document.activePag
     }
   }
   return entries.map(entry => entry.node);
+}
+
+function resolvedTidyUpNodes(document, entries) {
+  return entries.map(({ node }) => ({
+    ...node,
+    x: getNodePropertyValue(document, node, 'x') ?? node.x,
+    y: getNodePropertyValue(document, node, 'y') ?? node.y,
+  }));
+}
+
+function tidyUpPlanForEntries(document, entries) {
+  return planTidyUp(resolvedTidyUpNodes(document, entries));
+}
+
+/** Return a safe, immutable placement plan for the selected row, column, or grid. */
+export function planTidyUpLayers(document, nodeIds, pageId = document.activePageId) {
+  if (!canAlignLayers(document, nodeIds, 'left', pageId)) return null;
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const plan = tidyUpPlanForEntries(document, entries);
+  if (!plan) return null;
+  const byId = new Map(entries.map(entry => [entry.node.id, entry.node]));
+  if (!plan.patches.every(patch => {
+    const node = byId.get(patch.id);
+    return node && (!node.variableBindings?.x || Math.abs(patch.dx) < 1e-7)
+      && (!node.variableBindings?.y || Math.abs(patch.dy) < 1e-7);
+  })) return null;
+  return { ...plan, nodeIds: [...nodeIds], pageId };
+}
+
+/** Return whether an unlocked sibling selection forms a clear row, column, or grid. */
+export function canTidyUpLayers(document, nodeIds, pageId = document.activePageId) {
+  return Boolean(planTidyUpLayers(document, nodeIds, pageId));
+}
+
+/** Apply a previously calculated plan only if the document and selection still match it. */
+export function applyTidyUpPlan(document, plan) {
+  if (!plan || !Array.isArray(plan.nodeIds) || !Array.isArray(plan.patches)) {
+    throw new TypeError('A valid Tidy up plan is required.');
+  }
+  const current = planTidyUpLayers(document, plan.nodeIds, plan.pageId);
+  if (!current || current.layout !== plan.layout || current.patches.length !== plan.patches.length
+    || current.patches.some((patch, index) => patch.id !== plan.patches[index]?.id
+      || Math.abs(patch.dx - plan.patches[index].dx) > 1e-7
+      || Math.abs(patch.dy - plan.patches[index].dy) > 1e-7)) {
+    throw new Error('The selection changed before Tidy up could run. Select the layers again and retry.');
+  }
+  const byId = new Map(plan.nodeIds.map(id => [id, findNode(document, id, plan.pageId)?.node]));
+  const changedNodes = [];
+  for (const patch of current.patches) {
+    const node = byId.get(patch.id);
+    if (!node) throw new Error('A selected layer no longer exists.');
+    if (Math.abs(patch.dx) < 1e-7 && Math.abs(patch.dy) < 1e-7) continue;
+    node.x += patch.dx;
+    node.y += patch.dy;
+    changedNodes.push(node);
+  }
+  return { ...current, changedNodes };
+}
+
+/**
+ * Tidy a clear row, column, or rectangular grid without resizing or reordering
+ * layers. Current common gaps are retained; ambiguous layouts fail closed.
+ */
+export function tidyUpLayers(document, nodeIds, pageId = document.activePageId) {
+  const plan = planTidyUpLayers(document, nodeIds, pageId);
+  if (!plan) {
+    throw new Error('Select unlocked sibling layers arranged in a clear row, column, or rectangular grid outside Auto layout.');
+  }
+  return applyTidyUpPlan(document, plan);
 }
 
 function isBooleanOperand(node) {
@@ -2580,26 +2702,53 @@ export function canSwapComponentTo(document, ownerComponentId, targetComponentId
 function componentPropertyValueIsValid(document, component, property, value) {
   if (property.type === 'BOOLEAN') return typeof value === 'boolean';
   if (property.type === 'TEXT') return typeof value === 'string' && value.length <= 1_000_000;
-  if (property.type === 'SLOT') return Array.isArray(value) && new Set(value).size === value.length && value.every(id => typeof id === 'string' && id.length > 0);
+  if (property.type === 'SLOT') {
+    const groups = slotContentGroups(property, value);
+    if (!groups) return false;
+    const ids = groups.flat();
+    return ids.length <= 10_000 && new Set(ids).size === ids.length
+      && ids.every(id => typeof id === 'string' && id.length > 0);
+  }
   if (property.type !== 'INSTANCE_SWAP' || typeof value !== 'string') return false;
   return Boolean(document.components?.some(item => item.id === value)
     && canSwapComponentTo(document, component.id, value));
 }
 
+function slotContentGroups(property, value) {
+  if (!Array.isArray(value)) return null;
+  const targetIds = componentPropertyTargetSourceIds(property);
+  if (!targetIds.length) return null;
+  if (!value.length) return targetIds.map(() => []);
+  if (targetIds.length === 1 && value.every(id => typeof id === 'string')) return [value];
+  if (value.length !== targetIds.length || value.some(group => !Array.isArray(group))) return null;
+  return value;
+}
+
 function componentSlotValueIsValidForInstance(document, instance, component, property, value) {
-  if (property.type !== 'SLOT' || !isComponentSlotTarget(findComponentPropertyTarget(document, component, property.targetSourceId), component)
-    || !componentPropertyValueIsValid(document, component, property, value) || value.length > 10_000) return false;
-  const target = findInstancePropertyTarget(instance, property.targetSourceId);
-  if (!isComponentSlotTarget(target)) return false;
-  const children = target.children || [];
-  if (value.length !== children.length || value.some((id, index) => id !== children[index].id)) return false;
-  const sourceTarget = findComponentPropertyTarget(document, component, property.targetSourceId);
-  const inheritedIds = new Set((sourceTarget.children || []).map(child => child.id));
-  if (children.some(child => inheritedIds.has(child.componentSourceId))) return false;
+  const targetSourceIds = componentPropertyTargetSourceIds(property);
+  const groups = slotContentGroups(property, value);
+  if (property.type !== 'SLOT' || !targetSourceIds.length
+    || targetSourceIds.some(sourceId => !isComponentSlotTarget(findComponentPropertyTarget(document, component, sourceId), component))
+    || !componentPropertyValueIsValid(document, component, property, value) || !groups) return false;
+  let total = 0;
+  for (let index = 0; index < targetSourceIds.length; index += 1) {
+    const sourceTarget = findComponentPropertyTarget(document, component, targetSourceIds[index]);
+    const target = findInstancePropertyTarget(instance, targetSourceIds[index]);
+    if (!isComponentSlotTarget(target)) return false;
+    const children = target.children || [];
+    const ids = groups[index];
+    total += ids.length;
+    if (total > 10_000 || ids.length !== children.length || ids.some((id, childIndex) => id !== children[childIndex].id)) return false;
+    const inheritedIds = new Set((sourceTarget.children || []).map(child => child.id));
+    if (children.some(child => inheritedIds.has(child.componentSourceId))) return false;
+  }
   let safe = true;
-  walkNodes(children, ({ node }) => {
-    if (node.type === 'slice' || node.isComponent || (node.isInstance && !canSwapComponentTo(document, component.id, node.componentId))) safe = false;
-  });
+  for (const targetSourceId of targetSourceIds) {
+    const target = findInstancePropertyTarget(instance, targetSourceId);
+    walkNodes(target?.children || [], ({ node }) => {
+      if (node.type === 'slice' || node.isComponent || (node.isInstance && !canSwapComponentTo(document, component.id, node.componentId))) safe = false;
+    });
+  }
   return safe;
 }
 
@@ -2754,10 +2903,16 @@ function componentSlotContentKey(instanceId, targetSourceId) {
   return `${instanceId}\u0000${targetSourceId}`;
 }
 
-function instanceSlotContent(document, instance, component, property) {
-  const ids = instance.componentPropertyValues?.[property.id];
-  if (!Array.isArray(ids)) return [];
-  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+function instanceSlotContent(document, instance, component, property, targetSourceId = property.targetSourceId) {
+  const value = instance.componentPropertyValues?.[property.id];
+  if (!Array.isArray(value)) return [];
+  const targetSourceIds = componentPropertyTargetSourceIds(property);
+  const targetIndex = targetSourceIds.indexOf(targetSourceId);
+  if (targetIndex < 0) throw new TypeError(`Missing slot target for ${property.name}.`);
+  const groups = slotContentGroups(property, value);
+  if (!groups) throw new TypeError(`Invalid slot content for ${property.name}.`);
+  const ids = groups[targetIndex] || [];
+  const target = findInstancePropertyTarget(instance, targetSourceId);
   if (!isComponentSlotTarget(target, component)) throw new TypeError(`Missing slot target for ${property.name}.`);
   const byId = new Map((target.children || []).map(child => [child.id, child]));
   const nodes = ids.map(id => byId.get(id));
@@ -2770,7 +2925,9 @@ function collectInstanceSlotContents(document, instance, component) {
   if (!instance?.isInstance || !component) return contents;
   for (const property of component.componentProperties || []) {
     if (property.type !== 'SLOT' || !Object.hasOwn(instance.componentPropertyValues || {}, property.id)) continue;
-    contents.set(componentSlotContentKey(instance.id, property.targetSourceId), instanceSlotContent(document, instance, component, property));
+    for (const targetSourceId of componentPropertyTargetSourceIds(property)) {
+      contents.set(componentSlotContentKey(instance.id, targetSourceId), instanceSlotContent(document, instance, component, property, targetSourceId));
+    }
   }
   return contents;
 }
@@ -2932,7 +3089,9 @@ function cloneSlotContentTrees(document, nodes) {
       const propertiesById = new Map((component?.componentProperties || []).map(property => [property.id, property]));
       for (const [propertyId, value] of Object.entries(node.componentPropertyValues)) {
         if (propertiesById.get(propertyId)?.type === 'SLOT' && Array.isArray(value)) {
-          node.componentPropertyValues[propertyId] = value.map(id => idMap.get(id) || id);
+          node.componentPropertyValues[propertyId] = value.map(item => Array.isArray(item)
+            ? item.map(id => idMap.get(id) || id)
+            : idMap.get(item) || item);
         }
       }
     }
@@ -2967,24 +3126,29 @@ export function setComponentSlotContent(document, instanceId, propertyId, nodes,
   const property = component?.componentProperties?.find(item => item.id === propertyId);
   if (!instance || !component || property?.type !== 'SLOT') return false;
   if (!Array.isArray(nodes)) throw new TypeError('Slot content must be a list of layer trees.');
-  const target = findInstancePropertyTarget(instance, property.targetSourceId);
-  if (!isComponentSlotTarget(target)) throw new TypeError(`Missing slot target for ${property.name}.`);
+  const targetSourceIds = componentPropertyTargetSourceIds(property);
+  const targets = targetSourceIds.map(targetSourceId => findInstancePropertyTarget(instance, targetSourceId));
+  if (!targetSourceIds.length || targets.some(target => !isComponentSlotTarget(target))) throw new TypeError(`Missing slot target for ${property.name}.`);
 
-  const content = cloneSlotContentTrees(document, nodes);
-  validateSlotSubtreeDependencies(document, component.id, content);
+  const contents = targets.map(() => cloneSlotContentTrees(document, nodes));
+  contents.forEach(content => validateSlotSubtreeDependencies(document, component.id, content));
   const candidate = clone(document);
   const candidateInstance = findNode(candidate, instanceId, pageId)?.node;
-  const candidateTarget = candidateInstance && findInstancePropertyTarget(candidateInstance, property.targetSourceId);
-  if (!candidateTarget) throw new TypeError(`Missing slot target for ${property.name}.`);
-  candidateTarget.children = clone(content);
+  const candidateTargets = targetSourceIds.map(targetSourceId => candidateInstance && findInstancePropertyTarget(candidateInstance, targetSourceId));
+  if (candidateTargets.some(target => !target)) throw new TypeError(`Missing slot target for ${property.name}.`);
+  candidateTargets.forEach((target, index) => { target.children = clone(contents[index]); });
   candidateInstance.componentPropertyValues ||= {};
-  candidateInstance.componentPropertyValues[property.id] = content.map(node => node.id);
+  candidateInstance.componentPropertyValues[property.id] = targetSourceIds.length === 1
+    ? contents[0].map(node => node.id)
+    : contents.map(content => content.map(node => node.id));
   validateDocument(candidate);
 
-  target.children = content;
+  targets.forEach((target, index) => { target.children = contents[index]; });
   instance.componentPropertyValues ||= {};
-  instance.componentPropertyValues[property.id] = content.map(node => node.id);
-  return content;
+  instance.componentPropertyValues[property.id] = targetSourceIds.length === 1
+    ? contents[0].map(node => node.id)
+    : contents.map(content => content.map(node => node.id));
+  return targetSourceIds.length === 1 ? contents[0] : contents;
 }
 
 /** Promote inherited slot content to an instance override while deleting selected descendants. */
@@ -3379,12 +3543,34 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
     if (currentProperty.type !== 'SLOT' || !Array.isArray(contentIds) || !Object.hasOwn(instance.componentPropertyValues || {}, currentProperty.id)) continue;
     const targetProperty = targetProperties.find(property => property.name.trim().toLocaleLowerCase() === currentProperty.name.trim().toLocaleLowerCase());
     if (!targetProperty || targetProperty.type !== 'SLOT') throw new Error(`Cannot switch variants because slot “${currentProperty.name}” has no matching target slot.`);
-    const currentTarget = findInstancePropertyTarget(instance, currentProperty.targetSourceId);
-    const content = instanceSlotContent(document, instance, currentComponent, currentProperty);
-    slotContentsByInstanceAndSourceId.delete(componentSlotContentKey(instance.id, currentProperty.targetSourceId));
-    slotContentsByInstanceAndSourceId.set(componentSlotContentKey(instance.id, targetProperty.targetSourceId), content);
-    nextPropertyValues[targetProperty.id] = clone(contentIds);
-    if (!isComponentSlotTarget(currentTarget)) throw new Error(`Cannot switch variants because slot “${currentProperty.name}” no longer exists.`);
+    const currentTargetIds = componentPropertyTargetSourceIds(currentProperty);
+    const targetTargetIds = componentPropertyTargetSourceIds(targetProperty);
+    if (currentTargetIds.length !== targetTargetIds.length) throw new Error(`Cannot switch variants because slot “${currentProperty.name}” has a different number of targets.`);
+    const currentGroups = slotContentGroups(currentProperty, contentIds);
+    if (!currentGroups) throw new Error(`Cannot switch variants because slot “${currentProperty.name}” has invalid content groups.`);
+    const nextGroups = Array(targetTargetIds.length);
+    const usedTargetIds = new Set();
+    for (let index = 0; index < currentTargetIds.length; index += 1) {
+      const currentSourceId = currentTargetIds[index];
+      const currentTarget = findInstancePropertyTarget(instance, currentSourceId);
+      const currentSource = findComponentPropertyTarget(document, currentComponent, currentSourceId);
+      const variantKey = currentSource?.variantNodeKey;
+      const matchingTargets = targetTargetIds.filter(targetSourceId => {
+        const targetSource = findComponentPropertyTarget(document, targetComponent, targetSourceId);
+        return variantKey ? targetSource?.variantNodeKey === variantKey : currentTargetIds.length === 1;
+      });
+      if (!isComponentSlotTarget(currentTarget) || matchingTargets.length !== 1 || usedTargetIds.has(matchingTargets[0])) {
+        throw new Error(`Cannot switch variants because slot “${currentProperty.name}” targets could not be matched unambiguously.`);
+      }
+      const targetSourceId = matchingTargets[0];
+      usedTargetIds.add(targetSourceId);
+      const content = instanceSlotContent(document, instance, currentComponent, currentProperty, currentSourceId);
+      slotContentsByInstanceAndSourceId.delete(componentSlotContentKey(instance.id, currentSourceId));
+      slotContentsByInstanceAndSourceId.set(componentSlotContentKey(instance.id, targetSourceId), content);
+      nextGroups[targetTargetIds.indexOf(targetSourceId)] = currentGroups[index];
+    }
+    if (nextGroups.some(group => !Array.isArray(group))) throw new Error(`Cannot switch variants because slot “${currentProperty.name}” has unmatched targets.`);
+    nextPropertyValues[targetProperty.id] = targetTargetIds.length === 1 ? nextGroups[0] : nextGroups;
   }
   const overridesByKey = new Map();
   for (const [sourceId, overrides] of Object.entries(instance.componentOverrides || {})) {
@@ -3448,9 +3634,12 @@ function removeComponentFromSets(document, componentId) {
 
 function removeDanglingComponentProperties(document, removedNodeIds, removedComponentIds) {
   const removedPropertyIds = new Set();
+  const targetIdsByPropertyId = new Map();
   for (const component of document.components || []) {
     component.componentProperties = (component.componentProperties || []).filter(property => {
-      const remainingTargets = componentPropertyTargetSourceIds(property).filter(sourceId => !removedNodeIds.has(sourceId));
+      const originalTargets = componentPropertyTargetSourceIds(property);
+      targetIdsByPropertyId.set(property.id, originalTargets);
+      const remainingTargets = originalTargets.filter(sourceId => !removedNodeIds.has(sourceId));
       const invalid = !remainingTargets.length
         || (property.type === 'INSTANCE_SWAP' && removedComponentIds.has(property.defaultValue));
       if (invalid) removedPropertyIds.add(property.id);
@@ -3475,7 +3664,18 @@ function removeDanglingComponentProperties(document, removedNodeIds, removedComp
     for (const [propertyId, value] of Object.entries(node.componentPropertyValues)) {
       const property = definitions.get(propertyId);
       if (removedPropertyIds.has(propertyId) || (property?.type === 'INSTANCE_SWAP' && removedComponentIds.has(value))) delete node.componentPropertyValues[propertyId];
-      else if (property?.type === 'SLOT' && Array.isArray(value)) node.componentPropertyValues[propertyId] = value.filter(id => !removedNodeIds.has(id));
+      else if (property?.type === 'SLOT' && Array.isArray(value)) {
+        const originalTargets = targetIdsByPropertyId.get(propertyId) || componentPropertyTargetSourceIds(property);
+        const currentTargets = componentPropertyTargetSourceIds(property);
+        const groups = slotContentGroups({ ...property, targetSourceIds: originalTargets }, value);
+        if (!groups) { delete node.componentPropertyValues[propertyId]; continue; }
+        const remainingGroups = currentTargets.map(targetSourceId => {
+          const group = groups[originalTargets.indexOf(targetSourceId)] || [];
+          return group.filter(id => !removedNodeIds.has(id));
+        });
+        node.componentPropertyValues[propertyId] = currentTargets.length === 1
+          ? remainingGroups[0] : remainingGroups;
+      }
     }
     if (!Object.keys(node.componentPropertyValues).length) delete node.componentPropertyValues;
   });
@@ -3554,7 +3754,9 @@ export function createComponentInstance(document, componentId, { pageId = docume
       for (const propertyId of slotPropertyIds) {
         const value = node.componentPropertyValues[propertyId];
         if (!Array.isArray(value)) continue;
-        node.componentPropertyValues[propertyId] = value.map(id => cloneByOriginalId.get(id) || cloneBySourceId.get(id) || id);
+        node.componentPropertyValues[propertyId] = value.map(item => Array.isArray(item)
+          ? item.map(id => cloneByOriginalId.get(id) || cloneBySourceId.get(id) || id)
+          : cloneByOriginalId.get(item) || cloneBySourceId.get(item) || item);
       }
     }
   });
@@ -4047,6 +4249,7 @@ export function validateDocument(document) {
       }
       if (node.type === 'star' && node.innerRadius != null && (!Number.isFinite(node.innerRadius) || node.innerRadius < 0 || node.innerRadius > 1)) throw new TypeError(`Invalid star inner radius on layer ${node.name || node.id}.`);
       if (node.type !== 'star' && node.innerRadius != null) throw new TypeError(`Star inner radius is only supported on star layers (${node.name || node.id}).`);
+      if (node.arcData != null && (node.type !== 'ellipse' || !isValidEllipseArcData(node.arcData))) throw new TypeError(`Invalid ellipse arc data on layer ${node.name || node.id}.`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
       if (node.fit != null && (node.type !== 'image' || !['cover', 'contain', 'tile'].includes(node.fit))) throw new TypeError(`Invalid image fit mode on layer ${node.name || node.id}.`);
@@ -4296,6 +4499,7 @@ export function validateDocument(document) {
             if (!validVectorPath(candidate)) throw new TypeError(`Invalid component vector path geometry override on ${node.name || node.id}.`);
           }
           if (overrides.innerRadius != null && (sourceNode?.type !== 'star' || !Number.isFinite(overrides.innerRadius) || overrides.innerRadius < 0 || overrides.innerRadius > 1)) throw new TypeError(`Invalid component star inner-radius override on ${node.name || node.id}.`);
+          if (overrides.arcData != null && (sourceNode?.type !== 'ellipse' || !isValidEllipseArcData(overrides.arcData))) throw new TypeError(`Invalid component ellipse arc override on ${node.name || node.id}.`);
           if (overrides.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(sourceNode?.type) || !isValidCornerRadii(overrides.cornerRadii))) throw new TypeError(`Invalid component corner-radius override on ${node.name || node.id}.`);
           if (overrides.cornerSmoothing != null && (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(sourceNode?.type)
             || !Number.isFinite(overrides.cornerSmoothing) || overrides.cornerSmoothing < 0 || overrides.cornerSmoothing > 1)) throw new TypeError(`Invalid component corner-smoothing override on ${node.name || node.id}.`);
@@ -4453,8 +4657,8 @@ export function validateDocument(document) {
           || !nameKey || nameKey.length > 80 || propertyNames.has(nameKey)
           || !componentPropertyTypes.has(property.type)
           || typeof property.targetSourceId !== 'string' || !targetIdsValid
-          || (targetSourceIds.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP'].includes(property.type))
-          || (property.type === 'SLOT' && (targets.length !== 1 || !isComponentSlotTarget(target, component)))) {
+          || (targetSourceIds.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT'].includes(property.type))
+          || (property.type === 'SLOT' && targets.some(candidate => !isComponentSlotTarget(candidate, component)))) {
           throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
         }
         for (const targetSourceId of targetSourceIds) {

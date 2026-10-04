@@ -9,6 +9,7 @@ import {
   vectorNetworkVertexPoint, vectorPathContours, vectorSegmentPoints
 } from './vector-path.js';
 import { vectorNetworkFacePathPoints } from './vector-network-corners.js';
+import { ellipseArcBoundaryPolylines, ellipseArcContainsPoint } from './ellipse-arc.js';
 
 const MAX_FLATTENED_PATH_POINTS = 12_000;
 const MAX_CUBIC_DEPTH = 8;
@@ -242,10 +243,7 @@ function inVisibleFill(node, point, document) {
     return containsRoundedRectangle(node, point, document);
   }
   if (node.type === 'ellipse') {
-    const radiusX = Math.abs(node.width) / 2;
-    const radiusY = Math.abs(node.height) / 2;
-    if (!radiusX || !radiusY) return false;
-    return ((point.x - node.width / 2) / radiusX) ** 2 + ((point.y - node.height / 2) / radiusY) ** 2 <= 1;
+    return ellipseArcContainsPoint(node, point);
   }
   if (node.type === 'star' || node.type === 'polygon') return pointInPolygon(point, polygonForNode(node, document));
   if (node.type === 'path') return pathContainsPoint(node, point);
@@ -286,11 +284,7 @@ function inVisibleStroke(node, point, tolerance, document) {
     return distanceToPolyline(point, roundedRectanglePolygon(node, document), true) <= threshold;
   }
   if (node.type === 'ellipse') {
-    const rx = Math.abs(node.width) / 2;
-    const ry = Math.abs(node.height) / 2;
-    if (!rx || !ry) return false;
-    const normalized = Math.hypot((point.x - node.width / 2) / rx, (point.y - node.height / 2) / ry);
-    return Math.abs(normalized - 1) * Math.min(rx, ry) <= threshold;
+    return ellipseArcBoundaryPolylines(node).some(path => distanceToPolyline(point, path.points, path.closed) <= threshold);
   }
   if (node.type === 'star' || node.type === 'polygon') return distanceToPolyline(point, polygonForNode(node, document), true) <= threshold;
   if (node.type === 'path') return vectorPathContours(node).some((contour, index) => (

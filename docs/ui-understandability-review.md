@@ -1,5 +1,7 @@
 # UI understandability review
 
+> Historical snapshot: this review is superseded by the [current UI/UX understandability review](ui-ux-understandability-review.md), which reflects the current crop labels, start flow, and mobile layer-selection behavior.
+
 **Date:** 2026-10-04  
 **Scope:** first-use discoverability for adding and cropping an image, finding common editing actions, applying image recipes, and using the editor on a phone.
 

@@ -88,6 +88,42 @@ test('a sparse 100,000-layer batch retains only its requested image entries', ()
     'the initial pass visits the page once and the selected target uses its indexed location');
 });
 
+test('bulk lookups reuse the active page slot and rescan only after page order changes', () => {
+  const pageCount = 64;
+  const targets = Array.from({ length: 100 }, (_, index) => ({
+    id: `image-${index}`, type: 'image', locked: false, children: []
+  }));
+  let pageReads = 0;
+  const rawPages = Array.from({ length: pageCount }, (_, index) => ({ id: `page-${index}`, children: [] }));
+  rawPages.at(-1).children = targets;
+  const pages = new Proxy(rawPages, {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/u.test(property)) pageReads += 1;
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const document = { pages };
+  const targetIds = targets.map(node => node.id);
+  const index = createPageNodeIndex(document, 'page-63', {
+    nodeIds: targetIds,
+    preserveNodeIdentity: true
+  });
+
+  pageReads = 0;
+  for (const nodeId of targetIds) assert.ok(index.find(nodeId));
+  assert.equal(pageReads, targetIds.length,
+    'each target checks only the cached page slot rather than rescanning the page list');
+
+  pages.reverse();
+  pageReads = 0;
+  assert.equal(index.find(targetIds[0])?.node, targets[0], 'the active page remains usable after reordering');
+  assert.ok(pageReads <= 4, 'a stale slot should trigger only one bounded rescan and rebuild');
+
+  pageReads = 0;
+  assert.equal(index.find(targetIds[1])?.node, targets[1]);
+  assert.equal(pageReads, 1, 'the new page slot is cached for subsequent target lookups');
+});
+
 test('page node indexes refresh after deletion, reordering, reparenting, and page replacement', () => {
   const moved = { id: 'moved', type: 'image', locked: false, children: [] };
   const retained = { id: 'retained', type: 'image', locked: false, children: [] };

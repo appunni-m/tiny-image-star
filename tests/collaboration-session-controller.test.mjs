@@ -762,6 +762,76 @@ test('a new guest receives active peer presence and host relay updates without e
   hostB.close();
 });
 
+test('presence sequence remains fresh when a disconnected guest actor ID is reused', async () => {
+  const hostChannelA = new FakeChannel();
+  const hostChannelB = new FakeChannel();
+  const host = await hostFixture({
+    createTransport: async () => ({
+      offerCapsule: 'offer-a', dataChannel: hostChannelA,
+      session: { sessionId: 'session-a', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => hostChannelA.close()
+    })
+  });
+  await host.controller.acceptAnswer('answer-a');
+  const observerHost = await host.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-b', dataChannel: hostChannelB,
+      session: { sessionId: 'session-b', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => hostChannelB.close()
+    })
+  });
+  await observerHost.acceptAnswer('answer-b');
+
+  const reusedActorId = 'guest-reused';
+  hostChannelA.receive(context('HELLO', { actorId: reusedActorId, lastRevision: 0 }));
+  hostChannelB.receive(context('HELLO', { actorId: 'guest-observer', sessionId: 'session-b', lastRevision: 0 }));
+  await settle();
+  const pageId = host.persisted().document.pages[0].id;
+  const observerChannel = new FakeChannel();
+  hostChannelB.peer = observerChannel;
+  observerChannel.peer = hostChannelB;
+  const received = [];
+  observerChannel.addEventListener('message', event => {
+    const message = decodeCollaborationMessage(event.data, { direction: 'host-to-guest' });
+    if (message.kind === 'PRESENCE' && message.peerActorId === reusedActorId) received.push(message);
+  });
+
+  hostChannelA.receive(context('PRESENCE', {
+    actorId: reusedActorId, peerActorId: reusedActorId, sequence: 40, active: true,
+    pageId, cursorX: 1, cursorY: 2, selectedIds: []
+  }));
+  await settle();
+  hostChannelA.close();
+  await settle();
+  const inactive = received.at(-1);
+  assert.equal(inactive.active, false);
+
+  const hostChannelC = new FakeChannel();
+  const reconnectedHost = await host.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-c', dataChannel: hostChannelC,
+      session: { sessionId: 'session-c', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => hostChannelC.close()
+    })
+  });
+  await reconnectedHost.acceptAnswer('answer-c');
+  hostChannelC.receive(context('HELLO', { actorId: reusedActorId, sessionId: 'session-c', lastRevision: 0 }));
+  await settle();
+  hostChannelC.receive(context('PRESENCE', {
+    actorId: reusedActorId, sessionId: 'session-c', peerActorId: reusedActorId, sequence: 1,
+    active: true, pageId, cursorX: 8, cursorY: 9, selectedIds: []
+  }));
+  await settle();
+
+  const active = received.at(-1);
+  assert.equal(active.active, true);
+  assert.ok(active.sequence > inactive.sequence, 'room relays sequence numbers that survive actor ID reuse');
+  assert.deepEqual([active.cursorX, active.cursorY], [8, 9]);
+  host.controller.close();
+  observerHost.close();
+  reconnectedHost.close();
+});
+
 test('host rejects the wrong peer identity and revocation closes the connected channel', async () => {
   let active = true;
   const { controller, channel } = await hostFixture({

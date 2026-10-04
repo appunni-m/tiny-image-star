@@ -32,9 +32,33 @@ class ShadowPixelCanvas {
     const stack = [];
     this.context = {
       globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none', fillStyle: '#000000',
+      path: [],
       save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, filter: this.filter, fillStyle: this.fillStyle }); },
       restore() { Object.assign(this, stack.pop()); },
       setTransform() {},
+      beginPath() { this.path = []; },
+      moveTo(x, y) { this.path.push({ x, y }); },
+      lineTo(x, y) { this.path.push({ x, y }); },
+      closePath() {},
+      fill() {
+        if (this.path.length < 3) return;
+        const color = this.fillStyle.match(/^#([0-9a-f]{6})$/i)?.[1] || '000000';
+        const rgba = [0, 2, 4].map(offset => Number.parseInt(color.slice(offset, offset + 2), 16)).concat(255);
+        const minX = Math.max(0, Math.floor(Math.min(...this.path.map(point => point.x))));
+        const minY = Math.max(0, Math.floor(Math.min(...this.path.map(point => point.y))));
+        const maxX = Math.min(canvas.width, Math.ceil(Math.max(...this.path.map(point => point.x))));
+        const maxY = Math.min(canvas.height, Math.ceil(Math.max(...this.path.map(point => point.y))));
+        for (let py = minY; py < maxY; py += 1) for (let px = minX; px < maxX; px += 1) {
+          const sampleX = px + 0.5; const sampleY = py + 0.5;
+          let inside = false;
+          for (let index = 0, previous = this.path.length - 1; index < this.path.length; previous = index, index += 1) {
+            const point = this.path[index]; const prior = this.path[previous];
+            if ((point.y > sampleY) !== (prior.y > sampleY)
+              && sampleX < (prior.x - point.x) * (sampleY - point.y) / (prior.y - point.y) + point.x) inside = !inside;
+          }
+          if (inside) this.blend(px, py, rgba);
+        }
+      },
       clearRect(x, y, widthToClear, heightToClear) {
         const left = Math.max(0, Math.floor(x)); const top = Math.max(0, Math.floor(y));
         const right = Math.min(canvas.width, Math.ceil(x + widthToClear)); const bottom = Math.min(canvas.height, Math.ceil(y + heightToClear));
@@ -842,7 +866,7 @@ test('individual drop-shadow blend modes composite onto the live backdrop before
     const renderer = Object.create(SceneRenderer.prototype);
     const rendered = renderer.drawDropShadowsWithBlendMode(destination.context, source, { type: 'rectangle' }, [
       { id: 'screen-shadow', type: 'drop-shadow', visible: true, blendMode: 'screen', color: '#112233',
-        opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: 0 }
+        opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: 0, showShadowBehindNode: true }
     ], 1, 40, 30, 11, 13, 4, 6, 40, 30, 0.5);
 
     assert.equal(rendered, true);
@@ -866,14 +890,65 @@ test('spread shadows alter the raster silhouette before blur while retaining sou
     const source = new ShadowPixelCanvas(5, 5);
     source.pixels.set([10, 20, 30, 255], (2 * 5 + 2) * 4);
     const result = renderer.applyDropShadows(source, node, [
-      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 1 }
+      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 1, showShadowBehindNode: true }
     ], 1, 5, 5);
     const pixel = (canvas, x, y) => Array.from(canvas.pixels.subarray((y * canvas.width + x) * 4, (y * canvas.width + x + 1) * 4));
     assert.deepEqual(pixel(result, 1, 1), [255, 0, 0, 255], 'positive spread paints the expanded shadow silhouette');
     assert.deepEqual(pixel(result, 2, 2), [10, 20, 30, 255], 'the source artwork remains above its drop shadow');
     assert.equal(renderer.applyDropShadows(source, node, [
-      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 0 }
+      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 0, offsetY: 0, blur: 0, spread: 0, showShadowBehindNode: true }
     ], 1, 5, 5), null, 'zero-spread stacks keep the native CSS filter path');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('drop shadows stay outside node geometry unless showShadowBehindNode is enabled', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = ShadowPixelCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    const node = createNode('rectangle', { width: 3, height: 3 });
+    const makeSurface = () => {
+      const surface = new ShadowPixelCanvas(5, 5);
+      surface.pixels.set([255, 255, 255, 255], (2 * 5 + 1) * 4);
+      return surface;
+    };
+    const pixel = (surface, x, y) => Array.from(surface.pixels.subarray((y * 5 + x) * 4, (y * 5 + x + 1) * 4));
+    const shadow = { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: 1, offsetY: 0, blur: 0, spread: 0 };
+
+    const defaultResult = renderer.applyDropShadows(makeSurface(), node, [shadow], 1, 5, 5, 1, 1);
+    assert.deepEqual(pixel(defaultResult, 2, 2), [0, 0, 0, 0],
+      'the default shadow is clipped out of transparent pixels inside the node bounds');
+
+    const behindNodeResult = renderer.applyDropShadows(makeSurface(), node, [
+      { ...shadow, spread: 1, showShadowBehindNode: true }
+    ], 1, 5, 5, 1, 1);
+    assert.deepEqual(pixel(behindNodeResult, 2, 2), [255, 0, 0, 255],
+      'enabling the option allows a shadow to show through a transparent pixel inside the node bounds');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('polygon drop shadows follow the authored silhouette instead of clipping to its rectangular bounds', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = ShadowPixelCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    const node = createNode('polygon', { width: 4, height: 4, points: 3 });
+    const source = new ShadowPixelCanvas(6, 6);
+    for (const [x, y] of [[1, 3], [2, 3]]) source.pixels.set([255, 255, 255, 255], (y * 6 + x) * 4);
+    const result = renderer.applyDropShadows(source, node, [
+      { type: 'drop-shadow', visible: true, color: '#ff0000', opacity: 1, offsetX: -1, offsetY: -1, blur: 0 }
+    ], 1, 6, 6);
+    const pixel = (x, y) => Array.from(result.pixels.subarray((y * 6 + x) * 4, (y * 6 + x + 1) * 4));
+    assert.deepEqual(pixel(0, 2), [255, 0, 0, 255],
+      'shadow remains in the transparent corner of the polygon bounds, outside the triangular silhouette');
+    assert.deepEqual(pixel(1, 2), [0, 0, 0, 0],
+      'shadow is hidden where it falls behind the polygon geometry');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -895,13 +970,42 @@ test('positive inner-shadow spread contracts the shadow and still clips it to th
     const makeRenderer = () => Object.create(SceneRenderer.prototype);
     const plain = makeShape();
     const spread = makeShape();
+    const node = createNode('rectangle', { width: 3, height: 3 });
     const baseEffect = { type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 1, offsetY: 0, blur: 0 };
-    makeRenderer().applyInnerShadows(plain, [{ ...baseEffect, spread: 0 }], 1, 5, 5);
-    makeRenderer().applyInnerShadows(spread, [{ ...baseEffect, spread: 1 }], 1, 5, 5);
+    makeRenderer().applyInnerShadows(plain, [{ ...baseEffect, spread: 0 }], 1, 5, 5, plain, node);
+    makeRenderer().applyInnerShadows(spread, [{ ...baseEffect, spread: 1 }], 1, 5, 5, spread, node);
     const leftEdge = canvas => Array.from(canvas.pixels.subarray((2 * 5 + 1) * 4, (2 * 5 + 2) * 4));
     assert.deepEqual(leftEdge(plain), [128, 128, 128, 255], 'the unspread offset casts an inner edge shadow');
     assert.deepEqual(leftEdge(spread), [255, 255, 255, 255], 'positive spread expands the exclusion mask and contracts the inner shadow');
     assert.deepEqual(Array.from(spread.pixels.subarray(0, 4)), [0, 0, 0, 0], 'inner effects do not escape the original silhouette');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('inner-shadow spread values are retained but ignored on unsupported vector layers', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = ShadowPixelCanvas;
+  try {
+    const node = createNode('path', { width: 3, height: 3, points: [], closed: false });
+    const makeShape = () => {
+      const shape = new ShadowPixelCanvas(5, 5);
+      for (let y = 1; y <= 3; y += 1) for (let x = 1; x <= 3; x += 1) {
+        shape.pixels.set([255, 255, 255, 255], (y * 5 + x) * 4);
+      }
+      return shape;
+    };
+    const effect = { type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5,
+      offsetX: 1, offsetY: 0, blur: 0 };
+    const withoutSpread = makeShape();
+    const withUnsupportedSpread = makeShape();
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.applyInnerShadows(withoutSpread, [{ ...effect, spread: 0 }], 1, 5, 5, withoutSpread, node);
+    renderer.applyInnerShadows(withUnsupportedSpread, [{ ...effect, spread: 2 }], 1, 5, 5, withUnsupportedSpread, node);
+
+    assert.deepEqual(withUnsupportedSpread.pixels, withoutSpread.pixels,
+      'Figma ignores authored inner-shadow spread on vector paths even though the value remains stored');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -936,6 +1040,85 @@ test('layer blur processes the current surface at raster scale and copies it bac
     assert.deepEqual(scratch.draws[0], { image: surface, args: [0, 0], filter: 'blur(6px)' });
     assert.equal(surface.draws[0].image, scratch, 'the filtered pixels replace the prior surface before the next effect');
     assert.deepEqual(surface.draws[0].args, [0, 0]);
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('hidden layer blur leaves the current surface unchanged', () => {
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.draws = [];
+      this.context = {
+        filter: 'none', globalAlpha: 1, globalCompositeOperation: 'source-over',
+        save() {}, restore() {}, setTransform() {}, clearRect() {},
+        drawImage: (image, ...args) => this.draws.push({ image, args, filter: this.context.filter })
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const surface = new RecordingCanvas(160, 100);
+    const renderer = Object.create(SceneRenderer.prototype);
+    assert.equal(renderer.applyLayerBlurEffect(surface, { type: 'layer-blur', radius: 24, visible: false }, 2, 160, 100), true);
+    assert.deepEqual(canvases, [surface], 'a hidden blur does not allocate a scratch surface');
+    assert.deepEqual(surface.draws, [], 'a hidden blur does not replace the painted layer pixels');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('progressive layer blur uses bounded gradient-weighted radii in object space', () => {
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.draws = []; this.gradients = [];
+      this.context = {
+        _filter: 'none', _composite: 'source-over', filters: [], composites: [], fills: [],
+        get filter() { return this._filter; }, set filter(value) { this._filter = value; this.filters.push(value); },
+        get globalCompositeOperation() { return this._composite; }, set globalCompositeOperation(value) { this._composite = value; this.composites.push(value); },
+        globalAlpha: 1,
+        save() {}, restore() {}, setTransform() {}, clearRect() {},
+        drawImage: (image, ...args) => this.draws.push({ image, args, filter: this.context.filter, composite: this.context.globalCompositeOperation }),
+        fillRect: (...args) => this.context.fills.push({ args, fill: this.context.fillStyle, composite: this.context.globalCompositeOperation }),
+        createLinearGradient: (...points) => {
+          const gradient = { points, stops: [], addColorStop(offset, color) { this.stops.push([offset, color]); } };
+          this.gradients.push(gradient);
+          return gradient;
+        }
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const surface = new RecordingCanvas(160, 100);
+    const effect = { type: 'layer-blur', blurType: 'PROGRESSIVE', startRadius: 1, radius: 4,
+      startOffset: { x: 0.25, y: 0 }, endOffset: { x: 0.75, y: 1 } };
+    const renderer = Object.create(SceneRenderer.prototype);
+    assert.equal(renderer.applyLayerBlurEffect(surface, effect, 2, 160, 100,
+      { width: 40, height: 30, padX: 10, padY: 5 }), true);
+    const scratch = canvases[1]; const accumulation = canvases[2];
+    assert.deepEqual(scratch.draws.map(draw => draw.filter), ['blur(2px)', 'blur(8px)']);
+    assert.deepEqual(scratch.gradients[0].points, [40, 10, 80, 70], 'gradient points follow the node box and scale');
+    assert.ok(accumulation.context.composites.includes('lighter'), 'the bounded blur passes add as weighted premultiplied layers');
+    assert.equal(surface.draws.at(-1).image, accumulation, 'the accumulated progressive result replaces the source surface');
+
+    const rotatedSurface = new RecordingCanvas(160, 100);
+    assert.equal(renderer.applyLayerBlurEffect(rotatedSurface, effect, 2, 160, 100,
+      { width: 40, height: 30, rotation: 90, padX: 10, padY: 5 }), true);
+    assert.ok(canvases[4].gradients[0].points.every((value, index) => Math.abs(value - [90, 20, 30, 60][index]) < 1e-9),
+      'the direction rotates with the layer content');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -995,6 +1178,56 @@ test('layer opacity is applied once after the completed effect surface', () => {
   }
 });
 
+test('layer-effect surfaces include affine-transformed geometry and its effect padding', () => {
+  const document = createDocument();
+  const node = createNode('rectangle', {
+    id: 'affine-effect-bounds', x: 7, y: 9, width: 20, height: 10,
+    affineTransform: { a: 2, b: 0, c: 0, d: 1 },
+    effects: [{ id: 'blur', type: 'layer-blur', visible: true, radius: 1 }]
+  });
+  addNode(document, node);
+
+  const surfaces = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.draws = [];
+      const stack = [];
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none',
+        save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, filter: this.filter }); },
+        restore() { Object.assign(this, stack.pop()); },
+        setTransform() {},
+        drawImage: (...args) => this.draws.push(args)
+      };
+      surfaces.push(this);
+    }
+    getContext() { return this.context; }
+  }
+
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const destination = new RecordingCanvas(100, 80);
+    destination.context.getTransform = () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1 });
+    renderer.drawNode = () => {};
+    renderer.applyLayerBlurEffect = () => true;
+
+    renderer.drawNodeWithEffects(destination.context, node, 0, 0, new Map(), node.effects);
+
+    assert.deepEqual([surfaces[1].width, surfaces[1].height], [66, 16],
+      'the effect surface includes the scaled 40px width plus 3px blur aprons on both sides');
+    assert.deepEqual(destination.draws[0].slice(1), [-16, 6, 66, 16],
+      'the expanded surface remains aligned to the node origin when composited');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('foreground effect rendering preserves top-stack order before inner and drop shadow phases', () => {
   const document = createDocument();
   const effects = [
@@ -1003,7 +1236,7 @@ test('foreground effect rendering preserves top-stack order before inner and dro
     { id: 'grain-b', type: 'noise', visible: true },
     { id: 'edge', type: 'texture', visible: true },
     { id: 'inset', type: 'inner-shadow', visible: true, color: '#000000', opacity: .5, offsetX: 0, offsetY: 1, blur: 2 },
-    { id: 'shade', type: 'drop-shadow', visible: true, color: '#123456', opacity: .5, offsetX: 2, offsetY: 3, blur: 4 },
+    { id: 'shade', type: 'drop-shadow', visible: true, color: '#123456', opacity: .5, offsetX: 2, offsetY: 3, blur: 4, showShadowBehindNode: true },
     { id: 'hidden-grain', type: 'noise', visible: false }
   ];
   const node = createNode('rectangle', { id: 'effect-order', width: 30, height: 20, effects });
@@ -1034,6 +1267,10 @@ test('foreground effect rendering preserves top-stack order before inner and dro
     renderer.applyNoiseEffects = (_surface, _node, [effect]) => events.push(effect.id);
     renderer.applyTextureEffects = (_surface, _node, [effect]) => events.push(effect.id);
     renderer.applyInnerShadows = () => events.push('inner-phase');
+    renderer.applyDropShadows = (_surface, _node, effectStack) => {
+      if (effectStack.some(effect => effect.type === 'drop-shadow' && effect.visible !== false)) events.push('drop-phase');
+      return null;
+    };
     const destination = new RecordingCanvas(100, 80);
     destination.context.getTransform = () => ({ a: 1, b: 0 });
 
@@ -1041,20 +1278,23 @@ test('foreground effect rendering preserves top-stack order before inner and dro
 
     assert.deepEqual(events, [
       'paint:fill', 'paint:stroke', 'inner-phase', 'paint:stroke',
-      'grain-a', 'soften', 'grain-b', 'edge'
+      'grain-a', 'soften', 'grain-b', 'edge', 'drop-phase'
     ], 'inner shadow sits between fill and stroke, then top effects run over both paints in authored order');
     assert.match(destination.context.filter, /^drop-shadow\(/, 'drop shadows run after the ordered top stack and inner shadows');
     assert.doesNotMatch(destination.context.filter, /blur\(/, 'an applied layer blur must not be repeated in the final pass');
 
     events.length = 0;
     const group = createNode('group', { width: 30, height: 20, effects: [
+      { id: 'group-blur', type: 'layer-blur', visible: true, radius: 3 },
       { id: 'group-noise', type: 'noise', visible: true },
-      { id: 'group-inner', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 0, offsetY: 0, blur: 0 }
+      { id: 'group-inner', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.5, offsetX: 0, offsetY: 0, blur: 0 },
+      { id: 'group-drop', type: 'drop-shadow', visible: true, color: '#000000', opacity: .5, offsetX: 0, offsetY: 1, blur: 2, showShadowBehindNode: true }
     ] });
     addNode(document, group);
+    addNode(document, createNode('rectangle', { width: 10, height: 10 }), { parentId: group.id });
     renderer.drawNodeWithEffects(destination.context, group, 0, 0, new Map(), group.effects);
-    assert.deepEqual(events, ['paint:undefined', 'group-noise', 'inner-phase'],
-      'groups keep their established flattened effect path until group-specific paint staging is implemented');
+    assert.deepEqual(events, ['paint:undefined', 'inner-phase', 'group-blur', 'group-noise', 'drop-phase'],
+      'group content is followed by inner shadow, authored top effects, then drop shadow');
 
     events.length = 0;
     const text = createNode('text', { width: 30, height: 20, stroke: '#ff0000', strokeWidth: 1, effects: [
@@ -1064,6 +1304,18 @@ test('foreground effect rendering preserves top-stack order before inner and dro
     renderer.drawNodeWithEffects(destination.context, text, 0, 0, new Map(), text.effects);
     assert.deepEqual(events, ['paint:fill', 'paint:stroke', 'inner-phase', 'paint:stroke'],
       'text shadows are applied after glyph fills and before glyph strokes, matching shape paint phases');
+
+    events.length = 0;
+    const network = createNode('network', {
+      ...vectorNetworkGeometryFromAnchors([{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 18 }], { closed: true }),
+      stroke: '#ff0000', strokeWidth: 2,
+      effects: [{ id: 'network-inner', type: 'inner-shadow', visible: true, color: '#000000', opacity: .5,
+        offsetX: 0, offsetY: 1, blur: 2 }]
+    });
+    addNode(document, network);
+    renderer.drawNodeWithEffects(destination.context, network, 0, 0, new Map(), network.effects);
+    assert.deepEqual(events, ['paint:fill', 'paint:stroke', 'inner-phase', 'paint:stroke'],
+      'vector network shadows sit between face fills and the network outline');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -1271,6 +1523,64 @@ test('background blur samples the already-painted backdrop, clips to the authore
     assert.deepEqual(node.effects, [{ id: 'backdrop', type: 'background-blur', visible: true, radius: 4 }], 'the authored node is immutable');
     assert.equal(parent.draws[0][0], canvases[1], 'only the masked result is composited onto the scene');
     assert.equal(parent.draws[0].at(-1), true, 'the active ancestor clip remains applied to the filtered layer composite');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('progressive background blur maps its direction through page rotation and the viewport transform', () => {
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.draws = []; this.gradients = [];
+      this.context = {
+        _filter: 'none', _composite: 'source-over', filters: [], composites: [], fills: [],
+        get filter() { return this._filter; }, set filter(value) { this._filter = value; this.filters.push(value); },
+        get globalCompositeOperation() { return this._composite; }, set globalCompositeOperation(value) { this._composite = value; this.composites.push(value); },
+        globalAlpha: 1,
+        clearRect() {}, save() {}, restore() {}, setTransform() {},
+        drawImage: (...args) => this.draws.push(args),
+        fillRect: (...args) => this.context.fills.push({ args, fill: this.context.fillStyle, composite: this.context.globalCompositeOperation }),
+        createLinearGradient: (...points) => {
+          const gradient = { points, stops: [], addColorStop(offset, color) { this.stops.push([offset, color]); } };
+          this.gradients.push(gradient);
+          return gradient;
+        }
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const document = createDocument();
+    const effect = { id: 'progressive-backdrop', type: 'background-blur', visible: true, blurType: 'PROGRESSIVE',
+      startRadius: 2, radius: 12, startOffset: { x: 0.5, y: 0 }, endOffset: { x: 0.5, y: 1 } };
+    const node = createNode('rectangle', { x: 20, y: 30, width: 50, height: 30, rotation: 90, effects: [effect] });
+    addNode(document, node);
+    const backdrop = { width: 240, height: 180 };
+    const parent = {
+      canvas: backdrop, filter: 'none', globalAlpha: 1, globalCompositeOperation: 'source-over',
+      drawImage: (...args) => parent.draws.push(args), draws: [], save() {}, restore() {}, setTransform() {},
+      getTransform: () => ({ a: 2, b: 0, c: 0, d: 2, e: 4, f: 8 })
+    };
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document });
+    renderer.drawNode = () => {};
+    renderer.drawNodeWithBackgroundBlur(parent, node, 0, 0, new Map(), [effect]);
+
+    const [blurPassSurface, result] = canvases;
+    assert.deepEqual(blurPassSurface.draws.map(args => args[0]), [backdrop, backdrop], 'each tier samples the same untouched page backdrop');
+    assert.ok(blurPassSurface.context.filters.includes('blur(4px)'));
+    assert.ok(blurPassSurface.context.filters.includes('blur(24px)'));
+    assert.equal(blurPassSurface.gradients.length, 2);
+    const [startX, startY, endX, endY] = blurPassSurface.gradients[0].points;
+    assert.notEqual(startX, endX, 'a vertical node-space gradient rotates into the horizontal canvas direction');
+    assert.equal(startY, endY, 'rotated gradient endpoints remain on one horizontal line');
+    assert.ok(result.context.composites.includes('lighter'));
+    assert.equal(parent.draws[0][0], result, 'the masked backdrop result is composed back to the page');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -1874,6 +2184,31 @@ test('component property hover draws a purple outline around its instance layer'
     'hidden targets do not show a hover outline');
 });
 
+test('component property hover draws every visible target in one traversal', () => {
+  const document = createDocument();
+  const first = createNode('rectangle', { x: 20, y: 30, width: 40, height: 28 });
+  const second = createNode('text', { x: 92, y: 44, width: 56, height: 22, text: 'Label' });
+  addNode(document, first);
+  addNode(document, second);
+  const paths = [];
+  let path = [];
+  const context = {
+    save() {}, restore() {}, beginPath() { path = []; },
+    moveTo(x, y) { path.push({ x, y }); }, lineTo(x, y) { path.push({ x, y }); },
+    closePath() { path.push('close'); }, stroke() { paths.push(path); },
+    set strokeStyle(_value) {}, set lineWidth(_value) {}
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, zoom: 1 });
+
+  assert.equal(renderer.drawComponentPropertyHighlights(context, document.pages[0].children, [first.id, second.id]), 2);
+  assert.equal(paths.length, 2, 'both component-property targets receive outlines');
+  assert.deepEqual(paths.map(points => points.slice(0, 4).map(point => [point.x, point.y])), [
+    [[20, 30], [60, 30], [60, 58], [20, 58]],
+    [[92, 44], [148, 44], [148, 66], [92, 66]]
+  ]);
+});
+
 test('text tracking affects measured line width and wrapping', () => {
   const context = textContext();
   assert.equal(measureTrackedText(context, 'ab cd', 0), 45);
@@ -2080,6 +2415,36 @@ test('vector network rendering uses the shared rounded-face path for fills and s
     'each non-zero vertex radius must appear in both the face fill path and the shared stroke path');
 });
 
+test('vector network paint stages separate face fills from outlines', () => {
+  const document = createDocument();
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 24, y: 0 }, { x: 12, y: 20 }
+  ], { closed: true });
+  const network = createNode('network', { ...geometry, fill: '#123456', stroke: '#000000', strokeWidth: 2 });
+  addNode(document, network);
+  const calls = [];
+  const stack = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '', lineWidth: 1,
+    save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }); },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    beginPath() {}, moveTo() {}, lineTo() {}, bezierCurveTo() {}, closePath() {},
+    fill() { calls.push('fill'); }, stroke() { calls.push('stroke'); }
+  };
+  const context = new Proxy(target, {
+    get(current, property) { return property in current ? current[property] : () => {}; },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+
+  renderer.drawNode(context, network, 0, 0, new Map(), false, false, { effectPaintStage: 'fill' });
+  assert.deepEqual(calls, ['fill'], 'the fill pass paints network faces without their outline');
+  calls.length = 0;
+  renderer.drawNode(context, network, 0, 0, new Map(), false, false, { effectPaintStage: 'stroke' });
+  assert.deepEqual(calls, ['stroke'], 'the stroke pass paints the network outline without repainting its faces');
+});
+
 test('shape rendering paints linear, radial, and angular stroke gradients through the stroke geometry', () => {
   for (const type of ['linear', 'radial', 'angular']) {
     const document = createDocument();
@@ -2173,6 +2538,35 @@ test('open line stroke decorations render in order and follow the line endpoints
   assert.deepEqual(shapes[2].path[1], ['line', 44, 28]);
   assert.equal(shapes[1].color, '#123456');
   assert.equal(shapes[2].color, '#123456');
+});
+
+test('circle endpoint markers use Canvas arcs and diamonds remain filled vector paths', () => {
+  const document = createDocument();
+  const line = createNode('line', { x: 4, y: 8, width: 40, height: 0, strokes: [
+    { id: 'filled-markers', color: '#123456', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'circle', endDecoration: 'diamond' }
+  ] });
+  addNode(document, line);
+  const fills = [];
+  let path = [];
+  const context = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    save() {}, restore() {}, beginPath() { path = []; },
+    moveTo(x, y) { path.push(['move', x, y]); }, lineTo(x, y) { path.push(['line', x, y]); },
+    arc(x, y, radius, start, end) { path.push(['arc', x, y, radius, start, end]); },
+    closePath() { path.push(['close']); },
+    setLineDash() {}, stroke() {},
+    fill() { fills.push({ path: [...path], color: this.fillStyle }); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, line, 0, 0, new Map());
+  assert.deepEqual(fills.map(item => item.path[0][0]), ['arc', 'move']);
+  assert.deepEqual(fills[0].path[0], ['arc', 4, 8, 4.4, 0, Math.PI * 2]);
+  assert.deepEqual(fills[1].path.at(-1), ['close']);
+  assert.ok(fills.every(item => item.color === '#123456'));
 });
 
 test('shape rendering paints ordered stroke layers with independent opacity and presentation', () => {
@@ -3060,6 +3454,8 @@ test('image crop selection renders node-local crop and live drag bounds with zoo
   assert.equal(arcs, 0, 'crop mode suppresses the standard rotation handle');
   assert.equal(rects.filter(rect => Math.abs(rect.width - 24) < 1e-9 && Math.abs(rect.height - 24) < 1e-9).length, 8,
     'each crop edge/corner has a 48 CSS-pixel hit target at 200% zoom');
+  assert.equal(rects.filter(rect => Math.abs(rect.width - 7) < 1e-9 && Math.abs(rect.height - 7) < 1e-9).length, 8,
+    'each edge/corner handle stays 14 screen pixels across at 200% zoom so it reads as draggable');
   assert.equal(rects.filter(rect => Math.abs(rect.width - 3) < 1e-9 && Math.abs(rect.height - 3) < 1e-9).length, 0,
     'standard resize handles are suppressed while cropping');
   const expectedCrop = [

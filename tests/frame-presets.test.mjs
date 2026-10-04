@@ -12,7 +12,7 @@ test('the curated frame catalog uses the seven requested categories in stable pi
     { id: 'paper', name: 'Paper' },
     { id: 'social', name: 'Social media' },
   ]);
-  assert.equal(FRAME_PRESETS.length, 21);
+  assert.equal(FRAME_PRESETS.length, 24);
   assert.ok(Object.isFrozen(FRAME_PRESET_CATEGORIES));
   assert.ok(Object.isFrozen(FRAME_PRESETS));
   assert.ok(FRAME_PRESETS.every(Object.isFrozen), 'callers cannot mutate shared preset definitions');
@@ -38,6 +38,9 @@ test('representative device, presentation, paper, and social presets keep their 
     return [preset.name, preset.width, preset.height];
   };
   assert.deepEqual(dimensions('phone-standard'), ['Standard phone', 393, 852]);
+  assert.deepEqual(dimensions('phone-iphone-18-pro'), ['iPhone 18 Pro', 402, 874]);
+  assert.deepEqual(dimensions('phone-iphone-18-pro-max'), ['iPhone 18 Pro Max', 440, 956]);
+  assert.deepEqual(dimensions('phone-iphone-air'), ['iPhone Air', 420, 912]);
   assert.deepEqual(dimensions('tablet-standard'), ['Standard tablet', 820, 1180]);
   assert.deepEqual(dimensions('desktop-standard'), ['Desktop', 1440, 900]);
   assert.deepEqual(dimensions('presentation-widescreen'), ['Widescreen · 16:9', 1920, 1080]);

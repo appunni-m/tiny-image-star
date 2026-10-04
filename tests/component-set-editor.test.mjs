@@ -67,6 +67,18 @@ test('component set editor keeps at least one axis and prevents axis-name collis
   assert.equal(validateDocument(document), true);
 });
 
+test('component set editor safely stores a printable prototype-named axis', () => {
+  const { document, components, set } = makeSet(['Chip / State=Rest', 'Chip / State=Hover']);
+
+  addComponentVariantAxis(document, set.id, '__proto__', 'Light');
+
+  assert.equal(components.every(component => Object.hasOwn(component.variantProperties, '__proto__')), true);
+  assert.deepEqual(components.map(component => component.variantProperties.__proto__), ['Light', 'Light']);
+  assert.equal(validateDocument(document), true);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+    'prototype-named axis values survive a serialized document round-trip');
+});
+
 test('Assets variant chooser exposes exact variant identities and accessible axis controls', () => {
   const { document, components, set } = makeSet();
   const instance = createComponentInstance(document, components[1].id);

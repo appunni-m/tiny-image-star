@@ -5,6 +5,7 @@ import {
   vectorNetworkVertexPoint, vectorPathContours
 } from './vector-path.js';
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
+import { ellipseArcParameters, isValidEllipseArcData } from './ellipse-arc.js';
 
 const operations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const MAX_INPUT_SEGMENTS = 512;
@@ -81,7 +82,12 @@ function validateSimpleOperand(node, { root = false } = {}) {
     }
     return;
   }
-  if (node.type === 'ellipse') return;
+  if (node.type === 'ellipse') {
+    if (node.arcData != null && !isValidEllipseArcData(node.arcData)) {
+      unsupported(`“${node.name || node.type}” has invalid ellipse arc geometry.`);
+    }
+    return;
+  }
   if (node.type === 'polygon' || node.type === 'star') {
     const count = Number(node.points ?? (node.type === 'star' ? 5 : 6));
     const maximum = node.type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS;
@@ -681,16 +687,16 @@ function findCubicIntersections(first, second, epsilon, intersectionTolerance, b
     for (const endpoint of endpoints) if (!intersections.some(item => Math.abs(item.t - endpoint.t) < 1e-9 && Math.abs(item.u - endpoint.u) < 1e-9)) intersections.push(endpoint);
     return intersections;
   }
-  // Coincident/reversed cubics have infinitely many intersections. The current
-  // arrangement representation cannot preserve that topology, so fail closed.
+  // Exactly shared cubic spans already have matching finite endpoints. Split
+  // there and let side membership decide whether a shared boundary survives;
+  // this covers adjacent network faces whose common edge is curved. Cubics
+  // that overlap only partially still need an explicit overlap parameter map.
   const controlSets = [
     [first.curve.p0, first.curve.p1, first.curve.p2, first.curve.p3],
     [second.curve.p0, second.curve.p1, second.curve.p2, second.curve.p3],
     [second.curve.p3, second.curve.p2, second.curve.p1, second.curve.p0]
   ];
-  if ([1, 2].some(index => controlSets[0].every((point, pointIndex) => distance(point, controlSets[index][pointIndex]) <= epsilon * 8))) {
-    unsupported('coincident Bézier segments have ambiguous boundary ownership.');
-  }
+  if ([1, 2].some(index => controlSets[0].every((point, pointIndex) => distance(point, controlSets[index][pointIndex]) <= epsilon * 8))) return endpoints;
 
   const stack = [{ curveA: first.curve, curveB: second.curve, t0: 0, t1: 1, u0: 0, u1: 1, depth: 0 }];
   const intersections = [...endpoints];
@@ -1369,38 +1375,52 @@ function networkCurves(node) {
 }
 
 // Editable paths store cubic handles rather than rational conic segments, so
-// an ellipse cannot be represented exactly in the native path model. Twelve
-// 30-degree cubic arcs, inset by 5e-7 of each radius, keep the approximation
-// inside the source ellipse and below 1e-6 times its longer semiaxis in
-// Hausdorff distance. The small inset also prevents rotated ellipses from
-// protruding beyond the source visual bounds and creating a spurious clip.
+// ellipse arcs use bounded-error cubic spans. Full ellipses retain the twelve
+// 30-degree segments; partial arcs use spans no larger than 30 degrees.
 function ellipseCurves(node) {
-  const segments = 12;
   const inset = 1 - 5e-7;
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
   const rx = node.width / 2 * inset;
   const ry = node.height / 2 * inset;
-  const delta = TAU / segments;
-  const handle = 4 / 3 * Math.tan(delta / 4);
   const angle = node.rotation || 0;
   const transform = point => angle ? rotate(point, cx, cy, angle) : point;
-  const curves = [];
-  for (let index = 0; index < segments; index += 1) {
-    const startAngle = index * delta;
-    const endAngle = (index + 1) * delta;
-    const start = vector(cx + rx * Math.cos(startAngle), cy + ry * Math.sin(startAngle));
-    const end = vector(cx + rx * Math.cos(endAngle), cy + ry * Math.sin(endAngle));
-    const startTangent = vector(-rx * Math.sin(startAngle), ry * Math.cos(startAngle));
-    const endTangent = vector(-rx * Math.sin(endAngle), ry * Math.cos(endAngle));
-    curves.push(cubic(
-      transform(start),
-      transform(add(start, scale(startTangent, handle))),
-      transform(subtract(end, scale(endTangent, handle))),
-      transform(end)
-    ));
+  const { start, end, sweep, innerRadius, full } = ellipseArcParameters(node);
+  if (!sweep) return [];
+  const arcCurves = (radius, from, to) => {
+    const segmentCount = Math.max(1, Math.ceil(Math.abs(to - from) / (Math.PI / 6)));
+    const curves = [];
+    for (let index = 0; index < segmentCount; index += 1) {
+      const startAngle = from + (to - from) * index / segmentCount;
+      const endAngle = from + (to - from) * (index + 1) / segmentCount;
+      const delta = endAngle - startAngle;
+      const handle = 4 / 3 * Math.tan(delta / 4);
+      const start = vector(cx + rx * radius * Math.cos(startAngle), cy + ry * radius * Math.sin(startAngle));
+      const end = vector(cx + rx * radius * Math.cos(endAngle), cy + ry * radius * Math.sin(endAngle));
+      const startTangent = vector(-rx * radius * Math.sin(startAngle), ry * radius * Math.cos(startAngle));
+      const endTangent = vector(-rx * radius * Math.sin(endAngle), ry * radius * Math.cos(endAngle));
+      curves.push(cubic(
+        transform(start),
+        transform(add(start, scale(startTangent, handle))),
+        transform(subtract(end, scale(endTangent, handle))),
+        transform(end)
+      ));
+    }
+    return curves;
+  };
+  const reverseCurves = curves => [...curves].reverse().map(curve => cubic(curve.p3, curve.p2, curve.p1, curve.p0));
+  const outer = arcCurves(1, start, end);
+  if (full && innerRadius === 0) return [outer];
+  if (full) return [outer, reverseCurves(arcCurves(innerRadius, start, end))];
+  const outerStart = outer[0].p0;
+  const outerEnd = outer.at(-1).p3;
+  if (innerRadius > 0) {
+    const inner = reverseCurves(arcCurves(innerRadius, start, end));
+    return [[...outer, cubicFromLine(outerEnd, inner[0].p0), ...inner,
+      cubicFromLine(inner.at(-1).p3, outerStart)]];
   }
-  return [curves];
+  const center = transform(vector(cx, cy));
+  return [[...outer, cubicFromLine(outerEnd, center), cubicFromLine(center, outerStart)]];
 }
 
 function primitiveCurves(node) {

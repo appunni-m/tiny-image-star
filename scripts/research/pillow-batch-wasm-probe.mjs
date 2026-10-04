@@ -2,8 +2,10 @@
 import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { cpus } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { Worker } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
 import { defaultActiveRenderMemoryBudget, defaultImageCachePixelBudget, estimateImageWorkingSetBytes } from '../../src/image-engine.js';
 
 const parse = (key, fallback) => {
@@ -21,6 +23,25 @@ if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 32 
 }
 if (!requestedWorkerCounts.length || requestedWorkerCounts.some(value => !Number.isSafeInteger(value) || value < 1 || value > 8)) {
   throw new RangeError('--workers must be a comma-separated list of integers from 1 to 8.');
+}
+const uniqueRequestedWorkerCounts = [...new Set(requestedWorkerCounts)];
+if (uniqueRequestedWorkerCounts.length > 1 && parse('child', 'false') !== 'true') {
+  const results = [];
+  for (const requested of uniqueRequestedWorkerCounts) {
+    const args = process.argv.slice(2).filter(argument => !argument.startsWith('--workers='));
+    args.push(`--workers=${requested}`, '--child=true');
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    if (child.status !== 0) throw new Error(child.stderr || `Pillow batch probe exited with code ${child.status}.`);
+    results.push(JSON.parse(child.stdout));
+  }
+  const first = results[0];
+  console.log(JSON.stringify({
+    ...first,
+    runs: results.flatMap(result => result.runs),
+    identicalOutputsAcrossWorkers: results.every(result => result.identicalOutputsAcrossWorkers),
+    rssSamplesIsolated: true,
+  }, null, 2));
+  process.exit(0);
 }
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -40,6 +61,20 @@ function chunk(type, data) {
   const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
   const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])));
   return Buffer.concat([length, typeBytes, data, checksum]);
+}
+
+function samplePeakProcessRss() {
+  let peakBytes = process.memoryUsage.rss();
+  const sample = () => { peakBytes = Math.max(peakBytes, process.memoryUsage.rss()); };
+  const timer = setInterval(sample, 5);
+  timer.unref();
+  return {
+    stop() {
+      clearInterval(timer);
+      sample();
+      return Number((peakBytes / 1048576).toFixed(1));
+    },
+  };
 }
 
 function makeRgbaPng(sourceWidth, sourceHeight, seed) {
@@ -86,13 +121,16 @@ const perImageWorkingSet = Math.max(...images.map(image => estimateImageWorkingS
 const memoryWorkerLimit = Math.max(1, Math.floor(activeRenderBudget / perImageWorkingSet));
 const effectiveRuns = [...new Set(requestedWorkerCounts)].map(requested => ({
   requested,
-  poolSize: Math.min(requested, cpuBudget),
+  // Match the app's demand-sized pool: don't initialize idle runtimes that
+  // cannot receive a render under the current image working-set budget.
+  poolSize: Math.min(requested, cpuBudget, memoryWorkerLimit),
   activeWorkers: Math.min(requested, cpuBudget, memoryWorkerLimit),
 }));
 const referenceHashes = new Map();
 const runs = [];
 
 for (const run of effectiveRuns) {
+  const rssSampler = samplePeakProcessRss();
   const workers = Array.from({ length: run.poolSize }, (_, workerId) => new Worker(
     new URL('./pillow-batch-worker.mjs', import.meta.url),
     { workerData: { workerId, cachePixelBudget: Math.floor(cachePixelBudget / run.poolSize) } },
@@ -148,6 +186,7 @@ for (const run of effectiveRuns) {
   await allResults;
   const renderMs = performance.now() - renderStartedAt;
   const coldMs = performance.now() - startedAt;
+  const sampledPeakProcessRssMiB = rssSampler.stop();
   for (const [assetId, hash] of received) {
     if (referenceHashes.has(assetId) && referenceHashes.get(assetId) !== hash) {
       throw new Error(`Pillow-RS output differed at ${assetId} between worker counts.`);
@@ -164,7 +203,7 @@ for (const run of effectiveRuns) {
     coldTotalMs: Number(coldMs.toFixed(1)),
     imagesPerSecond: Number((images.length / (renderMs / 1000)).toFixed(2)),
     equivalentOutputs: received.size === images.length,
-    peakProcessRssMiB: Number((process.memoryUsage().rss / 1048576).toFixed(1)),
+    sampledPeakProcessRssMiB,
   });
 }
 

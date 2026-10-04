@@ -1,6 +1,8 @@
 /** Build a reusable, mutation-aware index for node lookups on one document page. */
 export function createPageNodeIndex(document, pageId, { nodeIds = null, preserveNodeIdentity = false } = {}) {
   let page = null;
+  let indexedPages = null;
+  let indexedPagePosition = -1;
   let byId = new Map();
   // A recipe batch needs one stable identity record per selected target. Keep
   // the captured node and its current path in that record so sparse batches do
@@ -24,8 +26,23 @@ export function createPageNodeIndex(document, pageId, { nodeIds = null, preserve
     ? targetRecords.get(nodeId)?.entry || null
     : byId.get(nodeId) || null;
 
+  const currentPage = () => {
+    const pages = document?.pages || [];
+    if (pages !== indexedPages) {
+      indexedPages = pages;
+      indexedPagePosition = pages.findIndex(candidate => candidate.id === pageId);
+      return indexedPagePosition < 0 ? null : pages[indexedPagePosition];
+    }
+    const cachedPage = indexedPagePosition < 0 ? null : pages[indexedPagePosition];
+    if (cachedPage?.id === pageId) return cachedPage;
+    // Page arrays are mutable. If a reorder, removal, or insertion changes the
+    // cached slot, pay for one lookup and keep the new position for later hits.
+    indexedPagePosition = pages.findIndex(candidate => candidate.id === pageId);
+    return indexedPagePosition < 0 ? null : pages[indexedPagePosition];
+  };
+
   const rebuild = () => {
-    page = (document?.pages || []).find(candidate => candidate.id === pageId) || null;
+    page = currentPage();
     byId = new Map();
     indexedTargetCount = 0;
     if (targetRecords) for (const record of targetRecords.values()) record.entry = null;
@@ -104,8 +121,7 @@ export function createPageNodeIndex(document, pageId, { nodeIds = null, preserve
     }
   };
 
-  const pageIsCurrent = () => page
-    && (document?.pages || []).find(candidate => candidate.id === pageId) === page;
+  const pageIsCurrent = () => page && currentPage() === page;
 
   const isCurrentPath = entry => {
     if (!page) return false;
@@ -133,8 +149,7 @@ export function createPageNodeIndex(document, pageId, { nodeIds = null, preserve
 
   return {
     find(nodeId) {
-      const currentPage = (document?.pages || []).find(candidate => candidate.id === pageId) || null;
-      if (currentPage !== page) rebuild();
+      if (currentPage() !== page) rebuild();
       const targetRecord = targetRecords?.get(nodeId);
       let entry = lookupEntry(nodeId);
       if (!entry && targetRecord?.expectedNode) {

@@ -8,7 +8,7 @@ import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
 import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
 import { DecodedSourceCache } from '../src/decoded-source-cache.js';
-import { addNode, createDocument, createNode, findNode } from '../src/model.js';
+import { addNode, applyImageRecipe, createDocument, createImageRecipe, createNode, findNode } from '../src/model.js';
 import { imagePreviewKey, imagePreviewRenderSettingsForNode } from '../src/image-preview-runtime.js';
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -635,6 +635,73 @@ test('warm decoded-source cache keeps previews and exports anchored to immutable
       'the same image node is passed to its stable-key preview scheduler');
   } finally {
     cache.clear();
+  }
+});
+
+test('saved crop and rotation recipes render repeatedly from one retained original source', async () => {
+  await pillow.default();
+  const sourceBytes = fourColorBmp();
+  const sourceSnapshot = sourceBytes.slice();
+  const document = createDocument();
+  const recipeSource = createNode('image', {
+    id: 'recipe-source', assetId: 'recipe-source-asset',
+    adjustments: { brightness: 28, saturation: -18 },
+    transforms: {
+      crop: { left: 0, top: 0, right: 0.5, bottom: 1 },
+      rotation: 90, flipHorizontal: true,
+    },
+  });
+  const target = createNode('image', {
+    id: 'recipe-target', assetId: 'recipe-target-asset',
+    adjustments: { invert: true }, transforms: { rotation: 270 },
+  });
+  addNode(document, recipeSource);
+  addNode(document, target);
+  const savedRecipe = createImageRecipe(recipeSource, 'Crop and rotate', {}, document);
+  const currentTarget = findNode(document, target.id).node;
+  const previewKey = imagePreviewKey(target.id);
+  const cache = new DecodedSourceCache({ pixelBudget: 4 });
+  cache.setActive(target.assetId);
+  let decodeCount = 0;
+  const renderTarget = () => {
+    const settings = imagePreviewRenderSettingsForNode(currentTarget, previewKey);
+    return cache.withSource(currentTarget.assetId, () => {
+      decodeCount += 1;
+      return decodeOriginal(pillow, sourceBytes);
+    }, source => renderImage(source, settings.adjustments, settings.transforms, pillow)).result;
+  };
+
+  let retainedOriginal;
+  let previousPreviewSource;
+  let expectedFromOriginal;
+  try {
+    const earlierPreview = renderTarget();
+    previousPreviewSource = decodeOriginal(pillow, earlierPreview.bytes);
+    const compounded = renderImage(previousPreviewSource, savedRecipe.adjustments, savedRecipe.transforms, pillow);
+
+    assert.equal(applyImageRecipe(document, target.id, savedRecipe), true);
+    const firstRecipePreview = renderTarget();
+    retainedOriginal = decodeOriginal(pillow, sourceBytes);
+    expectedFromOriginal = renderImage(retainedOriginal, savedRecipe.adjustments, savedRecipe.transforms, pillow);
+    assert.deepEqual(firstRecipePreview.bytes, expectedFromOriginal.bytes,
+      'applying the saved crop, rotation, and color settings matches one render from the imported bytes');
+    assert.notDeepEqual(firstRecipePreview.bytes, compounded.bytes,
+      'the recipe is not layered on the previously displayed image preview');
+
+    currentTarget.adjustments = { brightness: -40, invert: true };
+    currentTarget.transforms = { rotation: 180 };
+    assert.equal(applyImageRecipe(document, target.id, savedRecipe), true,
+      'a repeated batch-style recipe application replaces all prior image settings');
+    const repeatedRecipePreview = renderTarget();
+    assert.deepEqual(repeatedRecipePreview.bytes, firstRecipePreview.bytes,
+      'reapplying a saved recipe is pixel-idempotent while reusing the decoded original');
+    assert.equal(decodeCount, 1, 'all recipe previews share one retained decoded source');
+    assert.equal(currentTarget.assetId, 'recipe-target-asset', 'non-destructive recipe application keeps the target asset identity');
+    assert.deepEqual(sourceBytes, sourceSnapshot, 'recipe previews never mutate the retained imported bytes');
+  } finally {
+    cache.clear();
+    previousPreviewSource?.free();
+    retainedOriginal?.free();
   }
 });
 

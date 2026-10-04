@@ -1,22 +1,10 @@
 import { textGraphemes } from './text-layout.js';
+import { unicodeScriptFor } from './unicode-script.js';
 
 const MAX_FALLBACK_TEXT_CODE_UNITS = 32_768;
 const defaultIgnorable = /\p{Default_Ignorable_Code_Point}/u;
 const letterOrNumber = /[\p{Letter}\p{Number}]/u;
 const extendedPictographic = /\p{Extended_Pictographic}/u;
-const scriptDetectors = [
-  [/\p{Script=Latin}/u, 'Latn'], [/\p{Script=Arabic}/u, 'Arab'], [/\p{Script=Hebrew}/u, 'Hebr'],
-  [/\p{Script=Cyrillic}/u, 'Cyrl'], [/\p{Script=Greek}/u, 'Grek'], [/\p{Script=Armenian}/u, 'Armn'],
-  [/\p{Script=Georgian}/u, 'Geor'], [/\p{Script=Ethiopic}/u, 'Ethi'], [/\p{Script=Devanagari}/u, 'Deva'],
-  [/\p{Script=Bengali}/u, 'Beng'], [/\p{Script=Gurmukhi}/u, 'Guru'], [/\p{Script=Gujarati}/u, 'Gujr'],
-  [/\p{Script=Oriya}/u, 'Orya'], [/\p{Script=Tamil}/u, 'Taml'], [/\p{Script=Telugu}/u, 'Telu'],
-  [/\p{Script=Kannada}/u, 'Knda'], [/\p{Script=Malayalam}/u, 'Mlym'], [/\p{Script=Sinhala}/u, 'Sinh'],
-  [/\p{Script=Thai}/u, 'Thai'], [/\p{Script=Lao}/u, 'Laoo'], [/\p{Script=Tibetan}/u, 'Tibt'],
-  [/\p{Script=Myanmar}/u, 'Mymr'], [/\p{Script=Khmer}/u, 'Khmr'], [/\p{Script=Han}/u, 'Hani'],
-  [/\p{Script=Hiragana}/u, 'Hira'], [/\p{Script=Katakana}/u, 'Kana'], [/\p{Script=Hangul}/u, 'Hang'],
-  [/\p{Script=Cherokee}/u, 'Cher'], [/\p{Script=Canadian_Aboriginal}/u, 'Cans']
-];
-
 function codePointInCoverage(coverage, codePoint) {
   if (!coverage || !Number.isSafeInteger(codePoint)) return false;
   let low = 0;
@@ -42,23 +30,25 @@ function fontCoversGrapheme(font, grapheme) {
 }
 
 function scriptForGrapheme(grapheme) {
+  let hasUnclassifiedLetterOrNumber = false;
   for (const character of grapheme) {
-    for (const [pattern, tag] of scriptDetectors) if (pattern.test(character)) return tag;
+    const script = unicodeScriptFor(character.codePointAt(0));
+    if (script && !['Zyyy', 'Zinh', 'Zzzz'].includes(script)) return script;
+    if (script === 'Zzzz' && letterOrNumber.test(character)) hasUnclassifiedLetterOrNumber = true;
   }
-  if (extendedPictographic.test(grapheme)) return null;
-  // Unrecognized letters are left to the browser's complete script shaping
-  // stack. Common punctuation and spacing can safely join a neighboring run.
-  return letterOrNumber.test(grapheme) ? null : 'Zyyy';
+  if (extendedPictographic.test(grapheme) || hasUnclassifiedLetterOrNumber) return null;
+  // Unicode Common and Inherited characters can safely join a neighboring run.
+  return 'Zyyy';
 }
 
 function resolveCommonScripts(scripts) {
   return scripts.map((script, index) => {
     if (script !== 'Zyyy') return script;
     for (let before = index - 1; before >= 0; before -= 1) {
-      if (scripts[before] && scripts[before] !== 'Zyyy') return scripts[before];
+      if (scripts[before] && !['Zyyy', 'Zinh'].includes(scripts[before])) return scripts[before];
     }
     for (let after = index + 1; after < scripts.length; after += 1) {
-      if (scripts[after] && scripts[after] !== 'Zyyy') return scripts[after];
+      if (scripts[after] && !['Zyyy', 'Zinh'].includes(scripts[after])) return scripts[after];
     }
     return 'Zyyy';
   });

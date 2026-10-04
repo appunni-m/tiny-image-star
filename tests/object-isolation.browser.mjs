@@ -7,6 +7,7 @@ const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
 const design = createDocument();
 design.name = 'Object isolation ' + Date.now().toString(36);
+let diagnosticApp = null;
 const assetId = 'object-isolation-source-' + Date.now().toString(36);
 const source = createNode('image', {
   name: 'Isolation source', fileName: 'isolation-source.png', assetId,
@@ -65,12 +66,18 @@ let outputAssetId = null;
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup', 30000);
   const app = frame.contentDocument;
+  diagnosticApp = app;
   const sourceBytes = await photoBytes();
   await saveImageAssetBytes(assetId, 'isolation-source.png', 'image/png', sourceBytes);
   await saveDocument(design);
   click(app, app.querySelector('#main-menu-button'));
   click(app, [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Your designs')));
   click(app, await waitFor(() => app.querySelector('#design-library-dialog [data-design-id="' + design.id + '"][data-design-action="open"]'), 'saved fixture', 30000));
+  // Opening a design loads its record asynchronously before it raises the
+  // editor's transition fence; waiting only for the initial `false` value can
+  // race ahead and find every local-AI action temporarily disabled.
+  await waitFor(() => app.querySelector('.workspace')?.inert === true, 'design switch start', 30000);
+  await waitFor(() => app.querySelector('.workspace')?.inert === false, 'design switch completion', 30000);
   const sourceLayer = await waitFor(() => app.querySelector('[data-layer-id="' + source.id + '"]'), 'source layer', 30000);
   click(app, sourceLayer);
   const imageAiTools = await waitFor(() => app.querySelector('#inspector-content .image-ai-tools'), 'local AI image tools disclosure');
@@ -78,6 +85,7 @@ try {
   await waitFor(() => app.querySelector('[data-action="toggle-object-isolation-mode"]'), 'object-isolation inspector controls', 30000);
   const selectAreaButton = app.querySelector('[data-action="toggle-object-isolation-mode"]');
   const isolateButton = app.querySelector('[data-action="create-object-isolation-layer"]');
+  await waitFor(() => selectAreaButton && !selectAreaButton.disabled, 'object-isolation controls ready', 30000);
   assert(selectAreaButton?.textContent.trim() === 'Select area', 'the image inspector should start with the Select area action');
   assert(app.querySelector('[data-action="set-object-isolation-mode"][data-mode="3"]')?.getAttribute('aria-pressed') === 'true', 'lasso should be the default area-selection mode');
   assert(isolateButton?.textContent.trim() === 'Isolate' && isolateButton.getAttribute('aria-label')?.includes('new image layer'), 'the primary action should create a new isolated image layer');
@@ -128,10 +136,23 @@ try {
   assert(saved.pages[0].children.length === 2, 'switching designs must fence any late isolation result');
   result.textContent = 'PASS\n' + JSON.stringify({ selectAreaLassoIsolateWorkflow: true, includeExcludeRefinement: true, transformedSourceMapping: true, distinctTransparentLayer: true, sourceNodeAndBytesPreserved: true, cancelCleanup: true, designSwitchFence: true });
 } catch (error) {
-  result.textContent = 'FAIL\n' + (error?.stack || error);
+  const button = diagnosticApp?.querySelector('[data-action="create-object-isolation-layer"]');
+  const diagnostics = diagnosticApp ? {
+    status: diagnosticApp.querySelector('.object-isolation-status')?.textContent,
+    selectAreaPressed: diagnosticApp.querySelector('[data-action="toggle-object-isolation-mode"]')?.getAttribute('aria-pressed'),
+    selectAreaDisabled: diagnosticApp.querySelector('[data-action="toggle-object-isolation-mode"]')?.disabled,
+    selectAreaTitle: diagnosticApp.querySelector('[data-action="toggle-object-isolation-mode"]')?.title,
+    createDisabled: button?.disabled,
+    createTitle: button?.title,
+    modes: [...diagnosticApp.querySelectorAll('[data-action="set-object-isolation-mode"]')].map(item => [item.dataset.mode, item.getAttribute('aria-pressed')]),
+    canvasMode: diagnosticApp.querySelector('#scene-canvas')?.className
+  } : null;
+  result.textContent = 'FAIL\n' + (error?.stack || error) + (diagnostics ? '\nDEBUG ' + JSON.stringify(diagnostics) : '');
 } finally {
-  frame.src = 'about:blank';
-  await new Promise(resolve => setTimeout(resolve, 0));
+  if (result.textContent.startsWith('PASS\n')) {
+    frame.src = 'about:blank';
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
   try { await deleteStoredDocument(design.id); } catch { /* Best-effort local fixture cleanup. */ }
   for (const id of new Set([assetId, outputAssetId].filter(Boolean))) {
     try { await deleteImageAsset(id); } catch { /* Best-effort source/output cleanup. */ }

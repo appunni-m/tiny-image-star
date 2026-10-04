@@ -25,3 +25,18 @@ test('the pinned Pillow-RS WASM loads, applies color enhancement, and encodes qu
     source.free();
   }
 });
+
+test('the latest Pillow-RS WASM preserves native-L RankFilter output', () => {
+  const source = new Image('L', 3, 3, 0, 0, 0, 255);
+  let filtered;
+  try {
+    for (let value = 0; value < 9; value += 1) {
+      source.putpixelValue(value % 3, Math.floor(value / 3), value);
+    }
+    filtered = source.rankFilter(3, 1);
+    assert.deepEqual([...filtered.getFlattenedData()], [0, 0, 1, 0, 1, 2, 3, 4, 5]);
+  } finally {
+    filtered?.free();
+    source.free();
+  }
+});

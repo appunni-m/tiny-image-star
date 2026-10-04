@@ -83,6 +83,26 @@ test('drag merge combines disconnected faces into one compound path and deduplic
     { left: 80, top: 0, right: 100, bottom: 40 });
 });
 
+test('Shape Builder keeps ellipse arcs and ring holes when converting a remaining source to a path', () => {
+  const document = createDocument();
+  const ring = createNode('ellipse', {
+    name: 'Donut', x: 0, y: 0, width: 100, height: 100,
+    arcData: { startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: .4 }
+  });
+  const cutter = createNode('rectangle', { name: 'Cutter', x: 65, y: 40, width: 25, height: 20 });
+  addNode(document, ring); addNode(document, cutter);
+
+  const result = applyShapeBuilderEdit(document, [ring.id, cutter.id], [{ x: 75, y: 50 }], { mode: 'extract' });
+  const remainingRing = findNode(result.document, ring.id).node;
+  assert.equal(remainingRing.type, 'path');
+  assert.equal(Object.hasOwn(remainingRing, 'arcData'), false, 'arc semantics are baked into the resulting path');
+  assert.equal(validateDocument(result.document), true);
+  assert.equal(shapeBuilderRegionAtPoint([remainingRing], { x: 50, y: 50 }), null,
+    'conversion must preserve the donut hole');
+  assert(shapeBuilderRegionAtPoint([remainingRing], { x: 90, y: 50 }),
+    'the untouched outer band stays filled');
+});
+
 test('unsupported geometry and outside clicks fail atomically without mutating the source document', () => {
   const document = createDocument();
   const first = createNode('rectangle', { width: 20, height: 20 });

@@ -45,3 +45,10 @@ test('batch announcements describe pause, failure, save, and final outcomes', ()
   assert.equal(imageRecipeBatchAnnouncement({ ...activeBatch, completed: 3, failed: 1, done: true }), 'Warm light finished: 2 updated, 1 failed.');
   assert.match(imageRecipeBatchAnnouncement({ ...activeBatch, ownershipLost: true }), /Another tab owns/u);
 });
+
+test('long recipe names remain discoverable when batch and recovery titles are visually truncated', () => {
+  assert.match(main, /const titleText = [^;]*bulk\.recipe\.name[^;]*;[\s\S]*?\$\('#bulk-title'\)\.textContent = titleText;[\s\S]*?\$\('#bulk-title'\)\.title = titleText;/,
+    'the active bar should expose the complete title shown in its truncated heading');
+  assert.match(main, /const recipeName = recovery\.recipe\.name \|\| 'Image recipe';[\s\S]*?\$\('#recipe-recovery-recipe'\)\.textContent = recipeName;[\s\S]*?\$\('#recipe-recovery-recipe'\)\.title = recipeName;/,
+    'the interrupted-batch prompt should expose its complete recipe name too');
+});

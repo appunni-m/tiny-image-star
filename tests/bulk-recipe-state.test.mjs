@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { activeImageRecipeRenderTargets, canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, imageRecipeRenderIsCurrent, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
+import { activeImageRecipeRenderTargets, canDismissImageRecipeBatch, canSkipSelectedImagePreviewLookup, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, hydrateAndAdmitImageRecipeTarget, imageRecipeBatchTiming, imageRecipeRenderIsCurrent, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from '../src/bulk-recipe-state.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
@@ -66,6 +66,35 @@ test('bulk recipe admission reuses a mutation-aware page index across the full j
     'subject isolation inference must also share that lane');
 });
 
+test('large recipe batches skip selected-layer preview scans only while the exact batch selection remains active', () => {
+  const selectionSnapshot = Array.from({ length: 100_000 }, (_, index) => `image-${index}`);
+  const batch = {
+    done: false,
+    inflight: 0,
+    selectionSnapshot,
+    selectionIsEntireBatchTargets: true,
+  };
+  assert.equal(canSkipSelectedImagePreviewLookup(batch, selectionSnapshot), true,
+    'the common full-selection batch can avoid resolving every selected node while its memory cache is admitting previews');
+  assert.equal(canSkipSelectedImagePreviewLookup(batch, [...selectionSnapshot]), false,
+    'a replacement selection array must use the normal selected-preview protection path');
+  assert.equal(canSkipSelectedImagePreviewLookup({ ...batch, selectionIsEntireBatchTargets: false }, selectionSnapshot), false,
+    'batches that omit locked or otherwise ineligible selections must preserve normal selection protection');
+  assert.equal(canSkipSelectedImagePreviewLookup({ ...batch, done: true, inflight: 1 }, selectionSnapshot), true,
+    'selection optimization remains valid while already-admitted workers drain');
+  assert.equal(canSkipSelectedImagePreviewLookup({ ...batch, done: true }, selectionSnapshot), false,
+    'a drained batch no longer suppresses ordinary selection preview protection');
+
+  const selectedStart = editorSource.indexOf('function selectedImagePreviewKeys()');
+  const busyStart = editorSource.indexOf('\nfunction busyImagePreviewKeys()', selectedStart);
+  assert.match(editorSource.slice(selectedStart, busyStart), /canSkipSelectedImagePreviewLookup\(bulk, state\.selectedIds\)[\s\S]*?selectedImagePreviewKeysForNodes\(selectedNodes\(\), \{ excludedNodeIds: batchTargetIds \}\)/,
+    'only the unchanged full-batch selection may bypass the quadratic selected-node lookup');
+  assert.match(editorSource, /selectionIsEntireBatchTargets = selectionSnapshot\.length === targetIdSet\.size[\s\S]*?selectionSnapshot\.every\(id => targetIdSet\.has\(id\)\)/,
+    'the fast path must be certified once at batch creation and remain constant time per memory admission');
+  assert.match(editorSource, /function isActiveImageRecipeTarget\(nodeId\) \{\s*return isImageRecipeBatchActive\(state\.bulk\) && state\.bulk\.targetIdSet\?\.has\(nodeId\) === true;/,
+    'per-image membership checks must use the batch target index rather than scan all target IDs');
+});
+
 test('pre-render recipe failures still use the target start version to fence rollback', () => {
   const batch = { renderVersions: new Map() };
   assert.equal(imageRecipeRenderIsCurrent(batch, 'image-a', 3, 3), true);
@@ -112,6 +141,14 @@ test('bulk cancellation visits only active recipe renders in large batches', () 
     'cancellation only probes currently owned renders and still fences newer edits');
   assert.doesNotMatch(cancel, /bulk\.targets\.slice\(0, bulk\.next\)/,
     'the old cancellation scan over every previously admitted image must remain absent');
+
+  const leaseLossStart = editorSource.indexOf('function loseRecipeBatchLease(');
+  const leaseLossEnd = editorSource.indexOf('\nfunction scheduleRecipeBatchLeaseHeartbeat', leaseLossStart);
+  const leaseLoss = editorSource.slice(leaseLossStart, leaseLossEnd);
+  assert.match(leaseLoss, /activeImageRecipeRenderTargets\(bulk, targetId => state\.renderVersion\.get\(targetId\)\)/,
+    'lease takeover must cancel only in-flight renders rather than scan every previously admitted image');
+  assert.doesNotMatch(leaseLoss, /bulk\.targets\.slice\(0, bulk\.next\)/,
+    'large recovery takeover must not allocate a copy proportional to completed batch size');
 });
 
 test('recipe target hydration finishes before recipe mutation and render admission', async () => {
@@ -253,14 +290,34 @@ test('recipe progress distinguishes successful, failed, superseded, skipped, and
   });
 });
 
-test('failed image IDs are retained once for targeted retry after the batch drains', () => {
-  const batch = { completed: 0, failed: 0, superseded: 0, failedTargets: [] };
-  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a' });
-  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a' });
-  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-b' });
-  recordImageRecipeBatchTarget(batch, { canceled: true, failed: true, targetId: 'image-c' });
-  assert.equal(batch.failed, 3);
+test('duplicate failure results do not double-count a target or its throughput', () => {
+  const batch = {
+    targets: ['image-a', 'image-b', 'image-c'], completed: 0, failed: 0, superseded: 0,
+    failedTargets: [], paused: false, cancelled: false, done: false,
+  };
+  startImageRecipeBatchClock(batch, 0);
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a', now: 1000 }), true);
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a', now: 1200 }), false,
+    'a duplicate async terminal callback is ignored');
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-b', now: 2000 }), true);
+  assert.equal(recordImageRecipeBatchTarget(batch, { canceled: true, failed: true, targetId: 'image-c' }), false);
+  assert.equal(batch.completed, 2);
+  assert.equal(batch.failed, 2);
+  assert.equal(batch.timingCompletions, 2);
+  assert.deepEqual(batch.timingCompletionTimes, [1000, 2000]);
   assert.deepEqual(batch.failedTargets, ['image-a', 'image-b']);
+});
+
+test('failed-target membership rebuilds when recovery replaces the list without changing its size', () => {
+  const batch = { completed: 0, failed: 0, failedTargets: ['previous-run-failure'] };
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'previous-run-failure' }), false);
+
+  batch.failedTargets = ['recovered-failure'];
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'recovered-failure' }), false,
+    'the cached index must follow the new recovery list even when its length is unchanged');
+  assert.deepEqual(batch.failedTargets, ['recovered-failure']);
+  assert.equal(batch.completed, 0);
+  assert.equal(batch.failed, 0);
 });
 
 test('large batches index failed image IDs without repeated linear scans', () => {
@@ -274,8 +331,9 @@ test('large batches index failed image IDs without repeated linear scans', () =>
   assert.equal(batch.failedTargets.length, targetCount);
   assert.equal(batch.failedTargets[0], 'image-0');
   assert.equal(batch.failedTargets.at(-1), `image-${targetCount - 1}`);
-  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-0' });
+  assert.equal(recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-0' }), false);
   assert.equal(batch.failedTargets.length, targetCount, 'a repeated failure remains a single retry target');
+  assert.equal(batch.failed, targetCount, 'a repeated terminal callback cannot inflate the failure summary');
 });
 
 test('bulk timing reports active images per second and estimates only unfinished targets', () => {
@@ -325,6 +383,25 @@ test('throughput excludes skipped and canceled targets while counting completed 
     remaining: 1,
     etaSeconds: 2 / 3
   });
+});
+
+test('locked targets advance batch progress without contributing to render speed or ETA', () => {
+  const batch = { targets: ['locked', 'image'], completed: 0, inflight: 0, next: 2, paused: false, cancelled: false, done: false };
+  startImageRecipeBatchClock(batch, 0);
+  recordImageRecipeBatchTarget(batch, { skippedLocked: true, now: 500 });
+
+  const afterLockedTarget = imageRecipeBatchTiming(batch, 1000);
+  assert.equal(batch.completed, 1, 'locked targets still advance the progress bar');
+  assert.equal(batch.skippedLocked, 1, 'the result summary can report the locked target');
+  assert.equal(afterLockedTarget.imagesPerSecond, 0, 'a target that never rendered is not measured as image throughput');
+  assert.equal(afterLockedTarget.remaining, 1);
+  assert.equal(afterLockedTarget.etaSeconds, null, 'the estimate waits for a real render result');
+
+  recordImageRecipeBatchTarget(batch, { now: 2000 });
+  const afterImage = imageRecipeBatchTiming(batch, 2000);
+  assert.equal(afterImage.imagesPerSecond, 0.5, 'only the rendered image contributes to the measured rate');
+  assert.equal(afterImage.remaining, 0);
+  assert.equal(afterImage.etaSeconds, null);
 });
 
 test('a wave of unavailable targets cannot make the remaining recipe batch ETA look instant', () => {

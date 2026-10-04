@@ -11,9 +11,9 @@ const [source, stylesheet, browserSmoke] = await Promise.all([
 test('the inspector exposes an explicit delete-layer action for a single selected layer', () => {
   assert.match(source, /const deleteLayerControl = section\('Layer actions', `\<button class="delete-layer-button" type="button" data-action="delete-layer" data-layer-id="\$\{escapeHtml\(node\.id\)\}" aria-label="Delete layer \$\{escapeHtml\(node\.name\)\}">Delete layer<\/button>`\);/,
     'the destructive action should name and identify the exact layer instead of relying on point-edit mode');
-  assert.match(source, /content\.innerHTML = `\$\{slicePositionSection\(node\)\}\$\{exportSettingsSection\(node\)\}\$\{deleteLayerControl\}`/,
+  assert.match(source, /content\.innerHTML = `\$\{selectedLayerSummary\}\$\{slicePositionSection\(node\)\}\$\{exportSettingsSection\(node\)\}\$\{deleteLayerControl\}`/,
     'slice layers should also expose the direct layer deletion action');
-  assert.match(source, /let body = `\$\{deleteLayerControl\}\$\{shapeBuilderControl\}\$\{componentSection\(node\)\}/,
+  assert.match(source, /let body = `\$\{selectedLayerSummary\}\$\{deleteLayerControl\}\$\{shapeBuilderControl\}\$\{componentSection\(node\)\}/,
     'all other single-layer inspector views should include the same direct action');
 });
 

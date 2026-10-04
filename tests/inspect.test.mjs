@@ -465,6 +465,21 @@ test('Inspect output hands off enabled layer effects as CSS filters and structur
   assert.deepEqual(output.layers[0].effects, shape.effects);
 });
 
+test('Inspect preserves progressive blur data but does not misstate it as a uniform CSS blur', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { effects: [
+    createLayerEffect('layer-blur', { blurType: 'PROGRESSIVE', startRadius: 2, radius: 18,
+      startOffset: { x: 0.5, y: 0 }, endOffset: { x: 0.5, y: 1 } }),
+    createLayerEffect('background-blur', { blurType: 'PROGRESSIVE', startRadius: 1, radius: 12,
+      startOffset: { x: 0, y: 0.5 }, endOffset: { x: 1, y: 0.5 } })
+  ] });
+  addNode(document, shape);
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.doesNotMatch(output.css, /filter:\s*blur\(|backdrop-filter:\s*blur\(/);
+  assert.match(output.css, /Progressive blur is preserved in layer data but cannot be represented by generated CSS/);
+  assert.deepEqual(output.layers[0].effects, shape.effects);
+});
+
 test('Inspect preserves non-normal effect blend data but does not approximate it as a normal CSS shadow', () => {
   const document = createDocument();
   const shape = createNode('rectangle', { effects: [

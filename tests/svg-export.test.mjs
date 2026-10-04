@@ -126,6 +126,18 @@ test('SVG refuses background blur when equivalent editable backdrop sampling is 
   assert.doesNotThrow(() => exportNodeToSvg(node), 'hidden effects do not change the exported appearance');
 });
 
+test('SVG refuses progressive layer blur rather than exporting a uniform blur by mistake', () => {
+  const node = createNode('rectangle', { id: 'progressive-layer', name: 'Progressive layer', effects: [{
+    id: 'progressive-effect', type: 'layer-blur', visible: true, blurType: 'PROGRESSIVE',
+    startRadius: 2, radius: 18, startOffset: { x: 0.5, y: 0 }, endOffset: { x: 0.5, y: 1 }
+  }] });
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && error.nodeId === 'progressive-layer' && /progressive layer blur/.test(error.feature)
+    && /use raster export/.test(error.message));
+  node.effects[0].visible = false;
+  assert.doesNotThrow(() => exportNodeToSvg(node), 'a hidden progressive blur does not affect vector output');
+});
+
 test('SVG refuses visible noise rather than silently dropping its pixel texture', () => {
   const node = createNode('rectangle', { effects: [createLayerEffect('noise')] });
   assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
@@ -196,6 +208,18 @@ test('SVG places inward triangle apices inside the line endpoint', () => {
   const svg = exportNodeToSvg(line);
   assert.match(svg, /data-tiny-image-star-decoration="triangle-inward" data-tiny-image-star-decoration-end="start" d="M 8 0 L 0 4\.4 L 0 -4\.4 Z"/);
   assert.match(svg, /data-tiny-image-star-decoration="triangle-inward" data-tiny-image-star-decoration-end="end" d="M 32 0 L 40 -4\.4 L 40 4\.4 Z"/);
+});
+
+test('SVG exports editable filled circles and diamonds with stroke paint and correct bounds', () => {
+  const line = createNode('line', { width: 40, height: 0, strokes: [
+    { id: 'filled-markers', color: '#123456', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'circle', endDecoration: 'diamond' }
+  ] });
+  const svg = exportNodeToSvg(line);
+  assert.match(svg, /viewBox="-5\.4 -5\.4 46\.4 10\.8"/);
+  assert.match(svg, /<circle[^>]*data-tiny-image-star-decoration="circle" data-tiny-image-star-decoration-end="start"[^>]*cx="0" cy="0" r="4\.4" fill="#123456" fill-opacity="1" stroke="none"\/>/);
+  assert.match(svg, /data-tiny-image-star-decoration="diamond" data-tiny-image-star-decoration-end="end" d="M 40 0 L 36 4\.4 L 32 0 L 36 -4\.4 Z" fill="#123456" fill-opacity="1" stroke="none"/);
 });
 
 test('SVG exports independent editable linear and radial stroke gradients with local definitions', () => {
@@ -714,6 +738,81 @@ test('reports unsupported alpha-mask source contents precisely', () => {
   assert.throws(() => exportNodeToSvg(blendedGroup), error => error instanceof SvgExportError && error.feature === 'blended alpha mask contents');
 });
 
+test('SVG exports clipped shadows for opaque simple shapes and fails closed for alpha-bearing paints', () => {
+  const defaultShadow = createNode('rectangle', {
+    id: 'opaque-shadow', name: 'Opaque shadow', width: 80, height: 40,
+    fill: '#ffffff', fillOpacity: 1, stroke: null, strokeWidth: 0,
+    effects: [{ id: 'default-shadow', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+      offsetX: 2, offsetY: 3, blur: 4, spread: 0 }]
+  });
+  assert.match(exportNodeToSvg(defaultShadow), /<feDropShadow in="SourceGraphic"/,
+    'a fully opaque simple shape covers the clipped region of its SVG drop shadow');
+
+  const opaqueEllipse = createNode('ellipse', {
+    id: 'opaque-ellipse-shadow', width: 50, height: 30,
+    fill: '#ffffff', fillOpacity: 1, stroke: null, strokeWidth: 0,
+    effects: [{ id: 'ellipse-shadow', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+      offsetX: 2, offsetY: 3, blur: 4, spread: 0 }]
+  });
+  assert.match(exportNodeToSvg(opaqueEllipse), /<feDropShadow in="SourceGraphic"/,
+    'ellipse geometry has the same safe opaque-fill case');
+
+  const opaqueEffectStack = createNode('rectangle', {
+    id: 'opaque-effect-stack', width: 80, height: 40, radius: 8,
+    fill: '#ffffff', fillOpacity: 1, stroke: null, strokeWidth: 0,
+    effects: [
+      { id: 'stack-blur', type: 'layer-blur', visible: true, radius: 3 },
+      { id: 'stack-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.4, offsetX: 1, offsetY: 2, blur: 3 },
+      { id: 'stack-drop', type: 'drop-shadow', visible: true, color: '#304050', opacity: 0.5, offsetX: 2, offsetY: 3, blur: 4 }
+    ]
+  });
+  assert.match(exportNodeToSvg(opaqueEffectStack), /<feGaussianBlur in="SourceGraphic" stdDeviation="3"/,
+    'supported layer blur and inner-shadow chains remain exportable on opaque shapes');
+
+  for (const [id, paint] of [
+    ['transparent-shadow', { fill: 'transparent', fillOpacity: 1 }],
+    ['translucent-shadow', { fill: '#ffffff', fillOpacity: 0.5 }],
+    ['translucent-layer-shadow', { fill: '#ffffff', fillOpacity: 1, opacity: 0.5 }]
+  ]) {
+    const alphaShape = createNode('rectangle', {
+      id, width: 80, height: 40, stroke: null, strokeWidth: 0, ...paint,
+      effects: [{ id: `${id}-effect`, type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+        offsetX: 2, offsetY: 3, blur: 4, spread: 0 }]
+    });
+    assert.throws(() => exportNodeToSvg(alphaShape), error => error instanceof SvgExportError
+      && error.nodeId === id && /drop shadows hidden behind transparent node geometry/.test(error.feature));
+  }
+
+  const transparentEffectStack = createNode('rectangle', {
+    id: 'transparent-effect-stack', width: 80, height: 40,
+    fill: 'transparent', fillOpacity: 1, stroke: null, strokeWidth: 0,
+    effects: [
+      { id: 'transparent-blur', type: 'layer-blur', visible: true, radius: 3 },
+      { id: 'transparent-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.4, offsetX: 1, offsetY: 2, blur: 3 },
+      { id: 'transparent-drop', type: 'drop-shadow', visible: true, color: '#304050', opacity: 0.5, offsetX: 2, offsetY: 3, blur: 4 }
+    ]
+  });
+  assert.throws(() => exportNodeToSvg(transparentEffectStack), error => error instanceof SvgExportError
+    && error.nodeId === 'transparent-effect-stack' && /drop shadows hidden behind transparent node geometry/.test(error.feature),
+  'filter support must not weaken the fail-closed behavior for an alpha-bearing base paint');
+
+  const behindTransparentAreas = createNode('rectangle', {
+    id: 'unclipped-shadow', width: 80, height: 40,
+    effects: [{ id: 'visible-behind', type: 'drop-shadow', visible: true, showShadowBehindNode: true,
+      color: '#112233', opacity: 0.5, offsetX: 2, offsetY: 3, blur: 4, spread: 0 }]
+  });
+  assert.match(exportNodeToSvg(behindTransparentAreas), /<feDropShadow in="SourceGraphic"/,
+    'SVG drop-shadow filters match the enabled show-behind behavior');
+
+  const hiddenClippedShadow = createNode('rectangle', {
+    width: 80, height: 40,
+    effects: [{ id: 'hidden-shadow', type: 'drop-shadow', visible: false, showShadowBehindNode: false,
+      color: '#112233', opacity: 0.5, offsetX: 2, offsetY: 3, blur: 4, spread: 0 }]
+  });
+  assert.doesNotMatch(exportNodeToSvg(hiddenClippedShadow), /feDropShadow/,
+    'hidden effects do not block export');
+});
+
 test('exports user-space gradient fills, layer effects, and CSS blend modes as editable SVG', () => {
   const gradient = createNode('rectangle', {
     id: 'gradient-layer', name: 'Gradient card', x: 8, y: 12, width: 100, height: 50,
@@ -743,7 +842,7 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
     blendMode: 'multiply',
     effects: [
       { id: 'blur-1', type: 'layer-blur', visible: false, radius: 4 },
-      { id: 'shadow-1', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 }
+      { id: 'shadow-1', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 }
     ]
   });
   const effectSvg = exportNodeToSvg(effected);
@@ -753,7 +852,7 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
 
   const separatelyBlended = createNode('rectangle', {
     width: 30, height: 20,
-    effects: [{ id: 'screen-shadow', type: 'drop-shadow', visible: true, blendMode: 'screen', color: '#112233',
+    effects: [{ id: 'screen-shadow', type: 'drop-shadow', visible: true, showShadowBehindNode: true, blendMode: 'screen', color: '#112233',
       opacity: 0.5, offsetX: 1, offsetY: 2, blur: 3, spread: 0 }]
   });
   assert.throws(() => exportNodeToSvg(separatelyBlended), error => error instanceof SvgExportError
@@ -856,7 +955,7 @@ test('exports inner shadows as editable SVG alpha-mask filter primitives', () =>
 test('exports signed shadow spread with morphology while keeping zero-spread SVG compact', () => {
   const expanded = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',
-    effects: [{ id: 'expanded', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+    effects: [{ id: 'expanded', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#112233', opacity: 0.5,
       offsetX: 2, offsetY: 3, blur: 4, spread: 5 }]
   });
   const contracted = createNode('ellipse', {
@@ -866,12 +965,12 @@ test('exports signed shadow spread with morphology while keeping zero-spread SVG
   });
   const negative = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',
-    effects: [{ id: 'negative', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+    effects: [{ id: 'negative', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#112233', opacity: 0.5,
       offsetX: 0, offsetY: 0, blur: 1, spread: -2 }]
   });
   const zero = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',
-    effects: [{ id: 'zero', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5,
+    effects: [{ id: 'zero', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#112233', opacity: 0.5,
       offsetX: 0, offsetY: 0, blur: 1, spread: 0 }]
   });
   assert.match(exportNodeToSvg(expanded), /<feMorphology in="SourceGraphic" operator="dilate" radius="5" result="tis-effect-0-result-0-spread"\/>/);
@@ -882,30 +981,217 @@ test('exports signed shadow spread with morphology while keeping zero-spread SVG
     'positive outer spread is included in the SVG filter region');
 });
 
-test('orders SVG effects in Figma paint phases while preserving order within each phase', () => {
+test('SVG blurs the composite inner shadows and keeps drop shadows below the painted result', () => {
   const shape = createNode('rectangle', {
     width: 80, height: 40, fill: '#ffffff',
     effects: [
       { id: 'blur-first', type: 'layer-blur', visible: true, radius: 3 },
       { id: 'inner-first', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.35, offsetX: 3, offsetY: -2, blur: 5 },
-      { id: 'drop-shadow', type: 'drop-shadow', visible: true, color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 6 },
+      { id: 'drop-shadow', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 6 },
       { id: 'inner-second', type: 'inner-shadow', visible: true, color: '#506070', opacity: 0.2, offsetX: -2, offsetY: 1, blur: 2 }
     ]
   });
   const svg = exportNodeToSvg(shape);
-  const filter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
-  assert.ok(filter, 'expected the SVG effect filter');
-  const firstBlur = filter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="3"');
-  const firstShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-0" stdDeviation="5"');
-  const secondShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-1" stdDeviation="2"');
-  const dropShadow = filter.indexOf('<feDropShadow in="tis-effect-0-result-2"');
-  const positions = [firstBlur, firstShadow, secondShadow, dropShadow];
+  const innerFilter = svg.match(/<filter id="tis-effect-0-inner"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+  const outerFilter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+  assert.ok(innerFilter && outerFilter, 'inner shadows and outer layer effects should be represented in separate filters');
+  const firstShadow = innerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="5"');
+  const secondShadow = innerFilter.indexOf('<feGaussianBlur in="tis-effect-0-inner-result-0" stdDeviation="2"');
+  const compositeBlur = outerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="3"');
+  const dropShadow = outerFilter.indexOf('<feDropShadow in="tis-effect-0-result-0"');
+  const positions = [firstShadow, secondShadow, compositeBlur, dropShadow];
   assert.ok(positions.every(position => position >= 0), 'all visible effects should be represented');
-  assert.deepEqual(positions, [...positions].sort((left, right) => left - right),
-    'layer blur should run before inner shadows, with drop shadow below both in the rendered paint phases');
-  assert.match(filter, /<feComposite in="tis-effect-0-result-1" in2="tis-effect-0-result-2-offset" operator="out" result="tis-effect-0-result-2-shape"\/>/,
-    'the second inner shadow must use the first shadow result alpha, matching sequential Canvas compositing');
-  assert.doesNotMatch(filter, /stdDeviation="9"/, 'hidden effects should remain omitted');
+  assert.deepEqual([firstShadow, secondShadow], [firstShadow, secondShadow].sort((left, right) => left - right),
+    'inner shadows should composite sequentially on the fill');
+  assert.ok(compositeBlur < dropShadow,
+    'the top layer-blur phase should soften the painted result before the drop shadow');
+  assert.match(innerFilter, /<feComposite in="tis-effect-0-inner-result-0-shadow" in2="SourceGraphic" operator="over" result="tis-effect-0-inner-result-0"\/>[\s\S]*?<feGaussianBlur in="tis-effect-0-inner-result-0" stdDeviation="2"/,
+    'the first inner shadow should composite against the original paint before the second shadow');
+  assert.match(svg, /data-tiny-image-star-paint-stage="fill" filter="url\(#tis-effect-0-inner\)"/,
+    'only the fill stage should receive the inner-shadow filter');
+  assert.doesNotMatch(outerFilter, /stdDeviation="9"/, 'hidden effects should remain omitted');
+});
+
+test('SVG applies inner shadows to shape fills while keeping strokes crisp and editable', () => {
+  const shape = createNode('rectangle', {
+    width: 80, height: 40, fill: '#ffffff', stroke: '#204060', strokeWidth: 4,
+    effects: [{ id: 'inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5, offsetX: 1, offsetY: 2, blur: 3 }]
+  });
+  const svg = exportNodeToSvg(shape);
+  const fillStage = svg.match(/<g data-tiny-image-star-paint-stage="fill" filter="url\(#tis-effect-0\)">([\s\S]*?)<\/g>/)?.[1];
+  assert.ok(fillStage?.includes('fill="#ffffff"'), 'the fill stage keeps its paint');
+  assert.doesNotMatch(fillStage || '', /\bstroke=/, 'fill receives the inner-shadow filter without an embedded stroke');
+  assert.match(svg, /<g data-tiny-image-star-paint-stage="stroke"><rect[^>]*fill="none"[^>]*stroke="#204060"/,
+    'stroke remains a separate unfiltered paint phase above the fill');
+  const imported = importSvgToLayers(svg);
+  const nativeShape = findNestedLayer(imported.nodes, node => node.type === 'rectangle');
+  assert.ok(nativeShape, 'the staged SVG remains one native editable rectangle');
+  assert.equal(nativeShape.stroke, '#204060');
+  assert.equal(nativeShape.strokeWidth, 4);
+  assert.deepEqual(nativeShape.effects.map(effect => effect.type), ['inner-shadow']);
+});
+
+test('SVG keeps normal solid multi-fill layers native through the inner-shadow paint phase', () => {
+  const shape = createNode('rectangle', {
+    id: 'multi-fill-card', width: 80, height: 40,
+    fills: [
+      createFillLayer('solid', { id: 'multi-fill-base', color: '#123456', opacity: 0.8 }),
+      createFillLayer('solid', { id: 'multi-fill-overlay', color: '#abcdef', opacity: 0.35 })
+    ],
+    effects: [{ id: 'multi-fill-inset', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5,
+      offsetX: 1, offsetY: 2, blur: 3 }]
+  });
+  const svg = exportNodeToSvg(shape);
+  const fillStage = svg.match(/<g data-tiny-image-star-paint-stage="fill" filter="url\(#tis-effect-0\)">([\s\S]*?)<\/g>/)?.[1];
+  assert.ok(fillStage, 'the inner-shadow filter stays attached to the whole editable fill stage');
+  assert.equal([...fillStage.matchAll(/<rect\b/g)].length, 2, 'each solid fill remains a separate native rect paint');
+
+  const imported = importSvgToLayers(svg);
+  const nativeShape = findNestedLayer(imported.nodes, node => node.type === 'rectangle' && node.name === 'Rectangle');
+  assert.ok(nativeShape, 'the staged export round-trips as one editable rectangle');
+  assert.deepEqual(nativeShape.fills.map(({ type, color, opacity, blendMode }) => ({ type, color, opacity, blendMode })), [
+    { type: 'solid', color: '#123456', opacity: 0.8, blendMode: 'normal' },
+    { type: 'solid', color: '#abcdef', opacity: 0.35, blendMode: 'normal' }
+  ], 'fill order, color, opacity, and blend mode remain editable after import');
+  assert.deepEqual(nativeShape.effects.map(effect => effect.type), ['inner-shadow']);
+});
+
+test('SVG keeps closed path fills and compatible strokes in ordered editable effect phases', () => {
+  const pathPoints = [
+    { x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }, { x: 0.5, y: 0.9 }
+  ];
+  const shape = createNode('path', {
+    id: 'path-effect-phases', name: 'Path effect phases', width: 64, height: 40,
+    fill: '#ffffff', fillOpacity: 1,
+    strokes: [{ id: 'path-stroke', color: '#204060', width: 3, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, blendMode: 'normal',
+      startDecoration: 'none', endDecoration: 'none' }],
+    subpaths: [{ closed: true, points: pathPoints }],
+    effects: [
+      { id: 'path-blur', type: 'layer-blur', visible: true, radius: 3 },
+      { id: 'path-inner-a', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.4, offsetX: 2, offsetY: 1, blur: 4 },
+      { id: 'path-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false,
+        color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 5 },
+      { id: 'path-inner-b', type: 'inner-shadow', visible: true, color: '#506070', opacity: 0.2, offsetX: -1, offsetY: 2, blur: 2 }
+    ]
+  });
+  const svg = exportNodeToSvg(shape);
+  const innerFilter = svg.match(/<filter id="tis-effect-0-inner"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+  const outerFilter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+
+  assert.ok(innerFilter && outerFilter, 'the path exports separate inner and outer effect filters');
+  assert.match(svg, /data-tiny-image-star-type="path"[^>]*data-tiny-image-star-paint-phases="layer-v1"/,
+    'closed path geometry opts into the existing effect-phase format');
+  assert.match(svg, /data-tiny-image-star-effect-order="\[&quot;inner-shadow&quot;,&quot;inner-shadow&quot;,&quot;layer-blur&quot;,&quot;drop-shadow&quot;\]"/,
+    'phase metadata keeps the stack order used by the editable filter graph');
+  assert.match(svg, /<g data-tiny-image-star-paint-stage="fill" filter="url\(#tis-effect-0-inner\)"><path[^>]*fill="#ffffff" fill-opacity="1"/,
+    'the inner-shadow chain is attached to the filled path');
+  assert.match(svg, /<g data-tiny-image-star-paint-stage="stroke"><path[^>]*fill="none"[^>]*stroke="#204060" stroke-width="3"/,
+    'the compatible solid stroke stays crisp above the filtered fill');
+
+  const firstShadow = innerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="4"');
+  const secondShadow = innerFilter.indexOf('<feGaussianBlur in="tis-effect-0-inner-result-0" stdDeviation="2"');
+  const topBlur = outerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="3"');
+  const dropShadow = outerFilter.indexOf('<feDropShadow in="tis-effect-0-result-0"');
+  assert.ok([firstShadow, secondShadow, topBlur, dropShadow].every(position => position >= 0));
+  assert.ok(firstShadow < secondShadow && topBlur < dropShadow,
+    'inner shadows remain ordered on the fill before layer blur and drop shadow phases');
+
+  const imported = importSvgToLayers(svg);
+  const effectGroup = findNestedLayer(imported.nodes, node => node.type === 'group'
+    && node.name === 'Path effect phases' && node.effects?.length);
+  assert.deepEqual(effectGroup?.effects.map(effect => effect.type), ['layer-blur', 'drop-shadow'],
+    'the outer path group retains the top effect phase after import');
+  const fillGroup = findNestedLayer(effectGroup?.children, node => node.type === 'group' && node.effects?.length);
+  assert.deepEqual(fillGroup?.effects.map(effect => effect.type), ['inner-shadow', 'inner-shadow'],
+    'the fill subtree retains the ordered inner-shadow phase after import');
+  assert.equal(findNestedLayer(fillGroup?.children, node => node.type === 'path')?.fill, '#ffffff');
+  assert.equal(findNestedLayer(effectGroup?.children, node => node.type === 'path' && node.stroke === '#204060')?.strokeWidth, 3,
+    'the stroke remains an editable path outside the inner-shadow phase');
+
+  const clippedShadow = createNode('path', {
+    width: 64, height: 40, fill: '#ffffff', fillOpacity: 0.9,
+    subpaths: [{ closed: true, points: pathPoints }],
+    effects: [{ id: 'path-clipped-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false,
+      color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 5 }]
+  });
+  assert.throws(() => exportNodeToSvg(clippedShadow), error => error instanceof SvgExportError
+    && /drop shadows hidden behind transparent node geometry/.test(error.feature),
+  'path effects keep the existing fail-closed rule for clipped drop shadows');
+
+  const translucentStrokeShadow = createNode('path', {
+    width: 64, height: 40, fill: '#ffffff', fillOpacity: 1,
+    stroke: '#204060', strokeWidth: 3, strokeOpacity: 0.5,
+    subpaths: [{ closed: true, points: pathPoints }],
+    effects: [{ id: 'path-translucent-stroke-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false,
+      color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 5 }]
+  });
+  assert.throws(() => exportNodeToSvg(translucentStrokeShadow), error => error instanceof SvgExportError
+    && /drop shadows hidden behind transparent node geometry/.test(error.feature),
+  'partially transparent path strokes cannot claim that ordinary SVG shadow compositing is equivalent');
+});
+
+test('SVG keeps plain stars and polygons in ordered editable effect phases', () => {
+  for (const type of ['star', 'polygon']) {
+    const shape = createNode(type, {
+      id: `${type}-effect-phases`, name: `${type} effect phases`, width: 72, height: 56,
+      points: type === 'star' ? 7 : 8, fill: '#ffffff', fillOpacity: 1,
+      stroke: '#204060', strokeWidth: 3,
+      effects: [
+        { id: `${type}-inner`, type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.4, offsetX: 2, offsetY: 1, blur: 4 },
+        { id: `${type}-blur`, type: 'layer-blur', visible: true, radius: 3 },
+        { id: `${type}-drop`, type: 'drop-shadow', visible: true, showShadowBehindNode: false,
+          color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 5 }
+      ]
+    });
+    const svg = exportNodeToSvg(shape);
+    const innerFilter = svg.match(/<filter id="tis-effect-0-inner"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+    const outerFilter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+
+    assert.ok(innerFilter && outerFilter, `${type} has separate inner and outer effect filters`);
+    assert.match(svg, new RegExp(`data-tiny-image-star-type="${type}"[^>]*data-tiny-image-star-paint-phases="layer-v1"`),
+      `${type} geometry opts into the editable effect-phase format`);
+    assert.match(svg, /data-tiny-image-star-effect-order="\[&quot;inner-shadow&quot;,&quot;layer-blur&quot;,&quot;drop-shadow&quot;\]"/,
+      `${type} records the phase order used by the editable filter graph`);
+    assert.match(svg, new RegExp(`<g data-tiny-image-star-paint-stage="fill" filter="url\\(#tis-effect-0-inner\\)"><polygon[^>]*fill="#ffffff" fill-opacity="1"`),
+      `${type} receives the inner-shadow filter on its fill`);
+    assert.match(svg, new RegExp(`<g data-tiny-image-star-paint-stage="stroke"><polygon[^>]*fill="none"[^>]*stroke="#204060" stroke-width="3"`),
+      `${type} keeps the compatible solid stroke separate and crisp`);
+    assert.ok(innerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="4"') >= 0
+      && outerFilter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="3"')
+        < outerFilter.indexOf('<feDropShadow in="tis-effect-0-result-0"'),
+    `${type} keeps inner shadows on the fill before layer blur and drop shadow`);
+
+    const imported = importSvgToLayers(svg);
+    const importedShape = findNestedLayer(imported.nodes, node => node.type === type && node.name === shape.name);
+    assert.ok(importedShape, `${type} is recovered as a native editable shape after SVG import`);
+    assert.deepEqual(importedShape.effects?.map(effect => effect.type), ['inner-shadow', 'layer-blur', 'drop-shadow'],
+      `${type} restores the ordered effect stack on its native layer`);
+    assert.equal(importedShape.fill, '#ffffff', `${type} keeps its editable fill control`);
+    assert.equal(importedShape.stroke, '#204060', `${type} keeps its editable stroke control`);
+    assert.equal(importedShape.strokeWidth, 3, `${type} keeps its editable stroke width`);
+  }
+});
+
+test('SVG fails closed for regular-shape effects that cannot preserve paint phases', () => {
+  const roundedStar = createNode('star', {
+    width: 64, height: 64, radius: 4, fill: '#ffffff', stroke: '#204060', strokeWidth: 3,
+    effects: [{ id: 'rounded-star-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5,
+      offsetX: 1, offsetY: 2, blur: 3 }]
+  });
+  assert.throws(() => exportNodeToSvg(roundedStar), error => error instanceof SvgExportError
+    && /inner shadows on regular shapes with incompatible fill, stroke, or corner geometry/.test(error.feature),
+  'rounded regular shapes with strokes do not silently filter their stroke with the fill');
+
+  const translucentStrokeShadow = createNode('polygon', {
+    width: 64, height: 64, fill: '#ffffff', fillOpacity: 1,
+    stroke: '#204060', strokeWidth: 3, strokeOpacity: 0.5,
+    effects: [{ id: 'polygon-clipped-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false,
+      color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 5 }]
+  });
+  assert.throws(() => exportNodeToSvg(translucentStrokeShadow), error => error instanceof SvgExportError
+    && /drop shadows hidden behind transparent node geometry/.test(error.feature),
+  'a partially transparent regular-shape stroke cannot claim equivalent clipped-shadow compositing');
 });
 
 test('exports Boolean unions with editable vector operands and an alpha mask', () => {

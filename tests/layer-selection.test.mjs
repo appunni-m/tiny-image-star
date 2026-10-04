@@ -65,8 +65,8 @@ test('canvas Select mode toggles layers by tap before handles, anchor editing, d
 });
 
 test('Select mode explains the click or tap gesture and the saved-recipe batch flow', () => {
-  assert.match(source, /A recipe is a reusable image preset\./);
-  assert.match(source, /Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe\./);
+  assert.match(source, /Tap image layers in Layers or on the canvas to select them\./);
+  assert.match(source, /Choose Done, then choose a saved recipe\. Other layers stay unchanged\./);
   assert.match(source, /Design canvas\. Select mode is active\. Click or tap layers to add or remove them from the selection\./);
   assert.match(source, /selected · tap to add\/remove/);
 });

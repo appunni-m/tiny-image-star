@@ -27,12 +27,36 @@ test('grapheme fallback keeps combining marks together and ignores join controls
   ]);
 });
 
-test('unknown scripts stay on the browser fallback instead of inheriting a neighbor shaper', () => {
-  const fonts = [{ id: 'all', coverage: coverage([0, 0xffff]) }];
-  assert.deepEqual(itemizeLocalFontRuns('A𐒀B', fonts), [
+test('less-common and newly encoded scripts receive their own local HarfBuzz runs when covered', () => {
+  const osage = String.fromCodePoint(0x104b0);
+  const fonts = [{ id: 'all', coverage: coverage([0x41], [0x42], [0x104b0], [0x11f04]) }];
+  assert.deepEqual(itemizeLocalFontRuns(`A${osage}B`, fonts), [
     { text: 'A', fontId: 'all', script: 'Latn' },
-    { text: '𐒀', fontId: null, script: null },
+    { text: osage, fontId: 'all', script: 'Osge' },
     { text: 'B', fontId: 'all', script: 'Latn' }
+  ]);
+  assert.deepEqual(itemizeLocalFontRuns(String.fromCodePoint(0x11f04), fonts), [
+    { text: String.fromCodePoint(0x11f04), fontId: 'all', script: 'Kawi' }
+  ]);
+});
+
+test('a font without coverage for a less-common script keeps that run on browser fallback', () => {
+  const osage = String.fromCodePoint(0x104b0);
+  const fonts = [{ id: 'latin', coverage: coverage([0x41], [0x42]) }];
+  assert.deepEqual(itemizeLocalFontRuns(`A${osage}B`, fonts), [
+    { text: 'A', fontId: 'latin', script: 'Latn' },
+    { text: osage, fontId: null, script: 'Osge' },
+    { text: 'B', fontId: 'latin', script: 'Latn' }
+  ]);
+});
+
+test('covered Common-script digits inherit neighboring shaping context and stay in local font runs', () => {
+  const font = { id: 'latin', coverage: coverage([0x30, 0x39], [0x41], [0x42]) };
+  assert.deepEqual(itemizeLocalFontRuns('A1B', [font]), [
+    { text: 'A1B', fontId: 'latin', script: 'Latn' }
+  ]);
+  assert.deepEqual(itemizeLocalFontRuns('123', [font]), [
+    { text: '123', fontId: 'latin', script: 'Zyyy' }
   ]);
 });
 

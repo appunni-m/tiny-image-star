@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createNode, parseDocument, serializeDocument } from '../src/model.js';
+import { createStroke } from '../src/strokes.js';
 import { importSvgToLayers, SvgImportError } from '../src/svg-import.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
@@ -11,6 +12,17 @@ function allNodes(nodes, output = []) {
     allNodes(node.children || [], output);
   }
   return output;
+}
+
+function findWithAccumulatedPosition(nodes, name, parentX = 0, parentY = 0) {
+  for (const node of nodes) {
+    const x = parentX + Number(node.x || 0);
+    const y = parentY + Number(node.y || 0);
+    if (node.name === name) return { node, x, y };
+    const child = findWithAccumulatedPosition(node.children || [], name, x, y);
+    if (child) return child;
+  }
+  return null;
 }
 
 function importFailure(markup, code) {
@@ -50,6 +62,32 @@ test('imports safe primitive geometry, editable groups, inherited paint and dete
   assert.ok(nodes.some(node => node.name === 'line 5' && node.stroke === '#123456'));
   assert.ok(nodes.some(node => node.name === 'polyline 6' && node.closed === false));
   assert.ok(nodes.some(node => node.name === 'polygon 7' && node.closed === true));
+});
+
+test('resolves inherited SVG currentColor for fill and stroke independently of declaration order', () => {
+  const nodes = allNodes(importSvgToLayers(`<svg width="100" height="40">
+    <g color="#123456">
+      <rect id="inherited-fill" width="10" height="10" fill="currentColor"/>
+      <rect id="inline-fill" x="12" width="10" height="10" style="fill: currentColor; color: #abcdef"/>
+      <g color="rgba(255, 0, 0, .5)">
+        <rect id="alpha-fill" x="24" width="10" height="10" fill="currentColor"/>
+        <rect id="alpha-stroke" x="36" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2"/>
+      </g>
+    </g>
+    <rect id="default-fill" x="48" width="10" height="10" fill="currentColor"/>
+  </svg>`).nodes);
+
+  assert.equal(nodes.find(node => node.name === 'inherited-fill')?.fill, '#123456');
+  assert.equal(nodes.find(node => node.name === 'inline-fill')?.fill, '#abcdef',
+    'the computed color property applies even when it follows fill in the style declaration');
+  const alphaFill = nodes.find(node => node.name === 'alpha-fill');
+  assert.equal(alphaFill?.fill, '#ff0000');
+  assert.equal(alphaFill?.fillOpacity, 0.5);
+  const alphaStroke = nodes.find(node => node.name === 'alpha-stroke');
+  assert.equal(alphaStroke?.stroke, '#ff0000');
+  assert.equal(alphaStroke?.opacity, 0.5);
+  assert.equal(nodes.find(node => node.name === 'default-fill')?.fill, '#000000',
+    'SVG currentColor defaults to black when no color property is declared');
 });
 
 test('maps viewBox, preserveAspectRatio and transforms into path points, including negative coordinates', () => {
@@ -561,23 +599,476 @@ test('round-trips editor-exported inner-shadow filter chains as editable ordered
   const layer = allNodes(source.nodes).find(node => node.effects?.length);
   assert.deepEqual(layer.effects.map(({ type, color, opacity, offsetX, offsetY, blur, radius }) =>
     ({ type, color, opacity, offsetX, offsetY, blur, radius })), [
-    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 1 },
     { type: 'inner-shadow', color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, radius: undefined },
     { type: 'inner-shadow', color: '#102030', opacity: 0.75, offsetX: -4, offsetY: 6, blur: 2, radius: undefined },
+    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 1 },
     { type: 'drop-shadow', color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, radius: undefined }
   ]);
 });
 
-test('rejects shadow spread when SVG geometry would import as a layer type that cannot preserve it', () => {
+test('round-trips simple editor rectangles and ellipses as native editable shapes', () => {
+  const rectangle = createNode('rectangle', {
+    id: 'native-card', name: 'Native card', x: 24, y: 18, width: 72, height: 48,
+    radius: 10, rotation: 13, fill: '#234567', fillOpacity: 0.8,
+    stroke: '#abcdef', strokeOpacity: 0.6, strokeWidth: 2
+  });
+  const rectangleCopy = allNodes(importSvgToLayers(exportNodeToSvg(rectangle)).nodes).find(node => node.name === 'Native card');
+  assert.equal(rectangleCopy?.type, 'rectangle');
+  assert.ok([rectangleCopy.width, rectangleCopy.height, rectangleCopy.radius, rectangleCopy.fillOpacity,
+    rectangleCopy.strokeWidth, rectangleCopy.strokeOpacity].every((value, index) =>
+    Math.abs(value - [72, 48, 10, 0.8, 2, 0.6][index]) < 1e-6));
+  assert.ok(Math.abs(rectangleCopy.rotation - 13) < 1e-8);
+  assert.equal(rectangleCopy.fill, '#234567');
+  assert.equal(rectangleCopy.stroke, '#abcdef');
+
+  const ellipse = createNode('ellipse', { id: 'native-dot', name: 'Native dot', width: 42, height: 28, fill: '#778899' });
+  const ellipseCopy = allNodes(importSvgToLayers(exportNodeToSvg(ellipse)).nodes).find(node => node.name === 'Native dot');
+  assert.equal(ellipseCopy?.type, 'ellipse');
+  assert.deepEqual([ellipseCopy.width, ellipseCopy.height, ellipseCopy.fill], [42, 28, '#778899']);
+});
+
+test('round-trips editor ellipse arcs as native editable shapes only when the exported path is unchanged', () => {
+  const arcCases = [
+    { name: 'partial pie', startingAngle: 0, endingAngle: Math.PI * 1.5, innerRadius: 0 },
+    { name: 'donut ring', startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: .4 },
+    { name: 'full ellipse arc metadata', startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: 0 },
+    { name: 'empty ellipse sweep', startingAngle: Math.PI / 3, endingAngle: Math.PI / 3, innerRadius: .2 }
+  ];
+
+  for (const [index, arcData] of arcCases.entries()) {
+    const original = createNode('ellipse', {
+      id: `arc-${index}`, name: arcData.name, width: 120.25, height: 80.5,
+      x: index === 0 ? 24 : 0, y: index === 0 ? 18 : 0, rotation: index === 0 ? 13 : 0,
+      fill: '#334455', arcData
+    });
+    const svg = exportNodeToSvg(original);
+    const imported = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === arcData.name);
+    assert.equal(imported?.type, 'ellipse', `${arcData.name} should recover its editable ellipse controls`);
+    assert.deepEqual(imported.arcData, {
+      startingAngle: arcData.startingAngle,
+      endingAngle: arcData.endingAngle,
+      innerRadius: arcData.innerRadius
+    });
+    assert.ok(Math.abs(imported.width - original.width) < 1e-8);
+    assert.ok(Math.abs(imported.height - original.height) < 1e-8);
+  }
+
+  const pie = createNode('ellipse', {
+    name: 'edited pie', width: 100, height: 100, fill: '#334455',
+    arcData: { startingAngle: 0, endingAngle: Math.PI / 2, innerRadius: 0 }
+  });
+  const exported = exportNodeToSvg(pie);
+  const edited = exported.replace('d="M 100 50', 'd="M 99 50');
+  const importedEdited = allNodes(importSvgToLayers(edited).nodes);
+  assert.equal(importedEdited.some(node => node.type === 'ellipse'), false,
+    'edited path geometry must stay a vector rather than trusting stale arc metadata');
+  assert.ok(importedEdited.some(node => node.type === 'path'), 'edited arc geometry should remain available as an editable path');
+});
+
+test('round-trips standalone editor frames and their individual-side stroke controls', () => {
+  const original = createNode('frame', {
+    id: 'native-frame', name: 'Native frame', x: 24, y: 18, width: 96, height: 64,
+    radius: 8, rotation: -12, fill: '#234567', fillOpacity: 0.8,
+    strokes: [createStroke({
+      id: 'frame-border', color: '#abcdef', width: 4, opacity: 0.6,
+      cap: 'round', join: 'bevel', sideMode: 'custom',
+      sideWidths: { top: 1, right: 6, bottom: 3, left: 0 }
+    })]
+  });
+  const imported = allNodes(importSvgToLayers(exportNodeToSvg(original)).nodes)
+    .find(node => node.name === 'Native frame');
+
+  assert.equal(imported?.type, 'frame');
+  assert.equal(imported.clip, true);
+  assert.ok([imported.width, imported.height, imported.radius].every((value, index) =>
+    Math.abs(value - [original.width, original.height, original.radius][index]) < 1e-8));
+  assert.ok([imported.x, imported.y].every(Number.isFinite), 'selected-layer SVG maps its local frame position into the exported viewport');
+  assert.ok(Math.abs(imported.rotation - original.rotation) < 1e-8);
+  assert.equal(imported.fill, original.fill);
+  assert.equal(imported.fillOpacity, original.fillOpacity);
+  assert.equal(imported.strokes?.length, 1);
+  assert.equal(imported.strokes[0].sideMode, 'custom');
+  assert.deepEqual(imported.strokes[0].sideWidths, { top: 1, right: 6, bottom: 3, left: 0 });
+  assert.equal(imported.strokes[0].color, '#abcdef');
+  assert.equal(imported.strokes[0].opacity, 0.6);
+  assert.equal(imported.strokes[0].cap, 'round');
+  assert.equal(imported.strokes[0].join, 'bevel');
+});
+
+test('round-trips tagged rectangle individual-side stroke controls when geometry is unchanged', () => {
   const original = createNode('rectangle', {
-    id: 'spread-card', width: 100, height: 60, fill: '#ffffff',
+    id: 'individual-border', name: 'Individual border', x: 24, y: 18, width: 100, height: 60,
+    radius: 8, rotation: 13, fill: '#234567', fillOpacity: 0.8,
+    strokes: [createStroke({
+      id: 'original-border-stroke', color: '#cc4411', width: 4, opacity: 0.6,
+      cap: 'round', join: 'bevel', pattern: 'solid', miterLimit: 7,
+      sideMode: 'custom', sideWidths: { top: 2, right: 8, bottom: 0, left: 3 }
+    })]
+  });
+  const svg = exportNodeToSvg(original);
+  const imported = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === 'Individual border');
+  assert.equal(imported?.type, 'rectangle');
+  assert.ok(Math.abs(imported.width - original.width) < 1e-6);
+  assert.ok(Math.abs(imported.height - original.height) < 1e-6);
+  assert.ok(Math.abs(imported.rotation - original.rotation) < 1e-8);
+  assert.equal(imported.fill, original.fill);
+  assert.equal(imported.fillOpacity, original.fillOpacity);
+  assert.equal(imported.strokes?.length, 1);
+  const stroke = imported.strokes[0];
+  assert.equal(stroke.sideMode, 'custom');
+  assert.deepEqual(stroke.sideWidths, { top: 2, right: 8, bottom: 0, left: 3 });
+  assert.equal(stroke.width, 4, 'the base width used when switching away from custom sides is retained');
+  assert.equal(stroke.color, '#cc4411');
+  assert.equal(stroke.opacity, 0.6);
+  assert.equal(stroke.cap, 'round');
+  assert.equal(stroke.join, 'bevel');
+  assert.equal(stroke.pattern, 'solid');
+  assert.equal(stroke.miterLimit, 7);
+
+  const rightStrokePath = svg.match(/<path d="[^"]+"[^>]*data-tiny-image-star-stroke-side="right"[^>]*>/u)?.[0];
+  assert.ok(rightStrokePath, 'export should tag the right-side stroke outline');
+  const editedRightStrokePath = rightStrokePath.replace('L 100 8', 'L 101 8');
+  assert.notEqual(editedRightStrokePath, rightStrokePath);
+  const editedSvg = svg.replace(rightStrokePath, editedRightStrokePath);
+  const edited = allNodes(importSvgToLayers(editedSvg).nodes);
+  assert.equal(edited.some(node => node.type === 'rectangle' && node.name === 'Individual border'), false,
+    'edited side geometry must not be promoted to a native rectangle');
+  assert.ok(edited.some(node => node.type === 'path'), 'modified stroke outlines remain editable vector paths');
+});
+
+test('round-trips tagged unequal-side rectangle dashed, dotted, and exact custom stroke patterns', () => {
+  const cases = [
+    {
+      pattern: 'dashed', cap: 'square',
+      sideWidths: { top: 2, right: 8, bottom: 0, left: 3 },
+    },
+    {
+      pattern: 'dotted', cap: 'round',
+      // Thin sides exercise the minimum one-pixel SVG dot gap as well as
+      // the per-side width scaling that used to make these look custom.
+      sideWidths: { top: 0.25, right: 8, bottom: 0, left: 0.4 },
+    },
+    {
+      pattern: 'custom', cap: 'round', dashArray: [3, 1.5, 0.75, 2],
+      sideWidths: { top: 2, right: 8, bottom: 0, left: 3 },
+    },
+  ];
+
+  for (const { pattern, cap, dashArray, sideWidths } of cases) {
+    const original = createNode('rectangle', {
+      id: `unequal-${pattern}`, name: `Unequal ${pattern}`, width: 100, height: 60,
+      fill: '#234567', strokes: [createStroke({
+        color: '#cc4411', width: 4, cap, pattern, sideMode: 'custom', sideWidths,
+        ...(dashArray ? { dashArray } : {}),
+      })],
+    });
+    const imported = allNodes(importSvgToLayers(exportNodeToSvg(original)).nodes)
+      .find(node => node.name === `Unequal ${pattern}`);
+
+    assert.equal(imported?.type, 'rectangle', `${pattern} side strokes should recover the native rectangle`);
+    assert.equal(imported.strokes?.[0]?.pattern, pattern);
+    assert.deepEqual(imported.strokes[0].sideWidths, sideWidths);
+    assert.equal(imported.strokes[0].width, 4);
+    assert.equal(imported.strokes[0].cap, cap);
+    if (pattern === 'custom') assert.deepEqual(imported.strokes[0].dashArray, dashArray,
+      'custom dash and gap lengths must remain exact across unequal side widths');
+    else assert.equal(imported.strokes[0].dashArray, undefined,
+      'built-in patterns are reconstructed from their semantic preset, not one side’s encoded dash lengths');
+  }
+});
+
+test('falls back to editable vectors when tagged unequal-side stroke patterns disagree', () => {
+  const makeSvg = (pattern, dashArray = undefined) => exportNodeToSvg(createNode('rectangle', {
+    id: `incompatible-${pattern}`, name: `Incompatible ${pattern}`, width: 100, height: 60,
+    fill: '#234567', strokes: [createStroke({
+      color: '#cc4411', width: 4, cap: pattern === 'dotted' ? 'round' : 'butt', pattern,
+      sideMode: 'custom', sideWidths: { top: 2, right: 8, bottom: 0, left: 3 },
+      ...(dashArray ? { dashArray } : {}),
+    })],
+  }));
+  const editRightDash = (svg, expected, replacement) => {
+    const rightSide = svg.match(/<path\b(?=[^>]*data-tiny-image-star-stroke-side="right")[^>]*>/u)?.[0];
+    assert.ok(rightSide, 'the export should tag its right-side stroke path');
+    assert.ok(rightSide.includes(`stroke-dasharray="${expected}"`), `expected right-side dash ${expected}`);
+    return svg.replace(rightSide, rightSide.replace(`stroke-dasharray="${expected}"`, `stroke-dasharray="${replacement}"`));
+  };
+  const incompatibleCases = [
+    ['dashed', undefined, '32 16', '32 15'],
+    ['dotted', undefined, '0 16', '0 15'],
+    ['custom', [3, 1.5, 0.75, 2], '3 1.5 0.75 2', '3 1.25 0.75 2'],
+  ];
+
+  for (const [pattern, dashArray, originalDash, changedDash] of incompatibleCases) {
+    const svg = editRightDash(makeSvg(pattern, dashArray), originalDash, changedDash);
+    const imported = allNodes(importSvgToLayers(svg).nodes);
+    assert.equal(imported.some(node => node.type === 'rectangle' && node.name === `Incompatible ${pattern}`), false,
+      `${pattern} side paths with incompatible dash semantics must not be promoted to an editable rectangle`);
+    assert.ok(imported.some(node => node.type === 'path'),
+      `${pattern} side paths must remain available as editable vectors when native recovery is unsafe`);
+  }
+});
+
+test('round-trips unrounded editor stars and polygons with editable point controls', () => {
+  const star = createNode('star', {
+    id: 'native-star', name: 'Native star', x: 18, y: 26, width: 110, height: 70,
+    rotation: -17, points: 8, innerRadius: 0.32, fill: '#345678', fillOpacity: 0.75,
+    stroke: '#abcdef', strokeOpacity: 0.6, strokeWidth: 2
+  });
+  const polygon = createNode('polygon', {
+    id: 'native-polygon', name: 'Native polygon', x: 140, y: 30, width: 96, height: 64,
+    rotation: 23, points: 7, fill: '#778899'
+  });
+  const imported = allNodes(importSvgToLayers(exportNodeToSvg(createNode('group', {
+    name: 'Native regular shapes', width: 260, height: 120, children: [star, polygon]
+  }))).nodes);
+  const starCopy = imported.find(node => node.name === 'Native star');
+  const polygonCopy = imported.find(node => node.name === 'Native polygon');
+  assert.equal(starCopy?.type, 'star');
+  assert.equal(polygonCopy?.type, 'polygon');
+  assert.equal(starCopy.points, 8);
+  assert.ok(Math.abs(starCopy.innerRadius - 0.32) < 1e-6);
+  assert.equal(polygonCopy.points, 7);
+  for (const [copy, source] of [[starCopy, star], [polygonCopy, polygon]]) {
+    for (const property of ['width', 'height', 'rotation']) {
+      assert.ok(Math.abs(copy[property] - source[property]) < 1e-5, `${source.name} ${property} should round-trip`);
+    }
+  }
+  assert.equal(starCopy.fill, '#345678');
+  assert.equal(starCopy.fillOpacity, 0.75);
+  assert.equal(starCopy.stroke, '#abcdef');
+  assert.equal(starCopy.strokeOpacity, 0.6);
+  assert.ok(Math.abs(starCopy.strokeWidth - 2) < 1e-5);
+});
+
+test('round-trips phased editor stars and polygons with native controls and ordered effects', () => {
+  for (const type of ['star', 'polygon']) {
+    const original = createNode(type, {
+      id: `phased-${type}`, name: `Phased ${type}`, width: 82, height: 68,
+      points: type === 'star' ? 7 : 9,
+      ...(type === 'star' ? { innerRadius: 0.36 } : {}),
+      fill: '#345678', fillOpacity: 0.75, stroke: '#abcdef', strokeOpacity: 0.6, strokeWidth: 2.5,
+      effects: [
+        { id: `${type}-drop`, type: 'drop-shadow', visible: true, showShadowBehindNode: true,
+          color: '#112233', opacity: 0.3, offsetX: 4, offsetY: -2, blur: 5 },
+        { id: `${type}-inner`, type: 'inner-shadow', visible: true, color: '#abcdef', opacity: 0.45,
+          offsetX: -2, offsetY: 3, blur: 4 },
+        { id: `${type}-blur`, type: 'layer-blur', visible: true, radius: 2 }
+      ]
+    });
+    const svg = exportNodeToSvg(original);
+    const copy = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === original.name);
+
+    assert.equal(copy?.type, type, `${type} effect phases recover the native shape controls`);
+    assert.equal(copy.points, original.points);
+    if (type === 'star') assert.ok(Math.abs(copy.innerRadius - original.innerRadius) < 1e-6);
+    for (const property of ['width', 'height', 'fillOpacity', 'strokeOpacity', 'strokeWidth']) {
+      assert.ok(Math.abs(copy[property] - original[property]) < 1e-5, `${type} ${property} should round-trip`);
+    }
+    assert.equal(copy.fill, original.fill);
+    assert.equal(copy.stroke, original.stroke);
+    assert.deepEqual(copy.effects.map(effect => effect.type), ['inner-shadow', 'layer-blur', 'drop-shadow'],
+      `${type} restores effect order from the tagged paint phases`);
+    assert.deepEqual(copy.effects.map(({ type: effectType, color, opacity, offsetX, offsetY, blur, radius }) =>
+      ({ type: effectType, color, opacity, offsetX, offsetY, blur, radius })), [
+      { type: 'inner-shadow', color: '#abcdef', opacity: 0.45, offsetX: -2, offsetY: 3, blur: 4, radius: undefined },
+      { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 2 },
+      { type: 'drop-shadow', color: '#112233', opacity: 0.3, offsetX: 4, offsetY: -2, blur: 5, radius: undefined }
+    ], `${type} retains the filter values in the restored effect phases`);
+  }
+});
+
+test('edited or malformed phased regular-shape metadata stays editable vector geometry', () => {
+  const original = createNode('star', {
+    name: 'Phased edited star', width: 80, height: 72, points: 6, innerRadius: 0.4,
+    fill: '#345678', stroke: '#abcdef', strokeWidth: 2,
+    effects: [{ id: 'edited-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5,
+      offsetX: 1, offsetY: 2, blur: 3 }]
+  });
+  const sourceSvg = exportNodeToSvg(original);
+  const fillPolygon = sourceSvg.match(/(<g data-tiny-image-star-paint-stage="fill"[^>]*>\s*<polygon points=")([^"]+)/u);
+  assert.ok(fillPolygon, 'the phased export contains editable polygon geometry in its fill stage');
+  const [firstPoint, ...remainingPoints] = fillPolygon[2].split(' ');
+  const [firstX, firstY] = firstPoint.split(',').map(Number);
+  const editedGeometrySvg = sourceSvg.replace(fillPolygon[0],
+    `${fillPolygon[1]}${[`${firstX + 0.01},${firstY}`, ...remainingPoints].join(' ')}`);
+  const malformedMetadataSvg = sourceSvg.replace(
+    'data-tiny-image-star-type="star"',
+    'data-tiny-image-star-type="star" data-tiny-image-star-rounded-shape-v1="{&quot;version&quot;:99}"'
+  );
+
+  for (const [label, svg] of [['edited geometry', editedGeometrySvg], ['malformed source metadata', malformedMetadataSvg]]) {
+    const nodes = allNodes(importSvgToLayers(svg).nodes);
+    assert.equal(nodes.some(node => node.name === original.name && node.type === 'star'), false,
+      `${label} must not be promoted to native star controls`);
+    assert.ok(nodes.some(node => node.type === 'path'), `${label} remains available as editable path geometry`);
+  }
+});
+
+test('round-trips rounded tagged regular-shape geometry with native star and polygon controls', () => {
+  const roundedStar = createNode('star', {
+    id: 'rounded-star', name: 'Rounded native candidate', x: 12, y: 18, width: 80, height: 64,
+    rotation: -17, points: 7, innerRadius: 0.31, radius: 4, cornerSmoothing: 0.35
+  });
+  const customCorners = createNode('star', {
+    id: 'custom-corners', name: 'Custom star corners', x: 110, y: 18, width: 74, height: 64,
+    points: 5, innerRadius: 0.42, cornerSmoothing: 0.2,
+    vertexRadii: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  });
+  const roundedPolygon = createNode('polygon', {
+    id: 'rounded-polygon', name: 'Rounded polygon', x: 210, y: 18, width: 66, height: 64,
+    points: 7, radius: 3, cornerSmoothing: 0.15
+  });
+  const source = createNode('group', {
+    name: 'Rounded regular shapes', width: 300, height: 100,
+    children: [roundedStar, customCorners, roundedPolygon]
+  });
+  const sourceSvg = exportNodeToSvg(source);
+  const importedRoundedDocument = importSvgToLayers(sourceSvg);
+  const roundedImport = allNodes(importedRoundedDocument.nodes);
+  const starCopy = roundedImport.find(node => node.name === 'Rounded native candidate');
+  const customCornersCopy = roundedImport.find(node => node.name === 'Custom star corners');
+  const polygonCopy = roundedImport.find(node => node.name === 'Rounded polygon');
+  const positionedCopies = [
+    findWithAccumulatedPosition(importedRoundedDocument.nodes, roundedStar.name),
+    findWithAccumulatedPosition(importedRoundedDocument.nodes, customCorners.name),
+    findWithAccumulatedPosition(importedRoundedDocument.nodes, roundedPolygon.name)
+  ];
+  assert.equal(starCopy?.type, 'star');
+  assert.equal(starCopy.points, roundedStar.points);
+  assert.equal(starCopy.innerRadius, roundedStar.innerRadius);
+  assert.ok(Math.abs(starCopy.radius - roundedStar.radius) < 1e-8);
+  assert.equal(starCopy.cornerSmoothing, roundedStar.cornerSmoothing);
+  assert.equal(customCornersCopy?.type, 'star');
+  assert.deepEqual(customCornersCopy.vertexRadii, customCorners.vertexRadii);
+  assert.equal(customCornersCopy.cornerSmoothing, customCorners.cornerSmoothing);
+  assert.equal(polygonCopy?.type, 'polygon');
+  assert.equal(polygonCopy.points, roundedPolygon.points);
+  assert.ok(Math.abs(polygonCopy.radius - roundedPolygon.radius) < 1e-8);
+  assert.equal(polygonCopy.cornerSmoothing, roundedPolygon.cornerSmoothing);
+  for (const [index, [copy, original]] of [[starCopy, roundedStar], [customCornersCopy, customCorners], [polygonCopy, roundedPolygon]].entries()) {
+    assert.ok(positionedCopies[index], `${original.name} should have an imported position`);
+    for (const property of ['x', 'y', 'width', 'height', 'rotation']) {
+      const actual = property === 'x' ? positionedCopies[index].x
+        : property === 'y' ? positionedCopies[index].y : copy[property];
+      assert.ok(Math.abs(actual - original[property]) < 1e-5, `${original.name} ${property} should round-trip`);
+    }
+  }
+
+  const editedRoundedSvg = sourceSvg.replace(/(<path d="M )(-?\d+(?:\.\d+)?)/u,
+    (_match, prefix, x) => `${prefix}${Number(x) + 0.01}`);
+  const editedImport = allNodes(importSvgToLayers(editedRoundedSvg).nodes);
+  assert.equal(editedImport.some(node => node.name === 'Rounded native candidate' && node.type === 'star'), false,
+    'a rounded path whose geometry no longer matches its controls must not be promoted');
+  const editedGroup = editedImport.find(node => node.name === 'Rounded native candidate');
+  assert.ok(editedGroup?.children.some(node => node.type === 'path'),
+    'edited rounded-star geometry remains available as an editable vector path');
+});
+
+test('invalid rounded-shape metadata falls back to editable vector geometry', () => {
+  const roundedStar = createNode('star', { name: 'Metadata candidate', width: 80, height: 80, radius: 4 });
+  const malformedSvg = exportNodeToSvg(roundedStar).replace(
+    /data-tiny-image-star-rounded-shape-v1="[^"]*"/u,
+    'data-tiny-image-star-rounded-shape-v1="{&quot;version&quot;:99}"'
+  );
+  const roundedImport = allNodes(importSvgToLayers(exportNodeToSvg(roundedStar)).nodes);
+  const malformedImport = allNodes(importSvgToLayers(malformedSvg).nodes);
+  assert.equal(malformedImport.some(node => node.name === 'Metadata candidate' && node.type === 'star'), false);
+  const malformedGroup = malformedImport.find(node => node.name === 'Metadata candidate');
+  assert.ok(malformedGroup?.children.some(node => node.type === 'path'));
+  assert.ok(roundedImport.some(node => node.type === 'star'), 'valid metadata restores the native star controls');
+
+  const star = createNode('star', { name: 'Edited native candidate', width: 80, height: 80, points: 5 });
+  const svg = exportNodeToSvg(star).replace(/(<polygon points=")([^"]+)/u, (_match, prefix, value) => {
+    const [first, ...rest] = value.split(' ');
+    const [x, y] = first.split(',').map(Number);
+    return `${prefix}${x + 2},${y} ${rest.join(' ')}`;
+  });
+  const editedImport = allNodes(importSvgToLayers(svg).nodes);
+  assert.equal(editedImport.some(node => node.type === 'star'), false,
+    'a tagged polygon whose coordinates do not match the regular-shape controls stays editable vector geometry');
+  assert.ok(editedImport.some(node => node.type === 'path'), 'edited regular-shape geometry remains an editable vector path');
+});
+
+test('tagged regular shapes cannot bypass the SVG vector-point import budget', () => {
+  const points = Array.from({ length: 20_001 }, (_, index) => `${index},0`).join(' ');
+  importFailure(`<svg width="20001" height="2"><g data-tiny-image-star-type="polygon"><polygon points="${points}"/></g></svg>`, 'resource-limit');
+});
+
+test('round-trips simple editor lines as native line layers with direction and stroke controls', () => {
+  const diagonal = createNode('line', {
+    id: 'native-diagonal', name: 'Native diagonal', x: 12, y: 18, width: 88, height: 31,
+    rotation: 19, lineReverseY: true, stroke: '#225588', strokeWidth: 3.5,
+    strokeOpacity: 0.65, strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'solid'
+  });
+  const horizontal = createNode('line', {
+    id: 'native-horizontal', name: 'Native horizontal', x: 15, y: 70, width: 76, height: 0,
+    stroke: '#884422', strokeWidth: 2
+  });
+  const vertical = createNode('line', {
+    id: 'native-vertical', name: 'Native vertical', x: 100, y: 12, width: 0, height: 64,
+    lineReverseY: true, stroke: '#448822', strokeWidth: 2
+  });
+  const imported = allNodes(importSvgToLayers(exportNodeToSvg(createNode('group', {
+    name: 'Native lines', width: 130, height: 100, children: [diagonal, horizontal, vertical]
+  }))).nodes);
+  const diagonalCopy = imported.find(node => node.name === 'Native diagonal');
+  const horizontalCopy = imported.find(node => node.name === 'Native horizontal');
+  const verticalCopy = imported.find(node => node.name === 'Native vertical');
+  assert.equal(diagonalCopy?.type, 'line');
+  assert.equal(horizontalCopy?.type, 'line');
+  assert.equal(verticalCopy?.type, 'line');
+  for (const [copy, source] of [[diagonalCopy, diagonal], [horizontalCopy, horizontal], [verticalCopy, vertical]]) {
+    for (const property of ['width', 'height', 'rotation']) {
+      assert.ok(Math.abs(copy[property] - source[property]) < 1e-5, `${source.name} ${property} should round-trip`);
+    }
+  }
+  assert.equal(diagonalCopy.lineReverseY, true);
+  assert.equal(horizontalCopy.lineReverseY, false);
+  assert.equal(verticalCopy.lineReverseY, true);
+  assert.deepEqual([verticalCopy.width, verticalCopy.height], [0, 64]);
+  assert.equal(diagonalCopy.stroke, '#225588');
+  assert.equal(diagonalCopy.strokeOpacity, 0.65);
+  assert.equal(diagonalCopy.strokeCap, 'round');
+  assert.equal(diagonalCopy.strokeJoin, 'bevel');
+  assert.ok(Math.abs(diagonalCopy.strokeWidth - 3.5) < 1e-5);
+});
+
+test('does not promote tagged editor paths that are not one simple line segment', () => {
+  const line = createNode('line', { name: 'Edited line candidate', width: 80, height: 24 });
+  const svg = exportNodeToSvg(line).replace(/(L\s+80\s+24)/u, '$1 L 60 12');
+  const imported = allNodes(importSvgToLayers(svg).nodes);
+  assert.equal(imported.some(node => node.type === 'line'), false);
+  assert.ok(imported.some(node => node.type === 'path'), 'modified endpoint geometry remains editable as a vector path');
+});
+
+test('round-trips supported editor shadow spread while still rejecting path layers', () => {
+  const original = createNode('rectangle', {
+    id: 'spread-card', width: 100, height: 60, fill: '#ffffff', radius: 8, rotation: 30,
     effects: [
       { id: 'outer', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, spread: 4.5 },
       { id: 'inner', type: 'inner-shadow', visible: true, color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: -2.25 }
     ]
   });
   const svg = exportNodeToSvg(original);
-  importFailure(svg, 'unsupported-shadow-spread-target');
+  const importedSpread = importSvgToLayers(svg);
+  const spreadLayer = allNodes(importedSpread.nodes).find(node => node.type === 'rectangle');
+  assert.ok(spreadLayer, 'editor SVG metadata should retain the native rectangle layer type needed for editable spread');
+  assert.ok([spreadLayer.width, spreadLayer.height, spreadLayer.radius].every((value, index) =>
+    Math.abs(value - [100, 60, 8][index]) < 1e-6));
+  assert.ok(Math.abs(spreadLayer.rotation - 30) < 1e-8, 'the native shape keeps its uniform rotation');
+  const shadowEffects = spreadLayer.effects.filter(effect => effect.type.endsWith('shadow'));
+  assert.deepEqual(shadowEffects.map(effect => effect.type), ['inner-shadow', 'drop-shadow']);
+  assert.ok(Math.abs(shadowEffects[0].spread + 2.25) < 1e-6 && Math.abs(shadowEffects[1].spread - 4.5) < 1e-6,
+    'both signed spread values survive a uniform rotation and SVG viewport mapping');
+  importFailure(svg.replace('data-tiny-image-star-type="rectangle"', 'data-tiny-image-star-type="path"'), 'unsupported-shadow-spread-target');
+
+  const ellipse = createNode('ellipse', {
+    id: 'spread-ellipse', width: 42, height: 28,
+    effects: [{ id: 'outer', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.5, offsetX: 1, offsetY: 2, blur: 1, spread: 2 }]
+  });
+  const importedEllipse = allNodes(importSvgToLayers(exportNodeToSvg(ellipse)).nodes).find(node => node.type === 'ellipse');
+  assert.ok([importedEllipse?.width, importedEllipse?.height, importedEllipse?.effects[0]?.spread].every((value, index) =>
+    Math.abs(value - [42, 28, 2][index]) < 1e-6));
 
   const zeroSpread = createNode('rectangle', {
     id: 'zero-spread-card', width: 100, height: 60, fill: '#ffffff',
@@ -585,9 +1076,10 @@ test('rejects shadow spread when SVG geometry would import as a layer type that 
   });
   const importedZeroSpread = importSvgToLayers(exportNodeToSvg(zeroSpread));
   const layer = allNodes(importedZeroSpread.nodes).find(node => node.effects?.length);
+  assert.equal(layer.type, 'rectangle', 'metadata-tagged rectangles keep their native shape when spread is zero');
   assert.deepEqual(layer.effects.map(effect => effect.type), ['inner-shadow', 'drop-shadow']);
   assert.ok(layer.effects.every(effect => effect.spread == null || effect.spread === 0),
-    'ordinary zero-spread shadow filters remain editable on imported paths');
+    'ordinary zero-spread shadow filters remain editable on imported rectangles');
 
   const malformed = svg.replace('operator="over" result="tis-effect-0-result-0"', 'operator="xor" result="tis-effect-0-result-0"');
   assert.throws(() => importSvgToLayers(malformed), error =>

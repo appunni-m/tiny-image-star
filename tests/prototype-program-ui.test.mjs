@@ -60,5 +60,6 @@ test('keyboard shortcuts can be authored and dispatched in presentation mode', (
   assert.match(main, /id="prototype-key"/);
   assert.match(main, /prototype-key-\$\{name\}/);
   assert.match(main, /findPrototypeKeyboardInteraction\(presentRuntimeDocument, pageId, frameId, event, state\.presenting\)/);
-  assert.match(main, /if \(found\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*navigatePresentation\(found\.interaction\);/);
+  assert.match(main, /if \(found\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*navigatePresentation\(found\.interaction, found\.source\);/,
+    'keyboard-triggered overlays need the same source layer for trigger-relative placement');
 });

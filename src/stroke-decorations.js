@@ -1,6 +1,6 @@
 import { vectorNetworkEdgePoints, vectorNodePoint, vectorPathContours } from './vector-path.js';
 
-export const strokeDecorationTypes = Object.freeze(['none', 'arrow', 'triangle', 'triangle-inward']);
+export const strokeDecorationTypes = Object.freeze(['none', 'arrow', 'triangle', 'triangle-inward', 'diamond', 'circle']);
 const knownDecorations = new Set(strokeDecorationTypes);
 
 function point(x, y) { return { x, y }; }
@@ -46,6 +46,22 @@ function decoration(type, side, tip, forward, strokeWidth, metadata = {}) {
   const normal = point(-pointing.y, pointing.x);
   const size = strokeWidth * 4;
   const halfWidth = size * .55;
+  if (type === 'circle') {
+    return { type, side, tip: { ...tip }, center: { ...tip }, radius: halfWidth, closed: true, ...metadata };
+  }
+  if (type === 'diamond') {
+    const rear = point(tip.x - pointing.x * size, tip.y - pointing.y * size);
+    const middle = point(tip.x - pointing.x * size / 2, tip.y - pointing.y * size / 2);
+    const wide = point(normal.x * halfWidth, normal.y * halfWidth);
+    return {
+      type, side, tip: { ...tip },
+      points: [
+        { ...tip }, point(middle.x + wide.x, middle.y + wide.y), rear,
+        point(middle.x - wide.x, middle.y - wide.y)
+      ],
+      closed: true, ...metadata
+    };
+  }
   const apex = pointsOutward ? tip : point(tip.x + pointing.x * size, tip.y + pointing.y * size);
   const base = point(apex.x - pointing.x * size, apex.y - pointing.y * size);
   const left = point(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth);
@@ -114,7 +130,7 @@ function networkDecorations(node, stroke, origin) {
   return result;
 }
 
-/** Resolve arrow/triangle geometry at open stroke endpoints in the layer's local canvas coordinates. */
+/** Resolve marker geometry at open stroke endpoints in the layer's local canvas coordinates. */
 export function strokeEndpointDecorations(node, stroke, origin = { x: node?.x || 0, y: node?.y || 0 }) {
   if (!node || !stroke || !['line', 'path', 'network'].includes(node.type)) return [];
   const safeOrigin = Number.isFinite(origin?.x) && Number.isFinite(origin?.y) ? origin : { x: 0, y: 0 };

@@ -6,7 +6,7 @@ import { zipSync } from 'fflate';
 import { encodeCommandsBlob, encodeVectorNetwork, encodeVectorNetworkBlob } from 'openfig-core';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
 import { componentPropertyExposureGroups } from '../src/component-property-exposure.js';
-import { parseDocument, serializeDocument, setComponentPropertyValue, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
+import { parseDocument, resetComponentSlotContent, serializeDocument, setComponentPropertyValue, setComponentSlotContent, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
 import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transformPoint } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout, gridTrackLayout } from '../src/layout-engine.js';
@@ -92,6 +92,34 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
 });
 
+test('preserves valid Figma ellipse arc data and safely omits malformed arc settings', () => {
+  const page = { sessionID: 106, localID: 1 };
+  const full = { startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: 0 };
+  const half = { startingAngle: 0, endingAngle: Math.PI, innerRadius: 0 };
+  const donut = { startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: 0.5 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('ELLIPSE', 2, page, 'a', { name: 'Full ellipse', arcData: full }),
+      node('ELLIPSE', 3, page, 'b', { name: 'Half ellipse', arcData: half }),
+      node('ELLIPSE', 4, page, 'c', { name: 'Donut', arcData: donut }),
+      node('ELLIPSE', 5, page, 'd', { name: 'Invalid radius', arcData: { ...donut, innerRadius: 1.1 } }),
+      node('ELLIPSE', 6, page, 'e', { name: 'Invalid angle', arcData: { ...half, endingAngle: Number.NaN } }),
+      node('ELLIPSE', 7, page, 'f', { name: 'Missing settings', arcData: { startingAngle: 0, innerRadius: 0 } }),
+      node('ELLIPSE', 8, page, 'g', { name: 'Default ellipse' })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+
+  const ellipses = imported.document.pages[0].children;
+  assert.deepEqual(ellipses.slice(0, 3).map(ellipse => ellipse.arcData), [full, half, donut]);
+  assert.ok(ellipses.slice(3).every(ellipse => ellipse.arcData === undefined));
+  const warnings = imported.report.warnings.filter(warning => warning.type === 'ELLIPSE_ARC');
+  assert.deepEqual(warnings.map(warning => warning.name), ['Invalid radius', 'Invalid angle', 'Missing settings']);
+  assert.ok(warnings.every(warning => /full ellipse/u.test(warning.detail)));
+});
+
 test('imports a simple Figma vector as an editable network while preserving its cubic geometry and fills', () => {
   const pageGuid = { sessionID: 91, localID: 1 };
   const commands = [
@@ -153,6 +181,50 @@ test('imports fixed scroll children from their parent frame references', () => {
   const children = imported.document.pages[0].children[0].children;
   assert.equal(children[0].fixedPositionWhenScrolling, true);
   assert.equal(children[1].fixedPositionWhenScrolling, undefined);
+});
+
+test('preserves Figma locked state on normal, fallback-container, and editable vector layers', () => {
+  const page = { sessionID: 87, localID: 1 };
+  const frame = { sessionID: 87, localID: 2 };
+  const fallback = { sessionID: 87, localID: 5 };
+  const commands = [
+    { type: 'M', x: 10, y: 10 }, { type: 'L', x: 90, y: 10 },
+    { type: 'L', x: 50, y: 90 }, { type: 'Z' }
+  ];
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('FRAME', 2, page, 'a', { guid: frame, name: 'Locked frame', locked: true }),
+      node('RECTANGLE', 3, frame, 'a', { name: 'Locked shape', locked: true }),
+      node('RECTANGLE', 4, frame, 'b', { name: 'Editable shape', locked: false }),
+      node('UNSUPPORTED_CONTAINER', 5, page, 'b', { guid: fallback, name: 'Locked fallback', locked: true }),
+      node('RECTANGLE', 6, fallback, 'a', { name: 'Fallback child', locked: false }),
+      node('VECTOR', 7, page, 'c', {
+        name: 'Locked network', locked: true, size: { x: 100, y: 100 },
+        vectorData: { vectorNetworkBlob: 0, normalizedSize: { x: 100, y: 100 } },
+        fillGeometry: [{ commandsBlob: 1, windingRule: 'NONZERO', styleID: 0 }],
+        fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 }, opacity: 1, visible: true }],
+        strokePaints: []
+      })
+    ],
+    images: new Map(), message: { blobs: [encodeVectorNetworkBlob([commands]), encodeCommandsBlob(commands)] }
+  });
+
+  const [convertedFrame, convertedFallback, convertedVector] = imported.document.pages[0].children;
+  assert.equal(convertedFrame.locked, true);
+  assert.deepEqual(convertedFrame.children.map(child => child.locked), [true, false]);
+  assert.equal(convertedFallback.type, 'group');
+  assert.equal(convertedFallback.locked, true);
+  assert.equal(convertedFallback.children[0].locked, false,
+    'a locked parent and an independently unlocked child retain their distinct source states');
+  assert.equal(convertedVector.type, 'network');
+  assert.equal(convertedVector.locked, true);
+
+  const reopened = parseDocument(serializeDocument(imported.document));
+  assert.equal(reopened.pages[0].children[0].locked, true);
+  assert.equal(reopened.pages[0].children[1].locked, true);
+  assert.equal(reopened.pages[0].children[2].locked, true);
 });
 
 test('imports multiple one-loop Figma vector regions as editable network faces', () => {
@@ -552,20 +624,36 @@ test('imports Figma line caps with the correct decoration direction and NONE sem
   assert.equal(restored[2].strokes[0].endDecoration, 'triangle-inward');
 });
 
-test('unsupported Figma stroke cap shapes are omitted with a review warning', () => {
-  for (const cap of ['DIAMOND_FILLED', 'CIRCLE_FILLED']) {
-    const page = { sessionID: 835, localID: 1 };
-    const imported = convertFigDocument({ header: { version: 106 }, nodes: [
-      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
-      node('LINE', 2, page, 'a', { name: `${cap} cap`, strokeCap: cap,
-        strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }] })
-    ], images: new Map(), message: { blobs: [] } });
-    const line = imported.document.pages[0].children[0];
-    assert.equal(line.strokes?.length || 0, 0, `${cap} must not become an undecorated butt stroke`);
-    assert.equal(line.strokeWidth, 0);
-    assert.equal(imported.report.unsupportedTypes.STROKE_CAP, 1);
-    assert.match(imported.report.warnings.find(item => item.type === 'STROKE_CAP').detail, /stroke was omitted/);
-  }
+test('imports filled Figma line markers and their REST enum aliases as editable stroke ends', () => {
+  const page = { sessionID: 835, localID: 1 };
+  const caps = ['DIAMOND_FILLED', 'CIRCLE_FILLED', 'LINE_ARROW', 'TRIANGLE_ARROW'];
+  const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    ...caps.map((cap, index) => node('LINE', index + 2, page, String.fromCharCode(97 + index), {
+      name: `${cap} cap`, strokeCap: cap,
+      strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }]
+    }))
+  ], images: new Map(), message: { blobs: [] } });
+  assert.deepEqual(imported.report.unsupportedTypes, {});
+  assert.deepEqual(imported.report.warnings.filter(item => item.code === 'STROKE_CAP'), []);
+  const lines = imported.document.pages[0].children;
+  assert.deepEqual(lines.map(line => line.strokes[0].endDecoration), ['diamond', 'circle', 'arrow', 'triangle']);
+  assert.ok(lines.every(line => line.strokes[0].width > 0));
+  const restored = parseDocument(serializeDocument(imported.document)).pages[0].children;
+  assert.deepEqual(restored.map(line => line.strokes[0].endDecoration), ['diamond', 'circle', 'arrow', 'triangle']);
+});
+
+test('unmodeled Figma stroke caps remain an explicit import warning', () => {
+  const page = { sessionID: 836, localID: 1 };
+  const imported = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    node('LINE', 2, page, 'a', { name: 'Washi endpoint', strokeCap: 'WASHI_TAPE_1',
+      strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.8, a: 1 } }] })
+  ], images: new Map(), message: { blobs: [] } });
+  const line = imported.document.pages[0].children[0];
+  assert.equal(line.strokes?.length || 0, 0);
+  assert.equal(imported.report.unsupportedTypes.STROKE_CAP, 1);
+  assert.match(imported.report.warnings.find(item => item.type === 'STROKE_CAP').detail, /stroke was omitted/);
 });
 
 test('imports Figma individual rectangle stroke weights on each imported paint', () => {
@@ -1202,9 +1290,76 @@ test('imports shared component properties bound to multiple compatible layers', 
   assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY_VALUE, undefined);
 });
 
-test('leaves multi-target slot properties in import review because slot content is target-specific', () => {
+test('imports multi-target slots with per-target content groups and preserves them across edit, sync, and reload', () => {
   const page = { sessionID: 80, localID: 1 };
   const component = { sessionID: 80, localID: 2 };
+  const primarySlot = { sessionID: 80, localID: 3 };
+  const secondarySlot = { sessionID: 80, localID: 5 };
+  const instance = { sessionID: 80, localID: 10 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropertyDefinitions: {
+        'Content#0:0': { type: 'SLOT', defaultValue: [] }
+      } }),
+      node('FRAME', 3, component, 'a', { guid: primarySlot, name: 'Main content', componentPropertyReferences: { slotContentId: 'Content#0:0' } }),
+      node('TEXT', 4, primarySlot, 'a', { name: 'Main placeholder', textData: { characters: 'Main default' } }),
+      node('FRAME', 5, component, 'b', { guid: secondarySlot, name: 'Secondary content', componentPropertyReferences: { slotContentId: 'Content#0:0' } }),
+      node('TEXT', 6, secondarySlot, 'a', { name: 'Secondary placeholder', textData: { characters: 'Secondary default' } }),
+      node('INSTANCE', 10, page, 'b', { guid: instance, name: 'Card use', componentId: component }),
+      node('FRAME', 11, instance, 'a', { name: 'Main content' }),
+      node('RECTANGLE', 12, { sessionID: 1, localID: 11 }, 'a', { name: 'Main custom layer' }),
+      node('FRAME', 13, instance, 'b', { name: 'Secondary content' }),
+      node('TEXT', 14, { sessionID: 1, localID: 13 }, 'a', { name: 'Secondary custom label', textData: { characters: 'Custom secondary' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const property = localComponent.componentProperties[0];
+  const instanceNode = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  assert.equal(property.type, 'SLOT');
+  assert.equal(property.targetSourceIds.length, 2);
+  assert.deepEqual(property.defaultValue, []);
+  const targetsBySourceId = () => property.targetSourceIds.map(sourceId => instanceNode.children.find(child => child.componentSourceId === sourceId));
+  assert.deepEqual(targetsBySourceId().map(target => target.children.map(child => child.name)), [
+    ['Main custom layer'], ['Secondary custom label']
+  ]);
+  assert.deepEqual(instanceNode.componentPropertyValues[property.id], targetsBySourceId().map(target => target.children.map(child => child.id)));
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY, undefined);
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY_VALUE, undefined);
+
+  syncAllComponentInstances(imported.document);
+  assert.deepEqual(targetsBySourceId().map(target => target.children.map(child => child.name)), [
+    ['Main custom layer'], ['Secondary custom label']
+  ]);
+  const restored = parseDocument(serializeDocument(imported.document));
+  syncAllComponentInstances(restored);
+  const restoredComponent = restored.components.find(item => item.name === 'Card');
+  const restoredProperty = restoredComponent.componentProperties[0];
+  const restoredInstance = restored.pages[0].children.find(item => item.isInstance);
+  const restoredTargets = restoredProperty.targetSourceIds.map(sourceId => restoredInstance.children.find(child => child.componentSourceId === sourceId));
+  assert.deepEqual(restoredTargets.map(target => target.children.map(child => child.name)), [
+    ['Main custom layer'], ['Secondary custom label']
+  ]);
+  assert.deepEqual(restoredInstance.componentPropertyValues[restoredProperty.id], restoredTargets.map(target => target.children.map(child => child.id)));
+
+  const replacement = setComponentSlotContent(restored, restoredInstance.id, restoredProperty.id, restoredTargets[0].children);
+  assert.equal(replacement.length, 2);
+  assert.notEqual(replacement[0][0].id, replacement[1][0].id);
+  assert.deepEqual(restoredTargets.map(target => target.children.map(child => child.name)), [
+    ['Main custom layer'], ['Main custom layer']
+  ]);
+  assert.deepEqual(restoredInstance.componentPropertyValues[restoredProperty.id], replacement.map(group => group.map(node => node.id)));
+  assert.equal(resetComponentSlotContent(restored, restoredInstance.id, restoredProperty.id), true);
+  assert.deepEqual(restoredTargets.map(target => target.children.map(child => child.name)), [
+    ['Main placeholder'], ['Secondary placeholder']
+  ]);
+});
+
+test('keeps multi-target slot properties in import review when a target is not a slot container', () => {
+  const page = { sessionID: 83, localID: 1 };
+  const component = { sessionID: 83, localID: 2 };
   const imported = convertFigDocument({
     header: { version: 106 },
     nodes: [
@@ -1213,13 +1368,13 @@ test('leaves multi-target slot properties in import review because slot content 
         'Content#0:0': { type: 'SLOT', defaultValue: [] }
       } }),
       node('FRAME', 3, component, 'a', { name: 'Main content', componentPropertyReferences: { slotContentId: 'Content#0:0' } }),
-      node('FRAME', 4, component, 'b', { name: 'Secondary content', componentPropertyReferences: { slotContentId: 'Content#0:0' } })
+      node('RECTANGLE', 4, component, 'b', { name: 'Not a slot container', componentPropertyReferences: { slotContentId: 'Content#0:0' } })
     ],
     images: new Map(), message: { blobs: [] }
   });
   const localComponent = imported.document.components.find(item => item.name === 'Card');
   assert.equal(localComponent.componentProperties, undefined);
-  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /cannot be represented safely across several local targets/u);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /not converted to a compatible editable layer/u);
 });
 
 test('leaves multi-target properties in import review when their declared default conflicts with a referenced layer', () => {
@@ -1502,9 +1657,16 @@ test('imports documented Figma text wrap styles and warns for values the embedde
   const parsed = {
     header: { version: 106 },
     schema: { definitions: [
-      { kind: 'MESSAGE', name: 'NodeChange', fields: [{ name: 'textWrapStyle', type: 'FigTextWrapMode' }] },
+      { kind: 'MESSAGE', name: 'NodeChange', fields: [
+        { name: 'textWrapStyle', type: 'FigTextWrapMode' },
+        { name: 'textAlignHorizontal', type: 'FigTextAlignment' }
+      ] },
       { kind: 'ENUM', name: 'FigTextWrapMode', fields: [
         { name: 'AUTO', value: 7 }, { name: 'BALANCE', value: 3 }, { name: 'PRETTY', value: 11 }
+      ] },
+      { kind: 'ENUM', name: 'FigTextAlignment', fields: [
+        { name: 'LEFT', value: 0 }, { name: 'CENTER', value: 1 },
+        { name: 'RIGHT', value: 2 }, { name: 'JUSTIFIED', value: 3 }
       ] }
     ] },
     nodes: [
@@ -1515,12 +1677,16 @@ test('imports documented Figma text wrap styles and warns for values the embedde
       node('TEXT', 5, page, 'd', { name: 'Schema enum', textData: { characters: 'Balanced' }, textWrapStyle: 3 }),
       node('TEXT', 6, page, 'e', { name: 'Unknown enum', textData: { characters: 'Fallback' }, textWrapStyle: 4 }),
       node('TEXT', 7, page, 'f', {
-        name: 'Mixed paragraphs', textData: { characters: 'First\nSecond', paragraphStyle: [{ textWrapStyle: 'BALANCE' }, { textWrapStyle: 'PRETTY' }] },
+        name: 'Mixed paragraphs', textData: { characters: 'First\nSecond', paragraphStyle: [
+          { textWrapStyle: 'BALANCE', textAlignHorizontal: 1 },
+          { textWrapStyle: 'PRETTY', textAlignHorizontal: 3 }
+        ] },
         textWrapStyle: 'MIXED'
       }),
       node('TEXT', 8, page, 'g', {
         name: 'Mixed paragraph extras', textData: { characters: 'First\nSecond', paragraphStyle: [
-          { textWrapStyle: 'BALANCE', textAlignHorizontal: 'CENTER' }, { textWrapStyle: 'PRETTY' }
+          { textWrapStyle: 'BALANCE', textAlignHorizontal: 'FUTURE', indentation: 24 },
+          { textWrapStyle: 'PRETTY', textAlignHorizontal: 'CENTER' }
         ] },
         textWrapStyle: 'MIXED'
       })
@@ -1532,17 +1698,23 @@ test('imports documented Figma text wrap styles and warns for values the embedde
   assert.deepEqual(texts.map(text => text.textWrapStyle), ['auto', 'balance', 'pretty', 'balance', 'auto', 'auto', 'auto']);
   assert.ok(imported.report.warnings.some(warning => warning.type === 'TEXT_WRAP_STYLE'
     && warning.name === 'Unknown enum' && /embedded schema|unsupported/u.test(warning.detail)));
-  assert.deepEqual(texts[5].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
+  assert.deepEqual(texts[5].paragraphStyles, [
+    { align: 'center', textWrapStyle: 'balance' },
+    { align: 'justify', textWrapStyle: 'pretty' }
+  ]);
   assert.ok(!imported.report.warnings.some(warning => warning.type === 'TEXT_WRAP_STYLE'
     && warning.name === 'Mixed paragraphs'), 'known paragraph wrap styles explain the MIXED layer value');
   assert.ok(!imported.report.warnings.some(warning => warning.type === 'TEXT_PARAGRAPH'
-    && warning.name === 'Mixed paragraphs'), 'fully preserved paragraph wrap styles do not receive a simplification warning');
-  assert.deepEqual(texts[6].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
+    && warning.name === 'Mixed paragraphs'), 'fully preserved paragraph styles do not receive a simplification warning');
+  assert.deepEqual(texts[6].paragraphStyles, [
+    { textWrapStyle: 'balance' },
+    { align: 'center', textWrapStyle: 'pretty' }
+  ]);
   assert.ok(imported.report.warnings.some(warning => warning.type === 'TEXT_PARAGRAPH'
-    && warning.name === 'Mixed paragraph extras' && /alignment, indentation, list/u.test(warning.detail)));
+    && warning.name === 'Mixed paragraph extras' && /indentation, list, unsupported alignment/u.test(warning.detail)));
   const restored = parseDocument(serializeDocument(imported.document));
   assert.deepEqual(restored.pages[0].children.map(text => text.textWrapStyle), ['auto', 'balance', 'pretty', 'balance', 'auto', 'auto', 'auto']);
-  assert.deepEqual(restored.pages[0].children[5].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
+  assert.deepEqual(restored.pages[0].children[5].paragraphStyles, texts[5].paragraphStyles);
 });
 
 test('preserves Figma image-fill filters as editable local adjustments and reviews invalid filter values', () => {
@@ -1710,7 +1882,7 @@ test('imports common Figma shadows and foreground/background blurs as editable l
       node('RECTANGLE', 2, pageGuid, 'a', {
         name: 'Card',
         effects: [
-          { type: 'DROP_SHADOW', color: { r: 0.1, g: 0.2, b: 0.3, a: 0.5 }, opacity: 0.5, offset: { x: 3.5, y: 7 }, radius: 12 },
+          { type: 'DROP_SHADOW', color: { r: 0.1, g: 0.2, b: 0.3, a: 0.5 }, opacity: 0.5, offset: { x: 3.5, y: 7 }, radius: 12, showShadowBehindNode: true },
           { type: 'INNER_SHADOW', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: -2, y: 1 }, radius: 4 },
           { type: 'FOREGROUND_BLUR', radius: 6 }
         ]
@@ -1728,11 +1900,46 @@ test('imports common Figma shadows and foreground/background blurs as editable l
     { type: 'inner-shadow', color: '#000000', opacity: 1, offsetX: -2, offsetY: 1, blur: 4, radius: undefined },
     { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 6 }
   ]);
+  assert.equal(card.effects[0].showShadowBehindNode, true, 'the explicit Figma transparent-area flag survives import');
   assert.deepEqual(panel.effects.map(({ type, radius }) => [type, radius]), [['background-blur', 14]]);
   assert.equal(imported.report.unsupportedTypes.EFFECT, undefined);
   const restored = parseDocument(serializeDocument(imported.document));
   assert.deepEqual(restored.pages[0].children[0].effects.map(effect => effect.type), ['drop-shadow', 'inner-shadow', 'layer-blur']);
   assert.deepEqual(restored.pages[0].children[1].effects.map(effect => effect.type), ['background-blur']);
+});
+
+test('imports progressive blur radii and normalized direction points as editable values', () => {
+  const pageGuid = { sessionID: 711, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Progressive card',
+        effects: [{
+          type: 'FOREGROUND_BLUR', blurType: 'PROGRESSIVE', startRadius: 2, radius: 24,
+          startOffset: { x: 0.25, y: 0 }, endOffset: { x: 0.75, y: 1 }
+        }]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const effect = imported.document.pages[0].children[0].effects[0];
+  assert.deepEqual(effect, {
+    id: effect.id, type: 'layer-blur', visible: true, blurType: 'PROGRESSIVE', radius: 24,
+    startRadius: 2, startOffset: { x: 0.25, y: 0 }, endOffset: { x: 0.75, y: 1 }
+  });
+  assert.equal(imported.report.unsupportedTypes.PROGRESSIVE_BLUR_GEOMETRY, undefined);
+  const invalid = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 3, pageGuid, 'b', {
+        name: 'Invalid progressive card',
+        effects: [{ type: 'BACKGROUND_BLUR', blurType: 'PROGRESSIVE', startRadius: 3, radius: 12,
+          startOffset: { x: 0.5, y: 0.5 }, endOffset: { x: 0.5, y: 0.5 } }]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  assert.deepEqual(invalid.document.pages[0].children[0].effects || [], []);
+  assert.equal(invalid.report.unsupportedTypes.PROGRESSIVE_BLUR_GEOMETRY, 1);
 });
 
 test('keeps supported effects editable while explicitly reporting effect features that cannot be represented', () => {
@@ -1760,6 +1967,8 @@ test('keeps supported effects editable while explicitly reporting effect feature
   assert.equal(layer.effects.filter(effect => effect.type === 'drop-shadow').length, 8);
   assert.equal(layer.effects[0].spread, 5, 'supported shadow spread stays editable instead of being reset');
   assert.equal(layer.effects[0].blendMode, 'multiply', 'supported individual effect blends remain editable');
+  assert.equal(layer.effects[0].showShadowBehindNode, false, 'the Figma transparent-area flag remains editable');
+  assert.equal(layer.effects[1].showShadowBehindNode, false, 'an omitted Figma flag uses the documented default');
   assert.equal(imported.report.flattenedTypes.EFFECT_SPREAD || 0, 0, 'supported spread is preserved without a loss warning');
   assert.equal(layer.effects.filter(effect => effect.type === 'layer-blur').length, 1);
   assert.equal(layer.effects.some(effect => effect.type === 'background-blur'), false,
@@ -1767,7 +1976,7 @@ test('keeps supported effects editable while explicitly reporting effect feature
   assert.equal(imported.report.unsupportedTypes.EFFECT_STACK, 2, 'the ninth shadow and competing blur are reported');
   assert.equal(imported.report.unsupportedTypes.REPEAT, 1, 'unsupported effect types are omitted and identified');
   assert.equal(imported.report.flattenedTypes.EFFECT_BLEND || 0, 0, 'a supported effect blend is preserved without a loss warning');
-  assert.equal(imported.report.flattenedTypes.EFFECT_ORDER, 1, 'unsupported shadow ordering is still reported');
+  assert.equal(imported.report.flattenedTypes.EFFECT_ORDER || 0, 0, 'the transparent-area shadow behavior is represented locally');
   assert.equal(parseDocument(serializeDocument(imported.document)).pages[0].children[0].effects.length, 9);
 });
 
@@ -2070,6 +2279,51 @@ test('imports editable manual grid tracks, placements, spans, gaps, padding, and
   applyAutoLayout(frame);
   assert.deepEqual([frame.children[0].x, frame.children[0].y], [145, 12], 'a spanning child aligns to its full two-column area');
   assert.deepEqual([frame.children[1].x, frame.children[1].y], [340, 187], 'manual anchors use ordered track IDs and fill track weights');
+});
+
+test('preserves per-axis fill sizing on grid children and reviews unsupported hug sizing', () => {
+  const pageGuid = { sessionID: 28, localID: 1 };
+  const frameGuid = { sessionID: 28, localID: 2 };
+  const column1 = { sessionID: 28, localID: 10 };
+  const column2 = { sessionID: 28, localID: 11 };
+  const row1 = { sessionID: 28, localID: 12 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, size: { x: 300, y: 120 }, stackMode: 'GRID',
+        gridRowGap: 0, gridColumnGap: 0, gridAutoTracks: 'NONE', gridReflowEnabled: false,
+        gridColumns: { entries: [{ id: column1, position: 'a' }, { id: column2, position: 'b' }] },
+        gridRows: { entries: [{ id: row1, position: 'a' }] },
+        gridColumnsSizing: { entries: [
+          { id: column1, trackSize: { minSizing: { type: 'FIXED', value: 150 }, maxSizing: { type: 'FIXED', value: 150 } } },
+          { id: column2, trackSize: { minSizing: { type: 'FIXED', value: 150 }, maxSizing: { type: 'FIXED', value: 150 } } }
+        ] },
+        gridRowsSizing: { entries: [{ id: row1, trackSize: { minSizing: { type: 'FIXED', value: 120 }, maxSizing: { type: 'FIXED', value: 120 } } }] }
+      }),
+      node('RECTANGLE', 3, frameGuid, 'a', {
+        name: 'Horizontal fill', size: { x: 30, y: 20 }, gridRowAnchor: row1, gridColumnAnchor: column1,
+        layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'FIXED'
+      }),
+      node('RECTANGLE', 4, frameGuid, 'b', {
+        name: 'Vertical fill', size: { x: 30, y: 20 }, gridRowAnchor: row1, gridColumnAnchor: column2,
+        layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FILL'
+      }),
+      node('RECTANGLE', 5, frameGuid, 'c', {
+        name: 'Content sizing', size: { x: 30, y: 20 }, layoutSizingVertical: 'HUG'
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  }, { fileName: 'grid-child-sizing.fig' });
+  const frame = imported.document.pages[0].children[0];
+
+  assert.deepEqual(frame.children.map(child => [child.layoutSizingX, child.layoutSizingY]), [
+    ['fill', 'fixed'], ['fixed', 'fill'], [undefined, 'fixed']
+  ]);
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_GRID_SIZING, 1,
+    'HUG has no local grid child sizing equivalent and must be reviewed');
+  applyAutoLayout(frame);
+  assert.deepEqual(frame.children.slice(0, 2).map(child => [child.width, child.height]), [[150, 20], [30, 120]]);
 });
 
 test('imports fixed and hug grid track minimum bounds and applies them during reflow', () => {

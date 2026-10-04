@@ -3,8 +3,15 @@ import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
 import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
 import { isValidFontFeatureValues, parseFontFeatureSettings } from './font-features.js';
-import { normalizeStrokeDashArray } from './stroke-style.js';
+import { normalizeStrokeDashArray, strokeDashArray } from './stroke-style.js';
 import { MAX_SHADOW_SPREAD, supportsShadowSpread } from './layer-effects.js';
+import { createStroke, isValidStroke, strokeSideNames, syncLegacyStrokeFields } from './strokes.js';
+import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
+import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
+import {
+  MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS, isValidVertexRadii,
+  regularShapeVertices, roundedPolygonSvgPath
+} from './polygon-corners.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -28,6 +35,11 @@ const MAX_NETWORK_VERTICES = 20_000;
 const MAX_NETWORK_EDGES = 40_000;
 const MAX_NETWORK_FACES = 10_000;
 const NETWORK_METADATA_ATTRIBUTE = 'data-tiny-image-star-network-v1';
+const ELLIPSE_ARC_METADATA_ATTRIBUTE = 'data-tiny-image-star-ellipse-arc-v1';
+const MAX_ELLIPSE_ARC_METADATA_LENGTH = 512;
+const ROUNDED_SHAPE_METADATA_ATTRIBUTE = 'data-tiny-image-star-rounded-shape-v1';
+const MAX_ROUNDED_SHAPE_METADATA_LENGTH = 4096;
+const MAX_CORNER_RADIUS = 100_000;
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
 const MAX_GRADIENT_HANDLE_COORDINATE = 1_000_000;
@@ -42,6 +54,7 @@ const MAX_TEXT_LENGTH = 100_000;
 const unsafeSvgElements = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
 const initialStyle = {
   fill: '#000000', fillAlpha: 1, fillColorAlpha: 1, fillOpacityValue: 1,
+  currentColor: { value: '#000000', alpha: 1 },
   stroke: null, strokeAlpha: 1, strokeColorAlpha: 1, strokeOpacityValue: 1, strokeWidth: 1,
   strokeCap: 'butt', strokeJoin: 'miter', strokePattern: 'solid', strokeMiterLimit: 4, strokeDashArray: null, fillGradient: null,
   fillRule: 'nonzero', clipRule: null, opacity: 1,
@@ -457,8 +470,12 @@ function matrixScale(matrix) {
   return (xScale + yScale) / 2;
 }
 
-function color(value, element) {
+function color(value, element, currentColor = null) {
   const input = value.trim().toLowerCase();
+  if (input === 'currentcolor') {
+    if (!currentColor) fail('unsupported-color', 'SVG currentColor requires a resolvable inherited color.', element);
+    return { ...currentColor };
+  }
   if (input === 'none' || input === 'transparent') return { value: null, alpha: 0 };
   const named = {
     black: '#000000', white: '#ffffff', red: '#ff0000', green: '#008000', blue: '#0000ff', yellow: '#ffff00',
@@ -1003,6 +1020,15 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       declarations[name] = value;
     }
   }
+  // SVG's currentColor keyword resolves to the computed `color` property,
+  // regardless of whether the color came before or after fill/stroke in
+  // markup or in the element's inline style declaration.
+  if (declarations.color != null && declarations.color.trim().toLowerCase() !== 'inherit') {
+    const declaredColor = declarations.color.trim().toLowerCase() === 'currentcolor'
+      ? parentStyle.currentColor
+      : color(declarations.color, node.tag, parentStyle.currentColor);
+    values.currentColor = { ...declaredColor };
+  }
   for (const [key, raw] of Object.entries(declarations)) {
     const value = raw.trim();
     if (value === 'inherit' && inheritedProperties.has(key)) continue;
@@ -1015,12 +1041,12 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
           values.fill = null; values.fillColorAlpha = 1; values.fillGradient = gradient;
         } else {
           if (/^url\(/i.test(value)) fail('external-reference', 'SVG paint references must point to a local supported gradient.', node.tag);
-          const parsed = color(value, node.tag); values.fill = parsed.value; values.fillColorAlpha = parsed.alpha; values.fillGradient = null;
+          const parsed = color(value, node.tag, values.currentColor); values.fill = parsed.value; values.fillColorAlpha = parsed.alpha; values.fillGradient = null;
         }
         break;
       }
       case 'stroke': {
-        const parsed = color(value, node.tag); values.stroke = parsed.value; values.strokeColorAlpha = parsed.alpha; break;
+        const parsed = color(value, node.tag, values.currentColor); values.stroke = parsed.value; values.strokeColorAlpha = parsed.alpha; break;
       }
       case 'fill-opacity': values.fillOpacityValue = parseAlpha(value, key, node.tag); break;
       case 'stroke-opacity': values.strokeOpacityValue = parseAlpha(value, key, node.tag); break;
@@ -1119,7 +1145,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       case 'visibility':
         if (!['visible', 'hidden', 'collapse'].includes(value)) fail('invalid-visibility', 'SVG visibility must be visible or hidden.', node.tag);
         values.visibility = value; break;
-      case 'color': color(value, node.tag); break;
+      case 'color': break; // Resolved before paint so currentColor is declaration-order independent.
       default: fail('unsupported-style', `SVG style property “${key}” is unsupported.`, node.tag);
     }
   }
@@ -1139,9 +1165,13 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     const unit = values.strokeWidth;
     const close = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-6;
     const dash = values.strokeDashArray;
-    if (dash.length === 2 && close(dash[0], unit * 4) && close(dash[1], unit * 2)) {
+    const matchesPattern = pattern => {
+      const expected = strokeDashArray({ strokeWidth: unit, strokePattern: pattern });
+      return dash.length === expected.length && dash.every((value, index) => close(value, expected[index]));
+    };
+    if (matchesPattern('dashed')) {
       values.strokePattern = 'dashed';
-    } else if (dash.length === 2 && close(dash[0], 0) && close(dash[1], unit * 2) && values.strokeCap === 'round') {
+    } else if (matchesPattern('dotted') && values.strokeCap === 'round') {
       values.strokePattern = 'dotted';
     } else values.strokePattern = 'custom';
   }
@@ -2610,10 +2640,574 @@ function resolveNodeFilter(style, filters, matrix, sourceNodes, prefix, node, na
   if (effects.some(effect => effect.spread != null && effect.spread !== 0)
     && (sourceNodes.length !== 1 || !supportsShadowSpread(sourceNodes[0]))) {
     fail('unsupported-shadow-spread-target',
-      'This SVG uses nonzero shadow spread on geometry that imports as editable vector paths. The editor cannot preserve that spread on this layer type; remove the spread or export the shadow as part of the artwork before importing.',
+      'This SVG uses nonzero shadow spread on geometry that cannot be retained as one supported editable shape. Simplify it to a rectangle or ellipse, or remove the spread before importing.',
       node.tag);
   }
   return effects;
+}
+
+function parseRegularShapePoints(shape, type) {
+  const maximum = type === 'star' ? MAX_STAR_POINTS * 2 : MAX_POLYGON_POINTS;
+  const reader = new PathTokenReader(shape.attrs.points || '', shape.tag);
+  const vertices = [];
+  while (reader.peek() !== null) {
+    const xToken = reader.next();
+    if (/^[a-z]$/i.test(xToken)) fail('invalid-points', `<${shape.tag}> points must be numeric x/y pairs.`, shape.tag);
+    const x = finiteNumber(xToken, 'point x', shape.tag);
+    if (reader.peek() === null) return null;
+    const yToken = reader.next();
+    if (/^[a-z]$/i.test(yToken)) fail('invalid-points', `<${shape.tag}> points must be numeric x/y pairs.`, shape.tag);
+    const y = finiteNumber(yToken, 'point y', shape.tag);
+    if (vertices.length >= maximum) return null;
+    vertices.push({ x, y });
+  }
+  return vertices.length >= MIN_STAR_POINTS ? vertices : null;
+}
+
+function regularShapeGeometryFromSvg(type, shape) {
+  const vertices = parseRegularShapePoints(shape, type);
+  if (!vertices || type === 'star' && vertices.length % 2) return null;
+  const center = vertices.reduce((sum, vertex) => ({ x: sum.x + vertex.x / vertices.length, y: sum.y + vertex.y / vertices.length }), { x: 0, y: 0 });
+  const width = center.x * 2;
+  const height = center.y * 2;
+  if (![center.x, center.y, width, height].every(Number.isFinite)
+    || center.x <= 0 || center.y <= 0 || width > MAX_COORDINATE || height > MAX_COORDINATE) return null;
+
+  const radialDistance = vertex => Math.hypot(vertex.x - center.x, vertex.y - center.y);
+  let points = vertices.length;
+  let innerRadius;
+  if (type === 'star') {
+    points = vertices.length / 2;
+    const outerRadius = vertices.reduce((sum, vertex, index) => sum + (index % 2 === 0 ? radialDistance(vertex) : 0), 0) / points;
+    const inner = vertices.reduce((sum, vertex, index) => sum + (index % 2 ? radialDistance(vertex) : 0), 0) / points;
+    if (!(outerRadius > 0) || inner > outerRadius) return null;
+    innerRadius = inner / outerRadius;
+  }
+  const expected = regularShapeVertices(type, width, height, points, innerRadius);
+  const tolerance = Math.max(1, width, height) * 1e-5;
+  if (expected.length !== vertices.length || vertices.some((vertex, index) =>
+    Math.hypot(vertex.x - expected[index].x, vertex.y - expected[index].y) > tolerance)) return null;
+  return { center, width, height, points, ...(type === 'star' ? { innerRadius } : {}) };
+}
+
+function readEditorRoundedShapeMetadata(group, type) {
+  const serialized = group.attrs[ROUNDED_SHAPE_METADATA_ATTRIBUTE];
+  if (typeof serialized !== 'string' || serialized.length > MAX_ROUNDED_SHAPE_METADATA_LENGTH) return null;
+  let value;
+  try { value = JSON.parse(serialized); } catch { return null; }
+  const expectedKeys = type === 'star'
+    ? 'cornerSmoothing,height,innerRadius,points,radius,version,vertexRadii,width'
+    : 'cornerSmoothing,height,points,radius,version,vertexRadii,width';
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== expectedKeys
+    || value.version !== 1 || !Number.isFinite(value.width) || value.width <= 0 || value.width > MAX_COORDINATE
+    || !Number.isFinite(value.height) || value.height <= 0 || value.height > MAX_COORDINATE
+    || !Number.isSafeInteger(value.points) || value.points < MIN_STAR_POINTS
+    || value.points > (type === 'star' ? MAX_STAR_POINTS : MAX_POLYGON_POINTS)
+    || !Number.isFinite(value.radius) || value.radius < 0 || value.radius > MAX_CORNER_RADIUS
+    || !Number.isFinite(value.cornerSmoothing) || value.cornerSmoothing < 0 || value.cornerSmoothing > 1
+    || value.vertexRadii !== null && !isValidVertexRadii(type, value.points, value.vertexRadii)
+    || type === 'star' && (!Number.isFinite(value.innerRadius) || value.innerRadius < 0 || value.innerRadius > 1)) return null;
+  return value;
+}
+
+function matchesEditorRoundedShape(type, metadata, shape) {
+  if (!metadata || shape.tag !== 'path' || Object.hasOwn(shape.attrs, 'transform')) return false;
+  const vertices = regularShapeVertices(type, metadata.width, metadata.height, metadata.points, metadata.innerRadius);
+  const radius = metadata.vertexRadii || metadata.radius;
+  return shape.attrs.d === roundedPolygonSvgPath(vertices, radius, metadata.cornerSmoothing);
+}
+
+function editorLineGeometryFromSvgPath(shape) {
+  const reader = new PathTokenReader(shape.attrs.d || '', shape.tag);
+  if (reader.next() !== 'M') return null;
+  const readCoordinate = label => {
+    const token = reader.next();
+    if (token == null || /^[a-z]$/i.test(token)) return null;
+    return finiteNumber(token, label, shape.tag);
+  };
+  const start = { x: readCoordinate('line start x'), y: readCoordinate('line start y') };
+  if (!Number.isFinite(start.x) || !Number.isFinite(start.y) || reader.next() !== 'L') return null;
+  const end = { x: readCoordinate('line end x'), y: readCoordinate('line end y') };
+  if (!Number.isFinite(end.x) || !Number.isFinite(end.y) || reader.peek() !== null) return null;
+  const width = end.x - start.x;
+  const height = Math.abs(end.y - start.y);
+  const tolerance = Math.max(1, Math.abs(width), height) * 1e-7;
+  const normal = Math.abs(start.x) <= tolerance && Math.abs(start.y) <= tolerance
+    && width >= 0 && (height === 0 || Math.abs(end.y - height) <= tolerance);
+  const reverse = Math.abs(start.x) <= tolerance && Math.abs(start.y - height) <= tolerance
+    && width >= 0 && (height === 0 || Math.abs(end.y) <= tolerance);
+  if ((!normal && !reverse) || width > MAX_COORDINATE || height > MAX_COORDINATE) return null;
+  return { width, height, lineReverseY: Boolean(reverse && height > 0) };
+}
+
+function readEditorPolyline(shape, closed) {
+  const reader = new PathTokenReader(shape.attrs.d || '', shape.tag);
+  let tokenCount = 0;
+  const next = () => { tokenCount += 1; return reader.next(); };
+  if (next() !== 'M') return null;
+  const readCoordinate = label => {
+    const token = next();
+    if (token == null || /^[a-z]$/i.test(token)) return null;
+    return finiteNumber(token, label, shape.tag);
+  };
+  const first = { x: readCoordinate('path x'), y: readCoordinate('path y') };
+  if (!Number.isFinite(first.x) || !Number.isFinite(first.y)) return null;
+  const points = [first];
+  let ended = false;
+  while (reader.peek() !== null) {
+    const command = next();
+    if (command === 'Z') {
+      if (!closed || reader.peek() !== null) return null;
+      ended = true;
+      break;
+    }
+    if (command !== 'L') return null;
+    const point = { x: readCoordinate('path x'), y: readCoordinate('path y') };
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    points.push(point);
+    if (points.length > MAX_VECTOR_POINTS) return null;
+  }
+  if (points.length < (closed ? 3 : 2) || closed !== ended) return null;
+  return { points, tokenCount };
+}
+
+function pointsMatch(actual, expected, scale = 1) {
+  if (actual.length !== expected.length) return false;
+  const tolerance = Math.max(1, scale) * 1e-8;
+  return actual.every((point, index) => Math.abs(point.x - expected[index].x) <= tolerance
+    && Math.abs(point.y - expected[index].y) <= tolerance);
+}
+
+function shiftPoints(points, x, y) {
+  return points.map(point => ({ x: point.x + x, y: point.y + y }));
+}
+
+function importEditorRectangleSideStroke(group, parentStyle, gradients, width, height, radius, x, y) {
+  const marker = 'data-tiny-image-star-stroke-side-widths';
+  if (group.tag !== 'g' || !Object.hasOwn(group.attrs, marker)
+    || group.attrs['data-tiny-image-star-stroke-order'] !== '0'
+    || !group.attrs['data-tiny-image-star-stroke-id']) return null;
+  const allowedGroupAttributes = new Set([
+    'data-tiny-image-star-stroke-id', 'data-tiny-image-star-stroke-order', marker,
+    'data-tiny-image-star-stroke-base-width', 'data-tiny-image-star-stroke-original-cap',
+    'data-tiny-image-star-stroke-original-miter-limit', 'opacity'
+  ]);
+  if (Object.keys(group.attrs).some(key => !allowedGroupAttributes.has(key))) return null;
+  let sideWidths;
+  try { sideWidths = JSON.parse(group.attrs[marker]); }
+  catch { return null; }
+  if (!sideWidths || typeof sideWidths !== 'object' || Array.isArray(sideWidths)
+    || Object.keys(sideWidths).length !== strokeSideNames.length
+    || strokeSideNames.some(side => !Object.hasOwn(sideWidths, side)
+      || !Number.isFinite(sideWidths[side]) || sideWidths[side] < 0 || sideWidths[side] > 100_000)
+    || !strokeSideNames.some(side => sideWidths[side] > 0)) return null;
+
+  const baseWidth = group.attrs['data-tiny-image-star-stroke-base-width'] == null
+    ? Math.max(...strokeSideNames.map(side => sideWidths[side]))
+    : length(group.attrs['data-tiny-image-star-stroke-base-width'], 'stroke base width', group.tag);
+  if (baseWidth > 100_000) return null;
+  const originalCap = group.attrs['data-tiny-image-star-stroke-original-cap'] ?? 'butt';
+  if (!['butt', 'round', 'square'].includes(originalCap)) return null;
+  const originalMiterLimit = group.attrs['data-tiny-image-star-stroke-original-miter-limit'] == null
+    ? null
+    : finiteNumber(group.attrs['data-tiny-image-star-stroke-original-miter-limit'], 'stroke miter limit', group.tag, { min: 1, max: 1000 });
+  const groupStyle = parseStyle(group, parentStyle, gradients);
+  if (!groupStyle.display || !groupStyle.visible || groupStyle.filterRef || groupStyle.clipPathRef || groupStyle.maskRef
+    || groupStyle.fillGradient || groupStyle.stroke || groupStyle.opacity < 0 || groupStyle.opacity > 1) return null;
+  if (!group.children.length || group.children.some(child => child.tag !== 'path' || child.children.length)) return null;
+
+  const expectedRuns = rectangleStrokeSidePaths(width, height, radius);
+  const runBySide = new Map(expectedRuns.map(run => [run.side, shiftPoints(run.points, x, y)]));
+  const sidePaths = group.children.filter(child => Object.hasOwn(child.attrs, 'data-tiny-image-star-stroke-side'));
+  const joinPaths = group.children.filter(child => Object.hasOwn(child.attrs, 'data-tiny-image-star-stroke-join'));
+  if (sidePaths.length !== strokeSideNames.filter(side => sideWidths[side] > 0).length) return null;
+
+  let referenceStyle = null;
+  const seenSides = new Set();
+  const decoded = [];
+  for (const shape of sidePaths) {
+    const side = shape.attrs['data-tiny-image-star-stroke-side'];
+    const expected = runBySide.get(side);
+    if (!expected || seenSides.has(side) || !(sideWidths[side] > 0)) return null;
+    const allowedPathAttributes = new Set([
+      'd', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+      'stroke-miterlimit', 'stroke-dasharray', 'data-tiny-image-star-stroke-side'
+    ]);
+    if (Object.keys(shape.attrs).some(key => !allowedPathAttributes.has(key))) return null;
+    const geometry = readEditorPolyline(shape, false);
+    if (!geometry || !pointsMatch(geometry.points, expected, Math.max(width, height))) return null;
+    const pathStyle = parseStyle(shape, groupStyle, gradients);
+    if (!pathStyle.display || !pathStyle.visible || pathStyle.opacity !== 1 || pathStyle.filterRef
+      || pathStyle.clipPathRef || pathStyle.maskRef || pathStyle.fill || pathStyle.fillAlpha !== 0
+      || !pathStyle.stroke || pathStyle.strokeAlpha !== 1
+      || Math.abs(pathStyle.strokeWidth - sideWidths[side]) > Math.max(1, sideWidths[side]) * 1e-8
+      || pathStyle.strokeCap !== (pathStyle.strokePattern === 'dotted' ? 'round' : 'butt')) return null;
+    if (referenceStyle && (pathStyle.stroke !== referenceStyle.stroke
+      || pathStyle.strokeJoin !== referenceStyle.strokeJoin
+      || pathStyle.strokeMiterLimit !== referenceStyle.strokeMiterLimit
+      || pathStyle.strokePattern !== referenceStyle.strokePattern
+      || pathStyle.strokePattern === 'custom'
+        && JSON.stringify(pathStyle.strokeDashArray) !== JSON.stringify(referenceStyle.strokeDashArray))) return null;
+    referenceStyle ||= pathStyle;
+    seenSides.add(side);
+    decoded.push(geometry);
+  }
+  if (seenSides.size !== strokeSideNames.filter(side => sideWidths[side] > 0).length || !referenceStyle) return null;
+
+  const join = referenceStyle.strokeJoin;
+  const miterLimit = originalMiterLimit ?? referenceStyle.strokeMiterLimit;
+  if (join === 'miter' && miterLimit !== referenceStyle.strokeMiterLimit) return null;
+  const expectedJoins = referenceStyle.strokePattern === 'solid'
+    ? rectangleStrokeSideJoins(expectedRuns, sideWidths, join, miterLimit) : [];
+  if (joinPaths.length !== expectedJoins.length) return null;
+  for (const [index, shape] of joinPaths.entries()) {
+    if (shape.attrs['data-tiny-image-star-stroke-join'] !== join) return null;
+    const allowedPathAttributes = new Set(['d', 'fill', 'stroke', 'data-tiny-image-star-stroke-join']);
+    if (Object.keys(shape.attrs).some(key => !allowedPathAttributes.has(key))) return null;
+    const geometry = readEditorPolyline(shape, true);
+    if (!geometry || !pointsMatch(geometry.points, shiftPoints(expectedJoins[index].points, x, y), Math.max(width, height))) return null;
+    const pathStyle = parseStyle(shape, groupStyle, gradients);
+    if (!pathStyle.display || !pathStyle.visible || pathStyle.opacity !== 1 || pathStyle.filterRef
+      || pathStyle.clipPathRef || pathStyle.maskRef || pathStyle.fillGradient
+      || pathStyle.fill !== referenceStyle.stroke || pathStyle.fillAlpha !== 1
+      || pathStyle.stroke || pathStyle.strokeAlpha !== 0) return null;
+    decoded.push(geometry);
+  }
+
+  const stroke = createStroke({
+    color: referenceStyle.stroke,
+    width: baseWidth,
+    opacity: groupStyle.opacity,
+    cap: originalCap,
+    join,
+    pattern: referenceStyle.strokePattern,
+    ...(referenceStyle.strokePattern === 'custom' ? { dashArray: referenceStyle.strokeDashArray } : {}),
+    miterLimit,
+    sideMode: 'custom',
+    sideWidths
+  });
+  if (!isValidStroke(stroke)) return null;
+  return {
+    stroke,
+    points: decoded.reduce((sum, item) => sum + item.points.length, 0),
+    tokens: decoded.reduce((sum, item) => sum + item.tokenCount, 0)
+  };
+}
+
+function readEditorEllipseArcMetadata(group) {
+  const serialized = group.attrs[ELLIPSE_ARC_METADATA_ATTRIBUTE];
+  if (typeof serialized !== 'string' || serialized.length > MAX_ELLIPSE_ARC_METADATA_LENGTH) return null;
+  let value;
+  try { value = JSON.parse(serialized); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== 'arcData,height,version,width'
+    || value.version !== 1 || !Number.isFinite(value.width) || value.width <= 0 || value.width > MAX_COORDINATE
+    || !Number.isFinite(value.height) || value.height <= 0 || value.height > MAX_COORDINATE
+    || !value.arcData || typeof value.arcData !== 'object' || Array.isArray(value.arcData)
+    || Object.keys(value.arcData).sort().join(',') !== 'endingAngle,innerRadius,startingAngle'
+    || !isValidEllipseArcData(value.arcData)) return null;
+  return { width: value.width, height: value.height, arcData: value.arcData };
+}
+
+function editorEllipseArcShapeTag(metadata) {
+  if (!metadata) return null;
+  const path = ellipseArcSvgPathData(metadata);
+  const zeroSweep = Math.abs(metadata.arcData.endingAngle - metadata.arcData.startingAngle) <= 1e-9;
+  return path || zeroSweep ? 'path' : 'ellipse';
+}
+
+function matchesEditorEllipseArcShape(metadata, shape) {
+  if (!metadata || Object.hasOwn(shape.attrs, 'transform')) return false;
+  const expectedPath = ellipseArcSvgPathData(metadata);
+  const zeroSweep = Math.abs(metadata.arcData.endingAngle - metadata.arcData.startingAngle) <= 1e-9;
+  if (expectedPath || zeroSweep) return shape.tag === 'path' && shape.attrs.d === expectedPath;
+  if (shape.tag !== 'ellipse') return false;
+  const cx = coordinateLength(shape.attrs.cx, 'ellipse cx', shape.tag);
+  const cy = coordinateLength(shape.attrs.cy, 'ellipse cy', shape.tag);
+  const rx = length(shape.attrs.rx, 'ellipse rx', shape.tag);
+  const ry = length(shape.attrs.ry, 'ellipse ry', shape.tag);
+  const approximately = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-10;
+  return approximately(cx, metadata.width / 2) && approximately(cy, metadata.height / 2)
+    && approximately(rx, metadata.width / 2) && approximately(ry, metadata.height / 2);
+}
+
+function samePaintStageGeometry(fillShape, strokeShape) {
+  if (!strokeShape || fillShape.tag !== strokeShape.tag || fillShape.attrs.transform || strokeShape.attrs.transform) return false;
+  const geometryAttributes = {
+    rect: ['x', 'y', 'width', 'height', 'rx', 'ry'],
+    ellipse: ['cx', 'cy', 'rx', 'ry'],
+    polygon: ['points'],
+    path: ['d']
+  }[fillShape.tag];
+  return Boolean(geometryAttributes) && geometryAttributes.every(key =>
+    (fillShape.attrs[key] ?? null) === (strokeShape.attrs[key] ?? null));
+}
+
+function reorderPaintStageEffects(orderText, effects) {
+  if (typeof orderText !== 'string' || orderText.length > 4096) return null;
+  let order;
+  try { order = JSON.parse(orderText); }
+  catch { return null; }
+  if (!Array.isArray(order) || order.length !== effects.length
+    || order.some(type => !['inner-shadow', 'layer-blur', 'drop-shadow'].includes(type))) return null;
+  const remaining = new Map();
+  for (const effect of effects) {
+    const entries = remaining.get(effect.type) || [];
+    entries.push(effect);
+    remaining.set(effect.type, entries);
+  }
+  const result = [];
+  for (const type of order) {
+    const entries = remaining.get(type);
+    if (!entries?.length) return null;
+    result.push(entries.shift());
+  }
+  return [...remaining.values()].every(entries => entries.length === 0) ? result : null;
+}
+
+// Preserve native shape controls only when Tiny Image Star metadata and one
+// simple SVG primitive make the original rectangle, frame, ellipse, line, star, or polygon unambiguous.
+function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget) {
+  const type = node.attrs['data-tiny-image-star-type'];
+  const rectangularLayer = type === 'rectangle' || type === 'frame';
+  const lineShape = type === 'line';
+  const regularShape = type === 'star' || type === 'polygon';
+  const roundedShapeMetadata = regularShape ? readEditorRoundedShapeMetadata(node, type) : null;
+  const ellipseArcMetadata = type === 'ellipse' ? readEditorEllipseArcMetadata(node) : null;
+  const ellipseArcShapeTag = editorEllipseArcShapeTag(ellipseArcMetadata);
+  const shapeTag = rectangularLayer ? 'rect' : type === 'ellipse' ? ellipseArcShapeTag || 'ellipse'
+    : regularShape ? roundedShapeMetadata ? 'path' : 'polygon' : lineShape ? 'path' : null;
+  if (!shapeTag || style.clipPathRef || style.maskRef) return null;
+  const phasedPaintMarker = node.attrs['data-tiny-image-star-paint-phases'];
+  if (phasedPaintMarker != null && phasedPaintMarker !== 'layer-v1') return null;
+  const phasedPaint = phasedPaintMarker === 'layer-v1';
+  const shapeNodes = node.children.filter(child => child.tag !== 'title');
+  let shape;
+  let sideStrokeGroup = null;
+  let fillStage = null;
+  let strokeStage = null;
+  let stagedStrokeShape = null;
+  let stagedFillShapes = null;
+  let fillStageStyle = null;
+  if (phasedPaint) {
+    if (!['rectangle', 'ellipse', 'star', 'polygon'].includes(type)
+      || regularShape && Object.hasOwn(node.attrs, ROUNDED_SHAPE_METADATA_ATTRIBUTE)) return null;
+    const stages = shapeNodes.filter(child => child.tag === 'g'
+      && ['fill', 'stroke'].includes(child.attrs['data-tiny-image-star-paint-stage']));
+    if (stages.length !== shapeNodes.length) return null;
+    fillStage = stages.find(child => child.attrs['data-tiny-image-star-paint-stage'] === 'fill') || null;
+    strokeStage = stages.find(child => child.attrs['data-tiny-image-star-paint-stage'] === 'stroke') || null;
+    if (!fillStage || stages.filter(child => child.attrs['data-tiny-image-star-paint-stage'] === 'fill').length !== 1
+      || stages.filter(child => child.attrs['data-tiny-image-star-paint-stage'] === 'stroke').length > 1
+      || stages.some(stage => Object.keys(stage.attrs).some(key => !['data-tiny-image-star-paint-stage', 'filter'].includes(key)))) return null;
+    const fillShapes = fillStage.children.filter(child => child.tag !== 'title');
+    const strokeShapes = strokeStage?.children.filter(child => child.tag !== 'title') || [];
+    if (!fillShapes.length || fillShapes.length > 32 || fillShapes.some(fillShape => fillShape.tag !== shapeTag)
+      || strokeStage && (strokeShapes.length !== 1 || strokeShapes[0].tag !== shapeTag)) return null;
+    [shape] = fillShapes;
+    if (!fillShapes.slice(1).every(fillShape => samePaintStageGeometry(shape, fillShape))) return null;
+    stagedFillShapes = fillShapes;
+    stagedStrokeShape = strokeShapes[0] || null;
+    if (stagedStrokeShape && !samePaintStageGeometry(shape, stagedStrokeShape)) return null;
+    fillStageStyle = parseStyle(fillStage, style, gradients);
+    if (!fillStageStyle.filterRef || fillStageStyle.clipPathRef || fillStageStyle.maskRef
+      || strokeStage && strokeStage.attrs.filter != null) return null;
+  } else if (rectangularLayer && shapeNodes.length === 2) {
+    shape = shapeNodes.find(child => child.tag === shapeTag);
+    sideStrokeGroup = shapeNodes.find(child => child.tag === 'g'
+      && Object.hasOwn(child.attrs, 'data-tiny-image-star-stroke-side-widths'));
+    if (!shape || !sideStrokeGroup) return null;
+  } else {
+    if (shapeNodes.length !== 1 || shapeNodes[0].tag !== shapeTag) return null;
+    [shape] = shapeNodes;
+  }
+  if (shape.children.length) return null;
+  checkElementAttributes(shape);
+  if (ellipseArcMetadata && !matchesEditorEllipseArcShape(ellipseArcMetadata, shape)) return null;
+  if (roundedShapeMetadata && !matchesEditorRoundedShape(type, roundedShapeMetadata, shape)) return null;
+  let shapeStyle = parseStyle(shape, fillStageStyle || style, gradients);
+  let importedFillStack = null;
+  if (phasedPaint) {
+    const sourceFillIds = new Set();
+    importedFillStack = [];
+    for (const [fillIndex, fillShape] of stagedFillShapes.entries()) {
+      checkElementAttributes(fillShape);
+      if (fillShape.children.length) return null;
+      const sourceFillId = fillShape.attrs['data-tiny-image-star-fill-id'];
+      const sourceFillType = fillShape.attrs['data-tiny-image-star-fill-type'];
+      if (sourceFillId == null && sourceFillType == null && stagedFillShapes.length === 1) {
+        // Older staged exports encoded a legacy single fill without the fill
+        // stack metadata used by current explicit fill layers.
+        importedFillStack = null;
+        break;
+      }
+      if (sourceFillType !== 'solid'
+        || typeof sourceFillId !== 'string' || !sourceFillId || sourceFillId.length > 256
+        || sourceFillIds.has(sourceFillId)) return null;
+      sourceFillIds.add(sourceFillId);
+      const fillStyle = parseStyle(fillShape, fillStageStyle || style, gradients);
+      if (!fillStyle.visible || !fillStyle.display || fillStyle.filterRef || fillStyle.clipPathRef || fillStyle.maskRef
+        || fillStyle.fillGradient || fillStyle.stroke && fillStyle.strokeAlpha > 0 && fillStyle.strokeWidth > 0 || fillStyle.opacity !== 1
+        || fillStyle.fill != null && !/^#[0-9a-f]{6}$/i.test(fillStyle.fill)) return null;
+      importedFillStack.push({
+        id: `${prefix}-shape-${counter.next}-fill-${fillIndex}`,
+        type: 'solid', visible: true, opacity: fillStyle.fillAlpha,
+        blendMode: 'normal', color: fillStyle.fill || 'transparent'
+      });
+    }
+  }
+  if (stagedStrokeShape) {
+    checkElementAttributes(stagedStrokeShape);
+    if (stagedStrokeShape.children.length) return null;
+    const stagedStrokeStyle = parseStyle(stagedStrokeShape, parseStyle(strokeStage, style, gradients), gradients);
+    if (stagedStrokeStyle.fill || stagedStrokeStyle.fillAlpha > 0 || stagedStrokeStyle.filterRef
+      || stagedStrokeStyle.clipPathRef || stagedStrokeStyle.maskRef || !stagedStrokeStyle.stroke
+      || !(stagedStrokeStyle.strokeWidth > 0) || !(stagedStrokeStyle.strokeAlpha > 0)) return null;
+    shapeStyle = {
+      ...shapeStyle,
+      stroke: stagedStrokeStyle.stroke,
+      strokeAlpha: stagedStrokeStyle.strokeAlpha,
+      strokeWidth: stagedStrokeStyle.strokeWidth,
+      strokeCap: stagedStrokeStyle.strokeCap,
+      strokeJoin: stagedStrokeStyle.strokeJoin,
+      strokePattern: stagedStrokeStyle.strokePattern,
+      strokeDashArray: stagedStrokeStyle.strokeDashArray,
+      strokeMiterLimit: stagedStrokeStyle.strokeMiterLimit
+    };
+  } else if (phasedPaint && shapeStyle.stroke && shapeStyle.strokeAlpha > 0) return null;
+  if (!shapeStyle.visible || !shapeStyle.display || shapeStyle.filterRef || shapeStyle.clipPathRef || shapeStyle.maskRef
+    || shapeStyle.fillGradient || sideStrokeGroup && shapeStyle.stroke && shapeStyle.strokeWidth > 0 && shapeStyle.strokeAlpha > 0
+    || lineShape && (shapeStyle.fill || shapeStyle.fillAlpha > 0)) return null;
+  const shapeMatrix = matrixMultiply(matrix, parseTransform(shape.attrs.transform, shape.tag));
+  const scale = matrixScale(shapeMatrix);
+  if (scale == null || scale <= 0 || shapeMatrix[0] * shapeMatrix[3] - shapeMatrix[1] * shapeMatrix[2] <= 0) return null;
+
+  let x; let y; let width; let height; let radius = 0; let regularShapeGeometry = null; let lineGeometry = null;
+  let importedSideStroke = null;
+  if (rectangularLayer) {
+    x = coordinateLength(shape.attrs.x, 'rect x', shape.tag);
+    y = coordinateLength(shape.attrs.y, 'rect y', shape.tag);
+    width = length(shape.attrs.width, 'rect width', shape.tag);
+    height = length(shape.attrs.height, 'rect height', shape.tag);
+    if (!(width > 0 && height > 0)) return null;
+    const rx = length(shape.attrs.rx, 'rect rx', shape.tag,
+      shape.attrs.ry == null ? 0 : length(shape.attrs.ry, 'rect ry', shape.tag));
+    const ry = length(shape.attrs.ry, 'rect ry', shape.tag, rx);
+    if (Math.abs(rx - ry) > Math.max(1, rx, ry) * 1e-8) return null;
+    radius = Math.min(rx, width / 2, height / 2) * scale;
+    if (sideStrokeGroup) {
+      if (Object.hasOwn(shape.attrs, 'transform')) return null;
+      importedSideStroke = importEditorRectangleSideStroke(
+        sideStrokeGroup, style, gradients, width, height, rx, x, y
+      );
+      if (!importedSideStroke) return null;
+      reserveVectorBudget(budget, importedSideStroke.points, importedSideStroke.tokens, sideStrokeGroup.tag);
+      const strokeScale = Number(scale.toPrecision(12));
+      if (strokeScale !== 1) {
+        importedSideStroke.stroke.width = Number((importedSideStroke.stroke.width * strokeScale).toPrecision(12));
+        importedSideStroke.stroke.sideWidths = Object.fromEntries(strokeSideNames.map(side =>
+          [side, Number((importedSideStroke.stroke.sideWidths[side] * strokeScale).toPrecision(12))]));
+      }
+    }
+  } else if (type === 'ellipse' && ellipseArcMetadata) {
+    x = 0; y = 0;
+    width = ellipseArcMetadata.width; height = ellipseArcMetadata.height;
+  } else if (type === 'ellipse') {
+    const cx = coordinateLength(shape.attrs.cx, 'ellipse cx', shape.tag);
+    const cy = coordinateLength(shape.attrs.cy, 'ellipse cy', shape.tag);
+    const rx = length(shape.attrs.rx, 'ellipse rx', shape.tag);
+    const ry = length(shape.attrs.ry, 'ellipse ry', shape.tag);
+    if (!(rx > 0 && ry > 0)) return null;
+    x = cx - rx; y = cy - ry; width = rx * 2; height = ry * 2;
+  } else if (lineShape) {
+    lineGeometry = editorLineGeometryFromSvgPath(shape);
+    if (!lineGeometry) return null;
+    ({ width, height } = lineGeometry);
+    reserveVectorBudget(budget, 2, 6, shape.tag);
+    x = 0; y = 0;
+  } else if (roundedShapeMetadata) {
+    regularShapeGeometry = {
+      center: { x: roundedShapeMetadata.width / 2, y: roundedShapeMetadata.height / 2 },
+      width: roundedShapeMetadata.width,
+      height: roundedShapeMetadata.height,
+      points: roundedShapeMetadata.points,
+      ...(type === 'star' ? { innerRadius: roundedShapeMetadata.innerRadius } : {})
+    };
+    ({ width, height } = regularShapeGeometry);
+    reserveVectorBudget(budget, regularShapeGeometry.points * (type === 'star' ? 2 : 1),
+      regularShapeGeometry.points * (type === 'star' ? 4 : 2), shape.tag);
+    x = 0; y = 0;
+  } else {
+    regularShapeGeometry = regularShapeGeometryFromSvg(type, shape);
+    if (!regularShapeGeometry) return null;
+    reserveVectorBudget(budget, regularShapeGeometry.points * (type === 'star' ? 2 : 1),
+      regularShapeGeometry.points * (type === 'star' ? 4 : 2), shape.tag);
+    ({ width, height } = regularShapeGeometry);
+    x = regularShapeGeometry.center.x - width / 2;
+    y = regularShapeGeometry.center.y - height / 2;
+  }
+  const outputWidth = width * scale;
+  const outputHeight = height * scale;
+  const center = mapPoint(shapeMatrix, { x: x + width / 2, y: y + height / 2 });
+  const rotation = Math.atan2(shapeMatrix[1], shapeMatrix[0]) * 180 / Math.PI;
+  const outputX = center.x - outputWidth / 2;
+  const outputY = center.y - outputHeight / 2;
+  if (![outputX, outputY, outputWidth, outputHeight, radius, rotation].every(Number.isFinite)
+    || Math.abs(outputX) > MAX_COORDINATE || Math.abs(outputY) > MAX_COORDINATE
+    || (lineShape ? outputWidth < 0 || outputHeight < 0 || outputWidth + outputHeight <= 0 : outputWidth <= 0 || outputHeight <= 0)
+    || outputWidth > MAX_COORDINATE || outputHeight > MAX_COORDINATE) {
+    fail('coordinate-out-of-range', 'Transformed SVG geometry exceeds the supported layer coordinates.', node.tag);
+  }
+  const layer = createNode(type, {
+    id: `${prefix}-${type}-${counter.next++}`,
+    name: localName(node),
+    x: outputX,
+    y: outputY,
+    width: outputWidth,
+    height: outputHeight,
+    rotation,
+    opacity: style.opacity * shapeStyle.opacity,
+    fill: shapeStyle.fill || 'transparent',
+    fillOpacity: shapeStyle.fillAlpha,
+    ...(importedFillStack ? { fills: importedFillStack } : {}),
+    fillRule: shapeStyle.fillRule || 'nonzero',
+    ...(rectangularLayer ? { radius } : {}),
+    ...(ellipseArcMetadata ? { arcData: ellipseArcMetadata.arcData } : {}),
+    ...(regularShapeGeometry ? {
+      points: regularShapeGeometry.points,
+      ...(type === 'star' ? { innerRadius: regularShapeGeometry.innerRadius } : {}),
+      ...(roundedShapeMetadata ? {
+        radius: roundedShapeMetadata.radius * scale,
+        cornerSmoothing: roundedShapeMetadata.cornerSmoothing,
+        ...(roundedShapeMetadata.vertexRadii ? {
+          vertexRadii: roundedShapeMetadata.vertexRadii.map(value => value * scale)
+        } : {})
+      } : {})
+    } : {}),
+    ...(lineGeometry ? { lineReverseY: lineGeometry.lineReverseY, fillOpacity: 0 } : {}),
+    stroke: shapeStyle.stroke,
+    strokeOpacity: shapeStyle.strokeAlpha,
+    strokeWidth: shapeStyle.strokeWidth * scale,
+    strokeCap: shapeStyle.strokeCap,
+    strokeJoin: shapeStyle.strokeJoin,
+    strokePattern: shapeStyle.strokePattern,
+    ...(shapeStyle.strokeDashArray ? { strokeDashArray: shapeStyle.strokeDashArray.map(value => value * scale) } : {}),
+    strokeMiterLimit: shapeStyle.strokeMiterLimit,
+    ...(importedSideStroke ? { strokes: [importedSideStroke.stroke] } : {}),
+    children: []
+  });
+  if (importedSideStroke) syncLegacyStrokeFields(layer);
+  if (phasedPaint) {
+    const innerEffects = resolveNodeFilter(fillStageStyle, filters, matrix, [layer], prefix, fillStage);
+    const outerEffects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node);
+    if (!innerEffects.length || innerEffects.some(effect => effect.type !== 'inner-shadow')
+      || outerEffects.some(effect => !['layer-blur', 'drop-shadow'].includes(effect.type))) return null;
+    const ordered = reorderPaintStageEffects(node.attrs['data-tiny-image-star-effect-order'], [...innerEffects, ...outerEffects]);
+    if (!ordered) return null;
+    layer.effects = ordered;
+  } else layer.effects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node);
+  return layer;
 }
 
 function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients, filters, clipPaths, masks) {
@@ -2636,6 +3230,10 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     booleanLayer.effects = resolveNodeFilter(style, filters, matrix, [booleanLayer], prefix, node);
     return [booleanLayer];
   }
+  const nativePrimitive = node.tag === 'g'
+    ? importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget)
+    : null;
+  if (nativePrimitive) return [nativePrimitive];
   if (Object.hasOwn(node.attrs, NETWORK_METADATA_ATTRIBUTE)) {
     const network = importedNetwork(node, matrix, style, prefix, counter, node.attrs[NETWORK_METADATA_ATTRIBUTE]);
     const effects = resolveNodeFilter(style, filters, matrix, [network], prefix, node);

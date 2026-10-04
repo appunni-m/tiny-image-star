@@ -15,7 +15,7 @@ const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letter
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
-  'affineTransform', 'points', 'innerRadius', 'vertexRadii',
+  'affineTransform', 'points', 'innerRadius', 'vertexRadii', 'arcData',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
 ];
@@ -397,6 +397,8 @@ function interpolateStrokeStack(fromNode, toNode, progress) {
 function canInterpolateEffectPair(from, to) {
   if (from.type !== to.type || from.visible !== to.visible) return false;
   if (from.type === 'noise' || from.type === 'texture' || from.type === 'glass') return true;
+  if (['layer-blur', 'background-blur'].includes(from.type)
+    && (from.blurType || 'NORMAL') !== (to.blurType || 'NORMAL')) return false;
   // Shadow colors are only interpolated as six-digit hex values. Keep the
   // stack on its existing midpoint fallback if either endpoint cannot be
   // represented by that color interpolation path.
@@ -416,6 +418,15 @@ function interpolateEffectPair(from, to, progress) {
     result.color = interpolateColor(from.color, to.color, progress) || result.color;
   } else if (to.type === 'layer-blur' || to.type === 'background-blur') {
     result.radius = from.radius + (to.radius - from.radius) * progress;
+    if ((from.blurType || 'NORMAL') === 'PROGRESSIVE') {
+      result.startRadius = from.startRadius + (to.startRadius - from.startRadius) * progress;
+      for (const point of ['startOffset', 'endOffset']) {
+        result[point] = {
+          x: from[point].x + (to[point].x - from[point].x) * progress,
+          y: from[point].y + (to[point].y - from[point].y) * progress
+        };
+      }
+    }
   } else if (to.type === 'noise') {
     for (const property of ['sizeX', 'sizeY', 'density', 'opacity']) {
       result[property] = from[property] + (to[property] - from[property]) * progress;
@@ -481,6 +492,7 @@ function interpolateEffects(from, to, progress) {
       result.opacity *= tailProgress;
     } else if (effect.type === 'layer-blur' || effect.type === 'background-blur') {
       result.radius *= tailProgress;
+      if (effect.blurType === 'PROGRESSIVE') result.startRadius *= tailProgress;
     } else if (effect.type === 'noise') {
       result.opacity *= tailProgress;
     }
@@ -489,13 +501,91 @@ function interpolateEffects(from, to, progress) {
   return [...shared, ...tail];
 }
 
+function hasUnsupportedSmartAnimateEffect(node) {
+  return Array.isArray(node?.effects) && node.effects.some(effect => effect?.visible !== false
+    && ['drop-shadow', 'inner-shadow'].includes(effect?.type));
+}
+
 function canMatch(from, to) {
   if (!from || !to || from.type !== to.type) return false;
+  // Figma's public Smart Animate guide lists drop and inner shadows as
+  // unsupported. Treat a layer with either visible effect at either endpoint
+  // as unmatched and let the existing endpoint fade handle it. The guide says
+  // unsupported properties trigger a default dissolve, but does not say
+  // whether the fallback applies to the whole frame or only the affected
+  // layer, so this local fallback is a conservative approximation.
+  if (hasUnsupportedSmartAnimateEffect(from) || hasUnsupportedSmartAnimateEffect(to)) return false;
   if (from.type === 'image' && from.assetId !== to.assetId) return false;
   if (from.type === 'boolean' && from.operation !== to.operation) return false;
   if (from.type === 'path' && !canInterpolatePath(from, to)) return false;
   if (from.type === 'network' && !canInterpolateNetwork(from, to)) return false;
   return true;
+}
+
+const implicitTextStyleProperties = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent',
+  'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle'
+];
+const implicitTextStyleDefaults = {
+  fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal',
+  lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, paragraphSpacing: 0,
+  firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top',
+  textCase: 'none', textDecoration: 'none'
+};
+const implicitTextRunStyleProperties = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'baselineShift', 'color', 'textCase', 'textDecoration'
+];
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function implicitTextStyleSignature(node) {
+  // The text-name exception is only safe for a single, unambiguous text style.
+  // Paragraph overrides and text-on-path geometry depend on source text ranges
+  // or linked nodes, so leave those to ordinary name-based matching.
+  if (node.paragraphStyles != null || node.textPath != null
+    || (node.textRuns != null && (!Array.isArray(node.textRuns)
+      || node.textRuns.some(run => !run || typeof run !== 'object' || Array.isArray(run))))) return null;
+  const baseStyle = Object.fromEntries(implicitTextStyleProperties.map(property => [
+    property, node[property] ?? implicitTextStyleDefaults[property] ?? null
+  ]));
+  const runs = node.textRuns == null ? null : node.textRuns.map(run => Object.fromEntries(
+    implicitTextRunStyleProperties.map(property => [
+      property, run[property] ?? node[property] ?? implicitTextStyleDefaults[property] ?? textRunInheritanceDefaults[property] ?? null
+    ])
+  ));
+  const typographyBindings = Object.fromEntries(textVariableBindingProperties
+    .filter(property => node.variableBindings?.[property])
+    .map(property => [property, node.variableBindings[property]]));
+  return stableSerialize({
+    textStyleId: node.textStyleId ?? node.typographyStyleId ?? null,
+    textVariableId: node.textVariableId ?? null,
+    typographyBindings,
+    baseStyle,
+    runs
+  });
+}
+
+function canImplicitlyMatchText(from, to) {
+  if (from?.type !== 'text' || to?.type !== 'text'
+    || typeof from.text !== 'string' || typeof to.text !== 'string'
+    || from.text === to.text
+    || from.name !== from.text || to.name !== to.text
+    || !canMatch(from, to)) return false;
+  const sourceStyle = implicitTextStyleSignature(from);
+  return sourceStyle !== null && sourceStyle === implicitTextStyleSignature(to);
+}
+
+function implicitTextDistance(from, to) {
+  if (![from.x, from.y, to.x, to.y].every(Number.isFinite)) return Number.POSITIVE_INFINITY;
+  return Math.hypot(from.x - to.x, from.y - to.y);
 }
 
 function isFiniteNetworkPoint(point) {
@@ -723,6 +813,43 @@ function matchSiblingNodes(fromChildren, toChildren) {
     matchedSourceIndexes.add(source.index);
   }
 
+  // Figma also recognizes implicitly named text layers when their displayed
+  // text changes: if the layer name is the text itself and the text style is
+  // unchanged, pair the closest text layers by position. Explicitly renamed
+  // layers still require an exact name match, and exact-name duplicate layers
+  // above retain their authored sibling-index correspondence.
+  const implicitCandidates = [];
+  for (let destinationIndex = 0; destinationIndex < toChildren.length; destinationIndex += 1) {
+    if (matchesByDestinationIndex.has(destinationIndex)) continue;
+    const destination = toChildren[destinationIndex];
+    for (let sourceIndex = 0; sourceIndex < fromChildren.length; sourceIndex += 1) {
+      if (matchedSourceIndexes.has(sourceIndex)) continue;
+      const source = fromChildren[sourceIndex];
+      if (!canImplicitlyMatchText(source, destination)) continue;
+      implicitCandidates.push({
+        sourceIndex,
+        destinationIndex,
+        distance: implicitTextDistance(source, destination)
+      });
+    }
+  }
+  implicitCandidates.sort((left, right) => {
+    if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
+    return left.sourceIndex - right.sourceIndex || left.destinationIndex - right.destinationIndex;
+  });
+  for (const candidate of implicitCandidates) {
+    if (matchedSourceIndexes.has(candidate.sourceIndex) || matchesByDestinationIndex.has(candidate.destinationIndex)) continue;
+    const match = {
+      source: fromChildren[candidate.sourceIndex],
+      destination: toChildren[candidate.destinationIndex],
+      sourceIndex: candidate.sourceIndex,
+      destinationIndex: candidate.destinationIndex
+    };
+    matchesBySourceIndex.set(match.sourceIndex, match);
+    matchesByDestinationIndex.set(match.destinationIndex, match);
+    matchedSourceIndexes.add(match.sourceIndex);
+  }
+
   return { matchesBySourceIndex, matchesByDestinationIndex, matchedSourceIndexes };
 }
 
@@ -778,6 +905,22 @@ function interpolateVertexRadii(copy, from, to, progress, resolveRadius = null) 
   if (![...fromRadii, ...toRadii].every(value => Number.isFinite(value) && value >= 0 && value <= 100_000)) return;
   copy.vertexRadii = fromRadii.map((radius, index) => Math.max(0, Math.min(100_000,
     interpolateFiniteNumber(radius, toRadii[index], progress))));
+}
+
+function interpolateEllipseArcData(copy, from, to, progress) {
+  if (progress === 0 || progress === 1) {
+    snapProperty(copy, from, to, 'arcData', progress);
+    return;
+  }
+  if (from.type !== 'ellipse' || to.type !== 'ellipse' || (from.arcData == null && to.arcData == null)) return;
+  const full = { startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: 0 };
+  const start = from.arcData || full;
+  const end = to.arcData || full;
+  copy.arcData = {
+    startingAngle: interpolateFiniteNumber(start.startingAngle, end.startingAngle, progress),
+    endingAngle: interpolateFiniteNumber(start.endingAngle, end.endingAngle, progress),
+    innerRadius: Math.max(0, Math.min(1, interpolateFiniteNumber(start.innerRadius, end.innerRadius, progress)))
+  };
 }
 
 function fadeLayer(node, progress, entering) {
@@ -851,6 +994,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   }
   interpolateCornerRadii(copy, from, to, geometryProgress, resolveRadius);
   interpolateVertexRadii(copy, from, to, geometryProgress, resolveRadius);
+  interpolateEllipseArcData(copy, from, to, progress);
   for (const property of colorProperties) {
     if (property === 'color' && from.type === 'text' && to.type === 'text'
       && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {
@@ -869,13 +1013,14 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   if (fills) copy.fills = fills;
   const strokes = interpolateStrokeStack(from, to, progress);
   if (strokes) copy.strokes = strokes;
-  if (from.visible === false && to.visible !== false) {
-    copy.visible = true;
-    copy.opacity = layerOpacity(to) * progress;
-  } else if (from.visible !== false && to.visible === false) {
-    copy.visible = true;
-    copy.opacity = layerOpacity(from) * (1 - progress);
-  } else if (from.visible === false && to.visible === false) copy.visible = false;
+  if ((from.visible !== false) !== (to.visible !== false)) {
+    // Visibility is categorical in Figma prototypes; it does not behave like
+    // a dissolve. To animate a fade, authors keep the layer visible and change
+    // its opacity instead. Switch the visibility snapshot at the midpoint and
+    // keep opacity from the same endpoint so a hidden layer never ghost-fades.
+    snapProperty(copy, from, to, 'visible', progress);
+    snapProperty(copy, from, to, 'opacity', progress);
+  }
   if (from.type === 'text' && to.type === 'text') {
     snapTextVariableBindings(copy, from, to, progress);
     for (const property of textNodeNumericProperties) {
@@ -1346,7 +1491,7 @@ export function smartAnimatePresentationPaintPlan(split, destinationFrame, incom
   }
   for (const { sourceIndex, node } of split.fixedSourceRoots || []) {
     if (plannedSourceIndexes.has(sourceIndex)) continue;
-    const planned = makeSourceEntry(sourceIndex, true, node);
+    const planned = makeSourceEntry(sourceIndex, true, fadeLayer(node, progress, false));
     if (!planned) continue;
     plan.push(planned);
     plannedSourceIndexes.add(sourceIndex);

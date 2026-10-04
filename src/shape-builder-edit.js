@@ -7,7 +7,7 @@ import { addNode, cloneDocument, createId, findNode, removeNode, validateDocumen
 const shapeTypes = new Set(['rectangle', 'ellipse', 'polygon', 'star', 'path', 'network', 'boolean']);
 const geometryProperties = ['x', 'y', 'width', 'height', 'rotation', 'radius', 'innerRadius'];
 const typeSpecificProperties = [
-  'innerRadius', 'operation', 'vertices', 'edges', 'faces', 'cornerRadii', 'lineReverseY',
+  'innerRadius', 'arcData', 'operation', 'vertices', 'edges', 'faces', 'cornerRadii', 'lineReverseY',
   'overflowBehavior', 'autoLayout', 'mask', 'maskSourceId'
 ];
 

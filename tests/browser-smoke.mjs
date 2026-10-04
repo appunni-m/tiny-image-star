@@ -596,8 +596,10 @@ try {
   overflowControl.value = 'vertical'; overflowControl.dispatchEvent(new Event('input', { bubbles: true })); overflowControl.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'frame vertical overflow behavior');
   dispatchClick(app.querySelector('.tool-button[data-tool="rectangle"]'));
-  const frameContentStart = worldToScreen({ x: sourceFrame.x + 100, y: sourceFrame.y + 500 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
-  const frameContentEnd = worldToScreen({ x: sourceFrame.x + 180, y: sourceFrame.y + 600 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  // The first click-created frame is 100×100; create the target inside it,
+  // then move it offscreen through its local Y control below.
+  const frameContentStart = worldToScreen({ x: sourceFrame.x + 10, y: sourceFrame.y + 10 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  const frameContentEnd = worldToScreen({ x: sourceFrame.x + 80, y: sourceFrame.y + 60 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', frameContentStart.x, frameContentStart.y, 902);
   dispatchCanvasPointer(app, designCanvas, 'pointermove', frameContentEnd.x, frameContentEnd.y, 902);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', frameContentEnd.x, frameContentEnd.y, 902);
@@ -612,8 +614,10 @@ try {
   const offscreenScrollTarget = persistedOverflowSource.children.find(node => node.type === 'rectangle' && node.y >= 900);
   assert(offscreenScrollTarget, 'the scroll-to fixture did not contain an offscreen layer target');
   dispatchClick(app.querySelector('.tool-button[data-tool="rectangle"]'));
-  const scrollHotspotStart = worldToScreen({ x: sourceFrame.x + 100, y: sourceFrame.y + 80 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
-  const scrollHotspotEnd = worldToScreen({ x: sourceFrame.x + 180, y: sourceFrame.y + 140 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  // Keep the hotspot inside the first click-created 100×100 frame; the
+  // offscreen target above exercises scrolling through its local Y position.
+  const scrollHotspotStart = worldToScreen({ x: sourceFrame.x + 5, y: sourceFrame.y + 5 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  const scrollHotspotEnd = worldToScreen({ x: sourceFrame.x + 35, y: sourceFrame.y + 35 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', scrollHotspotStart.x, scrollHotspotStart.y, 903);
   dispatchCanvasPointer(app, designCanvas, 'pointermove', scrollHotspotEnd.x, scrollHotspotEnd.y, 903);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', scrollHotspotEnd.x, scrollHotspotEnd.y, 903);
@@ -739,7 +743,13 @@ try {
   app.querySelector('#prototype-transition').value = 'move-in-left';
   app.querySelector('#prototype-transition').dispatchEvent(new Event('change', { bubbles: true }));
   const overlayPosition = app.querySelector('#prototype-overlay-position');
-  overlayPosition.value = 'center'; overlayPosition.dispatchEvent(new Event('change', { bubbles: true }));
+  overlayPosition.value = 'manual'; overlayPosition.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(app.querySelector('#prototype-overlay-offset-x') && app.querySelector('#prototype-overlay-offset-y'),
+    'manual overlay position should expose trigger-relative X and Y offsets');
+  app.querySelector('#prototype-overlay-offset-x').value = '8';
+  app.querySelector('#prototype-overlay-offset-x').dispatchEvent(new Event('change', { bubbles: true }));
+  app.querySelector('#prototype-overlay-offset-y').value = '12';
+  app.querySelector('#prototype-overlay-offset-y').dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 85);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 85);
@@ -2711,7 +2721,7 @@ try {
   const keyboardShortcutRun = await runWorkflowModuleSafely('./keyboard-shortcuts-smoke.mjs', 'Section and local image keyboard shortcuts', 1280, 720, 'fresh keyboard-shortcut editor boot');
   const selectionInspectorRun = await runWorkflowModuleSafely('./selection-inspector-smoke.mjs', 'shared multi-selection inspector workflow', 1280, 720, 'fresh selection inspector editor boot');
   const commentRun = await runWorkflowModuleSafely('./comments-smoke.mjs', 'Comment mode frame selection and local review workflow', 1280, 720, 'fresh comments editor boot');
-  const canvasEditingRun = await runWorkflowModuleSafely('./canvas-interaction-smoke.mjs', 'crop, canvas cancellation, and text double-click editing', 1280, 720, 'fresh canvas interaction editor boot');
+  const canvasEditingRun = await runWorkflowModuleSafely('./canvas-interaction-smoke.mjs', 'crop, canvas cancellation, text editing, and editable shape handles', 1280, 720, 'fresh canvas interaction editor boot');
   const contextRecipeRun = await runWorkflowModuleSafely('./bulk-recipe-context-smoke.mjs', 'desktop context-menu recipe workflow', 1280, 720, 'fresh desktop editor boot');
   const longImageRecipeRun = await runWorkflowModuleSafely('./image-recipe-long-name-smoke.mjs', 'long image-name recipe save and bulk apply', 1280, 720, 'fresh long-name recipe editor boot');
   const rulerGuideRun = await runWorkflowModuleSafely('./ruler-guides-smoke.mjs', 'page rulers, draggable guides, and keyboard controls', 1280, 720, 'fresh ruler and guide editor boot');

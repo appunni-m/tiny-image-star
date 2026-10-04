@@ -223,3 +223,10 @@ test('the mobile main menu keeps a full-width 44px hit target on narrow phones',
   assert.match(mobile, /\.topbar #main-menu-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*min-height:\s*44px[^}]*flex:\s*0 0 44px/,
     'the main menu must remain easy to open even when the brand mark is compacted for a narrow viewport');
 });
+
+test('phone asset import and export actions meet the 44px touch target', () => {
+  const mobileAssetRule = stylesheet.match(/@media \(max-width: 820px\)\s*\{[\s\S]*?\.assets-section\s*\{[^}]*scrollbar-gutter:\s*auto;[^}]*\}[\s\S]*?\.assets-section \.asset-section-action\s*\{([^}]*)\}/);
+  assert.ok(mobileAssetRule, 'expected the phone Assets panel action rule');
+  assert.match(mobileAssetRule[1], /min-height:\s*44px/,
+    'Import and Export should remain full-sized targets on a touch screen');
+});

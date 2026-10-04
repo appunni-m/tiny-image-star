@@ -91,6 +91,43 @@ test('unpin restores ordinary LRU eviction while the active source remains prote
   assert.equal(pinned.freeCalls, 1);
 });
 
+test('admitting a newly active source evicts explicit cache pins before refusing the selected image', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 8 });
+  const pinned = source(5), active = source(5);
+  cache.set('pinned', pinned);
+  assert.equal(cache.pin('pinned'), true);
+  cache.setActive('active');
+
+  const inserted = cache.set('active', active);
+
+  assert.deepEqual(inserted, { retained: true, evictedAssetIds: ['pinned'] });
+  assert.equal(cache.has('active'), true, 'the selected source stays decoded for follow-up edits');
+  assert.equal(cache.has('pinned'), false, 'the lower-priority warm cache gives way to the active source');
+  assert.equal(cache.pixels, 5);
+  assert.deepEqual([pinned.freeCalls, active.freeCalls], [1, 0]);
+});
+
+test('active-source admission evicts only the oldest pins needed to fit within the pixel budget', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 10 });
+  const firstPin = source(3), secondPin = source(2), newestPin = source(4), active = source(6);
+  cache.set('first-pin', firstPin);
+  cache.set('second-pin', secondPin);
+  cache.set('newest-pin', newestPin);
+  cache.pin('first-pin');
+  cache.pin('second-pin');
+  cache.pin('newest-pin');
+  cache.setActive('active');
+
+  const inserted = cache.set('active', active);
+
+  assert.deepEqual(inserted, { retained: true, evictedAssetIds: ['first-pin', 'second-pin'] });
+  assert.equal(cache.has('first-pin'), false);
+  assert.equal(cache.has('second-pin'), false);
+  assert.equal(cache.has('newest-pin'), true, 'the newest pin stays resident when it fits with the active source');
+  assert.equal(cache.pixels, 10, 'admission never exceeds the configured cache ceiling');
+  assert.deepEqual([firstPin.freeCalls, secondPin.freeCalls, newestPin.freeCalls, active.freeCalls], [1, 1, 0, 0]);
+});
+
 test('oversized source renders successfully but is freed immediately after rendering', () => {
   const cache = new DecodedSourceCache({ pixelBudget: 4 });
   const large = source(3, 2);
@@ -258,4 +295,21 @@ test('delete and clear release pinned sources once and discard active intents', 
   assert.equal(a.freeCalls, 1);
   assert.equal(cache.pixels, 0);
   assert.equal(cache.size, 0);
+});
+
+test('clear attempts to free every retained source when one disposer throws', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 10 });
+  const broken = source(3), later = source(4);
+  const disposeError = new Error('WASM source was already freed');
+  broken.free = function free() { this.freeCalls += 1; throw disposeError; };
+  cache.set('broken', broken);
+  cache.set('later', later);
+
+  assert.throws(() => cache.clear(), error => error === disposeError,
+    'cleanup reports the first disposal failure after trying every entry');
+  assert.deepEqual([broken.freeCalls, later.freeCalls], [1, 1]);
+  assert.equal(cache.size, 0);
+  assert.equal(cache.pixels, 0);
+  assert.equal(cache.activeAssetId, null);
+  assert.doesNotThrow(() => cache.clear(), 'a second cleanup remains safe after a partial disposer failure');
 });

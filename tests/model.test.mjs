@@ -645,13 +645,13 @@ test('endpoint decorations persist in stroke stacks and reject unknown decoratio
   const line = createNode('line', { strokes: [
     { id: 'decorated-line', color: '#123456', width: 2, opacity: 1, visible: true,
       cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
-      startDecoration: 'arrow', endDecoration: 'triangle' }
+      startDecoration: 'diamond', endDecoration: 'circle' }
   ] });
   addNode(document, line);
   assert.equal(validateDocument(document), true);
   assert.deepEqual(parseDocument(serializeDocument(document)).pages[0].children[0].strokes, line.strokes);
 
-  for (const [property, invalid] of [['startDecoration', 'circle'], ['endDecoration', 'diamond']]) {
+  for (const [property, invalid] of [['startDecoration', 'hexagon'], ['endDecoration', 'burst']]) {
     const candidate = structuredClone(document);
     candidate.pages[0].children[0].strokes[0][property] = invalid;
     assert.throws(() => validateDocument(candidate), /Invalid stroke stack/);
@@ -1015,6 +1015,44 @@ test('image recipe names are bounded and an empty name uses a safe layer-derived
   const recipe = createImageRecipe(image, '   ');
   assert.equal(recipe.name.length, 60);
   assert.throws(() => createImageRecipe(image, 'x'.repeat(61)), /up to 60 characters/);
+});
+
+test('saved recipes apply to multiple images with long filenames without replacing names or sources', () => {
+  const document = createDocument();
+  const longBaseName = `portrait-${'very-long-camera-export-'.repeat(18)}`;
+  const source = createNode('image', {
+    name: longBaseName,
+    fileName: `${longBaseName}.png`,
+    assetId: 'long-name-source',
+    adjustments: { exposure: 24, contrast: 11 },
+    transforms: { rotation: 90, flipHorizontal: true }
+  });
+  const targets = Array.from({ length: 4 }, (_, index) => createNode('image', {
+    name: `target-${index}-${longBaseName}`,
+    fileName: `target-${index}-${longBaseName}.jpg`,
+    assetId: `long-name-target-${index}`
+  }));
+  addNode(document, source);
+  for (const target of targets) addNode(document, target);
+
+  const recipe = createImageRecipe(source, '   ');
+  assert.ok(recipe.name.length <= 60);
+  assert.ok(recipe.name.startsWith('portrait-'));
+  document.recipes.push(recipe);
+  const reopened = parseDocument(serializeDocument(document));
+  const savedRecipe = reopened.recipes[0];
+  assert.equal(savedRecipe.name, recipe.name);
+  for (const original of targets) {
+    const target = findNode(reopened, original.id).node;
+    const { name, fileName, assetId } = target;
+    assert.equal(applyImageRecipe(reopened, target.id, savedRecipe), true);
+    assert.deepEqual(target.adjustments, savedRecipe.adjustments);
+    assert.deepEqual(target.transforms, savedRecipe.transforms);
+    assert.equal(target.name, name, 'applying a recipe must keep the target layer name');
+    assert.equal(target.fileName, fileName, 'applying a recipe must keep the long source filename');
+    assert.equal(target.assetId, assetId, 'applying a recipe must keep the target image bytes');
+  }
+  assert.equal(validateDocument(reopened), true);
 });
 
 test('legacy image recipes default to PNG output and reject invalid format or quality', () => {

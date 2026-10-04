@@ -366,7 +366,9 @@ function mapStrokes(paints, node, report) {
   const lineLike = ['LINE', 'VECTOR'].includes(String(node.type || '').toUpperCase());
   const standardCaps = ['NONE', 'ROUND', 'SQUARE', 'BUTT'];
   const representedDecorations = {
-    ARROW_LINES: 'arrow', ARROW_EQUILATERAL: 'triangle', TRIANGLE_FILLED: 'triangle-inward'
+    ARROW_LINES: 'arrow', LINE_ARROW: 'arrow',
+    ARROW_EQUILATERAL: 'triangle', TRIANGLE_ARROW: 'triangle',
+    TRIANGLE_FILLED: 'triangle-inward', DIAMOND_FILLED: 'diamond', CIRCLE_FILLED: 'circle'
   };
   const decoration = lineLike ? representedDecorations[capValue] : undefined;
   // Do not silently turn a Figma cap shape into a plain butt cap. Missing cap
@@ -530,12 +532,39 @@ function mapLayerEffects(effects, node, report) {
       effect.offsetY = boundedEffectMetric(offset.y, 0, -1000, 1000, report, node.name, 'effect offset y');
       effect.blur = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
       effect.spread = boundedEffectMetric(source.spread, 0, -MAX_SHADOW_SPREAD, MAX_SHADOW_SPREAD, report, node.name, 'shadow spread');
+      if (type === 'drop-shadow') effect.showShadowBehindNode = source.showShadowBehindNode === true;
       mapEffectBlendMode(source, effect, report, node.name);
-      if (source.showShadowBehindNode === false) {
-        warn(report, 'flattened', 'EFFECT_ORDER', node.name, 'The source shadow ordering was reduced to the local shadow rendering order.');
-      }
     } else {
+      if (source.blurType != null && !['NORMAL', 'PROGRESSIVE'].includes(source.blurType)) {
+        warn(report, 'unsupported', 'BLUR_TYPE', node.name, 'This blur type is not supported and the effect was omitted.');
+        continue;
+      }
       effect.radius = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
+      effect.blurType = source.blurType === 'PROGRESSIVE' ? 'PROGRESSIVE' : 'NORMAL';
+      if (effect.blurType === 'PROGRESSIVE') {
+        const startOffset = source.startOffset;
+        const endOffset = source.endOffset;
+        if (![source.startRadius, startOffset?.x, startOffset?.y, endOffset?.x, endOffset?.y].every(Number.isFinite)) {
+          warn(report, 'unsupported', 'PROGRESSIVE_BLUR_GEOMETRY', node.name,
+            'This progressive blur had no valid start radius and end points and was omitted.');
+          continue;
+        }
+        effect.startRadius = boundedEffectMetric(source.startRadius, 0, 0, 100, report, node.name, 'progressive blur start radius');
+        effect.startOffset = {
+          x: boundedEffectMetric(startOffset.x, 0, 0, 1, report, node.name, 'progressive blur start x'),
+          y: boundedEffectMetric(startOffset.y, 0, 0, 1, report, node.name, 'progressive blur start y')
+        };
+        effect.endOffset = {
+          x: boundedEffectMetric(endOffset.x, 1, 0, 1, report, node.name, 'progressive blur end x'),
+          y: boundedEffectMetric(endOffset.y, 1, 0, 1, report, node.name, 'progressive blur end y')
+        };
+        if (Math.abs(effect.startOffset.x - effect.endOffset.x) <= EPSILON
+          && Math.abs(effect.startOffset.y - effect.endOffset.y) <= EPSILON) {
+          warn(report, 'unsupported', 'PROGRESSIVE_BLUR_GEOMETRY', node.name,
+            'This progressive blur had identical start and end points and was omitted.');
+          continue;
+        }
+      }
     }
     result.push(effect);
     counts[type] += 1;
@@ -884,30 +913,45 @@ function figTextWrapStyle(value, context, name) {
   return 'auto';
 }
 
-function figParagraphTextWrapStyles(source, characters, context) {
+function figTextAlignment(value, schema) {
+  const raw = typeof value === 'string'
+    ? value
+    : figEnumValueFromEmbeddedSchema(schema, 'textAlignHorizontal', value);
+  return ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(raw || '').toUpperCase()] || null;
+}
+
+function mapFigParagraphStyles(source, characters, context) {
   const sourceStyles = source.textData?.paragraphStyle;
   if (!Array.isArray(sourceStyles) || sourceStyles.length !== characters.split(/\r\n|\r|\n/u).length
     || sourceStyles.length > 100_000) return null;
   const styles = [];
-  let hasWrapStyle = false;
+  let hasSupportedStyle = false;
   for (const paragraph of sourceStyles) {
     if (!paragraph || typeof paragraph !== 'object' || Array.isArray(paragraph)) return null;
     const style = {};
     if (paragraph.textWrapStyle != null) {
-      hasWrapStyle = true;
+      hasSupportedStyle = true;
       const mapped = figTextWrapStyle(paragraph.textWrapStyle, context, source.name);
       style.textWrapStyle = mapped;
     }
+    if (paragraph.textAlignHorizontal != null) {
+      const mapped = figTextAlignment(paragraph.textAlignHorizontal, context.parsed?.schema);
+      if (mapped) {
+        hasSupportedStyle = true;
+        style.align = mapped;
+      }
+    }
     styles.push(style);
   }
-  return hasWrapStyle ? styles : null;
+  return hasSupportedStyle ? styles : null;
 }
 
-function hasOnlyFigParagraphWrapStyles(source, text) {
+function hasOnlySupportedFigParagraphStyles(source, text, schema) {
   const paragraphs = source.textData?.paragraphStyle;
   return Array.isArray(paragraphs) && paragraphs.length === String(text ?? '').split(/\r\n|\r|\n/u).length
     && paragraphs.length <= 100_000 && paragraphs.every(paragraph => paragraph && typeof paragraph === 'object'
-    && !Array.isArray(paragraph) && Object.keys(paragraph).every(key => key === 'textWrapStyle'));
+    && !Array.isArray(paragraph) && Object.keys(paragraph).every(key => key === 'textWrapStyle' || key === 'textAlignHorizontal')
+    && (paragraph.textAlignHorizontal == null || figTextAlignment(paragraph.textAlignHorizontal, schema)));
 }
 
 function inferredTextWeight(styleName) {
@@ -1061,7 +1105,7 @@ function textProperties(source, context) {
   const fontWeight = finite(style.fontWeight ?? source.fontWeight, inferredTextWeight(namedStyle), 1, 1000);
   const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight);
   const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
-  const paragraphStyles = figParagraphTextWrapStyles(source, characters, context);
+  const paragraphStyles = mapFigParagraphStyles(source, characters, context);
   const rawTextWrapStyle = source.textWrapStyle ?? style.textWrapStyle;
   const textWrapStyle = paragraphStyles && String(rawTextWrapStyle || '').toUpperCase() === 'MIXED'
     ? 'auto' : figTextWrapStyle(rawTextWrapStyle, context, source.name);
@@ -1436,6 +1480,20 @@ function mapChildAutoLayout(source, parentSource, overrides, report, name, conte
       else if (alignment && alignment !== 'AUTO') warn(report, 'flattened', 'AUTO_LAYOUT_GRID_ALIGNMENT', name, `${sourceKey} value ${alignment} uses the default cell alignment.`);
     }
     if (Object.keys(cell).length) overrides.gridCell = cell;
+    for (const [sourceKey, targetKey] of [['layoutSizingHorizontal', 'layoutSizingX'], ['layoutSizingVertical', 'layoutSizingY']]) {
+      if (source[sourceKey] == null) continue;
+      const sizing = String(source[sourceKey]).toUpperCase();
+      if (sizing === 'FILL') overrides[targetKey] = 'fill';
+      else if (sizing === 'FIXED') overrides[targetKey] = 'fixed';
+      else if (sizing === 'HUG') {
+        // The local grid model has no content-sized child mode. Keep the
+        // imported dimensions and explain the sizing simplification.
+        overrides[targetKey] = 'fixed';
+        warn(report, 'flattened', 'AUTO_LAYOUT_GRID_SIZING', name, `${sourceKey} HUG sizing was kept at the imported layer size.`);
+      } else {
+        warn(report, 'flattened', 'AUTO_LAYOUT_GRID_SIZING', name, `${sourceKey} value ${sizing.slice(0, 80)} was kept at the imported layer size.`);
+      }
+    }
     if (source.stackChildPrimaryGrow != null && Number(source.stackChildPrimaryGrow) > 0) {
       warn(report, 'flattened', 'AUTO_LAYOUT_GRID_SIZING', name, 'Grid fill sizing could not be inferred from the flex growth field; imported layer size was preserved.');
     }
@@ -1473,6 +1531,33 @@ function mapChildAutoLayout(source, parentSource, overrides, report, name, conte
       else warn(report, 'flattened', 'AUTO_LAYOUT_SIZE_LIMIT', name, `${sourceKey}.${coordinate} was invalid and was omitted.`);
     }
   }
+}
+
+function createImportedNode(source, type, overrides) {
+  // Lock state is a first-class Figma layer property. Keep it on every
+  // converted node (including editable fallbacks) so the imported hierarchy
+  // does not silently become easier to mutate than the source design.
+  return createNode(type, { ...overrides, locked: source.locked === true });
+}
+
+function mapEllipseArcData(source, report, name) {
+  const arcData = source.arcData;
+  if (arcData == null) return null;
+  const validRecord = arcData && typeof arcData === 'object' && !Array.isArray(arcData);
+  const { startingAngle, endingAngle, innerRadius } = validRecord ? arcData : {};
+  const valid = validRecord
+    && Number.isFinite(startingAngle)
+    && Number.isFinite(endingAngle)
+    && Number.isFinite(innerRadius)
+    && startingAngle >= 0 && startingAngle <= Math.PI * 2
+    && endingAngle >= 0 && endingAngle <= Math.PI * 2
+    && innerRadius >= 0 && innerRadius <= 1;
+  if (!valid) {
+    warn(report, 'flattened', 'ELLIPSE_ARC', name,
+      'The ellipse arc settings were invalid or outside the supported angle/radius range; the layer was imported as a full ellipse.');
+    return null;
+  }
+  return { startingAngle, endingAngle, innerRadius };
 }
 
 function createLayer(source, children, context, pageId, depth = 0, parentSource = null) {
@@ -1530,7 +1615,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     const editableStrokeStyles = !visibleStrokePaint
       || (['CENTER', undefined, null].includes(source.strokeAlign)
         && !(Array.isArray(source.dashPattern) && source.dashPattern.length)
-        && (!source.strokeCap || ['NONE', 'ROUND', 'SQUARE', 'BUTT', 'ARROW_LINES', 'ARROW_EQUILATERAL', 'TRIANGLE_FILLED'].includes(String(source.strokeCap).toUpperCase()))
+        && (!source.strokeCap || ['NONE', 'ROUND', 'SQUARE', 'BUTT', 'ARROW_LINES', 'LINE_ARROW', 'ARROW_EQUILATERAL', 'TRIANGLE_ARROW', 'TRIANGLE_FILLED', 'DIAMOND_FILLED', 'CIRCLE_FILLED'].includes(String(source.strokeCap).toUpperCase()))
         && (!source.strokeJoin || ['ROUND', 'BEVEL', 'MITER'].includes(String(source.strokeJoin).toUpperCase())));
     const directNetworkPathChars = paths.fill.reduce((total, path) => total + (path?.svgPath?.length ?? 0), 0);
     const editableNetworkPathsFitBudget = paths.fill.length > 0
@@ -1551,7 +1636,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
       mapFixedPositionWhenScrolling(source, parentSource, overrides);
       context.report.importedNodes += 1;
-      return createNode('network', overrides);
+      return createImportedNode(source, 'network', overrides);
     }
     const overrides = {
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
@@ -1562,7 +1647,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     if (effects.length) overrides.effects = effects;
     mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
     mapFixedPositionWhenScrolling(source, parentSource, overrides);
-    const node = createNode('group', {
+    const node = createImportedNode(source, 'group', {
       ...overrides
     });
     if (!node.children.length) {
@@ -1585,7 +1670,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       if (effects.length) overrides.effects = effects;
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
       mapFixedPositionWhenScrolling(source, parentSource, overrides);
-      const node = createNode('group', overrides);
+      const node = createImportedNode(source, 'group', overrides);
       warn(context.report, 'flattened', source.type || 'NODE', name, 'An unsupported container was kept as an editable group so its children remain available.');
       context.report.importedNodes += 1;
       return node;
@@ -1652,6 +1737,10 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     overrides.innerRadius = finite(source.starInnerRadius, 0.48, 0, 1);
   }
   if (type === 'polygon') overrides.points = finite(source.pointCount, 6, MIN_STAR_POINTS, MAX_POLYGON_POINTS);
+  if (type === 'ellipse') {
+    const arcData = mapEllipseArcData(source, context.report, name);
+    if (arcData) overrides.arcData = arcData;
+  }
   if (type === 'boolean') {
     const operation = String(source.booleanOperation || '').toUpperCase();
     overrides.operation = ({ UNION: 'union', SUBTRACT: 'subtract', INTERSECT: 'intersect', EXCLUDE: 'exclude' })[operation] || 'union';
@@ -1663,18 +1752,18 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       delete overrides.maxLines;
       warn(context.report, 'flattened', 'TEXT_MAX_LINES', name, 'The imported text has both a maximum line count and an auto-layout maximum height; the generic auto-layout size limit was preserved and the maximum line count was omitted.');
     }
-    if (source.textData?.paragraphStyle && !hasOnlyFigParagraphWrapStyles(source, overrides.text)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name,
-      'Per-paragraph alignment, indentation, list, or other paragraph layout settings were simplified.');
+    if (source.textData?.paragraphStyle && !hasOnlySupportedFigParagraphStyles(source, overrides.text, context.parsed?.schema)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name,
+      'Per-paragraph indentation, list, unsupported alignment, or other paragraph layout settings were simplified.');
   }
   if (source.type === 'LINE') overrides.fill = 'transparent';
   if (type === 'boolean' && !isValidBooleanChildren(overrides.children)) {
     warn(context.report, 'flattened', 'BOOLEAN_OPERATION', name, 'The Boolean operator could not be represented safely; its operands were kept in an editable group.');
     const { operation: _operation, ...groupOverrides } = overrides;
-    const node = createNode('group', groupOverrides);
+    const node = createImportedNode(source, 'group', groupOverrides);
     context.report.importedNodes += 1;
     return node;
   }
-  const node = createNode(type, overrides);
+  const node = createImportedNode(source, type, overrides);
   const sourceId = idOf(source);
   if (sourceId) {
     context.convertedNodesBySourceId.set(sourceId, node);
@@ -1693,7 +1782,7 @@ const componentOverrideProperties = [
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
   'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points',
-  'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings',
+  'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings',
   'outputFormat', 'outputQuality', 'layoutGuides'
 ];
 
@@ -1907,7 +1996,7 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
           `The “${figPropertyDisplayName(sourceName)}” property references more than the local 100-target limit and was not imported.`);
         continue;
       }
-      if (targets.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP'].includes(type)) {
+      if (targets.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT'].includes(type)) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
           `The “${figPropertyDisplayName(sourceName)}” property targets multiple layers, but its ${type} value cannot be represented safely across several local targets; it was not imported.`);
         continue;
@@ -1917,7 +2006,7 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
       const supportedTarget = type === 'BOOLEAN'
         || (type === 'TEXT' && localTargets.every(target => target?.type === 'text'))
         || (type === 'INSTANCE_SWAP' && localTargets.every(target => target?.isInstance))
-        || (type === 'SLOT' && localTargets.length === 1 && ['frame', 'group', 'section'].includes(localTargets[0]?.type));
+        || (type === 'SLOT' && localTargets.every(target => ['frame', 'group', 'section'].includes(target?.type)));
       if (localTargets.some(target => !target) || !supportedTarget) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
           `The “${figPropertyDisplayName(sourceName)}” property target was not converted to a compatible editable layer.`);
@@ -2066,13 +2155,21 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
     }
     for (const property of component?.componentProperties || []) {
       if (property.type !== 'SLOT') continue;
-      const target = localInstancePropertyTarget(instance, property.targetSourceId);
-      if (!target?.children?.length) continue;
+      const targetSourceIds = Array.isArray(property.targetSourceIds) ? property.targetSourceIds : [property.targetSourceId];
+      const targets = targetSourceIds.map(targetSourceId => localInstancePropertyTarget(instance, targetSourceId));
+      if (targets.some(target => !target || !['frame', 'group', 'section'].includes(target.type))) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY_VALUE', source.name,
+          `The “${property.name}” slot targets could not all be matched to compatible instance layers; slot content was not imported.`);
+        continue;
+      }
+      if (!targets.some(target => target.children?.length)) continue;
       // Slot content is authored as ordinary child layers in .fig. Keep those
       // concrete nodes as this instance's slot value so a later component sync
       // does not replace them with the master slot contents.
       instance.componentPropertyValues ||= {};
-      instance.componentPropertyValues[property.id] = target.children.map(child => child.id);
+      instance.componentPropertyValues[property.id] = targets.length === 1
+        ? (targets[0].children || []).map(child => child.id)
+        : targets.map(target => (target.children || []).map(child => child.id));
     }
   }
 }

@@ -323,6 +323,29 @@ test('linear auto layout keeps each child cross-axis alignment override', () => 
   assert.equal(stretched.height, 80);
 });
 
+test('non-wrapped center and end alignment use the frame cross-axis space', () => {
+  const alignedPosition = (axis, align, childSize) => {
+    const frame = createNode('frame', {
+      width: 100, height: 100,
+      autoLayout: createAutoLayout({ axis, align, padding: 10 })
+    });
+    const child = createNode('rectangle', {
+      width: axis === 'horizontal' ? 20 : childSize,
+      height: axis === 'horizontal' ? childSize : 20
+    });
+    frame.children.push(child);
+    applyAutoLayout(frame);
+    return axis === 'horizontal' ? child.y : child.x;
+  };
+
+  assert.equal(alignedPosition('horizontal', 'center', 20), 40);
+  assert.equal(alignedPosition('horizontal', 'end', 20), 70);
+  assert.equal(alignedPosition('vertical', 'center', 20), 40);
+  assert.equal(alignedPosition('vertical', 'end', 20), 70);
+  assert.equal(alignedPosition('horizontal', 'center', 120), -10,
+    'oversized children remain centered across the available inner space');
+});
+
 test('wrapped stretch alignment sizes items to their own row without overlap', () => {
   const frame = createNode('frame', {
     width: 130, height: 100,

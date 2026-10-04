@@ -26,6 +26,24 @@ function bytesView(sourceBytes) {
   return null;
 }
 
+function sameSourceBytes(left, right) {
+  const leftBytes = bytesView(left);
+  const rightBytes = bytesView(right);
+  if (!leftBytes || !rightBytes || leftBytes.byteLength !== rightBytes.byteLength) return false;
+  for (let index = 0; index < leftBytes.byteLength; index += 1) {
+    if (leftBytes.getUint8(index) !== rightBytes.getUint8(index)) return false;
+  }
+  return true;
+}
+
+function weakSourceBytes(sourceBytes) {
+  return typeof WeakRef === 'function' ? new WeakRef(sourceBytes) : sourceBytes;
+}
+
+function dereferenceSourceBytes(reference) {
+  return typeof reference?.deref === 'function' ? reference.deref() : reference;
+}
+
 function hasAscii(view, offset, text) {
   if (offset < 0 || offset + text.length > view.byteLength) return false;
   for (let index = 0; index < text.length; index += 1) {
@@ -272,7 +290,7 @@ export function defaultImageCachePixelBudget({
 }
 
 export class LocalImageEngine {
-  constructor({ maxWorkers = Math.min(8, Math.max(1, globalThis.navigator?.hardwareConcurrency || 4)), maxCachedPixels = defaultImageCachePixelBudget(), maxActiveRenderBytes = defaultActiveRenderMemoryBudget(), maxSingleRenderBytes = defaultSingleImageRenderMemoryBudget(), onChange = () => {} } = {}) {
+  constructor({ maxWorkers = Math.min(8, Math.max(1, globalThis.navigator?.hardwareConcurrency || 4)), maxCachedPixels = defaultImageCachePixelBudget(), maxActiveRenderBytes = defaultActiveRenderMemoryBudget(), maxSingleRenderBytes = defaultSingleImageRenderMemoryBudget(), lazyWorkers = false, onChange = () => {} } = {}) {
     if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1) {
       throw new RangeError('The image worker limit must be a positive safe integer.');
     }
@@ -289,6 +307,7 @@ export class LocalImageEngine {
     this.maxCachedPixels = maxCachedPixels;
     this.maxActiveRenderBytes = maxActiveRenderBytes;
     this.maxSingleRenderBytes = maxSingleRenderBytes;
+    this.lazyWorkers = Boolean(lazyWorkers);
     this.activeRenderBytes = 0;
     this.externalCpuReservations = 0;
     this.concurrency = Math.min(2, maxWorkers);
@@ -303,12 +322,20 @@ export class LocalImageEngine {
     this.exhaustedQueueGroups = new Set();
     this.pending = new Map();
     this.nextRequestId = 1;
+    // A worker cache is keyed by asset ID, so retain a weak reference to the
+    // exact source object sent for that ID. If a caller replaces an asset's
+    // bytes, equal copies may keep the decode; changed bytes must invalidate
+    // every worker before the next job can reuse that cache entry.
+    this.sourceBytesByAssetId = new Map();
     this.onChange = onChange;
     this.paused = false;
     this.dead = false;
     this.cacheGeneration = 0;
     this.cacheConfigurationPending = new Set();
     this.poolConfigured = true;
+    this.cachePoolReconfigurePending = false;
+    this.workerPoolTarget = 0;
+    this.workerRecoverySuppressed = false;
     this.activeSourceAssetId = null;
     // The selected image gets one worker-local cache with the complete shared
     // cache allowance. Splitting the allowance evenly across a large worker
@@ -322,9 +349,12 @@ export class LocalImageEngine {
     const previousPoolSize = this.workers.length;
     const next = Math.max(1, Math.min(this.maxWorkers, Math.trunc(value) || 1));
     this.concurrency = next;
-    while (this.workers.length < next) this.#createWorker();
+    if (!this.lazyWorkers) while (this.workers.length < next) this.#createWorker();
     this.#retireExcessWorkers();
-    if (next !== previousConcurrency || this.workers.length !== previousPoolSize) this.#configureCachePool();
+    if (next !== previousConcurrency || this.workers.length !== previousPoolSize) {
+      if (this.lazyWorkers) this.#reconfigureCachePoolWhenIdle();
+      else this.#configureCachePool();
+    }
     this.#dispatch();
     this.#notify();
     return next;
@@ -364,6 +394,21 @@ export class LocalImageEngine {
     slot.worker.onmessage = event => this.#receive(slot, event.data);
     slot.worker.onerror = event => this.#failWorker(slot, new Error(event.message || 'The local image worker stopped unexpectedly.'));
     this.workers.push(slot);
+    return slot;
+  }
+
+  #reconfigureCachePoolWhenIdle() {
+    if (this.workers.some(slot => slot.busy)) {
+      this.cachePoolReconfigurePending = true;
+      return false;
+    }
+    this.cachePoolReconfigurePending = false;
+    if (this.workers.length) this.#configureCachePool();
+    else {
+      this.poolConfigured = true;
+      this.cacheConfigurationPending.clear();
+    }
+    return true;
   }
 
   /** Keep the currently edited source resident when it fits the worker cache budget. */
@@ -378,7 +423,8 @@ export class LocalImageEngine {
     this.activeSourceSlot = assetId == null
       ? null
       : pool.find(slot => slot.loaded.has(assetId)) || pool[0] || null;
-    this.#configureCachePool();
+    if (this.lazyWorkers) this.#reconfigureCachePoolWhenIdle();
+    else this.#configureCachePool();
     this.#dispatch();
   }
 
@@ -424,7 +470,17 @@ export class LocalImageEngine {
       if (message.sourceRetained === undefined) slot.loaded.delete(job.assetId);
       job.reject(new Error(message.message));
     } else job.resolve(message);
+    if (this.lazyWorkers && this.pending.size === 0 && this.queuedCount === 0) {
+      this.workerPoolTarget = 0;
+      this.workerRecoverySuppressed = false;
+    }
+    const previousPoolSize = this.workers.length;
     this.#retireExcessWorkers();
+    if (this.lazyWorkers) {
+      if (this.cachePoolReconfigurePending || (previousPoolSize !== this.workers.length && !this.workers.some(workerSlot => workerSlot.busy))) {
+        this.#reconfigureCachePoolWhenIdle();
+      }
+    }
     this.#dispatch();
     this.#notify();
   }
@@ -443,13 +499,28 @@ export class LocalImageEngine {
       slot.busy = false;
       job.reject(error);
     }
+    const previousPoolSize = this.workers.length;
     this.#retireExcessWorkers();
     const availableWorkers = this.workers.filter(workerSlot => !workerSlot.failed && !workerSlot.retireWhenIdle).length;
-    if (!this.dead && availableWorkers < this.concurrency
-      && slot.recoveryAttempts < MAX_WORKER_RECOVERY_ATTEMPTS) {
-      this.#createWorker(slot.recoveryAttempts + 1);
+    if (this.lazyWorkers) {
+      const busyWorkers = this.workers.filter(workerSlot => workerSlot.busy).length;
+      const pendingDemand = this.#plannedQueueDemand(Math.max(0, this.activeWorkerLimit - busyWorkers));
+      this.workerPoolTarget = busyWorkers + pendingDemand;
+      if (!this.dead && availableWorkers < this.workerPoolTarget) {
+        if (slot.recoveryAttempts < MAX_WORKER_RECOVERY_ATTEMPTS) {
+          this.#addWorkerCapacity(this.workerPoolTarget, slot.recoveryAttempts + 1);
+        } else this.workerRecoverySuppressed = true;
+      }
+      if (this.cachePoolReconfigurePending || (previousPoolSize !== this.workers.length && !this.workers.some(workerSlot => workerSlot.busy))) {
+        this.#reconfigureCachePoolWhenIdle();
+      } else if (!this.workers.some(workerSlot => workerSlot.busy) && !this.cacheConfigurationPending.size) {
+        this.#reconfigureCachePoolWhenIdle();
+      }
+    } else {
+      if (!this.dead && availableWorkers < this.concurrency
+        && slot.recoveryAttempts < MAX_WORKER_RECOVERY_ATTEMPTS) this.#createWorker(slot.recoveryAttempts + 1);
+      this.#configureCachePool();
     }
-    this.#configureCachePool();
     const schedulableWorkers = this.workers.filter(workerSlot => !workerSlot.failed && !workerSlot.retireWhenIdle).length;
     if (schedulableWorkers === 0) {
       const queuedError = new Error('All local image workers stopped unexpectedly.');
@@ -519,6 +590,12 @@ export class LocalImageEngine {
         'wasm-working-set',
       ));
     }
+    const previousReference = this.sourceBytesByAssetId.get(assetId);
+    if (previousReference) {
+      const previousSourceBytes = dereferenceSourceBytes(previousReference);
+      if (!previousSourceBytes || !sameSourceBytes(previousSourceBytes, sourceBytes)) this.dispose(assetId);
+    }
+    this.sourceBytesByAssetId.set(assetId, weakSourceBytes(sourceBytes));
     return new Promise((resolve, reject) => {
       const job = {
         assetId,
@@ -546,7 +623,11 @@ export class LocalImageEngine {
       this.queue.push(job);
       this.queuedCount += 1;
       if (queueGroup !== null) this.queuedByGroup.set(queueGroup, (this.queuedByGroup.get(queueGroup) || 0) + 1);
-      if (!this.workers.length) this.setConcurrency(this.concurrency);
+      if (this.lazyWorkers && this.queuedCount === 1 && this.pending.size === 0) {
+        this.workerPoolTarget = 0;
+        this.workerRecoverySuppressed = false;
+      }
+      if (!this.workers.length && !this.lazyWorkers) this.setConcurrency(this.concurrency);
       this.#dispatch();
       this.#notify();
     });
@@ -626,13 +707,98 @@ export class LocalImageEngine {
     return cancelled;
   }
 
+  #plannedQueueDemand(maxJobs) {
+    if (maxJobs <= 0 || this.queuedCount === 0) return 0;
+    let simulatedBytes = this.activeRenderBytes;
+    // A decoded source belongs to one worker. The dispatcher will wait for
+    // that worker to become idle instead of decoding the same source in a
+    // second slot, so queued edits for a source with a busy owner are not
+    // worker demand yet.
+    const simulatedBusyAssetIds = new Set(this.workers
+      .filter(slot => slot.busy)
+      .flatMap(slot => [...slot.loaded]));
+    let simulatedActiveSourceBusy = this.activeSourceAssetId == null
+      ? false
+      : Boolean((this.workers.find(item => !item.failed && item.loaded.has(this.activeSourceAssetId)) || this.activeSourceSlot)?.busy);
+    let count = 0;
+    const selectedIndices = new Set();
+    const simulatedBypasses = new Map();
+
+    while (count < maxJobs) {
+      let selectedIndex = -1;
+      let selectedJob = null;
+      const memoryBlocked = [];
+      for (let index = this.queueHead; index < this.queue.length; index += 1) {
+        const candidate = this.queue[index];
+        if (candidate == null || selectedIndices.has(index)) continue;
+        if (candidate.queueGroup !== null && this.pausedQueueGroups.has(candidate.queueGroup)) continue;
+        if (simulatedBusyAssetIds.has(candidate.assetId)) continue;
+        if (candidate.assetId === this.activeSourceAssetId && simulatedActiveSourceBusy) continue;
+        if (simulatedBytes !== 0 && simulatedBytes + candidate.activeRenderBytes > this.maxActiveRenderBytes) {
+          memoryBlocked.push(index);
+          continue;
+        }
+        if (memoryBlocked.some(indexOfBlocked => {
+          const blocked = this.queue[indexOfBlocked];
+          return blocked && (blocked.memoryBypasses || 0) + (simulatedBypasses.get(indexOfBlocked) || 0) >= MAX_MEMORY_BLOCKED_JOB_BYPASSES;
+        })) return count;
+        selectedIndex = index;
+        selectedJob = candidate;
+        break;
+      }
+      if (!selectedJob) return count;
+      count += 1;
+      selectedIndices.add(selectedIndex);
+      simulatedBusyAssetIds.add(selectedJob.assetId);
+      simulatedBytes += selectedJob.activeRenderBytes;
+      if (selectedJob.assetId === this.activeSourceAssetId) simulatedActiveSourceBusy = true;
+      for (const indexOfBlocked of memoryBlocked) {
+        simulatedBypasses.set(indexOfBlocked, (simulatedBypasses.get(indexOfBlocked) || 0) + 1);
+      }
+    }
+    return count;
+  }
+
+  #addWorkerCapacity(targetCount, recoveryAttempts = 0) {
+    const pool = this.workers.filter(slot => !slot.failed && !slot.retireWhenIdle);
+    const missing = Math.max(0, targetCount - pool.length);
+    if (!missing) return false;
+    const hasBusyWorkers = pool.some(slot => slot.busy);
+    const additions = [];
+    let unallocatedCachePixels = this.activeSourceAssetId == null
+      ? Math.max(0, this.maxCachedPixels - pool.reduce((sum, slot) => sum + slot.cacheBudget, 0))
+      : 0;
+    for (let index = 0; index < missing; index += 1) {
+      const slot = this.#createWorker(recoveryAttempts);
+      additions.push(slot);
+      if (hasBusyWorkers) {
+        const remaining = missing - index;
+        slot.cacheBudget = Math.floor(unallocatedCachePixels / remaining);
+        unallocatedCachePixels -= slot.cacheBudget;
+        this.cacheConfigurationPending.add(slot);
+      }
+    }
+    if (hasBusyWorkers) this.poolConfigured = false;
+    else this.#configureCachePool();
+    return true;
+  }
+
   #dispatch() {
-    if (this.dead || this.paused || !this.poolConfigured) return;
+    if (this.dead || this.paused) return;
+    if (this.lazyWorkers && this.cachePoolReconfigurePending && !this.workers.some(slot => slot.busy)) this.#reconfigureCachePoolWhenIdle();
     const active = this.workers.filter(slot => slot.busy).length;
     if (active >= this.activeWorkerLimit) return;
-    const idle = this.workers.filter(item => item.ready && !item.busy);
-    if (!idle.length) return;
     if (this.queuedCount === 0) return;
+    if (this.lazyWorkers) {
+      const demand = this.#plannedQueueDemand(this.activeWorkerLimit - active);
+      if (demand === 0) return;
+      const desiredPoolSize = active + demand;
+      this.workerPoolTarget = desiredPoolSize;
+      const schedulableCount = this.workers.filter(slot => !slot.failed && !slot.retireWhenIdle).length;
+      if (!this.workerRecoverySuppressed && schedulableCount < desiredPoolSize) this.#addWorkerCapacity(desiredPoolSize);
+    } else if (!this.poolConfigured) return;
+    const idle = this.workers.filter(item => item.ready && !item.busy && !item.retireWhenIdle);
+    if (!idle.length) return;
     // A job may exceed the shared concurrency budget only when alone. Every
     // job has already passed the non-overridable per-image hard ceiling. If
     // the queue head cannot fit beside active work, let the first fitting job
@@ -849,6 +1015,7 @@ export class LocalImageEngine {
 
   dispose(assetId) {
     if (typeof assetId !== 'string' || !assetId) throw new TypeError('A disposed image needs a nonempty asset ID.');
+    this.sourceBytesByAssetId.delete(assetId);
     for (const slot of this.workers) { slot.worker.postMessage({ type: 'dispose', assetId }); slot.loaded.delete(assetId); }
     this.cancelQueuedByAsset(assetId);
   }
@@ -875,6 +1042,7 @@ export class LocalImageEngine {
     for (const slot of this.workers) slot.worker.terminate();
     for (const job of this.pending.values()) job.reject(new Error('The local image engine was closed.'));
     this.pending.clear(); this.workers.length = 0;
+    this.sourceBytesByAssetId.clear();
     this.activeRenderBytes = 0;
   }
 }

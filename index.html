@@ -13,7 +13,7 @@
     <div class="app-shell" id="app-shell">
       <header class="topbar">
         <div class="topbar-leading">
-          <button class="icon-button brand-button" id="main-menu-button" aria-label="Main menu" title="Main menu"><span class="brand-mark">✦</span></button>
+          <button class="icon-button brand-button" id="main-menu-button" aria-label="Open file and export menu" title="Menu · file, export, and appearance actions"><span class="brand-mark">✦</span></button>
           <button class="topbar-button file-menu-button" id="file-menu-button"><span class="file-glyph">◩</span><span>File</span><span class="chevron">⌄</span></button>
           <div class="topbar-divider"></div>
           <button class="mobile-panel-toggle icon-button" id="sidebar-toggle" aria-label="Open layers" aria-controls="left-panel" aria-expanded="false" title="Open layers">▤</button>
@@ -21,7 +21,7 @@
         <div class="document-title-wrap">
           <input id="document-name" class="document-name" aria-label="File name" value="Untitled" maxlength="120" />
           <span class="storage-mode-chip" id="storage-mode-chip" aria-live="polite">Browser</span>
-          <div class="save-state" id="save-state"><span class="save-dot"></span><span>Saved locally</span></div>
+          <div class="save-state" id="save-state" role="status" aria-live="polite" aria-atomic="true" title="Saved locally"><span class="save-dot" aria-hidden="true"></span><span class="save-state-full">Saved locally</span><span class="save-state-compact" aria-hidden="true">Saved</span></div>
         </div>
         <div class="topbar-trailing">
           <button class="topbar-button mode-switcher" id="mode-button" aria-label="Editor mode">Design <span class="chevron">⌄</span></button>
@@ -44,10 +44,10 @@
           </section>
           <section class="layers-section" id="layers-section" role="tabpanel" aria-labelledby="sidebar-tab-layers" tabindex="0">
             <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Select multiple</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
-            <p class="layer-selection-hint" id="layer-selection-hint" hidden>A recipe is a reusable image preset. Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe. Other selected layers stay unchanged.</p>
+            <p class="layer-selection-hint" id="layer-selection-hint" hidden>Tap image layers in Layers or on the canvas to select them. Choose Done, then choose a saved recipe. Other layers stay unchanged.</p>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
-          <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or draw a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Draw a frame</button></div></div>
+          <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or draw a frame. Select a photo to crop, adjust, or save it as a recipe.</span><div class="empty-layer-actions"><button class="secondary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Draw a frame</button></div></div>
           </section>
           <section class="assets-section" id="assets-section" role="tabpanel" aria-labelledby="sidebar-tab-assets" tabindex="0" hidden>
             <details class="assets-group" open>
@@ -96,16 +96,24 @@
 
         <main class="canvas-region" id="canvas-region" aria-label="Design canvas">
           <div class="canvas-topline">
-            <div class="canvas-breadcrumb"><span class="crumb-file" id="canvas-file-name">Untitled</span><span class="crumb-separator">/</span><span id="canvas-page-name">Page 1</span><span class="crumb-chevron">⌄</span></div>
-            <div class="canvas-top-actions"><button class="canvas-action-button" id="help-actions-button" type="button" title="Find a task, such as cropping an image" aria-label="Help and find an action">? Help</button><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Show rulers and guides" aria-label="Toggle rulers and guides" aria-pressed="false">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
+            <div class="canvas-breadcrumb"><span class="crumb-file" id="canvas-file-name">Untitled</span><span class="crumb-separator">/</span><button class="canvas-page-picker" id="canvas-page-picker" type="button" aria-label="Show pages" title="Show pages and switch page"><span id="canvas-page-name">Page 1</span><span class="crumb-chevron" aria-hidden="true">⌄</span></button></div>
+            <div class="canvas-top-actions"><button class="canvas-action-button" id="help-actions-button" type="button" title="Find a task or tool" aria-label="Help and find an action">? Help</button><button class="canvas-action-button" id="find-text-button" type="button" title="Find and replace text · ⌘⇧F / Ctrl+Shift+F" aria-label="Find and replace text">Find</button><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Show rulers and guides" aria-label="Toggle rulers and guides" aria-pressed="false">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
           </div>
           <div class="canvas-scroll" id="canvas-scroll">
-            <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
+            <canvas id="scene-canvas" aria-label="Design canvas. With a layer selected, Enter selects a child, Shift+Enter selects its parent, Tab selects the next sibling, and Shift+Tab selects the previous sibling." aria-keyshortcuts="Enter Shift+Enter Tab Shift+Tab" title="With a layer selected: Enter selects a child · Shift+Enter selects its parent · Tab / Shift+Tab moves between siblings" tabindex="0"></canvas>
             <section class="empty-canvas-guide" id="empty-canvas-guide" aria-labelledby="empty-canvas-guide-title" hidden>
               <div class="empty-canvas-card">
                 <span class="modal-eyebrow">START HERE</span>
                 <h2 id="empty-canvas-guide-title">Start designing</h2>
-                <p>Add a photo, draw a frame, or add text. A Page is an open workspace. Frames have fixed sizes, like a phone screen or social post. To crop a photo, add it, select it, then choose Crop image.</p>
+                <p>Add a photo, draw a frame, or add text to start a design.</p>
+                <section class="empty-canvas-crop-help" aria-labelledby="empty-canvas-crop-title">
+                  <h3 id="empty-canvas-crop-title">Crop a photo</h3>
+                  <ol>
+                    <li>Choose <strong>Add image</strong> and select a photo file.</li>
+                    <li>Click or tap the photo, then choose <strong>Crop image</strong>.</li>
+                    <li>Drag over what you want to keep, then choose <strong>Finish crop</strong>.</li>
+                  </ol>
+                </section>
                 <div class="empty-canvas-actions">
                   <button class="primary-button" type="button" data-empty-canvas-action="add-image">＋ Add image</button>
                   <button class="secondary-button" type="button" data-empty-canvas-action="create-frame">▧ Draw a frame</button>
@@ -116,14 +124,15 @@
             <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" aria-describedby="image-crop-toolbar-hint" hidden>
               <div class="image-crop-toolbar-copy">
                 <strong id="image-crop-toolbar-title">Edit image</strong>
-                <span id="image-crop-toolbar-hint">Choose Crop image, drag to select what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.</span>
+                <span id="image-crop-toolbar-hint">Choose Crop image, drag to choose what stays, then finish. Adjust image opens controls; Save recipe reuses edits.</span>
               </div>
               <div class="image-context-single" id="image-context-single">
                 <button class="secondary-button image-context-adjustments" id="image-context-adjustments" type="button" title="Open the image adjustment controls">Adjust image</button>
                 <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button" title="Save these image edits to reuse them on other images">Save recipe</button>
+                <button class="secondary-button image-context-export" id="image-context-export" type="button" aria-label="Export selected image" title="Download this image using its output format">Export image</button>
                 <label class="image-crop-ratio-control" id="image-crop-ratio-control" hidden title="Choose a crop shape. Its proportions stay correct after rotation and flips."><span>Crop shape</span><select class="select-field" id="image-crop-aspect-ratio" aria-label="Crop shape"><option value="free">Free (any shape)</option><option value="1:1">Square (1:1)</option><option value="4:5">Portrait (4:5)</option><option value="3:2">Landscape (3:2)</option><option value="16:9">Widescreen (16:9)</option></select></label>
                 <button class="secondary-button image-context-undo" id="image-crop-toolbar-undo" type="button" hidden>Undo crop</button>
-                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Drag to select the area you want to keep, then choose Finish crop">Crop image</button>
+                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Drag to choose what stays; release to apply, then choose Finish crop">Crop image</button>
               </div>
               <div class="image-context-batch" id="image-context-batch" hidden>
                 <select class="select-field image-context-recipe-picker" id="image-context-recipe" aria-label="Choose a saved recipe to apply to selected images"></select>
@@ -165,22 +174,40 @@
               <span class="prototype-connect-message" id="prototype-connect-message" role="status" aria-live="polite"></span>
               <button type="button" id="prototype-connect-cancel" aria-label="Cancel prototype connection">Cancel</button>
             </div>
-            <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" role="toolbar" tabindex="0" aria-label="Horizontal ruler. Drag into the canvas to add a vertical guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowLeft ArrowRight Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
-            <div class="canvas-ruler ruler-vertical" id="ruler-vertical" role="toolbar" tabindex="0" aria-label="Vertical ruler. Drag into the canvas to add a horizontal guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowUp ArrowDown Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
+          <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" role="toolbar" tabindex="0" aria-label="Horizontal ruler. Drag into the canvas to add a vertical guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowLeft ArrowRight Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
+          <div class="canvas-ruler ruler-vertical" id="ruler-vertical" role="toolbar" tabindex="0" aria-label="Vertical ruler. Drag into the canvas to add a horizontal guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowUp ArrowDown Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
+          </div>
+          <div class="frame-quick-add-controls" id="frame-quick-add-controls" role="group" aria-label="Add a frame beside this frame" hidden>
+            <div class="frame-quick-add-side" data-frame-quick-add-side="top">
+              <button type="button" data-frame-quick-add-mode="duplicate" data-frame-quick-add-direction="top" aria-label="Duplicate frame above" title="Duplicate above · Alt-click to add a blank frame">＋</button>
+              <button type="button" data-frame-quick-add-mode="blank" data-frame-quick-add-direction="top" aria-label="Add a blank frame above" title="Add a blank frame above">□</button>
+            </div>
+            <div class="frame-quick-add-side" data-frame-quick-add-side="right">
+              <button type="button" data-frame-quick-add-mode="duplicate" data-frame-quick-add-direction="right" aria-label="Duplicate frame to the right" title="Duplicate to the right · Alt-click to add a blank frame">＋</button>
+              <button type="button" data-frame-quick-add-mode="blank" data-frame-quick-add-direction="right" aria-label="Add a blank frame to the right" title="Add a blank frame to the right">□</button>
+            </div>
+            <div class="frame-quick-add-side" data-frame-quick-add-side="bottom">
+              <button type="button" data-frame-quick-add-mode="duplicate" data-frame-quick-add-direction="bottom" aria-label="Duplicate frame below" title="Duplicate below · Alt-click to add a blank frame">＋</button>
+              <button type="button" data-frame-quick-add-mode="blank" data-frame-quick-add-direction="bottom" aria-label="Add a blank frame below" title="Add a blank frame below">□</button>
+            </div>
+            <div class="frame-quick-add-side" data-frame-quick-add-side="left">
+              <button type="button" data-frame-quick-add-mode="duplicate" data-frame-quick-add-direction="left" aria-label="Duplicate frame to the left" title="Duplicate to the left · Alt-click to add a blank frame">＋</button>
+              <button type="button" data-frame-quick-add-mode="blank" data-frame-quick-add-direction="left" aria-label="Add a blank frame to the left" title="Add a blank frame to the left">□</button>
+            </div>
           </div>
           <div class="zoom-controls">
             <button class="canvas-action-button" id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
             <button class="zoom-readout" id="zoom-readout" title="Reset zoom">100%</button>
             <button class="canvas-action-button" id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
             <span class="zoom-divider"></span>
-            <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
+            <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection"><span aria-hidden="true">⌗</span><span class="fit-button-label">Fit</span></button>
           </div>
           <div class="bottom-toolbar bottom-toolbar-shell" role="group" aria-label="Design tools">
             <div class="bottom-toolbar-viewport" id="bottom-toolbar" role="toolbar" aria-orientation="horizontal" aria-label="Canvas tools. Use More tools to reveal the next set, swipe or scroll horizontally, or use arrow keys to move between tools; press Enter or Space to select.">
-            <button class="tool-button is-selected" data-tool="select" data-tool-label="Move" aria-pressed="true" tabindex="0" title="Move / Select (V). Touch or pen: press and hold a layer for its actions." aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button is-selected" data-tool="select" data-tool-label="Select" aria-pressed="true" tabindex="0" title="Select / Move (V). Touch or pen: press and hold a layer for its actions." aria-label="Select / Move"><span data-icon="cursor"></span><kbd>V</kbd></button>
             <button class="tool-button" data-tool="scale" data-tool-label="Scale" aria-pressed="false" tabindex="-1" title="Scale (K) · scale layers, strokes, effects, and text together" aria-label="Scale layers and their appearance"><span data-icon="scale"></span><kbd>K</kbd></button>
             <button class="tool-button" data-tool="lasso" data-tool-label="Lasso" aria-pressed="false" tabindex="-1" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
-            <button class="tool-button" data-tool="frame" data-tool-label="Frame" aria-pressed="false" tabindex="-1" title="Frame (F) · choose a preset or drag on the canvas to draw" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
+            <button class="tool-button" data-tool="frame" data-tool-label="Frame" aria-pressed="false" tabindex="-1" title="Frame (F or A) · choose a preset, click to create, or drag to draw" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
             <button class="tool-button" data-tool="slice" data-tool-label="Slice" aria-pressed="false" tabindex="-1" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
             <button class="tool-button" data-tool="section" data-tool-label="Section" aria-pressed="false" tabindex="-1" title="Section (⇧ S) · drag on the canvas to draw a section" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
             <span class="toolbar-separator"></span>
@@ -194,7 +221,7 @@
             <button class="tool-button" data-tool="pen" data-tool-label="Pen" aria-pressed="false" tabindex="-1" title="Pen (P) · tap to add points; drag for curves; choose Finish path when done" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
             <button class="tool-button" data-tool="pencil" data-tool-label="Pencil" aria-pressed="false" tabindex="-1" title="Pencil · draw freehand; stylus pressure varies stroke width, hold Shift for uniform" aria-label="Pencil · draw freehand with stylus pressure"><span data-icon="pencil"></span><kbd></kbd></button>
             <button class="tool-button" data-tool="text" data-tool-label="Text" aria-pressed="false" tabindex="-1" title="Text (T) · tap or click the canvas, then type" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
-            <button class="tool-button" data-tool="image" data-tool-label="Add image" aria-pressed="false" tabindex="-1" title="Add image from this device (⇧ Ctrl K) · choose one or more files to add them to the page" aria-label="Add image from this device"><span data-icon="image"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="image" data-tool-label="Add image" aria-pressed="false" tabindex="-1" title="Add image from this device (Shift+Ctrl+K) · choose one or more files to add them to the page" aria-label="Add image from this device"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button hand-tool" data-tool="hand" data-tool-label="Hand" aria-pressed="false" tabindex="-1" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
             <span class="toolbar-separator"></span>
@@ -231,7 +258,7 @@
       <div class="bulk-bar" id="bulk-bar" role="region" aria-label="Image recipe batch controls" tabindex="-1" hidden>
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span><span id="bulk-rate" class="bulk-rate" aria-live="off" aria-label="Batch processing speed and estimated time remaining">Starting…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track" id="bulk-progress-track" role="progressbar" aria-label="Images processed" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-valuetext="0 of 0 images processed"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
-        <label class="speed-control" for="bulk-speed"><span>Images at once</span><input id="bulk-speed" type="range" min="1" max="4" value="2" aria-label="Maximum images processing at once" aria-describedby="bulk-speed-help" title="More images at once can finish sooner, but may use more memory." /><output id="bulk-speed-value" aria-label="2 images at once; 0 active; 0 ready">2 at once</output><small class="speed-help" id="bulk-speed-help">Higher limits may use more memory.</small></label>
+        <label class="speed-control" for="bulk-speed"><span>Processing speed</span><input id="bulk-speed" type="range" min="1" max="4" value="2" aria-label="Maximum images processing at once" aria-describedby="bulk-speed-help" title="More images at once can finish sooner, but may use more memory." /><output id="bulk-speed-value" aria-label="2 images at once; 0 active; 0 ready">2 at once</output><small class="speed-help" id="bulk-speed-help">More images at once can finish sooner, but may use more memory.</small></label>
         <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action" id="bulk-retry" hidden>Retry failed</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
         <span class="sr-only" id="bulk-announcer" role="status" aria-live="polite" aria-atomic="true"></span>
       </div>
@@ -250,21 +277,23 @@
         <section class="workspace-onboarding-content">
           <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL WORKSPACE</span><h2 id="workspace-onboarding-title">Choose where your designs live</h2></div></div>
           <p class="modal-copy" id="workspace-onboarding-copy">Choose where Tiny Image Star keeps your designs.</p>
+          <p class="workspace-onboarding-invite-note" id="workspace-onboarding-invite-note" role="status" aria-live="polite" hidden></p>
           <p class="workspace-onboarding-status" id="workspace-onboarding-status" role="status" aria-live="polite"></p>
-          <div class="dialog-actions"><button class="secondary-button" id="workspace-onboarding-browser-fallback" type="button" hidden>Use browser storage</button><button class="primary-button" id="workspace-onboarding-choose-folder" type="button">Choose workspace folder</button></div>
+          <div class="dialog-actions"><button class="secondary-button" id="workspace-onboarding-browser-fallback" type="button" hidden>Use this browser only</button><button class="primary-button" id="workspace-onboarding-choose-folder" type="button">Choose folder for files + sharing</button></div>
         </section>
       </dialog>
 
       <dialog class="modal quick-actions-dialog" id="quick-actions-dialog" aria-labelledby="quick-actions-title" aria-describedby="quick-actions-help">
         <div class="quick-actions-content">
-          <div class="quick-actions-heading"><div><span class="modal-eyebrow">TINY IMAGE STAR</span><h2 id="quick-actions-title">Find an action</h2></div><button class="icon-button" id="quick-actions-close" type="button" aria-label="Close action search">×</button></div>
-          <label class="sr-only" for="quick-actions-search">Search actions</label>
-          <input class="text-field quick-actions-search" id="quick-actions-search" type="search" role="combobox" aria-autocomplete="list" aria-controls="quick-actions-results" aria-expanded="false" autocomplete="off" placeholder="Try “How do I crop an image?”" />
-          <p class="quick-actions-help" id="quick-actions-help">Type a task or question in your own words, such as “How do you crop an image?”</p>
+          <div class="quick-actions-heading"><div><span class="modal-eyebrow">TINY IMAGE STAR</span><h2 id="quick-actions-title">Find a task or action</h2></div><button class="icon-button" id="quick-actions-close" type="button" aria-label="Close action search">×</button></div>
+          <label class="sr-only" for="quick-actions-search">Search for a task or action</label>
+          <input class="text-field quick-actions-search" id="quick-actions-search" type="search" role="combobox" aria-autocomplete="list" aria-controls="quick-actions-results" aria-expanded="false" autocomplete="off" placeholder="Try “crop a photo”" />
+          <p class="quick-actions-help" id="quick-actions-help">Search for a tool or task in your own words. Choose a result to open its tool or control; its description says what it does. Disabled results explain what you need first.</p>
           <div class="quick-actions-suggestions" id="quick-actions-suggestions" aria-label="Suggested tasks">
             <button class="quick-action-suggestion" type="button" data-quick-action-query="How do I crop an image?">Crop an image</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="remove image background">Remove background</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="add text">Add text</button>
+            <button class="quick-action-suggestion" type="button" data-quick-action-query="find and replace text">Find and replace text</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="How do I create a component?">Create a component</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="apply recipe to selected images">Apply an image recipe</button>
             <button class="quick-action-suggestion" type="button" data-quick-action-query="export page as PDF">Export PDF</button>
@@ -273,6 +302,21 @@
           <p class="quick-actions-empty" id="quick-actions-empty" role="status" aria-live="polite" hidden>No matching action. Try a shorter word such as crop, image, recipe, text, or export.</p>
           <div class="quick-actions-footer"><span>↑ ↓ Choose</span><span>Enter Open</span><span>Esc Close</span><kbd>⌘K / Ctrl+K</kbd></div>
         </div>
+      </dialog>
+
+      <dialog class="modal text-find-replace-dialog" id="text-find-replace-dialog" aria-labelledby="text-find-replace-title" aria-describedby="text-find-replace-help" aria-modal="false">
+        <section class="text-find-replace-content">
+          <div class="quick-actions-heading"><div><span class="modal-eyebrow">CURRENT PAGE</span><h2 id="text-find-replace-title">Find and replace text</h2></div><button class="icon-button" id="text-find-replace-close" type="button" aria-label="Close find and replace">×</button></div>
+          <label class="text-find-replace-label" for="text-find-query">Find</label>
+          <input class="text-field text-find-replace-input" id="text-find-query" type="search" autocomplete="off" maxlength="512" placeholder="Text on this page" />
+          <div class="text-find-match-row"><button class="secondary-button" id="text-find-previous" type="button" aria-label="Find previous match">↑ Previous</button><output id="text-find-count" role="status" aria-live="polite">Type text to find.</output><button class="secondary-button" id="text-find-next" type="button" aria-label="Find next match">Next ↓</button></div>
+          <label class="text-find-replace-label" for="text-replace-query">Replace with</label>
+          <input class="text-field text-find-replace-input" id="text-replace-query" type="text" maxlength="2048" placeholder="Replacement text" />
+          <label class="text-find-case-option"><input id="text-find-case-sensitive" type="checkbox" /> Match case</label>
+          <div class="text-find-replace-actions"><button class="secondary-button" id="text-replace-current" type="button" disabled>Replace</button><button class="primary-button" id="text-replace-all" type="button" disabled>Replace all</button></div>
+          <p class="text-find-replace-help" id="text-find-replace-help">Matches text layers on this page only. Enter finds next; Shift+Enter finds previous. Variable-linked, component, instance, and locked text is shown as read-only.</p>
+          <p class="text-find-replace-status" id="text-find-replace-status" role="status" aria-live="polite"></p>
+        </section>
       </dialog>
 
       <dialog class="modal page-pdf-dialog" id="page-pdf-dialog" aria-labelledby="page-pdf-title">
@@ -378,12 +422,13 @@
         <section class="live-collaboration-content">
           <div class="modal-title-row">
             <div><span class="modal-eyebrow">SHARE THIS DESIGN</span><h2 id="live-collaboration-title">Invite someone</h2></div>
-            <button class="icon-button" id="live-collaboration-close" type="button" aria-label="Close live collaboration">×</button>
+            <form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-collaboration-close" type="submit" data-dialog-dismiss aria-label="Close live collaboration">×</button></form>
           </div>
           <p class="modal-copy" id="live-collaboration-copy">Your device saves the original design.</p>
           <section id="live-host-panel" hidden>
             <div id="live-host-start" class="live-share-step">
               <p class="live-collaboration-note">Your workspace folder saves the original design. Browser storage supports solo editing only; it cannot host a shared design.</p>
+              <p class="live-collaboration-note">While a guest is connected, your canvas follows their changes and you cannot edit. Stop sharing to take control again.</p>
               <button class="primary-button live-join-button" id="live-start-host" type="button">Start sharing</button>
             </div>
             <p class="live-status" id="live-host-status" role="status" aria-live="polite"></p>
@@ -410,6 +455,7 @@
               <div class="live-peer-list-wrap">
                 <div class="live-peer-list-heading"><strong>People in this design</strong><span>Up to 4 guests</span></div>
                 <button class="secondary-button live-add-guest-button" id="live-add-guest" type="button" hidden>＋ Invite another person</button>
+                <p class="live-collaboration-note live-multiple-invite-note">Invite each person separately. Every guest needs their own invite link and reply link.</p>
                 <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="People in this live design"></div>
               </div>
               <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
@@ -419,9 +465,9 @@
                   <label class="field-label" for="live-share-message-value">Full invite message for manual copy</label>
                   <textarea class="text-field live-capsule-field live-join-message" id="live-share-message-value" readonly spellcheck="false" aria-label="Full invitation message"></textarea>
                   <button class="secondary-button live-copy-button" type="button" data-copy-field="live-share-message-value">Copy full invite</button>
-                  <label class="field-label" for="live-invite-value">Design link</label>
+                  <label class="field-label" for="live-invite-value">Design identity link · cannot join by itself</label>
                   <textarea class="text-field live-capsule-field" id="live-invite-value" readonly spellcheck="false" aria-label="Stable design invitation link"></textarea>
-                  <button class="secondary-button live-copy-button" type="button" data-copy-field="live-invite-value">Copy design link</button>
+                  <button class="secondary-button live-copy-button" type="button" data-copy-field="live-invite-value">Copy design identity link</button>
                   <label class="field-label" for="live-offer-value">Temporary connection code</label>
                   <textarea class="text-field live-capsule-field" id="live-offer-value" readonly spellcheck="false" aria-label="One-time WebRTC offer"></textarea>
                   <button class="secondary-button live-copy-button" type="button" data-copy-field="live-offer-value">Copy code</button>
@@ -488,8 +534,8 @@
               </details>
               <button class="secondary-button" id="live-reply-link-retry" type="button" hidden>Try again</button>
             </div>
-            <div class="dialog-actions"><button class="secondary-button" id="live-reply-link-close" type="button">Close</button></div>
           </section>
+          <div class="dialog-actions live-collaboration-dismiss-actions"><form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-collaboration-close-action" type="submit" data-dialog-dismiss>Close sharing</button></form></div>
         </section>
       </dialog>
 

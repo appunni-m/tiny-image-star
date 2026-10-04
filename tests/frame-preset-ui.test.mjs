@@ -107,8 +107,8 @@ test('resize-to-fit measures visible artwork, preserves child placement, and has
 test('the existing canvas drag and click-to-create frame behavior remains available', () => {
   assert.match(source, /const typeByTool = \{ frame: 'frame'/,
     'Frame tool pointer gestures still enter the ordinary draw path');
-  assert.match(source, /if \(interaction\.kind === 'draw'\) \{[\s\S]*?if \(!interaction\.moved\) \{[\s\S]*?if \(node\.type === 'frame'\) \{ node\.width = 390; node\.height = 844; \}/,
-    'dragging keeps custom-size frames and a plain canvas click keeps the prior default frame size');
+  assert.match(source, /if \(interaction\.kind === 'draw'\) \{[\s\S]*?if \(!interaction\.moved\) \{[\s\S]*?clickParent = deepestContainerAt\(interaction\.start\)[\s\S]*?frameSizeForCanvasClick\(topLevelFrameSizesByDocument\.get\(state\.document\.id\)/,
+    'a plain canvas click follows Figma default/recent-size behavior while dragging keeps custom dimensions');
 });
 
 test('frame preset labels stay readable and all controls are touch-sized on mobile', () => {

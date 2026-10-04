@@ -3,18 +3,31 @@ export function isImageRecipeBatchActive(batch) {
   return Boolean(batch && (!batch.done || batch.inflight > 0));
 }
 
+/**
+ * The usual batch applies to exactly the current image selection. While that
+ * same selection is active, its targets are deliberately not pinned as preview
+ * cache entries, so memory admission can skip rebuilding the selected-node set.
+ */
+export function canSkipSelectedImagePreviewLookup(batch, selectedIds) {
+  return isImageRecipeBatchActive(batch)
+    && batch.selectionIsEntireBatchTargets === true
+    && batch.selectionSnapshot === selectedIds;
+}
+
 const failedTargetIndexes = new WeakMap();
 
 function rememberFailedTarget(batch, targetId) {
-  if (typeof targetId !== 'string' || !targetId || !Array.isArray(batch.failedTargets)) return;
-  let targetIndex = failedTargetIndexes.get(batch);
-  if (!targetIndex || targetIndex.size !== batch.failedTargets.length) {
-    targetIndex = new Set(batch.failedTargets);
-    failedTargetIndexes.set(batch, targetIndex);
+  if (typeof targetId !== 'string' || !targetId || !Array.isArray(batch.failedTargets)) return null;
+  const failedTargets = batch.failedTargets;
+  let cached = failedTargetIndexes.get(batch);
+  if (!cached || cached.failedTargets !== failedTargets || cached.targetIndex.size !== failedTargets.length) {
+    cached = { failedTargets, targetIndex: new Set(failedTargets) };
+    failedTargetIndexes.set(batch, cached);
   }
-  if (targetIndex.has(targetId)) return;
-  targetIndex.add(targetId);
-  batch.failedTargets.push(targetId);
+  if (cached.targetIndex.has(targetId)) return false;
+  cached.targetIndex.add(targetId);
+  failedTargets.push(targetId);
+  return true;
 }
 
 /** Fence rollback and preview restoration even when a target failed before its render was queued. */
@@ -244,13 +257,17 @@ export function completeImageRecipeBatchIfDrained(batch, now) {
 }
 
 /** Count one terminal target result; canceled work is not completed or skipped. */
-export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, canceled = false, targetId = null, now } = {}) {
+export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, skippedLocked = false, canceled = false, targetId = null, now } = {}) {
   if (canceled) return false;
+  // A recipe batch admits each target once. If an async failure path races and
+  // reports that same identified target twice, ignore the duplicate result so
+  // progress, failure counts, and throughput still describe target outcomes.
+  if (failed && rememberFailedTarget(batch, targetId) === false) return false;
   batch.completed += 1;
   // Skipped targets never enter the image pipeline. Counting them as image
   // throughput can inflate both the live rate and ETA when a large selection
   // contains deleted, unavailable, or otherwise ineligible layers.
-  const timedCompletion = !skipped && Number.isFinite(batch.activeSince) && !batch.paused;
+  const timedCompletion = !skipped && !skippedLocked && Number.isFinite(batch.activeSince) && !batch.paused;
   if (timedCompletion) batch.timingCompletions = (Number(batch.timingCompletions) || 0) + 1;
   if (timedCompletion) {
     batch.timingCompletionTimes ||= [];
@@ -263,9 +280,9 @@ export function recordImageRecipeBatchTarget(batch, { failed = false, superseded
   }
   if (failed) {
     batch.failed += 1;
-    rememberFailedTarget(batch, targetId);
   }
   if (superseded) batch.superseded = (batch.superseded || 0) + 1;
   if (skipped) batch.skipped = (batch.skipped || 0) + 1;
+  if (skippedLocked) batch.skippedLocked = (batch.skippedLocked || 0) + 1;
   return true;
 }

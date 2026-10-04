@@ -37,8 +37,8 @@ try {
   }
 
   // A received invite is commonly clicked while the editor tab is already
-  // open. Exercise the real hashchange route so a thrown history error cannot
-  // leave the user with no UI.
+  // open. Exercise the real hashchange route (rather than calling its handler
+  // directly) so a thrown history error cannot leave the user with no UI.
   const dialog = app.querySelector('#live-collaboration-dialog');
   const inviteErrors = [];
   app.defaultView.addEventListener('error', event => inviteErrors.push(event.message));
@@ -49,9 +49,8 @@ try {
   assert(app.defaultView.location.hash === '', 'the invite secret should be removed from the address bar after routing');
   await waitFor(() => app.querySelector('#live-guest-status').textContent.trim(), 'invite feedback');
   assert(inviteErrors.length === 0, `invite click should not throw: ${inviteErrors.join('; ')}`);
-  app.querySelector('#live-collaboration-close').click();
+  click(app, app.querySelector('#live-collaboration-close'));
   await waitFor(() => !dialog.open, 'close received invite flow');
-
 
   assert(app.querySelector('#share-button').textContent.trim() === 'Share', 'The top-bar action should open the live invitation flow.');
   app.defaultView.dispatchEvent(new app.defaultView.CustomEvent('tiny-image-star:join-live', { cancelable: true }));
@@ -68,6 +67,21 @@ try {
     'The join and scan actions should fit within a narrow phone layout.');
   click(app, app.querySelector('#live-collaboration-close'));
   await waitFor(() => !dialog.open, 'join dialog close');
+
+  app.defaultView.dispatchEvent(new app.defaultView.CustomEvent('tiny-image-star:join-live', { cancelable: true }));
+  await waitFor(() => dialog.open && !app.querySelector('#live-guest-panel').hidden, 'reopen guest sharing dialog');
+  click(app, app.querySelector('#live-scan-invitation-qr'));
+  const qrDialog = app.querySelector('#live-qr-dialog');
+  await waitFor(() => qrDialog?.open, 'open invite QR panel');
+  click(app, app.querySelector('#live-qr-close'));
+  await waitFor(() => !qrDialog.open && !dialog.open, 'close all sharing dialogs from QR close icon');
+
+  app.defaultView.dispatchEvent(new app.defaultView.CustomEvent('tiny-image-star:join-live', { cancelable: true }));
+  await waitFor(() => dialog.open, 'reopen sharing panel after closing QR flow');
+  click(app, app.querySelector('#live-scan-invitation-qr'));
+  await waitFor(() => qrDialog.open, 'reopen invite QR panel');
+  click(app, app.querySelector('#live-qr-close-action'));
+  await waitFor(() => !qrDialog.open && !dialog.open, 'close all sharing dialogs from QR footer action');
 
   app.querySelector('#live-host-panel').hidden = false;
   app.querySelector('#live-guest-panel').hidden = true;

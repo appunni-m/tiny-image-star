@@ -231,6 +231,7 @@ export async function createHostSessionController(options = {}) {
     viewStateSequence: 0,
     hostPresenceSequence: 0,
     presences: new Map(),
+    presenceSequences: new Map(),
     transferredAssetBytes: 0,
     transferredAssetCount: 0,
     stopped: false,
@@ -292,9 +293,18 @@ export async function createHostSessionController(options = {}) {
       if (member?.sessionId === sessionId()) {
         const activePresence = roomState.presences.get(guestActorId);
         if (activePresence) {
+          const sequence = Math.max(
+            roomState.presenceSequences.get(guestActorId) || 0,
+            activePresence.sequence
+          );
+          if (sequence >= Number.MAX_SAFE_INTEGER) {
+            roomState.presenceSequences.set(guestActorId, Number.MAX_SAFE_INTEGER);
+          } else {
+            roomState.presenceSequences.set(guestActorId, sequence + 1);
+          }
           const inactive = {
             ...activePresence,
-            sequence: Math.min(Number.MAX_SAFE_INTEGER, member.lastPresenceSequence + 1),
+            sequence: Math.min(Number.MAX_SAFE_INTEGER, sequence + 1),
             active: false, cursorX: null, cursorY: null, selectedIds: []
           };
           roomState.presences.delete(guestActorId);
@@ -693,15 +703,21 @@ export async function createHostSessionController(options = {}) {
     // reached the host. Ignore that transient reference rather than tearing
     // down a valid editing session.
     if (!roomState.engine.hasPageId(message.pageId)) return;
+    const lastRoomSequence = roomState.presenceSequences.get(guestActorId) || 0;
+    if (lastRoomSequence >= Number.MAX_SAFE_INTEGER) {
+      close('presence-sequence-limit');
+      return;
+    }
     const record = {
       peerActorId: guestActorId,
-      sequence: message.sequence,
+      sequence: lastRoomSequence + 1,
       active: message.active,
       pageId: message.pageId,
       cursorX: message.cursorX,
       cursorY: message.cursorY,
       selectedIds: [...message.selectedIds]
     };
+    roomState.presenceSequences.set(guestActorId, record.sequence);
     if (record.active) roomState.presences.set(guestActorId, record);
     else roomState.presences.delete(guestActorId);
     try { onPresence({ ...record, selectedIds: [...record.selectedIds] }); } catch {}

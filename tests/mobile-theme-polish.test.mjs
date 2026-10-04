@@ -37,7 +37,8 @@ test('phone chrome uses theme surfaces, readable controls, and full-size touch t
   assert.match(phoneHierarchy, /\.sidebar-tab, \.inspector-tab, \.property-heading, \.field-label\s*\{\s*font-size:\s*12px/);
   assert.match(stylesheet, /\.storage-mode-chip\s*\{[^}]*color:\s*var\(--muted\)[^}]*font-size:\s*10px/);
 
-  const navigationStart = stylesheet.indexOf('@media (max-width: 820px) {\n  html, body, .app-shell');
+  const safeAreaRuleIndex = stylesheet.indexOf('  html, body, .app-shell { height: 100dvh; }');
+  const navigationStart = stylesheet.lastIndexOf('@media (max-width: 820px) {', safeAreaRuleIndex);
   assert.notEqual(navigationStart, -1, 'expected the safe-area-aware phone control layout');
   const navigation = ruleBlock(navigationStart);
   assert.match(navigation, /\.icon-button, \.mobile-panel-toggle, \.present-button\s*\{\s*min-width:\s*44px;\s*min-height:\s*44px/);

@@ -686,6 +686,60 @@ test('closed network faces bake as editable cubic contours through Boolean opera
   }
 });
 
+test('adjacent network faces with a shared cubic edge bake to their editable outer boundary', () => {
+  const document = createDocument();
+  const network = createNode('network', {
+    x: 10, y: 10, width: 60, height: 40,
+    vertices: [
+      { id: 'left-top', x: 0, y: 0 }, { id: 'middle-top', x: .5, y: 0 }, { id: 'right-top', x: 1, y: 0 },
+      { id: 'left-bottom', x: 0, y: 1 }, { id: 'middle-bottom', x: .5, y: 1 }, { id: 'right-bottom', x: 1, y: 1 }
+    ],
+    edges: [
+      { id: 'top-left', from: 'left-top', to: 'middle-top' },
+      { id: 'top-right', from: 'middle-top', to: 'right-top' },
+      { id: 'right', from: 'right-top', to: 'right-bottom' },
+      { id: 'bottom-right', from: 'right-bottom', to: 'middle-bottom' },
+      { id: 'bottom-left', from: 'middle-bottom', to: 'left-bottom' },
+      { id: 'left', from: 'left-bottom', to: 'left-top' },
+      { id: 'shared-curve', from: 'middle-top', to: 'middle-bottom',
+        control1: { x: .35, y: .3 }, control2: { x: .35, y: .7 } }
+    ],
+    faces: [
+      { id: 'left-face', vertexIds: ['left-top', 'middle-top', 'middle-bottom', 'left-bottom'], fillOpacity: 1 },
+      { id: 'right-face', vertexIds: ['middle-top', 'right-top', 'right-bottom', 'middle-bottom'], fillOpacity: 1 }
+    ]
+  });
+  const distant = createNode('rectangle', { x: 100, y: 10, width: 10, height: 10 });
+  addNode(document, network); addNode(document, distant);
+  const group = combineBoolean(document, [network.id, distant.id], 'union');
+
+  const baked = bakeBoolean(document, group.id);
+  const contours = [baked.points, ...(baked.subpaths || []).map(contour => contour.points)];
+  assert.equal(contours.length, 2, 'the joined network and distant rectangle remain two editable contours');
+  assert.deepEqual(contours.map(points => points.length).sort((a, b) => a - b), [4, 6],
+    'the curved interior edge is removed while its outer junction anchors remain editable');
+  assert.ok(contours.flat().every(point => Math.hypot(point.in.x, point.in.y, point.out.x, point.out.y) < 1e-10),
+    'the removed cubic edge does not leak control handles into the straight outer boundary');
+
+  const output = sampledPathContours(baked, 24).map(contour => contour.map(point => ({
+    x: point.x - baked.x, y: point.y - baked.y
+  })));
+  for (let y = 1.37; y < 39; y += 5.11) for (let x = 1.29; x < 59; x += 4.73) {
+    assert.equal(insideSampledContours({ x, y }, output), true,
+      `the joined network region should stay filled at ${x},${y}`);
+  }
+  for (const point of [{ x: -1, y: 20 }, { x: 61, y: 20 }, { x: 30, y: 41 }]) {
+    assert.equal(insideSampledContours(point, output), false, `the result should exclude ${point.x},${point.y}`);
+  }
+  const networkArea = contours.find(points => points.length === 6).reduce((sum, point, index, points) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * baked.width * next.y * baked.height - next.x * baked.width * point.y * baked.height;
+  }, 0) / 2;
+  assert.equal(Math.abs(networkArea), 2400, 'the union keeps the original 60-by-40 filled network area');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+    'the resulting outer boundary remains a valid editable vector path');
+});
+
 test('rounded vector-network vertices survive Boolean baking as editable cubic geometry', () => {
   const document = createDocument();
   const geometry = vectorNetworkGeometryFromAnchors([

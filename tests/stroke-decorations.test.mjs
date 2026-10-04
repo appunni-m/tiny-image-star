@@ -23,6 +23,22 @@ test('line decorations use explicit start/end directions and line reversal', () 
   assert.ok(reverse[0].points[1].x > reverse[0].tip.x, 'start triangle points away from the reversed line');
 });
 
+test('filled circle and diamond markers have smooth and direction-aware endpoint geometry', () => {
+  const line = createNode('line', { width: 40, height: 0 });
+  const [circle, diamond] = strokeEndpointDecorations(line, {
+    width: 2, startDecoration: 'circle', endDecoration: 'diamond'
+  });
+  assert.deepEqual(circle, {
+    type: 'circle', side: 'start', tip: { x: 0, y: 0 }, center: { x: 0, y: 0 },
+    radius: 4.4, closed: true, endpoint: 'start'
+  });
+  assert.deepEqual(diamond, {
+    type: 'diamond', side: 'end', tip: { x: 40, y: 0 },
+    points: [{ x: 40, y: 0 }, { x: 36, y: 4.4 }, { x: 32, y: 0 }, { x: 36, y: -4.4 }],
+    closed: true, endpoint: 'end'
+  });
+});
+
 test('open path contours get endpoint decorations while closed contours stay undecorated', () => {
   const path = createNode('path', {
     width: 100, height: 60, closed: false,

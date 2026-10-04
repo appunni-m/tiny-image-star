@@ -41,8 +41,7 @@ export function addComponentVariantAxis(document, setId, name, defaultValue = 'D
   }
   set.properties.push({ name: axisName, values: [value] });
   for (const component of members) {
-    component.variantProperties ||= {};
-    component.variantProperties[axisName] = value;
+    component.variantProperties = { ...component.variantProperties, [axisName]: value };
   }
   return set.properties.at(-1);
 }

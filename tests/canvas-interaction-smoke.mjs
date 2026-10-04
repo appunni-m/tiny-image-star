@@ -1,4 +1,5 @@
 import { addNode, createComponent, createDocument, createNode } from '../src/model.js';
+import { ellipseArcControlHandles } from '../src/ellipse-arc-controls.js';
 import { starControlHandles } from '../src/star-controls.js';
 import { deleteImageAsset, deleteStoredDocument, loadDocumentById, saveDocument, saveImageAssetBytes } from '../src/storage.js';
 
@@ -18,7 +19,11 @@ const reviewComponent = createNode('frame', { name: 'Comment component', x: 150,
 const reviewFrame = createNode('frame', { name: 'Comment frame', x: 10, y: 10, width: 150, height: 90, fill: 'transparent' });
 const reviewArtwork = createNode('rectangle', { name: 'Comment artwork', x: 10, y: 10, width: 50, height: 35, fill: '#ff8b5d' });
 const star = createNode('star', { name: 'Tunable star', x: 390, y: 120, width: 120, height: 100, points: 5, innerRadius: .48, radius: 0 });
-addNode(design, image); addNode(design, movable); addNode(design, text); addNode(design, star);
+const ellipseArc = createNode('ellipse', {
+  name: 'Tunable ellipse arc', x: 560, y: 120, width: 120, height: 100, fill: '#36b37e',
+  arcData: { startingAngle: 0, endingAngle: Math.PI * 1.5, innerRadius: .25 }
+});
+addNode(design, image); addNode(design, movable); addNode(design, text); addNode(design, star); addNode(design, ellipseArc);
 addNode(design, reviewComponent); createComponent(design, reviewComponent.id, reviewComponent.name);
 addNode(design, reviewFrame, { parentId: reviewComponent.id }); addNode(design, reviewArtwork, { parentId: reviewFrame.id });
 
@@ -55,6 +60,14 @@ function pointer(app, type, point, pointerId = 91, pointerType = 'mouse') {
   canvas.dispatchEvent(new app.defaultView.PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId, pointerType, button: 0,
     clientX: screen.x, clientY: screen.y
+  }));
+}
+function pointerScreen(app, type, point, pointerId = 91, pointerType = 'mouse') {
+  const canvas = app.querySelector('#scene-canvas');
+  Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
+  canvas.dispatchEvent(new app.defaultView.PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId, pointerType, button: 0,
+    clientX: point.x, clientY: point.y
   }));
 }
 function tap(app, point, pointerId = 91, pointerType = 'mouse') {
@@ -103,11 +116,13 @@ try {
   const library = app.querySelector('#design-library-dialog');
   const designRow = await waitFor(() => library?.open && library.querySelector(`[data-design-id="${design.id}"][data-design-action="open"]`), 'seeded local design');
   click(app, designRow);
-  await waitFor(() => app.querySelector('#document-name')?.value === design.name, 'local design open');
+  await waitFor(() => app.querySelector('#document-name')?.value === design.name
+    && app.querySelector('.workspace')?.inert === false, 'local design open and editable');
   await waitFor(() => app.querySelector(`[data-layer-id="${image.id}"]`)
     && app.querySelector(`[data-layer-id="${movable.id}"]`)
     && app.querySelector(`[data-layer-id="${text.id}"]`)
-    && app.querySelector(`[data-layer-id="${star.id}"]`), 'seeded layers');
+    && app.querySelector(`[data-layer-id="${star.id}"]`)
+    && app.querySelector(`[data-layer-id="${ellipseArc.id}"]`), 'seeded layers');
 
   click(app, app.querySelector(`[data-layer-id="${star.id}"]`));
   await waitFor(() => app.querySelector('[data-prop="points"]'), 'star controls in the inspector');
@@ -156,6 +171,34 @@ try {
   await waitFor(async () => (await loadDocumentById(design.id))?.pages?.[0]?.children?.find(node => node.id === star.id)?.radius > 0,
     'direct star corner-radius edit');
 
+  click(app, app.querySelector(`[data-layer-id="${ellipseArc.id}"]`));
+  await waitFor(() => app.querySelector('[data-prop="ellipseArc.start"]')
+    && app.querySelector('[data-prop="ellipseArc.end"]')
+    && app.querySelector('[data-prop="ellipseArc.innerRadius"]'), 'ellipse arc controls in the inspector');
+  let savedEllipseArc = (await loadDocumentById(design.id)).pages[0].children.find(node => node.id === ellipseArc.id);
+  const angleHandle = ellipseArcControlHandles(savedEllipseArc, zoom).find(handle => handle.kind === 'start');
+  const angleStart = { x: savedEllipseArc.x + angleHandle.point.x, y: savedEllipseArc.y + angleHandle.point.y };
+  const angleEnd = { x: savedEllipseArc.x + savedEllipseArc.width / 2, y: savedEllipseArc.y + savedEllipseArc.height };
+  pointer(app, 'pointerdown', angleStart, 107);
+  pointer(app, 'pointermove', angleEnd, 107);
+  pointer(app, 'pointerup', angleEnd, 107);
+  await waitFor(async () => Math.abs(((await loadDocumentById(design.id))?.pages?.[0]?.children?.find(node => node.id === ellipseArc.id)?.arcData?.startingAngle ?? 0) - Math.PI / 2) < 1e-6,
+    'direct ellipse arc start-angle edit');
+
+  savedEllipseArc = (await loadDocumentById(design.id)).pages[0].children.find(node => node.id === ellipseArc.id);
+  const innerHandle = ellipseArcControlHandles(savedEllipseArc, zoom).find(handle => handle.kind === 'innerRadius');
+  const innerStart = { x: savedEllipseArc.x + innerHandle.point.x, y: savedEllipseArc.y + innerHandle.point.y };
+  const innerCenter = { x: savedEllipseArc.x + savedEllipseArc.width / 2, y: savedEllipseArc.y + savedEllipseArc.height / 2 };
+  const innerEnd = {
+    x: innerCenter.x + (innerStart.x - innerCenter.x) * 2.4,
+    y: innerCenter.y + (innerStart.y - innerCenter.y) * 2.4
+  };
+  pointer(app, 'pointerdown', innerStart, 108);
+  pointer(app, 'pointermove', innerEnd, 108);
+  pointer(app, 'pointerup', innerEnd, 108);
+  await waitFor(async () => Math.abs(((await loadDocumentById(design.id))?.pages?.[0]?.children?.find(node => node.id === ellipseArc.id)?.arcData?.innerRadius ?? 0) - .6) < .001,
+    'direct ellipse inner-radius edit');
+
   click(app, app.querySelector(`[data-layer-id="${movable.id}"]`));
   const moveStart = { x: movable.x + movable.width / 2, y: movable.y + movable.height / 2 };
   pointer(app, 'pointerdown', moveStart, 92);
@@ -183,7 +226,7 @@ try {
 
   const cropButton = app.querySelector('[data-action="toggle-image-crop-mode"]');
   click(app, cropButton);
-  await waitFor(() => app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Done cropping'), 'crop mode');
+  await waitFor(() => app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Finish crop'), 'crop mode');
   const outsideCrop = await waitFor(() => {
     const pixel = readPixelAtWorld(app, { x: image.x - 15, y: image.y + image.height / 2 });
     return pixel[0] > pixel[2] * 2 && pixel[0] > 120 ? pixel : null;
@@ -203,8 +246,24 @@ try {
   assert(cropAt(saved.pages[0].children.find(node => node.id === image.id))?.left === .25,
     'Undo during an uncommitted crop selection must not replace the document or lose the active layer reference.');
 
-  // Crop mode remains the active canvas tool even if Hand was selected first.
+  // Hand pans the view without applying a crop. Select returns to crop editing.
+  const cropBeforeHandPan = cropAt(saved.pages[0].children.find(node => node.id === image.id));
+  const beforeHandPan = app.querySelector('#scene-canvas').getContext('2d').getTransform();
   click(app, app.querySelector('.tool-button[data-tool="hand"]'));
+  const handPanStart = worldScreenPoint(app, { x: image.x + fullSource.left + 30, y: image.y + 20 });
+  const handPanEnd = { x: handPanStart.x + 42, y: handPanStart.y + 24 };
+  pointerScreen(app, 'pointerdown', handPanStart, 98);
+  pointerScreen(app, 'pointermove', handPanEnd, 98);
+  pointerScreen(app, 'pointerup', handPanEnd, 98);
+  await waitFor(() => {
+    const transform = app.querySelector('#scene-canvas').getContext('2d').getTransform();
+    return Math.abs(transform.e - beforeHandPan.e) > 1 || Math.abs(transform.f - beforeHandPan.f) > 1;
+  }, 'Hand-tool panning during crop mode');
+  saved = await loadDocumentById(design.id);
+  const cropAfterHandPan = cropAt(saved.pages[0].children.find(node => node.id === image.id));
+  assert(cropAfterHandPan.left === cropBeforeHandPan.left && cropAfterHandPan.right === cropBeforeHandPan.right,
+    'Hand-tool panning must leave the active image crop unchanged.');
+  click(app, app.querySelector('.tool-button[data-tool="select"]'));
   const handCropStart = { x: image.x + fullSource.left + 10, y: image.y + 10 };
   const handCropEnd = { x: image.x + fullSource.left + 170, y: image.y + 90 };
   pointer(app, 'pointerdown', handCropStart, 98);
@@ -267,7 +326,7 @@ try {
   click(app, app.querySelector(`[data-layer-id="${image.id}"]`));
   const commentCropButton = await waitFor(() => app.querySelector('[data-action="toggle-image-crop-mode"]'), 'image crop control while Comment is active');
   click(app, commentCropButton);
-  await waitFor(() => app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Done cropping'), 'crop capture while Comment remains active');
+  await waitFor(() => app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Finish crop'), 'crop capture while Comment remains active');
   tap(app, {
     x: reviewComponent.x + reviewFrame.x + reviewArtwork.x + reviewArtwork.width / 2,
     y: reviewComponent.y + reviewFrame.y + reviewArtwork.y + reviewArtwork.height / 2
@@ -283,11 +342,10 @@ try {
   assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'),
     'Comment mode should select the directly hit nested frame after releasing crop mode.');
   click(app, app.querySelector(`[data-layer-id="${image.id}"]`));
-  assert(app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Crop on canvas'),
+  assert(app.querySelector('[data-action="toggle-image-crop-mode"]')?.textContent.includes('Crop image'),
     'The intercepted crop mode must be fully reset after Comment selects a layer.');
 
   click(app, app.querySelector(`[data-layer-id="${text.id}"]`));
-  // The preceding crop-on-canvas check deliberately leaves Hand selected.
   // Put the editor back in Select mode before asserting text-layer editing.
   click(app, app.querySelector('.tool-button[data-tool="select"]'));
   const textCenter = worldScreenPoint(app, { x: text.x + text.width / 2, y: text.y + text.height / 2 });
@@ -300,7 +358,7 @@ try {
   click(app, app.querySelector('[data-text-format-done]'));
   await waitFor(() => app.querySelector('#text-editor-overlay')?.hidden, 'text edit close');
 
-  result.textContent = `PASS\n${JSON.stringify({ movePointerCancel: true, canceledMoveCreatedNoUndo: true, canvasGestureCancelsBeforePanelAction: true, uncroppedSourceVisible: true, cropSelectionUndoGuard: true, cropModeOverridesHandTool: true, touchOffsetPreserved: true, cropPointerCancelAndUndoGuard: true, cropSelectionInPlace: true, cropUndoRedo: true, commentReclaimsCanvasFromCrop: true, commentSelectsComponentAndFrame: true, doubleClickTextEdit: true, originalImageAssetRetained: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ movePointerCancel: true, canceledMoveCreatedNoUndo: true, canvasGestureCancelsBeforePanelAction: true, uncroppedSourceVisible: true, cropSelectionUndoGuard: true, cropModeOverridesHandTool: true, touchOffsetPreserved: true, cropPointerCancelAndUndoGuard: true, cropSelectionInPlace: true, cropUndoRedo: true, commentReclaimsCanvasFromCrop: true, commentSelectsComponentAndFrame: true, doubleClickTextEdit: true, starPointsRatioRadiusHandles: true, ellipseArcAngleAndRadiusHandles: true, originalImageAssetRetained: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {

@@ -114,8 +114,14 @@ try {
   await waitFor(() => app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 3, 'multi-selection');
   assert(app.querySelectorAll('[data-prop^="selection."]').length === 6, 'multi-selection should expose X, Y, width, height, rotation, and opacity controls.');
   assert(app.querySelector('[data-prop="selection.x"]')?.value !== '0', 'selection X should use the actual visual bounds instead of a placeholder.');
-  for (const property of ['x', 'y', 'width', 'height', 'rotation', 'opacity']) {
-    assert(app.querySelector(`[data-prop="selection.${property}"]`)?.step === '0.01', `${property} should accept hundredth-unit precision.`);
+  for (const property of ['x', 'y', 'width', 'height']) {
+    const field = app.querySelector(`[data-prop="selection.${property}"]`);
+    assert(field?.type === 'text' && field.hasAttribute('data-numeric-expression'),
+      `${property} should use the decimal-capable calculation field.`);
+  }
+  for (const property of ['rotation', 'opacity']) {
+    const field = app.querySelector(`[data-prop="selection.${property}"]`);
+    assert(field?.type === 'number' && field.step === '0.01', `${property} should accept hundredth-unit precision.`);
   }
   assert(app.querySelector('[data-prop="selection.opacity"]')?.placeholder === 'Mixed', 'different layer opacity values should display as Mixed.');
 
@@ -123,7 +129,9 @@ try {
   let currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   let bounds = boundsFor(currentNodes);
   const targetX = Number((bounds.x + 17.23).toFixed(2));
-  setInput(app, '[data-prop="selection.x"]', targetX);
+  // A leading minus is a relative edit (`-20`); use `=` for a negative
+  // absolute position so this assertion exercises decimal precision.
+  setInput(app, '[data-prop="selection.x"]', `=${targetX}`);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);
     return Math.abs(boundsFor(nodes.map(node => saved.pages[0].children.find(item => item.id === node.id))).x - targetX) < 1e-5;
@@ -133,7 +141,7 @@ try {
   currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   bounds = boundsFor(currentNodes);
   const targetY = Number((bounds.y + 11.17).toFixed(2));
-  setInput(app, '[data-prop="selection.y"]', targetY);
+  setInput(app, '[data-prop="selection.y"]', `=${targetY}`);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);
     return Math.abs(boundsFor(nodes.map(node => saved.pages[0].children.find(item => item.id === node.id))).y - targetY) < 1e-5;

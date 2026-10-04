@@ -441,6 +441,10 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
   const stretchPerGroup = stretchGroups
     ? Math.max(0, crossAvailable - naturalCrossExtent) / stretchGroups : 0;
   const groupCrossSizes = groups.map((group, index) => {
+    // A non-wrapped stack has one line spanning the frame's available
+    // cross-axis space. Without this, center/end alignment only sees the
+    // children group's intrinsic size and has no space to distribute.
+    if (!settings.wrap && settings.crossSizing !== 'hug') return crossAvailable;
     const canStretchGroup = settings.crossSizing !== 'hug'
       && (settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch'));
     return naturalCrossSizes[index] + (canStretchGroup ? stretchPerGroup : 0);
@@ -464,10 +468,7 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
   let computedMain = 0;
 
   for (const [groupIndex, group] of groups.entries()) {
-    const lineCross = naturalCrossSizes[groupIndex];
-    const canStretchGroup = settings.crossSizing !== 'hug'
-      && (settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch'));
-    const groupCross = lineCross + (canStretchGroup ? stretchPerGroup : 0);
+    const groupCross = groupCrossSizes[groupIndex];
     const crossCursor = crossStarts[groupIndex];
     const fillItems = settings.mainSizing === 'fixed' ? group.filter(item => item.layoutSizingMain === 'fill') : [];
     if (fillItems.length) {
@@ -488,10 +489,10 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
       const alignOffset = align === 'center' ? (groupCross - crossSize) / 2 : align === 'end' ? groupCross - crossSize : 0;
       if (horizontal) {
         item.x = mainCursor;
-        item.y = crossCursor + Math.max(0, alignOffset);
+        item.y = crossCursor + alignOffset;
         if (canStretch) item.height = nextCrossSize;
       } else {
-        item.x = crossCursor + Math.max(0, alignOffset);
+        item.x = crossCursor + alignOffset;
         item.y = mainCursor;
         if (canStretch) item.width = nextCrossSize;
       }

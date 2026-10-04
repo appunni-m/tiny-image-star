@@ -239,10 +239,12 @@ function shapeText({ fontId, text, variations, features, script, language, direc
   font.setVariations(checkedVariations(variations));
   const buffer = new hb.Buffer();
   buffer.addText(text);
+  // Guess complete Unicode segment properties first, then apply explicit
+  // overrides. This keeps direction overrides from skipping script detection.
+  buffer.guessSegmentProperties();
   if (script) buffer.setScript(script);
   if (language) buffer.setLanguage(language);
   if (direction) buffer.setDirection(direction);
-  else buffer.guessSegmentProperties();
   hb.shape(font, buffer, checkedFeatures(features));
   const infos = buffer.getGlyphInfosAndPositions();
   if (infos.length > MAX_GLYPHS) fail('The shaped text exceeds the local glyph preview limit.');

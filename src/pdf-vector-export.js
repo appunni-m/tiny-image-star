@@ -1,5 +1,7 @@
-const encoder = new TextEncoder();
 import { decodePdfImageDataUri, PdfImageFormatError } from './pdf-image.js';
+import { transformTextCase } from './text-layout.js';
+
+const encoder = new TextEncoder();
 
 const LIMITS = Object.freeze({
   maxPages: 100,
@@ -20,8 +22,10 @@ const LIMITS = Object.freeze({
  * WinAnsi/Windows-1252 extended Latin repertoire uses standard Helvetica PDF
  * fonts. Measured, flat inline rich-text runs also use standard Helvetica
  * variants when the SVG contains the editor's PDF placement metadata. Custom
- * fonts, shaped rich text, text paths, gradient strokes, filters,
- * luminance masks, and blend modes are rejected with feature-specific errors.
+ * fonts, shaped rich text, text paths, gradient strokes, unsupported filter
+ * graphs, luminance masks, and blend modes are rejected with feature-specific
+ * errors. A single user-space feDropShadow on a simple vector fill keeps its
+ * geometry as vector paths and its bounded blur as a transparent image XObject.
  */
 export class PdfVectorExportError extends TypeError {
   constructor(feature, detail = '') {
@@ -56,7 +60,26 @@ function finite(value, label) {
 
 function pdfNumber(value) {
   const rounded = Math.abs(value) < 1e-12 ? 0 : Number(value.toPrecision(12));
-  return Object.is(rounded, -0) ? '0' : String(rounded);
+  if (Object.is(rounded, -0)) return '0';
+  const text = String(rounded);
+  if (!/[eE]/.test(text)) return text;
+
+  // PDF real numbers do not use exponent notation. Expand the exponent after
+  // rounding so even very small valid SVG dimensions and coordinates remain
+  // valid PDF tokens.
+  const [mantissa, exponentText] = text.toLowerCase().split('e');
+  const exponent = Number(exponentText);
+  const negative = mantissa.startsWith('-');
+  const unsigned = negative ? mantissa.slice(1) : mantissa;
+  const decimalIndex = unsigned.indexOf('.') < 0 ? unsigned.length : unsigned.indexOf('.');
+  const digits = unsigned.replace('.', '');
+  const shiftedIndex = decimalIndex + exponent;
+  const magnitude = shiftedIndex <= 0
+    ? `0.${'0'.repeat(-shiftedIndex)}${digits}`
+    : shiftedIndex >= digits.length
+      ? `${digits}${'0'.repeat(shiftedIndex - digits.length)}`
+      : `${digits.slice(0, shiftedIndex)}.${digits.slice(shiftedIndex)}`;
+  return `${negative ? '-' : ''}${magnitude}`;
 }
 
 function decodeXml(text) {
@@ -120,6 +143,7 @@ const shapeAttributes = {
   path: new Set(['d', ...paintAttributes]),
   rect: new Set(['x', 'y', 'width', 'height', 'rx', 'ry', ...paintAttributes]),
   ellipse: new Set(['cx', 'cy', 'rx', 'ry', ...paintAttributes]),
+  circle: new Set(['cx', 'cy', 'r', ...paintAttributes]),
   polygon: new Set(['points', ...paintAttributes]),
 };
 
@@ -167,14 +191,14 @@ function parseSvg(svg) {
 }
 
 function parseRoot(svgRoot) {
-  assertAttributes(svgRoot, new Set(['xmlns', 'width', 'height', 'viewBox']));
+  assertAttributes(svgRoot, new Set(['xmlns', 'width', 'height', 'viewBox', 'preserveAspectRatio']));
   const rawViewBox = (svgRoot.attributes.viewBox || '').trim().split(/[\s,]+/).map(Number);
   if (rawViewBox.length !== 4 || !rawViewBox.every(Number.isFinite) || rawViewBox[2] <= 0 || rawViewBox[3] <= 0) {
     throw new TypeError('Vector PDF export requires a positive four-number SVG viewBox.');
   }
   const viewBox = rawViewBox.map(value => finite(value, 'viewBox coordinate'));
   const parseLength = (value, label) => {
-    const match = /^(\d+(?:\.\d*)?|\.\d+)(?:px)?$/.exec(String(value || ''));
+    const match = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(?:px)?$/.exec(String(value || ''));
     if (!match) throw new TypeError(`Vector PDF export requires SVG ${label} in pixels.`);
     return finite(match[1], label);
   };
@@ -183,7 +207,24 @@ function parseRoot(svgRoot) {
   if (width <= 0 || height <= 0 || width > LIMITS.maxPageDimension || height > LIMITS.maxPageDimension) {
     throw new RangeError(`Vector PDF page dimensions must be between 0 and ${LIMITS.maxPageDimension} points.`);
   }
-  return { viewBox, width, height };
+  const alignmentTokens = (svgRoot.attributes.preserveAspectRatio || 'xMidYMid meet').trim().split(/\s+/).filter(Boolean);
+  if (alignmentTokens[0] === 'defer') alignmentTokens.shift();
+  let preserveAspectRatio;
+  if (alignmentTokens[0] === 'none' && alignmentTokens.length === 1) {
+    preserveAspectRatio = { mode: 'none' };
+  } else {
+    const match = /^(xMin|xMid|xMax)(YMin|YMid|YMax)$/.exec(alignmentTokens[0] || '');
+    const mode = alignmentTokens[1] || 'meet';
+    if (!match || !['meet', 'slice'].includes(mode) || alignmentTokens.length > 2) {
+      fail('SVG preserveAspectRatio', 'only none or xMin/xMid/xMax with YMin/YMid/YMax and meet/slice is supported');
+    }
+    preserveAspectRatio = {
+      mode,
+      alignX: { xMin: 0, xMid: 0.5, xMax: 1 }[match[1]],
+      alignY: { YMin: 0, YMid: 0.5, YMax: 1 }[match[2]],
+    };
+  }
+  return { viewBox, width, height, preserveAspectRatio };
 }
 
 function gradientOffset(value) {
@@ -298,10 +339,45 @@ function maskRegion(node) {
   return { x, y, width, height };
 }
 
+function parseSimpleDropShadowFilter(definition) {
+  assertAttributes(definition, new Set(['id', 'filterUnits', 'x', 'y', 'width', 'height']));
+  if (definition.attributes.filterUnits !== 'userSpaceOnUse') {
+    fail('object-bounding-box layer effects', 'only explicit userSpaceOnUse drop-shadow filter regions are supported');
+  }
+  const region = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => {
+    if (definition.attributes[key] == null) fail('implicit drop-shadow filter regions', 'explicit user-space x, y, width, and height are required');
+    return [key, finite(definition.attributes[key], `drop-shadow filter ${key}`)];
+  }));
+  if (region.width <= 0 || region.height <= 0) throw new TypeError('SVG drop-shadow filter regions must have positive dimensions.');
+  const primitives = definition.children.filter(child => child.name !== '#text');
+  if (primitives.length !== 1 || primitives[0].name !== 'feDropShadow') {
+    fail('layer-effect filter graphs', 'only one feDropShadow primitive on simple filled geometry is supported');
+  }
+  const primitive = primitives[0];
+  assertAttributes(primitive, new Set(['in', 'dx', 'dy', 'stdDeviation', 'flood-color', 'flood-opacity', 'result']));
+  if (primitive.children.length) throw new TypeError('SVG feDropShadow primitives must be empty elements.');
+  if (primitive.attributes.in !== 'SourceGraphic') {
+    fail('chained drop shadows', 'the supported feDropShadow input must be SourceGraphic');
+  }
+  const dx = finite(primitive.attributes.dx, 'drop-shadow dx');
+  const dy = finite(primitive.attributes.dy, 'drop-shadow dy');
+  const deviationText = String(primitive.attributes.stdDeviation ?? '');
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(deviationText)) {
+    fail('anisotropic drop-shadow blur', 'one nonnegative stdDeviation value is supported');
+  }
+  const stdDeviation = finite(deviationText, 'drop-shadow standard deviation');
+  if (stdDeviation > 512) fail('oversized drop-shadow blur', 'standard deviation is limited to 512 SVG units');
+  const floodColor = primitive.attributes['flood-color'];
+  colorComponents(floodColor, 'drop-shadow');
+  const floodOpacity = parseOpacity(primitive.attributes['flood-opacity'], 'drop-shadow flood opacity');
+  return { ...region, dx, dy, stdDeviation, floodColor, floodOpacity };
+}
+
 function scanDefinitions(svgRoot) {
   const clips = new Map();
   const gradients = new Map();
   const masks = new Map();
+  const filters = new Map();
   const ids = new Set();
   const collect = (node) => {
     if (node.name === 'defs') {
@@ -325,7 +401,10 @@ function scanDefinitions(svgRoot) {
           ids.add(id);
           gradients.set(id, parseGradient(definition));
         } else if (definition.name === 'filter') {
-          fail('layer effects', 'SVG filter effects cannot be preserved by the current PDF writer');
+          const id = definition.attributes.id;
+          if (!id || ids.has(id)) throw new TypeError('SVG definitions require unique IDs.');
+          ids.add(id);
+          filters.set(id, parseSimpleDropShadowFilter(definition));
         } else if (definition.name === 'mask') {
           assertAttributes(definition, new Set([
             'id', 'maskUnits', 'maskContentUnits', 'mask-type', 'x', 'y', 'width', 'height'
@@ -346,7 +425,7 @@ function scanDefinitions(svgRoot) {
     if (node.children) node.children.forEach(collect);
   };
   collect(svgRoot);
-  return { clips, gradients, masks };
+  return { clips, gradients, masks, filters };
 }
 
 function parseOpacity(value, feature) {
@@ -488,6 +567,15 @@ function shapePath(node, { closeOpen = false } = {}) {
   if (node.name === 'path') return pathOperators(node.attributes.d || '', { closeOpen });
   if (node.name === 'rect') return rectPath(node.attributes);
   if (node.name === 'ellipse') return ellipsePath(node.attributes);
+  if (node.name === 'circle') {
+    const radius = finite(node.attributes.r, 'circle radius');
+    return ellipsePath({
+      cx: node.attributes.cx ?? 0,
+      cy: node.attributes.cy ?? 0,
+      rx: radius,
+      ry: radius,
+    });
+  }
   if (node.name === 'polygon') return polygonPath(node.attributes.points || '');
   if (node.name === 'text' || node.name === 'tspan') fail('text layers', 'only simple single-line ASCII text with a standard Helvetica font is supported');
   fail(`SVG element <${node.name}>`);
@@ -619,8 +707,9 @@ function paintText(node, inheritedOpacity, context) {
     || (attrs['stroke-opacity'] != null && parseOpacity(attrs['stroke-opacity'], 'text stroke opacity') !== 0)) {
     fail('text strokes', 'outlined text requires glyph paths; use raster PDF');
   }
-  if (attrs['text-transform'] != null) {
-    fail('text transformations', 'the text must already contain its final characters; use raster PDF to preserve transformed text');
+  const textTransform = attrs['text-transform'] ?? 'none';
+  if (!['none', 'uppercase', 'lowercase', 'capitalize'].includes(textTransform)) {
+    fail('text transformations', `the text case “${textTransform}” is not supported; use raster PDF`);
   }
   if (attrs['xml:space'] != null && attrs['xml:space'] !== 'preserve') {
     fail('SVG text whitespace', 'only preserved SVG text whitespace is supported');
@@ -628,6 +717,16 @@ function paintText(node, inheritedOpacity, context) {
   const letterSpacing = finite(attrs['letter-spacing'] ?? 0, 'text letter spacing');
   if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF text subset currently requires zero letter spacing');
   const hasPositionedLines = node.children.some(child => child.name === 'tspan');
+  const hasInlineRuns = node.children.some(line => line.name === 'tspan'
+    && line.children.some(child => child.name === 'tspan'));
+  const editorTextIsAlreadyTransformed = attrs['data-tiny-image-star-text-wrap'] === 'canvas-word-wrap';
+  if (textTransform !== 'none' && hasInlineRuns && !editorTextIsAlreadyTransformed) {
+    fail('rich text transformations', 'case conversion can cross styled run boundaries; use raster PDF');
+  }
+  // Editor SVG already contains the final case-transformed, measured text.
+  // Re-transforming each wrapped line could capitalize a continuation line
+  // that starts mid-word, so only apply SVG text-transform to untagged input.
+  const transformText = value => editorTextIsAlreadyTransformed ? value : transformTextCase(value, textTransform);
   const hasEditorTextMetrics = attrs['data-tiny-image-star-pdf-ascent'] != null;
   if (hasPositionedLines && !hasEditorTextMetrics) {
     fail('rich text', 'positioned runs need measured PDF baseline and run-layout metadata; text paths and unmeasured runs are unsupported');
@@ -677,7 +776,7 @@ function paintText(node, inheritedOpacity, context) {
       if (!['start', 'middle', 'end'].includes(textAnchor)) {
         fail('text alignment', 'positioned lines support only start, middle, or end text anchors');
       }
-      const value = line.children.map(child => child.text).join('');
+      const value = transformText(line.children.map(child => child.text).join(''));
       if (!value) continue;
       const literal = pdfTextLiteral(value);
       let x = finite(line.attributes.x, 'text line x');
@@ -721,7 +820,7 @@ function paintText(node, inheritedOpacity, context) {
   if (attrs['text-anchor'] != null && attrs['text-anchor'] !== 'start') {
     fail('text alignment', 'centered or right-aligned SVG text needs positioned line metrics; use raster PDF');
   }
-  const value = node.children.map(child => child.text).join('');
+  const value = transformText(node.children.map(child => child.text).join(''));
   const literal = pdfTextLiteral(value);
   const x = finite(attrs.x, 'text x');
   const y = finite(attrs.y, 'text y');
@@ -903,6 +1002,258 @@ function imageResource(href, context) {
   return context.imageNames.get(href);
 }
 
+const SHADOW_RASTER_LIMITS = Object.freeze({ maxPixels: 4_000_000, maxAggregatePixels: 12_000_000, maxDimension: 4096, maxKernelWork: 40_000_000 });
+
+function zlibStored(bytes) {
+  // Shadow rasters contain a flat RGB color plus a soft alpha mask. A bounded
+  // stored DEFLATE stream avoids a browser-only dependency in this module,
+  // which is loaded directly as a native ES module by the app.
+  const blockCount = Math.max(1, Math.ceil(bytes.length / 65_535));
+  const output = new Uint8Array(2 + bytes.length + blockCount * 5 + 4);
+  let offset = 0;
+  output[offset++] = 0x78;
+  output[offset++] = 0x01;
+  for (let sourceOffset = 0; sourceOffset < bytes.length || sourceOffset === 0; sourceOffset += 65_535) {
+    const length = Math.min(65_535, bytes.length - sourceOffset);
+    const final = sourceOffset + length >= bytes.length;
+    output[offset++] = final ? 1 : 0;
+    output[offset++] = length & 0xff;
+    output[offset++] = length >>> 8;
+    const inverse = (~length) & 0xffff;
+    output[offset++] = inverse & 0xff;
+    output[offset++] = inverse >>> 8;
+    output.set(bytes.subarray(sourceOffset, sourceOffset + length), offset);
+    offset += length;
+    if (final) break;
+  }
+  let s1 = 1;
+  let s2 = 0;
+  for (const byte of bytes) {
+    s1 = (s1 + byte) % 65_521;
+    s2 = (s2 + s1) % 65_521;
+  }
+  const adler = ((s2 << 16) | s1) >>> 0;
+  output[offset++] = adler >>> 24;
+  output[offset++] = adler >>> 16;
+  output[offset++] = adler >>> 8;
+  output[offset++] = adler & 0xff;
+  return output;
+}
+
+function shadowShapeGeometry(node) {
+  const attrs = node.attributes;
+  // Validate every accepted SVG shape with the same geometry parser used by
+  // the vector painter, then derive only the bounds needed by the bounded blur.
+  shapePath(node);
+  if (node.name === 'rect') {
+    const x = finite(attrs.x ?? 0, 'shadow rectangle x');
+    const y = finite(attrs.y ?? 0, 'shadow rectangle y');
+    const width = finite(attrs.width, 'shadow rectangle width');
+    const height = finite(attrs.height, 'shadow rectangle height');
+    if (width <= 0 || height <= 0) throw new TypeError('Drop-shadow rectangles require positive dimensions.');
+    const rx = Math.min(width / 2, Math.max(0, finite(attrs.rx ?? attrs.ry ?? 0, 'shadow rectangle x radius')));
+    const ry = Math.min(height / 2, Math.max(0, finite(attrs.ry ?? attrs.rx ?? 0, 'shadow rectangle y radius')));
+    return {
+      type: 'rect', x, y, width, height, rx, ry,
+      minX: finite(x, 'shadow rectangle left edge'), minY: finite(y, 'shadow rectangle top edge'),
+      maxX: finite(x + width, 'shadow rectangle right edge'), maxY: finite(y + height, 'shadow rectangle bottom edge'),
+    };
+  }
+  if (node.name === 'ellipse' || node.name === 'circle') {
+    const radius = node.name === 'circle' ? finite(attrs.r, 'shadow circle radius') : null;
+    const cx = finite(attrs.cx ?? 0, 'shadow ellipse center x');
+    const cy = finite(attrs.cy ?? 0, 'shadow ellipse center y');
+    const rx = radius ?? finite(attrs.rx, 'shadow ellipse radius x');
+    const ry = radius ?? finite(attrs.ry, 'shadow ellipse radius y');
+    if (rx <= 0 || ry <= 0) throw new TypeError('Drop-shadow ellipses require positive radii.');
+    return {
+      type: 'ellipse', cx, cy, rx, ry,
+      minX: finite(cx - rx, 'shadow ellipse left edge'), minY: finite(cy - ry, 'shadow ellipse top edge'),
+      maxX: finite(cx + rx, 'shadow ellipse right edge'), maxY: finite(cy + ry, 'shadow ellipse bottom edge'),
+    };
+  }
+  if (node.name === 'polygon') {
+    const points = attrs.points.trim().split(/[\s,]+/).filter(Boolean).map(value => finite(value, 'shadow polygon coordinate'));
+    if (points.length < 6 || points.length % 2) fail('degenerate drop-shadow polygons', 'at least three coordinate pairs are required');
+    if (points.length > 1024) fail('high-complexity drop-shadow polygons', 'shadow masks are limited to 512 vertices');
+    const vertices = [];
+    for (let index = 0; index < points.length; index += 2) vertices.push({ x: points[index], y: points[index + 1] });
+    return {
+      type: 'polygon', vertices,
+      minX: Math.min(...vertices.map(point => point.x)), minY: Math.min(...vertices.map(point => point.y)),
+      maxX: Math.max(...vertices.map(point => point.x)), maxY: Math.max(...vertices.map(point => point.y)),
+      fillRule: attrs['fill-rule'] || 'nonzero',
+    };
+  }
+  fail('drop shadows on this geometry', 'only rectangles, ellipses, circles, and simple polygons are supported');
+}
+
+function pointInsideShadowShape(shape, x, y) {
+  if (shape.type === 'rect') {
+    if (x < shape.minX || x > shape.maxX || y < shape.minY || y > shape.maxY) return false;
+    if (!shape.rx || !shape.ry) return true;
+    const cx = Math.max(shape.minX + shape.rx, Math.min(shape.maxX - shape.rx, x));
+    const cy = Math.max(shape.minY + shape.ry, Math.min(shape.maxY - shape.ry, y));
+    const dx = (x - cx) / shape.rx;
+    const dy = (y - cy) / shape.ry;
+    return dx * dx + dy * dy <= 1;
+  }
+  if (shape.type === 'ellipse') {
+    const dx = (x - shape.cx) / shape.rx;
+    const dy = (y - shape.cy) / shape.ry;
+    return dx * dx + dy * dy <= 1;
+  }
+  let winding = 0;
+  let crossings = 0;
+  for (let index = 0; index < shape.vertices.length; index += 1) {
+    const start = shape.vertices[index];
+    const end = shape.vertices[(index + 1) % shape.vertices.length];
+    if ((start.y <= y && end.y > y) || (start.y > y && end.y <= y)) {
+      const crossX = start.x + ((y - start.y) * (end.x - start.x)) / (end.y - start.y);
+      if (crossX > x) crossings += 1;
+    }
+    const cross = (end.x - start.x) * (y - start.y) - (x - start.x) * (end.y - start.y);
+    if (start.y <= y && end.y > y && cross > 0) winding += 1;
+    else if (start.y > y && end.y <= y && cross < 0) winding -= 1;
+  }
+  return shape.fillRule === 'evenodd' ? crossings % 2 === 1 : winding !== 0;
+}
+
+function gaussianBlur(alpha, width, height, sigma) {
+  const radius = sigma > 0 ? Math.ceil(3 * sigma) : 0;
+  if (radius > 256) fail('oversized drop-shadow blur kernel', 'the local Gaussian radius exceeds the bounded PDF workload');
+  if (!radius) return alpha;
+  const operations = width * height * (2 * radius + 1) * 2;
+  if (!Number.isSafeInteger(operations) || operations > SHADOW_RASTER_LIMITS.maxKernelWork) {
+    fail('drop-shadow blur workload', 'the requested blur exceeds the bounded local PDF raster budget');
+  }
+  const weights = new Float32Array(radius * 2 + 1);
+  let total = 0;
+  for (let index = -radius; index <= radius; index += 1) {
+    const weight = Math.exp(-(index * index) / (2 * sigma * sigma));
+    weights[index + radius] = weight;
+    total += weight;
+  }
+  for (let index = 0; index < weights.length; index += 1) weights[index] /= total;
+  const horizontal = new Float32Array(width * height);
+  const output = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    for (let x = 0; x < width; x += 1) {
+      let value = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sourceX = x + offset;
+        if (sourceX >= 0 && sourceX < width) value += alpha[row + sourceX] * weights[offset + radius];
+      }
+      horizontal[row + x] = value;
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let value = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sourceY = y + offset;
+        if (sourceY >= 0 && sourceY < height) value += horizontal[sourceY * width + x] * weights[offset + radius];
+      }
+      output[y * width + x] = value;
+    }
+  }
+  return output;
+}
+
+function shadowImageForShape(shapeNode, filter, context) {
+  const attrs = shapeNode.attributes;
+  if (attrs.stroke && attrs.stroke !== 'none') {
+    fail('drop shadows on stroked geometry', 'the supported raster shadow source must have a single solid fill and no stroke');
+  }
+  const fill = attrs.fill ?? '#000000';
+  if (fill === 'none') return null;
+  if (fill.startsWith('url(')) fail('drop shadows on gradient fills', 'only one solid source fill is supported');
+  colorComponents(fill, 'drop-shadow source');
+  const fillOpacity = parseOpacity(attrs['fill-opacity'], 'drop-shadow source fill opacity');
+  if (fillOpacity === 0 || filter.floodOpacity === 0) return null;
+  const shape = shadowShapeGeometry(shapeNode);
+  const padding = filter.stdDeviation * 3;
+  const boxWidth = shape.maxX - shape.minX + 2 * padding;
+  const boxHeight = shape.maxY - shape.minY + 2 * padding;
+  const density = Math.min(2, Math.sqrt(SHADOW_RASTER_LIMITS.maxPixels / (boxWidth * boxHeight)),
+    SHADOW_RASTER_LIMITS.maxDimension / boxWidth, SHADOW_RASTER_LIMITS.maxDimension / boxHeight);
+  if (!Number.isFinite(density) || density < 0.125) {
+    fail('oversized drop-shadow source', 'the vector shape is too large for the bounded shadow raster budget');
+  }
+  const width = Math.max(1, Math.ceil(boxWidth * density));
+  const height = Math.max(1, Math.ceil(boxHeight * density));
+  const pixelCount = width * height;
+  if (pixelCount > SHADOW_RASTER_LIMITS.maxPixels
+    || context.shadowPixelCount + pixelCount > SHADOW_RASTER_LIMITS.maxAggregatePixels) {
+    fail('drop-shadow raster budget', 'the page exceeds the bounded local shadow-raster pixel limit');
+  }
+  context.shadowPixelCount += pixelCount;
+  const x = shape.minX - padding;
+  const y = shape.minY - padding;
+  const sourceAlpha = new Float32Array(pixelCount);
+  const samples = [0.25, 0.75];
+  const sampleWork = pixelCount * samples.length ** 2 * (shape.vertices?.length || 1);
+  if (!Number.isSafeInteger(sampleWork) || sampleWork > SHADOW_RASTER_LIMITS.maxKernelWork) {
+    fail('drop-shadow geometry workload', 'the source shape exceeds the bounded local shadow-raster budget');
+  }
+  for (let py = 0; py < height; py += 1) {
+    for (let px = 0; px < width; px += 1) {
+      let coverage = 0;
+      for (const oy of samples) for (const ox of samples) {
+        const sampleX = x + (px + ox) / density;
+        const sampleY = y + (py + oy) / density;
+        if (pointInsideShadowShape(shape, sampleX, sampleY)) coverage += 0.25;
+      }
+      sourceAlpha[py * width + px] = coverage * fillOpacity;
+    }
+  }
+  const blurredAlpha = gaussianBlur(sourceAlpha, width, height, filter.stdDeviation * density);
+  const shadowAlpha = new Uint8Array(pixelCount);
+  for (let index = 0; index < pixelCount; index += 1) {
+    shadowAlpha[index] = Math.max(0, Math.min(255, Math.round(blurredAlpha[index] * filter.floodOpacity * 255)));
+  }
+  const [red, green, blue] = colorComponents(filter.floodColor, 'drop-shadow').map(component => Math.round(component * 255));
+  const colorBytes = new Uint8Array(pixelCount * 3);
+  for (let index = 0; index < pixelCount; index += 1) {
+    const offset = index * 3;
+    colorBytes[offset] = red;
+    colorBytes[offset + 1] = green;
+    colorBytes[offset + 2] = blue;
+  }
+  const descriptor = {
+    width, height, displayWidth: width, displayHeight: height, orientation: 1,
+    bitsPerComponent: 8, colorSpace: '/DeviceRGB', filter: 'FlateDecode', decodeParms: '',
+    data: zlibStored(colorBytes),
+    alpha: { bitsPerComponent: 8, data: zlibStored(shadowAlpha) },
+  };
+  const name = `Im${context.images.size + 1}`;
+  context.images.set(name, descriptor);
+  const imageMatrix = [
+    width / density, 0, 0, -height / density,
+    x + filter.dx, y + filter.dy + height / density,
+  ];
+  return `q\n${imageMatrix.map(pdfNumber).join(' ')} cm\n/${name} Do\nQ`;
+}
+
+function renderFilteredGroup(node, filter, context, opacity) {
+  const visible = node.children.filter(child => child.name !== '#text' && child.name !== 'title');
+  if (visible.length !== 1) fail('drop shadows on compound groups', 'one simple filled vector shape is supported per effect group');
+  const shape = visible[0];
+  if (!['rect', 'ellipse', 'circle', 'polygon'].includes(shape.name)) {
+    fail('drop shadows on this geometry', 'only rectangles, ellipses, circles, and simple polygons are supported');
+  }
+  const shadow = shadowImageForShape(shape, filter, context);
+  const renderedShape = renderTree(shape, { ...context, opacity: 1, inDefs: false });
+  const filterClip = `${rectPath({ x: filter.x, y: filter.y, width: filter.width, height: filter.height })}\nW\nn`;
+  const filteredContent = ['q', filterClip, shadow, renderedShape, 'Q'].filter(Boolean).join('\n');
+  if (opacity === 1) return filteredContent;
+  const formName = reserveForm(context);
+  context.forms.set(formName, { content: `${filteredContent}\n` });
+  const state = alphaState(opacity, opacity, context.stateNames);
+  return `q\n${state}\n/${formName} Do\nQ`;
+}
+
 function imageOrientation(image) {
   const width = image.width;
   const height = image.height;
@@ -1014,11 +1365,22 @@ function renderTree(node, context = {}) {
     assertAttributes(node, new Set(['transform', 'opacity', 'filter', 'mask', 'style', 'clip-path']));
     const ownOpacity = parseOpacity(attrs.opacity, 'group opacity');
     if (ownOpacity === 0 || opacity === 0) return '';
-    if (attrs.filter) fail('layer effects', 'SVG filter effects cannot be preserved by PDF');
     if (attrs.style) fail('blend modes and inline CSS', 'SVG styles cannot be represented by the current PDF writer');
     const matrix = transformMatrix(attrs.transform);
     const commands = ['q'];
     if (matrix) commands.push(matrix);
+    if (attrs.filter) {
+      if (attrs.mask || attrs['clip-path']) {
+        fail('drop-shadow filters combined with masks or clipping', 'the filtered group must have no mask or group clip path');
+      }
+      const match = /^url\(#([^)]+)\)$/.exec(attrs.filter);
+      if (!match) fail('external SVG filters', 'only local feDropShadow filter references are supported');
+      const filter = definitions.filters.get(match[1]);
+      if (!filter) throw new TypeError(`SVG references missing filter ${match[1]}.`);
+      commands.push(renderFilteredGroup(node, filter, context, opacity * ownOpacity));
+      commands.push('Q');
+      return commands.filter(Boolean).join('\n');
+    }
     const clip = attrs['clip-path'];
     if (clip) {
       const match = /^url\(#([^)]+)\)$/.exec(clip);
@@ -1073,7 +1435,7 @@ function renderTree(node, context = {}) {
     if (node.attributes.mask) fail('text alpha masks', 'masked text requires glyph outlines');
     return paintText(node, opacity, context);
   }
-  if (['path', 'rect', 'ellipse', 'polygon', 'text', 'tspan'].includes(node.name)) {
+  if (['path', 'rect', 'ellipse', 'circle', 'polygon', 'text', 'tspan'].includes(node.name)) {
     if (inDefs) return '';
     if (node.attributes.mask) {
       const maskFormName = maskFormFor(maskReference(node.attributes.mask), context);
@@ -1096,7 +1458,7 @@ function renderTree(node, context = {}) {
 
 function compileSvg(svg) {
   const root = parseSvg(svg);
-  const { viewBox, width, height } = parseRoot(root);
+  const { viewBox, width, height, preserveAspectRatio } = parseRoot(root);
   const definitions = scanDefinitions(root);
   const stateNames = new Map();
   const shadingNames = new Map();
@@ -1110,13 +1472,22 @@ function compileSvg(svg) {
   const buildingMaskIds = new Set();
   const renderContext = {
     definitions, stateNames, shadingNames, shadings, imageNames, images, forms, fontNames, fonts,
-    maskFormNames, buildingMaskIds,
+    maskFormNames, buildingMaskIds, shadowPixelCount: 0,
   };
   const [vx, vy, vbWidth, vbHeight] = viewBox;
-  const sx = finite(width / vbWidth, 'viewport scale');
-  const sy = finite(height / vbHeight, 'viewport scale');
-  const e = finite(-vx * sx, 'viewport translation');
-  const f = finite((vy + vbHeight) * sy, 'viewport translation');
+  let sx = finite(width / vbWidth, 'viewport scale');
+  let sy = finite(height / vbHeight, 'viewport scale');
+  let e = finite(-vx * sx, 'viewport translation');
+  let f = finite((vy + vbHeight) * sy, 'viewport translation');
+  if (preserveAspectRatio.mode !== 'none') {
+    const uniformScale = preserveAspectRatio.mode === 'slice' ? Math.max(sx, sy) : Math.min(sx, sy);
+    const alignX = (width - vbWidth * uniformScale) * preserveAspectRatio.alignX;
+    const alignY = (height - vbHeight * uniformScale) * preserveAspectRatio.alignY;
+    sx = uniformScale;
+    sy = uniformScale;
+    e = finite(alignX - vx * uniformScale, 'viewport translation');
+    f = finite(height - alignY + vy * uniformScale, 'viewport translation');
+  }
   const content = [
     'q',
     `${pdfNumber(sx)} 0 0 ${pdfNumber(-sy)} ${pdfNumber(e)} ${pdfNumber(f)} cm`,

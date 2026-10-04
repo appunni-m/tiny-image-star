@@ -1,11 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, createComponent, createComponentInstance, createDocument, createNode, duplicateNode,
-  detachNodeTextPath, getNodeGeometry, getNodeTextPath, moveNode, removeNode, syncComponentInstances, validateDocument
+  addNode, createComponent, createComponentInstance, createDocument, createMaskGroup, createNode, duplicateNode,
+  detachNodeTextPath, findNode, getNodeGeometry, getNodeTextPath, moveNode, removeNode, syncComponentInstances, validateDocument
 } from '../src/model.js';
+import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
 import { exportNodeToSvg, exportPageToSvg } from '../src/svg-export.js';
-import { createTextPathGeometry, createTextPathSampler, drawTextAlongPath, flattenTextPath, isValidTextPathGeometry, pointAtTextPathDistance, textPathSvgData } from '../src/text-on-path.js';
+import { createTextPathGeometry, createTextPathSampler, drawTextAlongPath, flattenTextPath, isValidTextPathGeometry, pointAtTextPathDistance, textPathParentPlacement, textPathSvgData } from '../src/text-on-path.js';
+
+test('text-on-path creation keeps live auto-layout labels absolute and excludes Boolean operands', () => {
+  assert.deepEqual(textPathParentPlacement(null), { liveLink: true, layoutPositioning: undefined });
+  assert.deepEqual(textPathParentPlacement({ type: 'frame', autoLayout: { axis: 'horizontal' } }), {
+    liveLink: true, layoutPositioning: 'absolute'
+  });
+  assert.deepEqual(textPathParentPlacement({ type: 'group', mask: true }), {
+    liveLink: true, layoutPositioning: undefined
+  });
+  assert.deepEqual(textPathParentPlacement({ type: 'boolean' }), {
+    liveLink: false, layoutPositioning: undefined
+  });
+});
 
 function pathNode() {
   return createNode('path', {
@@ -41,6 +55,19 @@ test('text path snapshots validate, flatten cubic geometry, and sample distance 
   const circleLength = flattenTextPath(circle).at(-1).distance;
   assert.ok(circleLength > 250);
   assert.deepEqual(pointAtTextPathDistance(circle, circleLength + 5), pointAtTextPathDistance(circle, 5));
+  const ellipseArc = createTextPathGeometry(createNode('ellipse', {
+    width: 100, height: 80, arcData: { startingAngle: 0, endingAngle: Math.PI / 2, innerRadius: .35 }
+  }));
+  assert.equal(ellipseArc.closed, false, 'text on a partial ellipse follows the visible outer arc rather than the full circle');
+  assert.equal(ellipseArc.points[0].x, 1);
+  assert.equal(ellipseArc.points[0].y, .5);
+  assert.ok(Math.abs(ellipseArc.points[0].out.x) < 1e-12);
+  assert.ok(Math.abs(ellipseArc.points[0].out.y - .2761423749153967) < 1e-12);
+  assert.equal(ellipseArc.points.at(-1).x, .5);
+  assert.equal(ellipseArc.points.at(-1).y, 1);
+  assert.ok(Math.abs(ellipseArc.points.at(-1).in.x - .2761423749153967) < 1e-12);
+  assert.ok(Math.abs(ellipseArc.points.at(-1).in.y) < 1e-12);
+  assert.ok(flattenTextPath(ellipseArc).at(-1).distance < circleLength / 2);
 });
 
 test('text path flattening has a fixed sample budget for dense or adversarial paths', () => {
@@ -52,6 +79,40 @@ test('text path flattening has a fixed sample budget for dense or adversarial pa
   const table = flattenTextPath(geometry, .25);
   assert.ok(table.length <= 65_536, 'flattening stays inside the fixed memory budget');
   assert.ok(table.at(-1).distance > 0, 'the bounded table remains usable for text placement');
+});
+
+test('text path flattening adapts to curve shape when a high-curvature segment has a short chord', () => {
+  const geometry = {
+    width: 100, height: 100, closed: false, startOffset: 0, flipped: false,
+    points: [
+      { x: 0, y: 0, out: { x: .5, y: .3 } },
+      { x: .01, y: 0, in: { x: -.71, y: .02 } }
+    ]
+  };
+  const table = flattenTextPath(geometry, .25);
+  const [start, end] = geometry.points;
+  const p0 = { x: start.x * geometry.width, y: start.y * geometry.height };
+  const p1 = { x: (start.x + start.out.x) * geometry.width, y: (start.y + start.out.y) * geometry.height };
+  const p3 = { x: end.x * geometry.width, y: end.y * geometry.height };
+  const p2 = { x: (end.x + end.in.x) * geometry.width, y: (end.y + end.in.y) * geometry.height };
+  let referenceLength = 0;
+  let previous = p0;
+  const referenceSteps = 100_000;
+  for (let step = 1; step <= referenceSteps; step += 1) {
+    const t = step / referenceSteps;
+    const u = 1 - t;
+    const point = {
+      x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
+      y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y
+    };
+    referenceLength += Math.hypot(point.x - previous.x, point.y - previous.y);
+    previous = point;
+  }
+
+  assert.ok(table.length > 9, 'subdivision follows the cubic curvature instead of relying on the 1-unit endpoint chord');
+  assert.ok(Math.abs(table.at(-1).distance - referenceLength) < .25,
+    'glyph distances stay close to a dense reference even when the curve loops far beyond its short chord');
+  assert.ok(table.length <= 65_536, 'adaptive subdivision remains inside the fixed sample budget');
 });
 
 test('text path geometry and orientation round-trip through the saved document model', () => {
@@ -110,6 +171,76 @@ test('linked text follows live path geometry and exports the current source shap
     'anchor and source-size edits change the path used by the label');
   const svg = exportPageToSvg(document.pages[0], { document, measureText: value => [...String(value)].length * 8 });
   assert.ok(svg.includes(`d="${textPathSvgData(currentPath)}"`), 'SVG export uses the current source path rather than the saved snapshot');
+});
+
+test('live text-on-path follows an auto-layout source without joining or resizing its flow', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    width: 280, height: 100,
+    autoLayout: createAutoLayout({
+      axis: 'horizontal', columnGap: 12,
+      padding: { top: 10, right: 16, bottom: 10, left: 20 }
+    })
+  });
+  const source = pathNode();
+  source.x = 0;
+  source.y = 0;
+  source.width = 100;
+  source.height = 40;
+  const text = createNode('text', {
+    text: 'Live in auto layout', x: source.x, y: source.y,
+    width: source.width, height: source.height, layoutPositioning: 'absolute',
+    textPath: { ...createTextPathGeometry(source), sourceId: source.id }
+  });
+  addNode(document, frame);
+  addNode(document, source, { parentId: frame.id });
+  addNode(document, text, { parentId: frame.id });
+
+  applyAutoLayout(frame);
+  assert.deepEqual([source.x, source.y], [20, 10], 'the source remains the only flow item');
+  assert.deepEqual(getNodeGeometry(document, text), {
+    x: source.x, y: source.y, width: source.width, height: source.height,
+    rotation: source.rotation, affineTransform: null
+  }, 'the linked text follows the source after auto-layout positions it');
+  const previousPath = getNodeTextPath(document, text);
+  source.width = 180;
+  source.points[1].out.y = 1;
+  const currentPath = getNodeTextPath(document, text);
+  assert.equal(currentPath.width, 180);
+  assert.notDeepEqual(currentPath.points, previousPath.points,
+    'source geometry edits refresh the path rather than leaving a snapshot');
+  assert.doesNotThrow(() => validateDocument(document));
+});
+
+test('live text-on-path follows an editable mask source while remaining inside the mask group', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { x: 0, y: 0, width: 200, height: 100 });
+  const source = createNode('ellipse', { x: 12, y: 15, width: 160, height: 70 });
+  addNode(document, content);
+  addNode(document, source);
+  const mask = createMaskGroup(document, [content.id, source.id]);
+  const text = createNode('text', {
+    text: 'Mask follows its source', x: source.x, y: source.y,
+    width: source.width, height: source.height,
+    textPath: { ...createTextPathGeometry(source), sourceId: source.id }
+  });
+  addNode(document, text, { parentId: mask.id });
+
+  const previousPath = getNodeTextPath(document, text);
+  const editableSource = findNode(document, source.id).node;
+  editableSource.width = 220;
+  editableSource.arcData = { startingAngle: 0, endingAngle: Math.PI / 2, innerRadius: .2 };
+
+  assert.equal(getNodeTextPath(document, text).width, 220);
+  assert.notDeepEqual(getNodeTextPath(document, text).points, previousPath.points,
+    'masking preserves a live link to editable source geometry');
+  assert.equal(findNode(document, text.id).parent, mask,
+    'the label remains inside the same mask composition');
+  const currentPath = getNodeTextPath(document, text);
+  const svg = exportPageToSvg(document.pages[0], { document, measureText: value => [...String(value)].length * 8 });
+  assert.ok(svg.includes(`d="${textPathSvgData(currentPath)}"`),
+    'SVG keeps the live source geometry for a label nested in the mask');
+  assert.doesNotThrow(() => validateDocument(document));
 });
 
 test('deleting or reparenting a linked path detaches the label at its latest geometry', () => {
@@ -238,6 +369,25 @@ test('canvas rendering positions editable graphemes on the path and reverses ori
   node.textPath.flipped = false;
   drawTextAlongPath(ctx, 'ABCDEFGHIJK', node, 5, 8, () => 10);
   assert.equal(calls.filter(call => call[0] === 'text').length, 8, 'open paths stop at their endpoint instead of piling glyphs there');
+});
+
+test('text with a negative start offset skips glyphs before an open path instead of piling them at its start', () => {
+  const calls = [];
+  const ctx = {
+    font: '', textBaseline: '', textAlign: '',
+    save() {}, restore() {}, translate(x, y) { calls.push(['translate', x, y]); },
+    rotate() {}, scale() {}, fillText(text) { calls.push(['text', text]); }
+  };
+  const node = createNode('text', {
+    textPath: {
+      width: 80, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], closed: false,
+      startOffset: -30, flipped: false
+    }
+  });
+
+  assert.equal(drawTextAlongPath(ctx, 'ABCDE', node, 5, 8, () => 10), true);
+  assert.deepEqual(calls.filter(call => call[0] === 'text').map(call => call[1]), ['D', 'E']);
+  assert.deepEqual(calls.filter(call => call[0] === 'translate'), [['translate', 10, 18], ['translate', 20, 18]]);
 });
 
 test('text on a path keeps rich-run type, color, tracking, baseline, and text-case styles', () => {
@@ -379,4 +529,28 @@ test('SVG textPath exports preserve rich spans and measure their independent sty
   assert.match(svg, /<textPath[^>]*><tspan font-family="Alpha" font-size="18" font-weight="700"[^>]*fill="#ff0000" text-decoration="underline">Bold &amp; <\/tspan>/);
   assert.match(svg, /<tspan font-family="Beta" font-size="12"[^>]*fill="#0000ff" baseline-shift="2px">light<\/tspan>/);
   assert.deepEqual([...new Set(measuredFamilies.filter(family => family !== 'base'))], ['Alpha', 'Beta']);
+});
+
+test('SVG textPath alignment measures a shaped run as a whole and applies tracking between graphemes', () => {
+  const text = createNode('text', {
+    id: 'kerned-curve-label', text: 'AV', align: 'center',
+    textRuns: [{ text: 'AV', fontFamily: 'Alpha', fontSize: 12, letterSpacing: 2 }],
+    textPath: {
+      width: 100, height: 20,
+      points: [{ x: 0, y: .5 }, { x: 1, y: .5 }],
+      closed: false, startOffset: 0, flipped: false
+    }
+  });
+  const measurements = [];
+  const svg = exportNodeToSvg(text, {
+    measureText(value, node) {
+      measurements.push({ value, family: node.textPathRunStyle?.fontFamily, tracking: node.textPathRunStyle?.letterSpacing });
+      return value === 'AV' ? 18 : 10;
+    }
+  });
+
+  assert.deepEqual(measurements.filter(item => item.family), [{ value: 'AV', family: 'Alpha', tracking: 0 }],
+    'alignment measurement keeps the same styled shaping context as the exported SVG span');
+  assert.match(svg, /startOffset="40"/,
+    '18px of shaped advance plus one 2px inter-grapheme tracking gap centers on the 100px path');
 });

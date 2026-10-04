@@ -1,9 +1,21 @@
 import { vectorPathContours } from './vector-path.js';
 import { requiresComplexTextShaping, textGraphemes } from './text-layout.js';
 import { canvasFontWeight } from './font-variation.js';
+import { ellipseArcParameters, isValidEllipseArcData } from './ellipse-arc.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const MAX_TEXT_PATH_SAMPLES = 65_536;
+
+/** Keep a live label outside auto-layout flow while preserving safe same-parent links. */
+export function textPathParentPlacement(parent) {
+  if (parent?.type === 'boolean') {
+    return { liveLink: false, layoutPositioning: undefined };
+  }
+  return {
+    liveLink: true,
+    layoutPositioning: parent?.autoLayout ? 'absolute' : undefined
+  };
+}
 
 /** Snapshot editable vector geometry onto a text layer so it survives source deletion. */
 export function createTextPathGeometry(source, { startOffset = 0, flipped = false } = {}) {
@@ -13,12 +25,44 @@ export function createTextPathGeometry(source, { startOffset = 0, flipped = fals
     contour = vectorPathContours(source).find(item => Array.isArray(item.points) && item.points.length >= 2);
   } else if (source.type === 'ellipse') {
     const k = 4 * (Math.sqrt(2) - 1) / 3;
-    contour = { closed: true, points: [
-      { x: .5, y: 0, out: { x: k / 2, y: 0 } },
-      { x: 1, y: .5, in: { x: 0, y: -k / 2 }, out: { x: 0, y: k / 2 } },
-      { x: .5, y: 1, in: { x: k / 2, y: 0 }, out: { x: -k / 2, y: 0 } },
-      { x: 0, y: .5, in: { x: 0, y: k / 2 }, out: { x: 0, y: -k / 2 } }
-    ] };
+    const width = Math.max(1, Number(source.width) || 0);
+    const height = Math.max(1, Number(source.height) || 0);
+    const arc = isValidEllipseArcData(source.arcData) ? ellipseArcParameters(source) : null;
+    if (arc && !arc.full && Math.abs(arc.sweep) > 1e-9) {
+      const segments = Math.max(1, Math.ceil(Math.abs(arc.sweep) / (Math.PI / 2)));
+      const points = [];
+      for (let index = 0; index < segments; index += 1) {
+        const startAngle = arc.start + arc.sweep * index / segments;
+        const endAngle = arc.start + arc.sweep * (index + 1) / segments;
+        const delta = endAngle - startAngle;
+        const handle = 4 / 3 * Math.tan(delta / 4);
+        const pointAt = angle => ({
+          x: width * (.5 + .5 * Math.cos(angle)),
+          y: height * (.5 + .5 * Math.sin(angle))
+        });
+        const tangentAt = angle => ({ x: -width * .5 * Math.sin(angle), y: height * .5 * Math.cos(angle) });
+        const start = pointAt(startAngle);
+        const end = pointAt(endAngle);
+        const startTangent = tangentAt(startAngle);
+        const endTangent = tangentAt(endAngle);
+        const startHandle = { x: startTangent.x * handle, y: startTangent.y * handle };
+        const endHandle = { x: -endTangent.x * handle, y: -endTangent.y * handle };
+        const normalizeCoordinate = value => Math.abs(value) < 1e-15 ? 0 : value;
+        const normalized = point => ({ x: normalizeCoordinate(point.x / width), y: normalizeCoordinate(point.y / height) });
+        const normalizedOffset = point => ({ x: normalizeCoordinate(point.x / width), y: normalizeCoordinate(point.y / height) });
+        if (!points.length) points.push({ ...normalized(start), out: normalizedOffset(startHandle) });
+        else points.at(-1).out = normalizedOffset(startHandle);
+        points.push({ ...normalized(end), in: normalizedOffset(endHandle) });
+      }
+      contour = { closed: false, points };
+    } else {
+      contour = { closed: true, points: [
+        { x: .5, y: 0, out: { x: k / 2, y: 0 } },
+        { x: 1, y: .5, in: { x: 0, y: -k / 2 }, out: { x: 0, y: k / 2 } },
+        { x: .5, y: 1, in: { x: k / 2, y: 0 }, out: { x: -k / 2, y: 0 } },
+        { x: 0, y: .5, in: { x: 0, y: k / 2 }, out: { x: 0, y: -k / 2 } }
+      ] };
+    }
   } else if (source.type === 'rectangle') {
     contour = { closed: true, points: [
       { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }
@@ -52,17 +96,63 @@ export function isValidTextPathGeometry(path) {
     && ['in', 'out'].every(part => point[part] == null || coordinate(point[part].x) && coordinate(point[part].y)));
 }
 
-function curvePoint(p0, p1, p2, p3, t) {
-  const u = 1 - t;
-  return {
-    x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
-    y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y
-  };
+function pointSegmentDistance(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (!(lengthSquared > 0)) return Math.hypot(point.x - start.x, point.y - start.y);
+  const projection = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+  return Math.hypot(point.x - start.x - projection * dx, point.y - start.y - projection * dy);
+}
+
+function cubicFlatness({ p0, p1, p2, p3 }) {
+  const chord = Math.hypot(p3.x - p0.x, p3.y - p0.y);
+  const controlPolygon = Math.hypot(p1.x - p0.x, p1.y - p0.y)
+    + Math.hypot(p2.x - p1.x, p2.y - p1.y)
+    + Math.hypot(p3.x - p2.x, p3.y - p2.y);
+  return Math.max(
+    pointSegmentDistance(p1, p0, p3),
+    pointSegmentDistance(p2, p0, p3),
+    controlPolygon - chord
+  );
+}
+
+function splitCubicHalf(curve) {
+  const midpoint = (left, right) => ({ x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 });
+  const p01 = midpoint(curve.p0, curve.p1);
+  const p12 = midpoint(curve.p1, curve.p2);
+  const p23 = midpoint(curve.p2, curve.p3);
+  const p012 = midpoint(p01, p12);
+  const p123 = midpoint(p12, p23);
+  const p0123 = midpoint(p012, p123);
+  return [
+    { p0: curve.p0, p1: p01, p2: p012, p3: p0123, depth: curve.depth + 1 },
+    { p0: p0123, p1: p123, p2: p23, p3: curve.p3, depth: curve.depth + 1 }
+  ];
+}
+
+function flattenCubic(p0, p1, p2, p3, tolerance, maxSegments) {
+  const first = { p0, p1, p2, p3, depth: 0 };
+  const stack = [first];
+  const output = [p0];
+  while (stack.length) {
+    const curve = stack.pop();
+    const accepted = output.length - 1;
+    const canSplit = curve.depth < 24
+      && cubicFlatness(curve) > tolerance
+      && accepted + stack.length + 2 <= maxSegments;
+    if (canSplit) {
+      const [left, right] = splitCubicHalf(curve);
+      stack.push(right, left);
+    } else output.push(curve.p3);
+  }
+  return output;
 }
 
 /** Flatten the stored cubic path into a bounded-distance lookup table. */
 export function flattenTextPath(path, tolerance = 1) {
   if (!isValidTextPathGeometry(path)) return [];
+  const flatnessTolerance = Number.isFinite(tolerance) ? Math.max(0.25, tolerance) : 1;
   const points = path.points;
   const segments = path.closed ? points.length : points.length - 1;
   const output = [];
@@ -74,16 +164,14 @@ export function flattenTextPath(path, tolerance = 1) {
     const c1 = start.out ? { x: p0.x + start.out.x * path.width, y: p0.y + start.out.y * path.height } : p0;
     const c2 = end.in ? { x: p3.x + end.in.x * path.width, y: p3.y + end.in.y * path.height } : p3;
     const curved = start.out || end.in;
-    const desiredSteps = curved ? clamp(Math.ceil(Math.hypot(p3.x - p0.x, p3.y - p0.y) / Math.max(0.25, tolerance)), 8, 128) : 1;
     const remainingSegments = segments - index;
     const availableSamples = MAX_TEXT_PATH_SAMPLES - output.length;
     const segmentBudget = Math.max(1, Math.floor((availableSamples - (index === 0 ? 1 : 0)) / remainingSegments));
-    const steps = Math.min(desiredSteps, segmentBudget);
-    for (let step = index === 0 ? 0 : 1; step <= steps; step += 1) {
-      output.push(curved ? curvePoint(p0, c1, c2, p3, step / steps) : {
-        x: p0.x + (p3.x - p0.x) * step / steps,
-        y: p0.y + (p3.y - p0.y) * step / steps
-      });
+    const segmentPoints = curved
+      ? flattenCubic(p0, c1, c2, p3, flatnessTolerance, segmentBudget)
+      : [p0, p3];
+    for (let pointIndex = index === 0 ? 0 : 1; pointIndex < segmentPoints.length; pointIndex += 1) {
+      output.push(segmentPoints[pointIndex]);
     }
   }
   let length = 0;
@@ -182,6 +270,33 @@ export function textPathCharacters(text, node, {
   return characters;
 }
 
+function samePathRunStyle(left, right) {
+  const sameMap = (leftMap = {}, rightMap = {}) => {
+    const leftKeys = Object.keys(leftMap || {}).sort(); const rightKeys = Object.keys(rightMap || {}).sort();
+    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+      key === rightKeys[index] && Object.is(leftMap[key], rightMap[key]));
+  };
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left); const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every(key => Object.hasOwn(right, key)
+    && (['fontAxes', 'fontFeatures'].includes(key)
+      ? sameMap(left[key], right[key])
+      : Object.is(left[key], right[key])));
+}
+
+/** Group adjacent path characters with the same style for shaping and measurement. */
+export function textPathSpans(text, node, options) {
+  const spans = [];
+  for (const character of textPathCharacters(text, node, options)) {
+    const previous = spans.at(-1);
+    if (previous && samePathRunStyle(previous.style, character.style)) {
+      previous.text += character.text;
+      previous.graphemeCount += 1;
+    } else spans.push({ text: character.text, style: character.style, graphemeCount: 1 });
+  }
+  return spans;
+}
+
 export function textPathSvgData(path) {
   if (!isValidTextPathGeometry(path)) return '';
   const n = value => Number(Number(value).toFixed(6));
@@ -221,19 +336,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     letterSpacing: letterSpacingOverride ?? node.letterSpacing,
     color: color ?? node.color
   };
-  const styledCharacters = textPathCharacters(text, { ...node, ...baseStyle }, { color, overrideRunColors });
-  const spans = [];
-  const sameMap = (left = {}, right = {}) => {
-    const leftKeys = Object.keys(left || {}).sort(); const rightKeys = Object.keys(right || {}).sort();
-    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index] && Object.is(left[key], right[key]));
-  };
-  const sameStyle = (left, right) => left && right && Object.keys(left).every(key =>
-    ['fontAxes', 'fontFeatures'].includes(key) ? sameMap(left[key], right[key]) : Object.is(left[key], right[key]));
-  for (const character of styledCharacters) {
-    const previous = spans.at(-1);
-    if (previous && sameStyle(previous.style, character.style)) previous.text += character.text;
-    else spans.push({ text: character.text, style: character.style });
-  }
+  const spans = textPathSpans(text, { ...node, ...baseStyle }, { color, overrideRunColors });
   const segments = [];
   const appendCanvasFallback = span => {
     if (requiresComplexTextShaping(span.text)) {
@@ -301,6 +404,10 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   }
   for (let index = 0; index < segments.length; index += 1) {
     const advance = advances[index];
+    if (!path.closed && cursor + advance / 2 < 0) {
+      cursor += advance;
+      continue;
+    }
     if (!path.closed && cursor + advance / 2 > sampler.length) break;
     const sample = sampler.at(cursor + advance / 2);
     if (!sample) break;

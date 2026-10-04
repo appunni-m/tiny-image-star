@@ -147,11 +147,21 @@ test('layer tasks explain missing selection and current batch restrictions', () 
   assert.equal(busy.find(action => action.id === 'group-layers').unavailableReason, 'Finish or cancel the current image batch first.');
 });
 
-test('the editor exposes image cropping through searchable keyboard and menu actions', () => {
+test('task search accurately explains that results open tools instead of promising walkthroughs', () => {
   assert.match(html, /id="quick-actions-dialog"[^>]*aria-labelledby="quick-actions-title"/);
   assert.match(html, /id="quick-actions-search"[^>]*role="combobox"[^>]*aria-controls="quick-actions-results"/);
   assert.match(html, /id="quick-actions-results"[^>]*role="listbox"/);
-  assert.match(html, /id="quick-actions-help"[^>]*>Type a task or question in your own words[\s\S]*How do you crop an image/);
+  assert.match(html, /id="quick-actions-title">Find a task or action/);
+  const searchInput = html.match(/<input class="text-field quick-actions-search" id="quick-actions-search"[^>]*>/)?.[0] || '';
+  const searchHelp = html.match(/<p class="quick-actions-help" id="quick-actions-help">([^<]*)<\/p>/)?.[1] || '';
+  assert.match(searchInput, /placeholder="Try “crop a photo”"/);
+  assert.doesNotMatch(searchInput, /How do (?:I|you)/, 'the placeholder should not imply search returns a how-to guide');
+  assert.match(searchHelp, /Search for a tool or task in your own words/);
+  assert.match(searchHelp, /Choose a result to open its tool or control/);
+  assert.match(searchHelp, /description says what it does/);
+  assert.match(searchHelp, /Disabled results explain what you need first/);
+  assert.doesNotMatch(searchHelp, /How do (?:I|you)|walkthrough|next steps/i,
+    'Help search copy should describe action discovery, not promise a guided answer');
   assert.match(html, /id="quick-actions-empty"[^>]*>No matching action\.[\s\S]*shorter word/);
   assert.match(main, /\{ label: 'Search actions…', shortcut: '⌘K', action: \(\) => openQuickActions\(\) \}/);
   assert.match(main, /key === 'k'[\s\S]*?openQuickActions\(\)/);
@@ -225,21 +235,33 @@ test('task help is directly reachable on touch and keeps the full instructions v
     'the visible phone overflow control should meet the touch target minimum');
 });
 
-test('empty canvas offers direct start actions and explains pages versus fixed-size frames', () => {
+test('empty canvas prioritizes direct start and crop actions while Properties explains page sizing', () => {
   assert.match(html, /<section class="empty-canvas-guide" id="empty-canvas-guide"[^>]*hidden>/);
   for (const action of ['add-image', 'create-frame', 'add-text']) {
     assert.match(html, new RegExp(`data-empty-canvas-action="${action}"`), `empty canvas should offer ${action}`);
   }
-  assert.match(html, /A Page is an open workspace\. Frames have fixed sizes, like a phone screen or social post\. To crop a photo, add it, select it, then choose Crop image\./);
+  assert.match(html, /Add a photo, draw a frame, or add text to start a design\.[\s\S]*?Crop a photo[\s\S]*?<li>Choose <strong>Add image<\/strong> and select a photo file\.<\/li>[\s\S]*?<li>Click or tap the photo, then choose <strong>Crop image<\/strong>\.<\/li>[\s\S]*?<li>Drag over what you want to keep, then choose <strong>Finish crop<\/strong>\.<\/li>/);
+  const startGuide = html.match(/<section class="empty-canvas-guide"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.doesNotMatch(startGuide, /PDF|fixed-size sheet/,
+    'page-size concepts should not distract from starting and cropping on the empty canvas');
+  assert.match(html, /class="empty-canvas-crop-help"[\s\S]*?<h3 id="empty-canvas-crop-title">Crop a photo<\/h3>[\s\S]*?<ol>[\s\S]*?<\/ol>/,
+    'the crop route should stand out as a short, numbered sequence');
   assert.match(html, /data-action="create-frame">▧ Draw a frame/);
   assert.match(main, /data-action="create-frame">▧ Draw a frame/);
   assert.match(main, /id: 'create-frame', label: 'Draw a frame'[\s\S]*?keywords: \['create a frame', 'create frame'/,
     'the visible button and Help result should use the same action name while still understanding “create a frame” searches');
-  assert.match(html, /id="layer-selection-hint"[^>]*hidden>A recipe is a reusable image preset\./);
+  assert.match(html, /id="layer-selection-hint"[^>]*hidden>Tap image layers in Layers or on the canvas to select them\./);
   assert.match(main, /function syncEmptyCanvasGuide\(\)[\s\S]*?Boolean\(page\.children\?\.length\)[\s\S]*?state\.emptyCanvasGuideDismissedPageId === page\.id/);
   assert.match(main, /\$\('#empty-canvas-guide'\)\.addEventListener\('click'[\s\S]*?setTool\('frame'\)[\s\S]*?setTool\('text'\)/);
   assert.match(main, /selectionHint\.hidden = !state\.layerSelectionMode/);
-  assert.match(main, /A Page is an open workspace\. Frames are fixed-size areas inside it\./);
+  assert.match(main, /Page is the workspace\. Use a frame to set the design width and height\. Export PDF sets the paper size\./);
+  assert.match(html, /id="canvas-page-picker"[^>]*aria-label="Show pages"[^>]*title="Show pages and switch page"/);
+  assert.match(main, /function openPagesList\(\)[\s\S]*?state\.sidebarTab = 'layers'[\s\S]*?toggleMobilePanel\('left'\)[\s\S]*?aria-current="page"/);
+  assert.match(main, /\$\('#canvas-page-picker'\)\.addEventListener\('click', openPagesList\)/);
+  assert.match(main, /id: 'show-pages', label: 'Show pages'[\s\S]*?keywords: \['switch page', 'change page'/);
+  assert.match(main, /id: 'choose-workspace-folder'[\s\S]*?Choose a writable folder for local design files and live sharing[\s\S]*?run: chooseWorkspaceFolder/);
+  assert.match(main, /id: 'create-frame', label: 'Draw a frame', description: 'Set a design’s width and height/);
+  assert.match(html, /data-tool="select" data-tool-label="Select"[\s\S]*?aria-label="Select \/ Move"/);
   assert.match(styles, /\.empty-canvas-guide\s*\{[^}]*pointer-events:\s*none/);
   assert.match(styles, /\.empty-canvas-card\s*\{[^}]*pointer-events:\s*auto/);
   assert.match(styles, /#sidebar-toggle::after \{ content: 'Layers'; \}/);
@@ -247,15 +269,15 @@ test('empty canvas offers direct start actions and explains pages versus fixed-s
 });
 
 test('crop help distinguishes standalone photos from photos placed inside shapes', () => {
-  assert.match(main, /id: 'crop-image-fill', label: 'Crop image inside shape'/);
-  assert.match(main, /set its Scale menu to Fill in Design properties, then choose Crop \/ position image/);
-  assert.match(main, /set the image’s Scale menu to Fill before repositioning it/);
+  assert.match(main, /id: 'crop-image-fill', label: 'Reposition photo inside shape'/);
+  assert.match(main, /set Scale to Fill in Design properties, then choose Reposition photo/);
+  assert.match(main, /Set Scale to Fill in Design properties first; this lets the photo extend past the shape edge/);
   assert.match(main, /applyInspectorAction\('toggle-image-crop-mode', \{ transformTarget: 'fill', fillId: selectedImageFill\.id \}\)/);
-  assert.match(main, /This photo is inside a shape\. Use Crop image inside shape below\./);
+  assert.match(main, /This photo is inside a shape\. Use Reposition photo inside shape below\./);
   assert.match(main, /Visible source edges · %/);
   assert.match(main, /Visible crop \$\{edge\} edge, percent of source/);
   assert.match(styles, /\.canvas-scroll:has\(#image-crop-toolbar\[data-crop-mode="true"\]\) #scene-canvas\s*\{\s*cursor:\s*crosshair/);
-  assert.match(readme, /To crop a photo inside a shape: select the shape and choose \*\*Crop \/ position image\*\* from its canvas action bar, or search \*\*Crop image\*\*/);
+  assert.match(readme, /To crop a photo inside a shape: select the shape and choose \*\*Reposition photo\*\* from its canvas action bar, or search \*\*Crop image inside shape\*\*/);
 });
 
 test('component help is reachable as a natural-language task and explains where to place copies', () => {

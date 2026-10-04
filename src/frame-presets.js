@@ -1,11 +1,16 @@
 /**
- * Curated starter frame sizes for common design targets.
+ * Starter frame sizes for common design targets.
  *
  * Figma documents these preset categories, but this intentionally small list
  * is not an exhaustive copy of Figma's changing device catalog. Dimensions
  * are canvas pixels; paper sizes use the nearest whole-pixel equivalent at
  * 96 px/in.
  * https://help.figma.com/hc/en-us/articles/360041539473-Frames-in-Figma-Design
+ * Current Apple phone entries use the 3× logical screen dimensions derived
+ * from Apple's published display resolutions (the frame size is not the
+ * physical raster resolution):
+ * https://www.apple.com/iphone-air/specs/
+ * https://www.apple.com/iphone-18-pro/specs/
  */
 export const FRAME_PRESET_CATEGORIES = Object.freeze([
   Object.freeze({ id: 'phone', name: 'Phone' }),
@@ -18,6 +23,10 @@ export const FRAME_PRESET_CATEGORIES = Object.freeze([
 ]);
 
 const presetDefinitions = [
+  { id: 'phone-iphone-18-pro', category: 'phone', name: 'iPhone 18 Pro', width: 402, height: 874 },
+  { id: 'phone-iphone-18-pro-max', category: 'phone', name: 'iPhone 18 Pro Max', width: 440, height: 956 },
+  { id: 'phone-iphone-air', category: 'phone', name: 'iPhone Air', width: 420, height: 912 },
+
   { id: 'phone-compact', category: 'phone', name: 'Compact phone', width: 360, height: 800 },
   { id: 'phone-standard', category: 'phone', name: 'Standard phone', width: 393, height: 852 },
   { id: 'phone-large', category: 'phone', name: 'Large phone', width: 440, height: 956 },

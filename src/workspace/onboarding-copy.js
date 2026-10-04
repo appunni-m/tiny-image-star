@@ -12,6 +12,16 @@ export function workspaceOnboardingCopy({ folderPickerAvailable = false } = {}) 
   };
 }
 
+/** Explain why a received live invite is waiting behind first-run storage setup. */
+export function workspaceInvitationSetupMessage({ folderPickerAvailable = false, hasFullInvitation = true } = {}) {
+  if (!hasFullInvitation) {
+    return 'This design link does not start a live session by itself. Ask the owner for a live invite link.';
+  }
+  return folderPickerAvailable
+    ? 'Design invite received. Choose a folder to save your local copy; Tiny Image Star will open the invite when setup finishes.'
+    : 'Design invite received. This browser cannot choose the folder needed to join; open the link in a browser that can choose a folder.';
+}
+
 /** Require a storage choice only when there is no usable local design or folder workspace yet. */
 export function shouldRequireWorkspaceOnboarding({
   folderReopened = false,

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createEffectStyle, createLayerEffect, createNode, addNode, applyEffectStyle, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
 import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding, moveLayerEffect, supportsShadowSpread } from '../src/layer-effects.js';
+import { progressiveBlurStepCount, progressiveBlurWeights } from '../src/progressive-blur.js';
 
 test('drop shadows and layer blur are saved as editable layer effects', () => {
   const document = createDocument();
@@ -30,6 +31,38 @@ test('background blur is a bounded editable effect and is excluded from foregrou
   assert.throws(() => createLayerEffect('not-a-blur'), /Unsupported layer effect/);
 });
 
+test('progressive blur geometry is validated, serialized, and expands by its strongest local radius', () => {
+  const progressive = createLayerEffect('layer-blur', {
+    id: 'progressive-blur', blurType: 'PROGRESSIVE', radius: 24, startRadius: 2,
+    startOffset: { x: 0.25, y: 0 }, endOffset: { x: 0.75, y: 1 }
+  });
+  const node = createNode('rectangle', { width: 40, height: 30, effects: [progressive] });
+  const document = createDocument();
+  addNode(document, node);
+  assert.equal(isValidLayerEffects([progressive]), true);
+  assert.equal(buildLayerEffectFilter([progressive]), 'none', 'CSS output cannot claim the non-uniform blur as one uniform radius');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  assert.deepEqual(parseDocument(serializeDocument(document)).pages[0].children[0].effects, [progressive]);
+  assert.deepEqual(layerEffectPadding([progressive]), { x: 72, y: 72 });
+  assert.equal(isValidLayerEffects([{ ...progressive, startRadius: 101 }]), false);
+  assert.equal(isValidLayerEffects([{ ...progressive, startOffset: { x: -0.01, y: 0 } }]), false);
+  assert.equal(isValidLayerEffects([{ ...progressive, endOffset: { x: 0.25, y: 0 } }]), false,
+    'the progressive path needs a non-zero direction');
+  assert.equal(isValidLayerEffects([{ ...progressive, blurType: 'RADIANT' }]), false);
+});
+
+test('progressive blur weights crossfade between neighboring radii and limit large surfaces', () => {
+  assert.deepEqual(progressiveBlurWeights(0, 4), [1, 0, 0, 0]);
+  assert.deepEqual(progressiveBlurWeights(1, 4), [0, 0, 0, 1]);
+  const halfway = progressiveBlurWeights(0.5, 3);
+  assert.deepEqual(halfway, [0, 1, 0]);
+  assert.equal(progressiveBlurWeights(0.125, 3).reduce((sum, value) => sum + value, 0), 1);
+  const blur = { startRadius: 0, radius: 80 };
+  assert.equal(progressiveBlurStepCount(blur, 10_000), 6);
+  assert.equal(progressiveBlurStepCount(blur, 500_000), 4);
+  assert.equal(progressiveBlurStepCount(blur, 2_000_000), 2);
+});
+
 test('inner shadows are validated, serialized, and excluded from outer filter padding', () => {
   const document = createDocument();
   const inner = createLayerEffect('inner-shadow', { offsetX: 3, offsetY: -2, blur: 6, opacity: 0.4 });
@@ -48,11 +81,17 @@ test('shadow spread defaults to zero, validates legacy values, and expands only 
   const drop = createLayerEffect('drop-shadow', { offsetX: 2, offsetY: -3, blur: 4, spread: 5 });
   const inner = createLayerEffect('inner-shadow', { offsetX: 3, offsetY: -2, blur: 6, spread: -4 });
   assert.equal(createLayerEffect('drop-shadow').spread, 0);
+  assert.equal(createLayerEffect('drop-shadow').showShadowBehindNode, false,
+    'drop shadows follow Figma’s default of staying out of transparent geometry');
   assert.equal(createLayerEffect('inner-shadow').spread, 0);
   assert.equal(isValidLayerEffects([{ ...drop, spread: undefined }]), true, 'older documents without the optional field remain valid');
   assert.equal(isValidLayerEffects([{ ...drop, spread: -1000 }]), true);
   assert.equal(isValidLayerEffects([{ ...drop, spread: 1000.01 }]), false);
   assert.equal(isValidLayerEffects([{ ...drop, spread: Infinity }]), false);
+  assert.equal(isValidLayerEffects([{ ...drop, showShadowBehindNode: true }]), true);
+  assert.equal(isValidLayerEffects([{ ...drop, showShadowBehindNode: 'yes' }]), false);
+  assert.equal(isValidLayerEffects([{ ...inner, showShadowBehindNode: true }]), false,
+    'the transparent-area option only applies to drop shadows');
   assert.deepEqual(layerEffectPadding([drop, inner]), { x: 19, y: 20 }, 'only positive drop-shadow spread expands the padded surface');
 });
 
@@ -87,7 +126,7 @@ test('effect validation allows eight shadows of each kind and one mutually exclu
 
 test('per-effect blend modes default to normal, validate, and survive serialization and effect-style copies', () => {
   const document = createDocument();
-  const shadow = createLayerEffect('drop-shadow', { blendMode: 'multiply' });
+  const shadow = createLayerEffect('drop-shadow', { blendMode: 'multiply', showShadowBehindNode: true });
   const noise = createLayerEffect('noise', { blendMode: 'screen' });
   const legacyShadow = createLayerEffect('inner-shadow');
   delete legacyShadow.blendMode;
@@ -107,6 +146,8 @@ test('per-effect blend modes default to normal, validate, and survive serializat
 
   const restored = parseDocument(serializeDocument(document));
   assert.deepEqual(restored.pages[0].children[0].effects, source.effects);
+  assert.equal(restored.pages[0].children[0].effects[0].showShadowBehindNode, true,
+    'the transparent-area rendering option persists with an effect stack');
   const style = createEffectStyle(restored, source.id, 'Blended shadows');
   assert.equal(applyEffectStyle(restored, target.id, style.id), true);
   const applied = restored.pages[0].children[1].effects;

@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { DecodedSourceCache } from '../src/decoded-source-cache.js';
 import { assertSafeRasterDimensions, defaultActiveRenderMemoryBudget, defaultImageCachePixelBudget, defaultSingleImageRenderMemoryBudget, estimateImageWorkingSetBytes, inspectRasterDimensions, LocalImageEngine } from '../src/image-engine.js';
 import { ImageMemoryLimitError } from '../src/image-memory-budget.js';
 
 const PIXEL_BUDGET = 5;
+const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+
+test('the production editor opts into demand-sized Pillow worker allocation', () => {
+  assert.match(mainSource, /new LocalImageEngine\(\{ maxWorkers: CPU_LIMIT, lazyWorkers: true,/,
+    'the deployed editor should initialize only workers that current memory-admitted image jobs can use');
+});
 
 function makeSource(width) {
   return { width, height: 1, freeCalls: 0, free() { this.freeCalls += 1; } };
@@ -105,14 +112,14 @@ class CacheWorkerMock {
   #emit(data) { if (!this.terminated) this.onmessage?.({ data }); }
 }
 
-async function withEngine(run, { maxWorkers = 1, maxCachedPixels = PIXEL_BUDGET, maxActiveRenderBytes, maxSingleRenderBytes = Number.MAX_SAFE_INTEGER, deferRenders = false } = {}) {
+async function withEngine(run, { maxWorkers = 1, maxCachedPixels = PIXEL_BUDGET, maxActiveRenderBytes, maxSingleRenderBytes = Number.MAX_SAFE_INTEGER, deferRenders = false, lazyWorkers = false } = {}) {
   const oldWorker = globalThis.Worker;
   const oldBudget = CacheWorkerMock.initialPixelBudget;
   const oldDeferred = CacheWorkerMock.deferRenders;
   CacheWorkerMock.initialPixelBudget = maxCachedPixels;
   CacheWorkerMock.deferRenders = deferRenders;
   globalThis.Worker = CacheWorkerMock;
-  const engine = new LocalImageEngine({ maxWorkers, maxCachedPixels, ...(maxActiveRenderBytes === undefined ? {} : { maxActiveRenderBytes }), ...(maxSingleRenderBytes === null ? {} : { maxSingleRenderBytes }) });
+  const engine = new LocalImageEngine({ maxWorkers, maxCachedPixels, lazyWorkers, ...(maxActiveRenderBytes === undefined ? {} : { maxActiveRenderBytes }), ...(maxSingleRenderBytes === null ? {} : { maxSingleRenderBytes }) });
   try {
     await run(engine);
   } finally {
@@ -149,6 +156,145 @@ test('lowering image concurrency retires idle excess Pillow workers', async () =
     assert.deepEqual(workers.map(worker => worker.terminated), [false, true, true, true]);
     assert.equal(engine.metrics().workersReady, 1);
   }, { maxWorkers: 4 });
+});
+
+test('lazy Pillow pool starts only the image workers admitted by the active memory budget', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(8);
+    assert.equal(engine.workers.length, 0, 'choosing a speed limit does not start idle WASM runtimes');
+
+    const source = pngHeader(1, 1);
+    const jobs = Array.from({ length: 8 }, (_, index) => engine.render(`lazy-small-${index}`, source, {}));
+    assert.equal(engine.workers.length, 3, 'a three-image memory budget starts three workers even when eight were requested');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().active, 3);
+    assert.equal(engine.metrics().queued, 5);
+    assert.equal(engine.metrics().workersReady, 3);
+
+    const results = Promise.all(jobs);
+    while (engine.metrics().active || engine.metrics().queued) {
+      let completed = false;
+      for (const slot of engine.workers) completed = slot.worker.completeNextRender() || completed;
+      assert.equal(completed, true, 'admitted workers continue to drain the batch');
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.equal((await results).length, 8);
+    assert.equal(engine.workers.length, 3, 'the pool stays at the bounded concurrent demand after the queue drains');
+  }, {
+    maxWorkers: 8,
+    maxCachedPixels: 0,
+    maxActiveRenderBytes: (32 + pngHeader(1, 1).byteLength) * 3,
+    maxSingleRenderBytes: 1024,
+    lazyWorkers: true,
+    deferRenders: true,
+  });
+});
+
+test('lazy Pillow pool uses image working-set estimates to cap large-image workers', async () => {
+  const imageCount = 8;
+  const largeSource = new Uint8Array(8 * 1024 * 1024);
+  largeSource.set(pngHeader(1600, 1200));
+  const workingSet = estimateImageWorkingSetBytes(largeSource);
+  const activeBudget = 256 * 1024 * 1024;
+  assert.equal(Math.floor(activeBudget / workingSet), 3);
+
+  await withEngine(async engine => {
+    engine.setConcurrency(8);
+    const jobs = Array.from({ length: imageCount }, (_, index) => engine.render(`lazy-large-${index}`, largeSource, {}));
+    assert.equal(engine.workers.length, 3, 'eight requested slots are reduced to the three large renders that fit');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().active, 3);
+    assert.equal(engine.metrics().queued, imageCount - 3);
+    assert.ok(engine.metrics().activeRenderBytes <= activeBudget);
+
+    const results = Promise.all(jobs);
+    while (engine.metrics().active || engine.metrics().queued) {
+      let completed = false;
+      for (const slot of engine.workers) completed = slot.worker.completeNextRender() || completed;
+      assert.equal(completed, true, 'the large-image queue keeps making progress');
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.equal((await results).length, imageCount);
+    assert.equal(engine.workers.length, 3);
+  }, {
+    maxWorkers: 8,
+    maxCachedPixels: 0,
+    maxActiveRenderBytes: activeBudget,
+    maxSingleRenderBytes: 512 * 1024 * 1024,
+    lazyWorkers: true,
+    deferRenders: true,
+  });
+});
+
+test('raising lazy worker concurrency during a batch adds capacity without stalling busy workers', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    const source = pngHeader(1, 1);
+    const jobs = Array.from({ length: 4 }, (_, index) => engine.render(`lazy-resize-${index}`, source, {}));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 1);
+    assert.equal(engine.metrics().active, 1);
+
+    engine.setConcurrency(3);
+    assert.equal(engine.workers.length, 3, 'the engine provisions newly requested queue capacity while the first render drains');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().active, 3);
+    assert.equal(engine.metrics().queued, 1);
+
+    const results = Promise.all(jobs);
+    while (engine.metrics().active || engine.metrics().queued) {
+      let completed = false;
+      for (const slot of engine.workers) completed = slot.worker.completeNextRender() || completed;
+      assert.equal(completed, true);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.equal((await results).length, 4);
+  }, {
+    maxWorkers: 4,
+    maxCachedPixels: 0,
+    maxActiveRenderBytes: 10_000,
+    maxSingleRenderBytes: 10_000,
+    lazyWorkers: true,
+    deferRenders: true,
+  });
+});
+
+test('lazy worker recovery replaces only demanded capacity and keeps the remaining queue moving', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(3);
+    const source = pngHeader(1, 1);
+    const jobs = Array.from({ length: 4 }, (_, index) => engine.render(`lazy-recovery-${index}`, source, {}));
+    const settled = Promise.allSettled(jobs);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().active, 3);
+    assert.equal(engine.metrics().queued, 1);
+
+    const crashed = engine.workers.find(slot => slot.busy);
+    crashed.worker.crash('synthetic lazy-pool failure');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 3, 'one replacement fills the existing memory-admitted demand');
+    assert.equal(engine.metrics().active, 3, 'healthy workers keep running while the replacement configures');
+    assert.equal(engine.metrics().queued, 0);
+
+    for (let round = 0; round < 5 && engine.metrics().active; round += 1) {
+      let completed = false;
+      for (const slot of engine.workers) completed = slot.worker.completeNextRender() || completed;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (!completed && engine.metrics().active) assert.fail('lazy recovery left an active render with no worker response');
+    }
+    const results = await settled;
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 3);
+    assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+    assert.equal(engine.metrics().activeRenderBytes, 0);
+    assert.equal(engine.metrics().queued, 0);
+  }, {
+    maxWorkers: 3,
+    maxCachedPixels: 0,
+    maxActiveRenderBytes: 168,
+    maxSingleRenderBytes: 1024,
+    lazyWorkers: true,
+    deferRenders: true,
+  });
 });
 
 test('lowering image concurrency retires busy excess workers after their current render drains', async () => {
@@ -379,6 +525,42 @@ test('active-source affinity waits for its owner without blocking unrelated batc
   }, { maxWorkers: 3, maxCachedPixels: 10, maxActiveRenderBytes: 8_000_000_000, deferRenders: true });
 });
 
+test('lazy admission does not start another worker for a source owned by a busy slot', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(3);
+    const source = pngHeader(1, 1);
+    const first = engine.render('retained', source, {});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.workers[0].worker.completeNextRender();
+    await first;
+
+    const blocker = engine.render('other', source, {});
+    assert.equal(engine.metrics().active, 1);
+    assert.equal(engine.workers[0].loaded.has('retained'), true);
+
+    const retainedAgain = engine.render('retained', source, { brightness: 10 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().queued, 1, 'the cached source waits for its current worker owner');
+    assert.equal(engine.workers.length, 1,
+      'a queued cache hit cannot use another slot, so it must not cause an idle WASM worker to be allocated');
+
+    engine.workers[0].worker.completeNextRender();
+    await blocker;
+    assert.equal(engine.metrics().active, 1, 'the owner starts the waiting edit as soon as it is free');
+    assert.equal(engine.metrics().queued, 0);
+    engine.workers[0].worker.completeNextRender();
+    await retainedAgain;
+    assert.equal(engine.workers.length, 1);
+  }, {
+    maxWorkers: 3,
+    maxCachedPixels: 1000,
+    maxActiveRenderBytes: 10_000,
+    maxSingleRenderBytes: 10_000,
+    lazyWorkers: true,
+    deferRenders: true,
+  });
+});
+
 test('LocalImageEngine transfers raw ArrayBuffers and exact typed-view ranges without detaching originals', async () => {
   await withEngine(async engine => {
     const raw = bytesFor(2).buffer;
@@ -419,6 +601,37 @@ test('LocalImageEngine omits source bytes for retained cache hits and resends af
     const worker = engine.workers[0].worker;
     assert.deepEqual(worker.renderRequests.map(request => request.hasSourceBytes), [true, false, true]);
     assert.deepEqual(worker.disposed, ['asset']);
+  });
+});
+
+test('LocalImageEngine invalidates a decoded source when retained bytes change under the same asset ID', async () => {
+  await withEngine(async engine => {
+    const originalBytes = bytesFor(1);
+    const original = await engine.render('reused-id', originalBytes, { brightness: 12 });
+    const replacementBytes = bytesFor(2);
+    const replacement = await engine.render('reused-id', replacementBytes, { brightness: 24 });
+    const worker = engine.workers[0].worker;
+
+    assert.deepEqual([...original.bytes], [1]);
+    assert.deepEqual([...replacement.bytes], [2], 'a cache hit cannot silently render pixels from the previous source');
+    assert.deepEqual(worker.renderRequests.map(request => request.hasSourceBytes), [true, true],
+      'the replacement source is sent to Pillow after the stale decoded image is disposed');
+    assert.deepEqual(worker.disposed, ['reused-id']);
+    assert.deepEqual([...originalBytes], [1], 'cache identity checks leave the editor-owned original attached');
+    assert.deepEqual([...replacementBytes], [2], 'the replacement original remains attached for later edits');
+  });
+});
+
+test('LocalImageEngine preserves decoded cache hits for byte-identical source copies', async () => {
+  await withEngine(async engine => {
+    await engine.render('copied-source', bytesFor(3), { brightness: 12 });
+    const repeated = await engine.render('copied-source', bytesFor(3), { contrast: 18 });
+    const worker = engine.workers[0].worker;
+
+    assert.deepEqual([...repeated.bytes], [3]);
+    assert.deepEqual(worker.renderRequests.map(request => request.hasSourceBytes), [true, false],
+      'byte-identical copies of the same original can still reuse the warm Pillow decode');
+    assert.deepEqual(worker.disposed, []);
   });
 });
 

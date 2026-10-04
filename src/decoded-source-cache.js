@@ -123,15 +123,36 @@ export class DecodedSourceCache {
       return { retained: false, evictedAssetIds: [] };
     }
 
-    // The incoming source must fit beside every currently protected source,
-    // even when it will itself remain ordinarily evictable after insertion.
-    const protectedPixels = this.#protectedPixels() + pixelCount;
-    if (protectedPixels > this.pixelBudget) {
-      this.pinnedAssetIds.delete(assetId);
-      return { retained: false, evictedAssetIds: [] };
+    const evictedAssetIds = [];
+    // The image the user is editing takes priority over explicit warm-cache
+    // pins. Match setBudget(): ordinary entries are evicted first, explicit
+    // pins next, and the active image last. Without this, a newly selected
+    // image could be refused even though dropping a lower-priority pin would
+    // keep the active original resident for rapid successive edits.
+    let protectedPixels = this.#protectedPixels();
+    if (assetId === this.activeAssetId && protectedPixels + pixelCount > this.pixelBudget) {
+      // Count protected pixels once, then walk LRU order once. Recomputing the
+      // total and rescanning for the oldest pin after every eviction makes
+      // admission quadratic when a selection replaces many warm-cache pins.
+      for (const pinnedAssetId of this.entries.keys()) {
+        if (pinnedAssetId === this.activeAssetId || !this.pinnedAssetIds.has(pinnedAssetId)) continue;
+        const pinnedPixels = this.entries.get(pinnedAssetId)?.pixels || 0;
+        if (!pinnedPixels) continue;
+        this.#remove(pinnedAssetId, true);
+        protectedPixels -= pinnedPixels;
+        evictedAssetIds.push(pinnedAssetId);
+        if (protectedPixels + pixelCount <= this.pixelBudget) break;
+      }
     }
 
-    const evictedAssetIds = [];
+    // The incoming source must fit beside every currently protected source,
+    // even when it will itself remain ordinarily evictable after insertion.
+    protectedPixels += pixelCount;
+    if (protectedPixels > this.pixelBudget) {
+      this.pinnedAssetIds.delete(assetId);
+      return { retained: false, evictedAssetIds };
+    }
+
     while (this.pixels + pixelCount > this.pixelBudget) {
       const oldestAssetId = this.#oldestUnprotectedAssetId(assetId);
       // If all remaining capacity belongs to pinned assets, leave ownership
@@ -164,7 +185,12 @@ export class DecodedSourceCache {
     this.pixels = 0;
     this.pinnedAssetIds.clear();
     this.activeAssetId = null;
-    for (const { source } of entries) source.free();
+    let firstError = null;
+    for (const { source } of entries) {
+      try { source.free(); }
+      catch (error) { firstError ??= error; }
+    }
+    if (firstError) throw firstError;
   }
 
   /**

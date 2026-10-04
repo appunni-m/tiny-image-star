@@ -80,6 +80,31 @@ function pdfText(bytes) {
   return Buffer.from(bytes).toString('latin1');
 }
 
+function pdfObjectStream(pdf, objectId) {
+  const bytes = Buffer.from(pdf);
+  const text = bytes.toString('latin1');
+  const objectStart = text.indexOf(`${objectId} 0 obj\n`);
+  assert.notEqual(objectStart, -1, `PDF object ${objectId} exists`);
+  const streamMarker = text.indexOf('stream\n', objectStart);
+  assert.notEqual(streamMarker, -1, `PDF object ${objectId} has a stream`);
+  const length = Number(/\/Length (\d+)/.exec(text.slice(objectStart, streamMarker))?.[1]);
+  assert.ok(Number.isSafeInteger(length) && length >= 0, `PDF object ${objectId} has a valid stream length`);
+  return bytes.subarray(streamMarker + 'stream\n'.length, streamMarker + 'stream\n'.length + length);
+}
+
+function pdfPageContent(pdf) {
+  const match = /\/Contents (\d+) 0 R/.exec(pdfText(pdf));
+  assert.ok(match, 'PDF page has a content stream');
+  return pdfObjectStream(pdf, Number(match[1])).toString('latin1');
+}
+
+function pdfAlphaMaskSamples(pdf) {
+  const text = pdfText(pdf);
+  const match = /\/SMask (\d+) 0 R/.exec(text);
+  assert.ok(match, 'drop-shadow image has a PDF soft alpha mask');
+  return inflateSync(pdfObjectStream(pdf, Number(match[1])));
+}
+
 function assertValidXref(bytes) {
   const text = pdfText(bytes);
   const offset = Number(text.slice(text.lastIndexOf('startxref\n') + 10).split('\n', 1)[0]);
@@ -502,6 +527,35 @@ test('exports WinAnsi Latin text using one-byte Helvetica glyph codes', () => {
   assertValidXref(pdf);
 });
 
+test('preserves SVG case transforms and trusts the editor’s already-laid-out text case', () => {
+  const rawText = (mode, value) => `<svg width="180px" height="30px" viewBox="0 0 180 30">`
+    + `<text x="8" y="20" font-family="Arial" font-size="16" text-transform="${mode}">${value}</text></svg>`;
+  const expected = [
+    ['uppercase', 'hello', '(HELLO) Tj'],
+    ['lowercase', 'SOME TEXT', '(some text) Tj'],
+    ['capitalize', 'école du tiny', '<C9636F6C652044752054696E79> Tj'],
+  ];
+  for (const [mode, value, operator] of expected) {
+    const pdf = createVectorPdf(rawText(mode, value));
+    assert.ok(pdfText(pdf).includes(operator), `${mode} text case should be applied before WinAnsi encoding`);
+    assertValidXref(pdf);
+  }
+
+  const editorSvg = exportNodeToSvg(createNode('text', {
+    text: 'supercalifragilisticexpialidocious', textCase: 'capitalize',
+    fontFamily: 'Arial, sans-serif', fontSize: 16, width: 48, height: 80,
+  }), { measureText: pdfTextMeasurer() });
+  const editorLines = [...editorSvg.matchAll(/<tspan[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1]);
+  assert.ok(editorLines.length > 1, 'the editor fixture wraps one long word across multiple measured lines');
+  assert.ok(editorLines.slice(1).some(line => /^[a-z]/.test(line)),
+    'the editor fixture contains a lowercase continuation line inside the same word');
+  const editorPdf = pdfText(createVectorPdf(editorSvg));
+  for (const line of editorLines) {
+    assert.ok(editorPdf.includes(`(${line}) Tj`), `PDF should preserve the editor-laid-out line “${line}” exactly`);
+  }
+  assertValidXref(createVectorPdf(editorSvg));
+});
+
 test('simple text rejects font-dependent or shaped SVG cases instead of substituting silently', () => {
   const svg = body => `<svg width="40px" height="20px" viewBox="0 0 40 20">${body}</svg>`;
   assert.throws(() => createVectorPdf(svg('<text x="0" y="14" font-family="Inter">Hello</text>')),
@@ -645,8 +699,8 @@ test('editor-generated text rejects custom fonts and preserves centered and righ
 
 test('positioned PDF text fails closed when transforms or font metrics cannot be preserved', () => {
   const svg = body => `<svg width="40px" height="20px" viewBox="0 0 40 20">${body}</svg>`;
-  assert.throws(() => createVectorPdf(svg('<text x="0" y="14" text-transform="uppercase">hello</text>')),
-    error => error instanceof PdfVectorExportError && error.feature === 'text transformations' && /raster PDF/.test(error.message));
+  assert.throws(() => createVectorPdf(svg('<text x="0" y="0" text-transform="uppercase"><tspan><tspan>Styled</tspan></tspan></text>')),
+    error => error instanceof PdfVectorExportError && error.feature === 'rich text transformations' && /raster PDF/.test(error.message));
   assert.throws(() => createVectorPdf(svg('<text x="0" y="0" dominant-baseline="text-before-edge" data-tiny-image-star-pdf-ascent="12" font-family="Arial" font-size="16"><tspan x="0" y="0" textLength="24" lengthAdjust="spacingAndGlyphs">PDF</tspan></text>')),
     error => error instanceof PdfVectorExportError && error.feature === 'text line metrics' && /built-in Helvetica width/.test(error.message));
   const spacedText = exportNodeToSvg(createNode('text', {
@@ -745,4 +799,158 @@ test('rejects unsupported SVG commands, malformed documents, and excessive page 
     error => error instanceof PdfVectorExportError && /attribute transform/.test(error.message));
   assert.throws(() => createVectorPdf('<svg width="10px" height="10px" viewBox="0 0 10 10"><title>&bad;</title></svg>'), /unsupported XML entity/);
   assert.doesNotThrow(() => createVectorPdf('<svg width="10px" height="10px" viewBox="0 0 10 10"><g><title>&amp;bad;</title><rect width="10" height="10"/></g></svg>'));
+});
+
+test('accepts scientific SVG lengths and writes PDF numbers without exponent notation', () => {
+  const pdf = createVectorPdf('<svg width="1e-7px" height="1px" viewBox="0 0 1e-7 1"><rect width="1e-7" height="1" fill="#123456"/></svg>');
+  const text = pdfText(pdf);
+
+  assert.match(text, /\/MediaBox \[0 0 0\.0000001 1\]/,
+    'the small SVG page size is serialized as a valid PDF real number');
+  assert.match(text, /0 0 m 0\.0000001 0 l/,
+    'small path coordinates stay in PDF real-number syntax');
+  assert.doesNotMatch(text, /\b\d+(?:\.\d+)?[eE][+-]?\d+\b/,
+    'PDF numeric operands never use the exponent notation allowed by SVG');
+});
+
+test('maps SVG viewBox into the PDF viewport using preserveAspectRatio', () => {
+  const source = body => `<svg width="200px" height="100px" viewBox="0 0 100 100">${body}</svg>`;
+  const meet = createVectorPdf(source('<rect x="10" y="10" width="20" height="30" fill="#123456"/>'));
+  assert.match(pdfText(meet), /\/MediaBox \[0 0 200 100\]/);
+  assert.match(pdfPageContent(meet), /1 0 0 -1 50 100 cm/,
+    'the default xMidYMid meet scales uniformly and centers letterboxed SVG artwork');
+
+  const none = createVectorPdf(source('<rect x="10" y="10" width="20" height="30" fill="#123456"/>')
+    .replace('<svg ', '<svg preserveAspectRatio="none" '));
+  assert.match(pdfPageContent(none), /2 0 0 -1 0 100 cm/,
+    'explicit none retains nonuniform scaling');
+
+  const slice = createVectorPdf(source('<rect x="10" y="10" width="20" height="30" fill="#123456"/>')
+    .replace('<svg ', '<svg preserveAspectRatio="xMidYMid slice" '));
+  assert.match(pdfPageContent(slice), /2 0 0 -2 0 150 cm/,
+    'slice uniformly scales and centers oversized artwork for the PDF page crop');
+
+  const malformed = source('<rect width="10" height="10"/>').replace('<svg ', '<svg preserveAspectRatio="xSpaceYTime" ');
+  assert.throws(() => createVectorPdf(malformed), error => error instanceof PdfVectorExportError
+    && error.feature === 'SVG preserveAspectRatio');
+});
+
+test('exports filled stroke endpoint triangle, inward-triangle, diamond, and circle markers as vectors', () => {
+  for (const marker of ['triangle', 'triangle-inward', 'diamond', 'circle']) {
+    const line = createNode('line', {
+      width: 40,
+      height: 0,
+      strokes: [{
+        id: `marker-${marker}`,
+        color: '#123456',
+        width: 2,
+        opacity: 0.5,
+        visible: true,
+        cap: 'butt',
+        join: 'miter',
+        pattern: 'solid',
+        miterLimit: 10,
+        startDecoration: marker,
+        endDecoration: 'none',
+      }],
+    });
+    const svg = exportNodeToSvg(line);
+    const pdf = createVectorPdf(svg);
+    const text = pdfText(pdf);
+
+    assert.match(svg, new RegExp(`data-tiny-image-star-decoration="${marker}"`));
+    assert.match(text, /\bh\s*\nf\b/, `${marker} remains a filled PDF path`);
+    assert.match(text, /\/ca 0\.5 \/CA 1/, `${marker} retains stroke opacity`);
+    assert.doesNotMatch(text, /\/Subtype \/Image|\/DCTDecode/,
+      `${marker} does not rasterize the surrounding line artwork`);
+    assertValidXref(pdf);
+  }
+});
+
+test('fails closed when a filled stroke marker uses unsupported SVG path geometry', () => {
+  const unsupported = '<svg width="40px" height="20px" viewBox="0 0 40 20">'
+    + '<path data-tiny-image-star-decoration="triangle" d="M 0 0 A 5 5 0 0 1 10 10 Z" fill="#123456"/>'
+    + '</svg>';
+  assert.throws(() => createVectorPdf(unsupported), error => error instanceof PdfVectorExportError
+    && error.feature === 'SVG path command A');
+});
+
+test('preserves Figma-like drop-shadow visibility for supported simple SVG shapes', () => {
+  const opaque = createNode('rectangle', {
+    id: 'opaque-clipped-shadow', width: 40, height: 24, fill: '#ffffff', fillOpacity: 1,
+    effects: [createLayerEffect('drop-shadow', {
+      id: 'opaque-shadow', showShadowBehindNode: false, color: '#112233', opacity: 0.5,
+      offsetX: 3, offsetY: 2, blur: 2,
+    })],
+  });
+  const opaqueSvg = exportNodeToSvg(opaque);
+  const opaquePdf = createVectorPdf(opaqueSvg);
+  const opaqueText = pdfText(opaquePdf);
+  const opaqueContent = pdfPageContent(opaquePdf);
+  const opaqueShadow = opaqueContent.indexOf('/Im1 Do');
+  const opaqueFill = opaqueContent.indexOf('40 0 l 40 24 l 0 24 l h\nf');
+
+  assert.ok(opaqueShadow >= 0 && opaqueFill > opaqueShadow,
+    'the shadow is painted first and the opaque vector geometry covers its interior');
+  assert.match(opaqueText, /\/Subtype \/Image[^>]*\/SMask \d+ 0 R/,
+    'the Gaussian edge is a bounded transparent shadow raster while the source stays vector');
+  assert.match(opaqueText, /\/Subtype \/Image[^>]*\/ColorSpace \/DeviceGray/,
+    'the shadow alpha channel is stored as a PDF soft-mask image');
+  assert.equal(Math.max(...pdfAlphaMaskSamples(opaquePdf)), 128,
+    'an opaque source with 50% shadow opacity retains the full shadow alpha before the vector knockout');
+
+  const translucent = createNode('ellipse', {
+    id: 'transparent-behind-shadow', width: 40, height: 24, fill: '#ffffff', fillOpacity: 0.4,
+    effects: [createLayerEffect('drop-shadow', {
+      id: 'behind-shadow', showShadowBehindNode: true, color: '#112233', opacity: 0.5,
+      offsetX: 3, offsetY: 2, blur: 2,
+    })],
+  });
+  const translucentSvg = exportNodeToSvg(translucent);
+  const translucentPdf = createVectorPdf(translucentSvg);
+  const translucentContent = pdfPageContent(translucentPdf);
+  const translucentShadow = translucentContent.indexOf('/Im1 Do');
+  const translucentFill = translucentContent.indexOf('c h\nf');
+  const translucentAlpha = pdfAlphaMaskSamples(translucentPdf);
+
+  assert.ok(translucentShadow >= 0 && translucentFill > translucentShadow,
+    'the shadow stays behind the translucent vector ellipse');
+  assert.ok(Math.max(...translucentAlpha) >= 50 && Math.max(...translucentAlpha) <= 52,
+    'shadow alpha combines 40% source alpha and 50% effect opacity, so it can show through the source');
+  assert.match(pdfText(translucentPdf), /\/Type \/ExtGState \/ca 0\.4/,
+    'the original translucent vector fill keeps its own alpha after the shadow is painted');
+  assert.doesNotMatch(opaqueText, /\/Subtype \/Image[^>]*\/Width 40 \/Height 24/,
+    'the original opaque rectangle remains vector geometry rather than becoming the shadow bitmap');
+  assertValidXref(opaquePdf);
+  assertValidXref(translucentPdf);
+
+  const multiBlockShadow = createVectorPdf(exportNodeToSvg(createNode('rectangle', {
+    width: 200, height: 150, fill: '#ffffff',
+    effects: [createLayerEffect('drop-shadow', { color: '#000000', opacity: 0.5, blur: 1 })],
+  })));
+  const maskReference = /\/SMask (\d+) 0 R/.exec(pdfText(multiBlockShadow));
+  assert.ok(maskReference);
+  assert.ok(pdfAlphaMaskSamples(multiBlockShadow).length > 65_535,
+    'large bounded alpha-mask streams remain valid across stored-DEFLATE block boundaries');
+  assertValidXref(multiBlockShadow);
+});
+
+test('fails closed for unsupported drop-shadow SVG graphs and clipped translucent shadows', () => {
+  const chainedFilter = '<svg width="20px" height="20px" viewBox="0 0 20 20">'
+    + '<defs><filter id="fx" filterUnits="userSpaceOnUse" x="-5" y="-5" width="30" height="30">'
+    + '<feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>'
+    + '<feDropShadow in="SourceGraphic" dx="2" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.5"/>'
+    + '</filter></defs><g filter="url(#fx)"><rect width="10" height="10" fill="#ffffff"/></g></svg>';
+  assert.throws(() => createVectorPdf(chainedFilter), error => error instanceof PdfVectorExportError
+    && error.feature === 'layer-effect filter graphs');
+
+  const clippedTranslucent = createNode('rectangle', {
+    id: 'unrepresentable-clipped-shadow', width: 40, height: 24, fill: '#ffffff', fillOpacity: 0.4,
+    effects: [createLayerEffect('drop-shadow', {
+      id: 'clipped-translucent-shadow', showShadowBehindNode: false, color: '#112233', opacity: 0.5,
+      offsetX: 3, offsetY: 2, blur: 2,
+    })],
+  });
+  assert.throws(() => exportNodeToSvg(clippedTranslucent), /drop shadows hidden behind transparent node geometry/,
+    'the SVG source exporter refuses a clipped translucent shadow instead of feeding the PDF writer an ambiguous filter');
 });

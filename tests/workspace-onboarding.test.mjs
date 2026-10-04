@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { workspaceEditingAccess } from '../src/workspace/editing-access.js';
-import { shouldRequireWorkspaceOnboarding, workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
+import { shouldRequireWorkspaceOnboarding, workspaceInvitationSetupMessage, workspaceOnboardingCopy } from '../src/workspace/onboarding-copy.js';
 
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
@@ -21,6 +21,22 @@ test('workspace onboarding describes only storage choices available on this brow
   assert.match(browser.status, /export a local design file from File/);
   assert.match(browser.status, /stay in this browser profile/);
   assert.match(folder.status, /choose browser storage for solo editing/);
+  assert.match(htmlSource, /Use this browser only[\s\S]*?Choose folder for files \+ sharing/);
+  assert.match(mainSource, /pickerAvailable \? 'Use this browser only' : 'Continue in this browser only'/);
+  assert.match(mainSource, /workspace-onboarding-choose-folder'\)\.textContent = 'Choose folder for files \+ sharing'/);
+});
+
+test('a received invite explains why it is waiting during first-run folder setup', () => {
+  assert.match(workspaceInvitationSetupMessage({ folderPickerAvailable: true }), /Design invite received[\s\S]*Choose a folder[\s\S]*open the invite when setup finishes/);
+  assert.match(workspaceInvitationSetupMessage({ folderPickerAvailable: false }), /browser cannot choose the folder needed to join/);
+  assert.match(workspaceInvitationSetupMessage({ folderPickerAvailable: true, hasFullInvitation: false }), /does not start a live session by itself/);
+  assert.match(htmlSource, /id="workspace-onboarding-invite-note"[^>]*role="status"[^>]*hidden/);
+  const syncStart = mainSource.indexOf('function syncWorkspaceOnboardingDialog()');
+  const syncEnd = mainSource.indexOf('\nasync function continueWithBrowserStorage', syncStart);
+  assert.match(mainSource.slice(syncStart, syncEnd), /inviteNote\.hidden = !isLiveJoinHash\(\)[\s\S]*workspaceInvitationSetupMessage/);
+  const joinStart = mainSource.indexOf('function startJoinFromStableLink()');
+  const joinEnd = mainSource.indexOf('\nfunction setLiveReplyLinkStatus', joinStart);
+  assert.match(mainSource.slice(joinStart, joinEnd), /if \(state\.workspaceOnboardingRequired\)[\s\S]*syncWorkspaceOnboardingDialog\(\)/);
 });
 
 test('a saved browser design remembers the storage choice on reload', () => {
@@ -105,7 +121,7 @@ test('a deferred stable-link invitation opens after recipe recovery is resolved'
   const joinStart = mainSource.indexOf('function startJoinFromStableLink()');
   const joinEnd = mainSource.indexOf('\nfunction toggleLayoutGuides', joinStart);
   assert.ok(joinStart >= 0 && joinEnd > joinStart);
-  assert.match(mainSource.slice(joinStart, joinEnd), /if \(state\.workspaceOnboardingRequired \|\| state\.workspacePermissionNeeded \|\| state\.pendingRecipeRecovery\) return false/);
+  assert.match(mainSource.slice(joinStart, joinEnd), /if \(state\.workspaceOnboardingRequired \|\| state\.workspacePermissionNeeded \|\| state\.pendingRecipeRecovery\) \{[\s\S]*?return false;/);
 });
 
 test('recipe recovery can take over an active lease in place without consulting another tab', () => {

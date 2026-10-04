@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { canShowPreviousImagePreview, collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
+import { canShowPreviousImagePreview, collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewOutputSettingsForNode, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, imagePreviewSourceMatchesNode, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -81,6 +81,41 @@ test('preview signatures include pixel inputs but ignore export-only format and 
     'export-only settings do not require a new preview render');
   assert.equal(imagePreviewRequiresRenderedPixels({ adjustments: { brightness: 5 }, outputFormat: 'jpeg', outputQuality: 40 }), true,
     'pixel-changing adjustments still require a rendered preview');
+});
+
+test('preview worker settings retain a saved image recipe codec and quality', () => {
+  assert.deepEqual(imagePreviewOutputSettingsForNode({
+    id: 'recipe-target', type: 'image', outputFormat: 'webp', outputQuality: 73,
+  }), { format: 'webp', quality: 73 });
+  assert.deepEqual(imagePreviewOutputSettingsForNode({ id: 'default-image', type: 'image' }), {
+    format: 'png', quality: 90,
+  });
+  assert.deepEqual(imagePreviewOutputSettingsForNode({ id: 'shape', type: 'rectangle' }), {
+    format: 'png', quality: 90,
+  }, 'image-fill previews do not inherit image-layer export settings');
+});
+
+test('an async preview restore cannot render a source that no longer belongs to its live layer', async () => {
+  const image = { id: 'image', type: 'image', assetId: 'original-a', adjustments: { brightness: 12 } };
+  const fillShape = { id: 'shape', type: 'rectangle', fills: [
+    { id: 'photo-fill', type: 'image', imageFill: { assetId: 'fill-a' } },
+  ] };
+  const fillKey = imagePreviewKey(fillShape.id, 'photo-fill');
+  const capturedAssetId = image.assetId;
+  let continueRestore;
+  const restore = new Promise(resolve => { continueRestore = resolve; }).then(() =>
+    imagePreviewSourceMatchesNode(image, imagePreviewKey(image.id), capturedAssetId));
+
+  image.assetId = 'original-b';
+  continueRestore();
+
+  assert.equal(await restore, false, 'a source captured before async storage work is rejected after the live layer switches assets');
+  assert.equal(imagePreviewSourceMatchesNode(image, imagePreviewKey(image.id), image.assetId), true);
+  assert.equal(imagePreviewSourceMatchesNode(fillShape, fillKey, 'fill-a'), true);
+  fillShape.fills[0].imageFill.assetId = 'fill-b';
+  assert.equal(imagePreviewSourceMatchesNode(fillShape, fillKey, 'fill-a'), false,
+    'image-fill previews are fenced against the current paint source too');
+  assert.equal(imagePreviewSourceMatchesNode(fillShape, fillKey, 'missing'), false);
 });
 
 test('previous previews are temporary fallbacks only for same-source adjustment changes', () => {
@@ -175,17 +210,25 @@ test('async preview work resolves edit values from the current layer, not a capt
   const renderStart = mainSource.indexOf('async function renderImagePreview(');
   const renderEnd = mainSource.indexOf('function reconcileImagePreviewRuntime', renderStart);
   const renderBody = mainSource.slice(renderStart, renderEnd);
-  assert.match(renderBody, /imagePreviewRenderSettingsForNode\(previewLayer, previewKey, assetId\)/);
-  assert.match(renderBody, /format: 'png', quality: 90/,
-    'the canvas preview always uses lossless encoding independently of per-image download settings');
+  assert.match(renderBody, /imagePreviewSourceMatchesNode\(previewLayer, previewKey, assetId\)/,
+    'a source captured before an async restore must still belong to the live layer before worker dispatch');
+  assert.match(renderBody, /imagePreviewRenderSettingsForNode\(previewLayer, previewKey\)/,
+    'the render signature uses the current layer source instead of reapplying the captured asset ID');
+  assert.ok(renderBody.indexOf('imagePreviewSourceMatchesNode(previewLayer, previewKey, assetId)')
+    < renderBody.indexOf('const asset = state.assets.get(liveAssetId)'),
+  'stale restore results are rejected before obtaining the source bytes or mutating the active preview token');
+  assert.match(renderBody, /\.\.\.imagePreviewOutputSettingsForNode\(imageNode\)/,
+    'Pillow jobs carry per-image output settings while the worker still encodes previews as lossless PNG');
   const signatureSnapshot = renderBody.indexOf('const previewSignature = imagePreviewSettingsSignature(previewSettings);');
   const renderDispatch = renderBody.indexOf('await renderImageWithEdits(');
   assert.ok(signatureSnapshot >= 0 && signatureSnapshot < renderDispatch,
     'settings identity is snapshotted before an async worker can overlap later edits');
-  assert.match(renderBody, /renderImageWithEdits\(imageNode, \{ assetId, sourceBytes: asset\.sourceBytes \}, previewSettings\.adjustments, previewTransforms/,
+  assert.match(renderBody, /renderImageWithEdits\(imageNode, \{ assetId: liveAssetId, sourceBytes: asset\.sourceBytes \}, previewSettings\.adjustments, previewTransforms/,
     'Pillow receives the same current edit values that are later written into the preview signature');
   assert.match(renderBody, /state\.previewSignatures\.set\(previewKey, previewSignature\)/,
     'a successfully rendered bitmap is only marked current for its actual model settings');
+  assert.match(renderBody, /state\.renderVersion\.get\(previewKey\) !== version \|\| !previewSourceIsCurrent\(\)/,
+    'source changes during Pillow rendering or bitmap decoding fence publication even if no newer edit scheduled a render');
 });
 
 test('preview keys round-trip node and image-fill identity', () => {
@@ -222,8 +265,8 @@ test('offscreen selected recipe targets can be evicted while other selected prev
   const busyStart = source.indexOf('function busyImagePreviewKeys()', selectedStart);
   const protectedSourceStart = source.indexOf('function protectedImageSourceAssetIds', busyStart);
   assert.ok(selectedStart >= 0 && busyStart > selectedStart && protectedSourceStart > busyStart);
-  assert.match(source.slice(selectedStart, busyStart), /isImageRecipeBatchActive\(state\.bulk\)[\s\S]*?selectedImagePreviewKeysForNodes\(selectedNodes\(\), \{ excludedNodeIds: batchTargetIds \}\)/,
-    'selected recipe targets must be excluded from permanent selection pins');
+  assert.match(source.slice(selectedStart, busyStart), /canSkipSelectedImagePreviewLookup\(bulk, state\.selectedIds\)[\s\S]*?selectedImagePreviewKeysForNodes\(selectedNodes\(\), \{ excludedNodeIds: batchTargetIds \}\)/,
+    'selected recipe targets must be excluded from permanent selection pins, with an exact-selection fast path');
   assert.match(source.slice(busyStart, protectedSourceStart), /Processing recipe/,
     'the currently admitted recipe target stays protected while it hydrates or renders');
 });
@@ -521,7 +564,7 @@ test('late editor renders are fenced after both async boundaries before publishi
     'a newer edit or document replacement fences the WASM result before allocating a bitmap');
   assert.ok(body.indexOf(fence, bitmapDecode) > bitmapDecode && body.indexOf(fence, bitmapDecode) < publish,
     'a newer edit or document replacement fences a late bitmap before replacing the visible preview');
-  assert.ok(body.slice(body.indexOf('} catch (error) {')).includes(`if (${fence}) return false;`),
+  assert.ok(body.slice(body.indexOf('} catch (error) {')).includes(`if (${fence} || !previewSourceIsCurrent()) return false;`),
     'stale errors cannot overwrite the newer preview status');
 });
 
@@ -563,7 +606,7 @@ test('resident image sources stay pinned while renders use them and memory admis
   const renderStart = source.indexOf('async function renderImagePreview(');
   const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
   const render = source.slice(renderStart, renderEnd);
-  assert.match(render, /sourceLease = imageSourceResidency\.acquire\(assetId\)/);
+  assert.match(render, /sourceLease = imageSourceResidency\.acquire\(liveAssetId\)/);
   assert.match(render, /sourceLease\?\.release\(\)/);
 
   const reserveStart = source.indexOf('function reserveImageMemory(bytes, { kind =');

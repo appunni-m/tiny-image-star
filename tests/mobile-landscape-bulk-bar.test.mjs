@@ -44,12 +44,12 @@ test('short landscape phones keep the live image-recipe bar compact and its cont
   for (const id of ['bulk-title', 'bulk-subtitle', 'bulk-rate', 'bulk-progress-label', 'bulk-speed', 'bulk-pause', 'bulk-cancel']) {
     assert.match(html, new RegExp(`id="${id}"`), `the mobile batch bar should retain ${id}`);
   }
-  assert.match(html, /<span>Images at once<\/span><input id="bulk-speed"[^>]*aria-label="Maximum images processing at once"/,
-    'the batch slider should explain its user-visible control without worker jargon');
+  assert.match(html, /<span>Processing speed<\/span><input id="bulk-speed"[^>]*aria-label="Maximum images processing at once"/,
+    'the batch slider should describe the adjustable speed in plain language');
   assert.match(html, /id="bulk-speed"[^>]*aria-describedby="bulk-speed-help"/,
     'the concurrency slider should expose its visible memory guidance to assistive technology');
-  assert.match(html, /<small class="speed-help" id="bulk-speed-help">Higher limits may use more memory\.<\/small>/,
-    'the memory trade-off should be visible without relying on a hover tooltip');
+  assert.match(html, /<small class="speed-help" id="bulk-speed-help">More images at once can finish sooner, but may use more memory\.<\/small>/,
+    'the speed and memory trade-off should be visible without relying on a hover tooltip');
   assert.match(stylesheet, /\.speed-control \.speed-help\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*white-space:\s*normal/,
     'the memory hint should wrap inside the compact recipe controls');
   assert.match(stylesheet, /\.speed-control \{[\s\S]*?grid-template-columns: minmax\(32px, \.9fr\) minmax\(24px, 1fr\) 54px;[\s\S]*?\.speed-control > span \{ white-space: normal;/,

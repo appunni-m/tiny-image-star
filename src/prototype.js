@@ -3,6 +3,7 @@ import { pageToNodeLocal } from './transform-geometry.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS } from './prototype-expressions.js';
 import { DEFAULT_PROTOTYPE_BEZIER, isValidPrototypeEasing } from './prototype-easing.js';
 import { normalizePrototypeKeyboardKey, normalizePrototypeKeyModifiers, prototypeKeyboardEventMatches } from './prototype-keyboard.js';
+import { isValidPrototypeOverlayPosition, isValidPrototypeOverlayRelativePosition, normalizePrototypeOverlayRelativePosition } from './prototype-overlay-position.js';
 
 export { easePrototypeProgress, prototypeEasingTimingFunction } from './prototype-easing.js';
 export { prototypeMoveInOffset } from './prototype-transition.js';
@@ -26,10 +27,6 @@ const maxPrototypeDelay = 10_000;
 export const PROTOTYPE_ACTION_PROGRAM_VERSION = 2;
 export const MAX_PROTOTYPE_ACTION_STEPS = 128;
 export const MAX_PROTOTYPE_ACTION_DEPTH = 8;
-const overlayPositions = new Set([
-  'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
-  'bottom-left', 'bottom-center', 'bottom-right'
-]);
 const conditionOperators = new Set(['equals', 'not-equals', 'greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
 const numericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
 
@@ -90,7 +87,7 @@ function prototypeConditionMatches(document, condition, session, node) {
 
 const legacyActionFields = [
   'action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
-  'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
+  'overlayPosition', 'overlayRelativePosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
   'smartAnimateMatchingLayers', 'scrollPosition', 'key', 'keyModifiers'
@@ -113,12 +110,12 @@ function activePrototypeFrame(document, session) {
   return findNode(document, overlay?.frameId || session.frameId, overlay?.pageId || session.pageId)?.node || null;
 }
 
-function runPrototypeActionSteps(document, session, interaction, steps, results) {
+function runPrototypeActionSteps(document, session, interaction, steps, results, sourceNodeId = null) {
   for (const step of steps) {
     if (step.type === 'if') {
       const frame = activePrototypeFrame(document, session);
       const branch = prototypeConditionMatches(document, step.condition, session, frame) ? step.then : step.else;
-      const result = runPrototypeActionSteps(document, session, interaction, branch, results);
+      const result = runPrototypeActionSteps(document, session, interaction, branch, results, sourceNodeId);
       if (result === false) return false;
       continue;
     }
@@ -127,7 +124,7 @@ function runPrototypeActionSteps(document, session, interaction, steps, results)
     delete action.actionId;
     delete action.actionProgram;
     delete action.condition;
-    const result = applySinglePrototypeInteraction(document, session, action);
+    const result = applySinglePrototypeInteraction(document, session, action, sourceNodeId);
     results.push(result);
     if (result === false) return false;
   }
@@ -135,11 +132,11 @@ function runPrototypeActionSteps(document, session, interaction, steps, results)
 }
 
 /** Execute a v2 ordered action program (or its virtual legacy one-step migration). */
-export function executePrototypeActionProgram(document, session, interaction) {
+export function executePrototypeActionProgram(document, session, interaction, { sourceNodeId = null } = {}) {
   if (!session || !interaction) return { result: false, actionResults: [] };
   const results = [];
   const program = prototypeActionProgram(interaction);
-  const result = runPrototypeActionSteps(document, session, interaction, program.steps, results);
+  const result = runPrototypeActionSteps(document, session, interaction, program.steps, results, sourceNodeId);
   return { result, actionResults: results };
 }
 
@@ -320,6 +317,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   easingBezier = DEFAULT_PROTOTYPE_BEZIER,
   duration = 300,
   overlayPosition = 'center',
+  overlayRelativePosition,
   overlayOutsideClick = true,
   overlayBackground = true,
   overlayBackgroundColor = '#000000',
@@ -429,7 +427,16 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
       throw new TypeError('Choose a target inside a scrollable frame on the same prototype screen.');
     }
   } else if (scrollTargetId != null) throw new TypeError('Only scroll-to interactions can have a scroll target.');
-  if (action === 'open-overlay' && !overlayPositions.has(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
+  if (action === 'open-overlay') {
+    if (!isValidPrototypeOverlayPosition(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
+    if (overlayPosition === 'manual' && overlayRelativePosition != null
+      && !isValidPrototypeOverlayRelativePosition(overlayRelativePosition)) {
+      throw new TypeError('Manual overlay position needs finite X and Y offsets.');
+    }
+    if (overlayPosition !== 'manual' && overlayRelativePosition != null) {
+      throw new TypeError('Only manual overlays can have trigger-relative position offsets.');
+    }
+  } else if (overlayRelativePosition != null) throw new TypeError('Only open-overlay actions can have trigger-relative position offsets.');
   const interactions = source.node.interactions ||= [];
   const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null)
     && conditionIdentity(item.condition) === conditionIdentity(normalizedCondition)
@@ -454,6 +461,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     else delete existing.smartAnimateMatchingLayers;
     if (action === 'open-overlay') {
       existing.overlayPosition = overlayPosition;
+      if (overlayPosition === 'manual') existing.overlayRelativePosition = normalizePrototypeOverlayRelativePosition(overlayRelativePosition);
+      else delete existing.overlayRelativePosition;
       existing.overlayOutsideClick = Boolean(overlayOutsideClick);
       existing.overlayBackground = Boolean(overlayBackground);
       existing.overlayBackgroundColor = /^#[0-9a-f]{6}$/i.test(overlayBackgroundColor) ? overlayBackgroundColor : '#000000';
@@ -510,6 +519,9 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     overlayBackgroundColor: /^#[0-9a-f]{6}$/i.test(overlayBackgroundColor) ? overlayBackgroundColor : '#000000',
     overlayBackgroundOpacity: Math.max(0, Math.min(1, Number(overlayBackgroundOpacity) || 0))
   });
+  if (action === 'open-overlay' && overlayPosition === 'manual') {
+    interaction.overlayRelativePosition = normalizePrototypeOverlayRelativePosition(overlayRelativePosition);
+  }
   interactions.push(interaction);
   return interaction;
 }
@@ -654,11 +666,11 @@ function rememberPrototypeHoverInteraction(session, interaction) {
   // until the presentation pointer handler observes that the hotspot was left.
 }
 
-export function applyPrototypeInteraction(document, session, interaction) {
-  return executePrototypeActionProgram(document, session, interaction).result;
+export function applyPrototypeInteraction(document, session, interaction, options = {}) {
+  return executePrototypeActionProgram(document, session, interaction, options).result;
 }
 
-function applySinglePrototypeInteraction(document, session, interaction) {
+function applySinglePrototypeInteraction(document, session, interaction, sourceNodeId = null) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
   if (interaction.action === 'back') return backPrototypeSession(session);
   if (interaction.action === 'open-link') return normalizePrototypeLinkUrl(interaction.url) ? 'link-opened' : false;
@@ -761,11 +773,15 @@ function applySinglePrototypeInteraction(document, session, interaction) {
   }
 
   if (interaction.action === 'open-overlay') {
-    const position = overlayPositions.has(interaction.overlayPosition) ? interaction.overlayPosition : 'center';
+    const position = isValidPrototypeOverlayPosition(interaction.overlayPosition) ? interaction.overlayPosition : 'center';
     session.overlays.push({
       pageId: destination.page.id,
       frameId: destination.node.id,
       position,
+      ...(position === 'manual' ? {
+        anchorId: typeof sourceNodeId === 'string' && sourceNodeId ? sourceNodeId : null,
+        relativePosition: normalizePrototypeOverlayRelativePosition(interaction.overlayRelativePosition)
+      } : {}),
       outsideClick: interaction.overlayOutsideClick !== false,
       background: interaction.overlayBackground !== false,
       backgroundColor: /^#[0-9a-f]{6}$/i.test(interaction.overlayBackgroundColor || '') ? interaction.overlayBackgroundColor : '#000000',

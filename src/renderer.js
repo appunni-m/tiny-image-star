@@ -4,6 +4,7 @@ import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdge
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, requiresComplexTextShaping, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding, supportsShadowSpread } from './layer-effects.js';
+import { progressiveBlurStepCount, progressiveBlurWeights } from './progressive-blur.js';
 import { morphShadowAlpha } from './shadow-spread.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
@@ -28,7 +29,9 @@ import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDim
 import { canvasFontWeight } from './font-variation.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 import { regularShapeVertices, traceRoundedPolygonPath } from './polygon-corners.js';
+import { traceEllipseArc } from './ellipse-arc.js';
 import { starControlHandles } from './star-controls.js';
+import { ellipseArcControlHandles } from './ellipse-arc-controls.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { hitTestVisibleGeometry } from './shape-hit-testing.js';
 import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from './eyedropper.js';
@@ -38,9 +41,41 @@ export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
-const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path', 'text']);
+const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path', 'network', 'text']);
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
+
+function progressiveBlurRadius(effect, progress) {
+  const start = Number.isFinite(effect?.startRadius) ? effect.startRadius : effect?.radius || 0;
+  const end = Number.isFinite(effect?.radius) ? effect.radius : start;
+  return start + (end - start) * progress;
+}
+
+function progressiveBlurGradient(context, points, tierIndex, tierCount) {
+  if (typeof context?.createLinearGradient !== 'function' || !Array.isArray(points) || points.length !== 2) return null;
+  const [start, end] = points;
+  if (![start?.x, start?.y, end?.x, end?.y].every(Number.isFinite)
+    || Math.hypot(end.x - start.x, end.y - start.y) < 0.001) return null;
+  const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+  for (let index = 0; index < tierCount; index += 1) {
+    const progress = index / (tierCount - 1);
+    const weight = progressiveBlurWeights(progress, tierCount)[tierIndex];
+    gradient.addColorStop(progress, `rgba(255, 255, 255, ${weight})`);
+  }
+  return gradient;
+}
+
+function maskProgressiveBlurTier(context, gradient, width, height) {
+  if (!gradient || typeof context?.fillRect !== 'function') return false;
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.filter = 'none';
+  context.globalCompositeOperation = 'destination-in';
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, width, height);
+  context.restore();
+  return true;
+}
 const MAX_FONT_OUTLINE_PATH_ENTRIES = 4096;
 const MAX_FONT_OUTLINE_PATH_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_FONT_OUTLINE_PATH_BYTES = 256 * 1024;
@@ -458,6 +493,93 @@ function createShadowSpreadSurface(source, spread) {
   if (!resultContext?.putImageData) return null;
   resultContext.putImageData(imageData, 0, 0);
   return result;
+}
+
+function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixelHeight, padX = 0, padY = 0, shapeText = null) {
+  const mask = createTextSurface(pixelWidth, pixelHeight);
+  const context = mask?.getContext?.('2d');
+  if (!context) return null;
+  context.save();
+  context.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
+  if (node.affineTransform) {
+    const { a, b, c, d } = node.affineTransform;
+    context.translate(0, 0);
+    context.transform(a, b, c, d, 0, 0);
+    context.translate(0, 0);
+  }
+  if (node.rotation && typeof context.translate === 'function' && typeof context.rotate === 'function') {
+    context.translate(node.width / 2, node.height / 2);
+    context.rotate(node.rotation * Math.PI / 180);
+    context.translate(-node.width / 2, -node.height / 2);
+  }
+  context.fillStyle = '#ffffff';
+  const tracePath = pathContext => {
+    if (node.type === 'star' || node.type === 'polygon') {
+      traceRoundedPolygonPath(pathContext, 0, 0,
+        regularShapeVertices(node.type, node.width, node.height, node.points, node.innerRadius ?? 0.48),
+        node.vertexRadii || node.radius || 0, node.cornerSmoothing || 0);
+    } else if (node.type === 'path') traceVectorPath(pathContext, node, 0, 0);
+    else if (node.type === 'network') traceVectorNetworkEdges(pathContext, node, 0, 0);
+    else if (node.type === 'line') {
+      pathContext.moveTo(0, node.lineReverseY === true ? node.height : 0);
+      pathContext.lineTo(node.width, node.lineReverseY === true ? 0 : node.height);
+    }
+  };
+  if (node.type === 'ellipse' && typeof context.ellipse === 'function') {
+    context.beginPath();
+    traceEllipseArc(context, node);
+    context.fill();
+  } else if (node.type === 'star' || node.type === 'polygon') {
+    context.beginPath();
+    tracePath(context);
+    context.fill();
+  } else if (node.type === 'path' && typeof context.beginPath === 'function') {
+    context.beginPath();
+    tracePath(context);
+    if (pathHasClosedContour(node)) context.fill(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+  } else if (node.type === 'network' && typeof context.beginPath === 'function') {
+    for (const face of node.faces || []) {
+      context.beginPath();
+      if (traceVectorNetworkFace(context, node, face, 0, 0)) context.fill();
+    }
+  } else if (node.type === 'text') {
+    drawTextMask(context, node, document, 0, 0, node.width, node.height, shapeText, 'vector');
+  } else if (node.type === 'line') {
+    // The line's stroke path below defines its geometry; its bounds are not a
+    // filled rectangle.
+  } else if (typeof context.beginPath === 'function' && typeof context.rect === 'function') {
+    context.beginPath();
+    roundedRect(context, 0, 0, node.width, node.height, node.cornerRadii || node.radius || 0, node.cornerSmoothing || 0);
+    context.fill();
+  } else if (typeof context.fillRect === 'function') context.fillRect(0, 0, node.width, node.height);
+  else { context.restore(); return null; }
+  if (['star', 'polygon', 'path', 'network', 'line', 'text'].includes(node.type)) {
+    // Include the authored stroke silhouette too; stroke opacity is ignored
+    // for geometry, just as fill opacity is for this Figma effect option.
+    const textOutline = node.type === 'text'
+      ? outlineContext => drawTextLayerContent(outlineContext, node, document, 0, 0, node.width, node.height, {
+        colorOverride: '#ffffff', fillOpacity: 1, paintMode: 'stroke', includeDecorations: false,
+        overrideRunColors: true, shapeText
+      })
+      : null;
+    drawStrokeStack(context, node, document, 0, 0, node.width, node.height, tracePath, 'vector', textOutline);
+  }
+  context.restore();
+  return mask;
+}
+
+function removeShadowBehindGeometry(shadowSurface, geometryMask) {
+  if (!shadowSurface || !geometryMask) return false;
+  const context = shadowSurface.getContext?.('2d');
+  if (!context) return false;
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = 'destination-out';
+  context.filter = 'none';
+  context.drawImage(geometryMask, 0, 0);
+  context.restore();
+  return true;
 }
 
 function resizeTextSurface(surface, width, height) {
@@ -971,6 +1093,12 @@ function drawStrokeEndpointDecorations(ctx, node, stroke, origin, color) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
+    if (item.type === 'circle') {
+      ctx.arc(item.center.x, item.center.y, item.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
     ctx.moveTo(item.points[0].x, item.points[0].y);
     for (let index = 1; index < item.points.length; index += 1) ctx.lineTo(item.points[index].x, item.points[index].y);
     if (item.closed) {
@@ -1004,6 +1132,40 @@ export function getPresentationScrollOffset(state, frame) {
     x: Number.isFinite(x) ? Math.max(0, x) : 0,
     y: Number.isFinite(y) ? Math.max(0, y) : 0
   };
+}
+
+/** Return a layer's rendered page-space origin, including scroll and sticky offsets. */
+export function presentationNodePageOrigin(page, nodeId, document = null, presentationScrollOffsets = null) {
+  if (!page || typeof nodeId !== 'string' || !nodeId) return null;
+  const scrollState = { presentationScrollOffsets };
+  let origin = null;
+  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }, parentScrollFrame = null, stickyScrollContext = null, layoutAncestors = []) => {
+    for (const node of nodes || []) {
+      if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
+      const geometry = document ? getNodeGeometry(document, node) : node;
+      const rawNode = { ...node, ...geometry };
+      const childScrollOffset = scrollOffsetForPresentationChild(
+        parentScrollFrame, rawNode, parentScrollOffset, stickyScrollContext, layoutAncestors.slice(0, -1)
+      );
+      const resolvedNode = {
+        ...rawNode,
+        x: rawNode.x - childScrollOffset.x,
+        y: rawNode.y - childScrollOffset.y
+      };
+      if (node.id === nodeId) {
+        origin = nodeLocalToPage(resolvedNode, { x: 0, y: 0 }, ancestors);
+        return true;
+      }
+      if (node.type === 'boolean') continue;
+      const ownScrollOffset = getPresentationScrollOffset(scrollState, rawNode);
+      const childStickyContext = scrollContextForChildren(rawNode, layoutAncestors, ownScrollOffset, stickyScrollContext);
+      if (visit(node.children || [], [...ancestors, resolvedNode], ownScrollOffset, rawNode,
+        childStickyContext, [...layoutAncestors, rawNode])) return true;
+    }
+    return false;
+  };
+  visit(page.children || []);
+  return origin;
 }
 
 /** Translate only a scrollable frame's contents; call after its viewport clip. */
@@ -1550,8 +1712,8 @@ export class SceneRenderer {
     if (state.shapeBuilder) drawShapeBuilderRegions(ctx, state.shapeBuilder.previewContours, state.zoom);
     this.drawSelection(ctx, page.children, state.shapeBuilder ? [] : state.selectedIds, 0, 0);
     this.drawRemotePresence(ctx, page, state);
-    if (state.componentPropertyHighlightNodeId) {
-      this.drawComponentPropertyHighlight(ctx, page.children, state.componentPropertyHighlightNodeId);
+    if (state.componentPropertyHighlightNodeIds?.length) {
+      this.drawComponentPropertyHighlights(ctx, page.children, state.componentPropertyHighlightNodeIds);
     }
     drawAlignmentGuides(ctx, state.smartGuides, state.zoom);
     if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
@@ -1795,7 +1957,7 @@ export class SceneRenderer {
         roundedRect(ctx, x, y, width, height, radius || 0, cornerSmoothing);
         break;
       case 'ellipse':
-        ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
+        traceEllipseArc(ctx, node, x, y, width, height);
         break;
       case 'line':
         if (node.lineReverseY === true) { ctx.moveTo(x, y + height); ctx.lineTo(x + width, y); }
@@ -1885,7 +2047,7 @@ export class SceneRenderer {
       }
     } else if (node.type === 'network') {
       if (vectorMask) {
-        const hasVisibleFill = fillStackForNode(node).some(fill => fill.visible);
+        const hasVisibleFill = drawFillPaint && fillStackForNode(node).some(fill => fill.visible);
         if (hasVisibleFill) for (const face of node.faces || []) {
           ctx.beginPath();
           if (traceVectorNetworkFace(ctx, node, face, x, y)) {
@@ -1893,7 +2055,7 @@ export class SceneRenderer {
             ctx.fill();
           }
         }
-      } else {
+      } else if (drawFillPaint) {
       const fills = fillStackForNode(node);
       for (const face of node.faces || []) {
         // Keep the original one-fill face behavior for old files: an image fill
@@ -1961,7 +2123,8 @@ export class SceneRenderer {
         }
       }
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
+      if (drawStrokePaint) drawStrokeStack(ctx, node, document, x, y, width, height,
+        pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
     } else {
       if (drawFillPaint && node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode, 0, null, this);
       if (drawStrokePaint) drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode);
@@ -2035,7 +2198,7 @@ export class SceneRenderer {
     ctx.restore();
   }
 
-  applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, alphaSurface = surface) {
+  applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, alphaSurface = surface, node = null) {
     const innerShadows = effects.filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
     if (!innerShadows.length) return;
     const overlay = typeof OffscreenCanvas === 'function'
@@ -2046,7 +2209,9 @@ export class SceneRenderer {
     if (!overlayContext || !surfaceContext || !alphaSurface) return;
     const spreadMasks = new Map();
     for (const effect of innerShadows) {
-      const spread = (effect.spread ?? 0) * rasterScale;
+      // Figma retains spread values on unsupported layers but does not apply
+      // them there. Keep inner and drop shadows on the same eligibility path.
+      const spread = supportsShadowSpread(node) ? (effect.spread ?? 0) * rasterScale : 0;
       let shadowSource = alphaSurface;
       if (spread) {
         if (!spreadMasks.has(spread)) spreadMasks.set(spread, createShadowSpreadSurface(alphaSurface, spread));
@@ -2078,9 +2243,16 @@ export class SceneRenderer {
     }
   }
 
-  applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight) {
+  applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight, padX = 0, padY = 0, shadowGeometryMask = null) {
     const shadows = effects.filter(effect => effect?.type === 'drop-shadow' && effect.visible !== false && effect.opacity > 0);
-    if (!shadows.some(effect => supportsShadowSpread(node) && (effect.spread ?? 0) !== 0)) return null;
+    const hidesShadowBehindNode = shadows.some(effect => effect.showShadowBehindNode !== true);
+    const hasSpread = shadows.some(effect => supportsShadowSpread(node) && (effect.spread ?? 0) !== 0);
+    if (!hasSpread && !hidesShadowBehindNode) return null;
+    if (hidesShadowBehindNode && !shadowGeometryMask) {
+      shadowGeometryMask = createShadowGeometryMask(node, this.getState?.()?.document || null,
+        rasterScale, pixelWidth, pixelHeight, padX, padY, this.getState?.()?.shapeLocalTextRun || null);
+    }
+    if (hidesShadowBehindNode && !shadowGeometryMask) return null;
     let current = surface;
     let spare = createTextSurface(pixelWidth, pixelHeight);
     const colorMask = createTextSurface(pixelWidth, pixelHeight);
@@ -2114,6 +2286,7 @@ export class SceneRenderer {
       blurContext.clearRect(0, 0, pixelWidth, pixelHeight);
       blurContext.drawImage(colorMask, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
       blurContext.restore();
+      if (effect.showShadowBehindNode !== true) removeShadowBehindGeometry(blurred, shadowGeometryMask);
 
       spareContext.save();
       spareContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -2133,7 +2306,7 @@ export class SceneRenderer {
   }
 
   drawDropShadowsWithBlendMode(ctx, source, node, effects, rasterScale, pixelWidth, pixelHeight,
-    x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity) {
+    x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask = null) {
     const shadows = effects.filter(effect => effect?.type === 'drop-shadow' && effect.visible !== false && effect.opacity > 0);
     if (!shadows.length) return false;
     let working = createTextSurface(pixelWidth, pixelHeight);
@@ -2170,6 +2343,7 @@ export class SceneRenderer {
       blurContext.clearRect(0, 0, pixelWidth, pixelHeight);
       blurContext.drawImage(colorMask, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
       blurContext.restore();
+      if (effect.showShadowBehindNode !== true) removeShadowBehindGeometry(blurred, shadowGeometryMask);
 
       // A drop shadow blends with the scene beneath the layer. Apply it to the
       // live destination before the foreground layer is drawn over it.
@@ -2194,16 +2368,77 @@ export class SceneRenderer {
     return true;
   }
 
-  applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight) {
-    if (!effect || effect.type !== 'layer-blur' || effect.radius <= 0) return true;
+  applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight, geometry = null) {
+    if (!effect || effect.type !== 'layer-blur' || effect.visible === false) return true;
+    const maximumRadius = effect.blurType === 'PROGRESSIVE'
+      ? Math.max(effect.radius || 0, effect.startRadius || 0) : effect.radius;
+    if (maximumRadius <= 0) return true;
     const ownerDocument = surface.ownerDocument || globalThis.document;
-    const scratch = typeof OffscreenCanvas === 'function'
+    const surfaceContext = surface.getContext('2d');
+    const createSurface = () => typeof OffscreenCanvas === 'function'
       ? new OffscreenCanvas(pixelWidth, pixelHeight)
       : ownerDocument?.createElement
         ? Object.assign(ownerDocument.createElement('canvas'), { width: pixelWidth, height: pixelHeight })
         : null;
+
+    if (effect.blurType === 'PROGRESSIVE' && geometry
+      && [geometry.width, geometry.height, geometry.padX, geometry.padY].every(Number.isFinite)) {
+      try {
+        const scratch = createSurface();
+        const accumulation = createSurface();
+        const scratchContext = scratch?.getContext('2d');
+        const accumulationContext = accumulation?.getContext('2d');
+        if (scratchContext && accumulationContext && surfaceContext && typeof scratchContext.filter === 'string'
+          && typeof scratchContext.createLinearGradient === 'function' && typeof scratchContext.fillRect === 'function') {
+          const angle = (Number(geometry.rotation) || 0) * Math.PI / 180;
+          const points = [effect.startOffset, effect.endOffset].map(point => {
+            const dx = geometry.width * point.x - geometry.width / 2;
+            const dy = geometry.height * point.y - geometry.height / 2;
+            return {
+              x: (geometry.padX + geometry.width / 2 + dx * Math.cos(angle) - dy * Math.sin(angle)) * rasterScale,
+              y: (geometry.padY + geometry.height / 2 + dx * Math.sin(angle) + dy * Math.cos(angle)) * rasterScale
+            };
+          });
+          const tierCount = progressiveBlurStepCount(effect, pixelWidth * pixelHeight);
+          let supported = true;
+          for (let index = 0; index < tierCount; index += 1) {
+            const progress = index / (tierCount - 1);
+            const gradient = progressiveBlurGradient(scratchContext, points, index, tierCount);
+            if (!gradient) { supported = false; break; }
+            scratchContext.save();
+            scratchContext.setTransform(1, 0, 0, 1, 0, 0);
+            scratchContext.filter = `blur(${Math.max(0, progressiveBlurRadius(effect, progress)) * rasterScale}px)`;
+            scratchContext.globalCompositeOperation = 'source-over';
+            scratchContext.clearRect(0, 0, pixelWidth, pixelHeight);
+            scratchContext.drawImage(surface, 0, 0);
+            scratchContext.restore();
+            if (!maskProgressiveBlurTier(scratchContext, gradient, pixelWidth, pixelHeight)) { supported = false; break; }
+            accumulationContext.save();
+            accumulationContext.setTransform(1, 0, 0, 1, 0, 0);
+            accumulationContext.filter = 'none';
+            accumulationContext.globalCompositeOperation = index === 0 ? 'source-over' : 'lighter';
+            if (index === 0) accumulationContext.clearRect(0, 0, pixelWidth, pixelHeight);
+            accumulationContext.drawImage(scratch, 0, 0);
+            accumulationContext.restore();
+          }
+          if (supported) {
+            surfaceContext.save();
+            surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+            surfaceContext.globalAlpha = 1;
+            surfaceContext.globalCompositeOperation = 'source-over';
+            surfaceContext.filter = 'none';
+            surfaceContext.clearRect(0, 0, pixelWidth, pixelHeight);
+            surfaceContext.drawImage(accumulation, 0, 0);
+            surfaceContext.restore();
+            return true;
+          }
+        }
+      } catch { /* Fall back to the normal bounded blur if a progressive surface cannot be allocated. */ }
+    }
+
+    let scratch;
+    try { scratch = createSurface(); } catch { return false; }
     const scratchContext = scratch?.getContext('2d');
-    const surfaceContext = surface.getContext('2d');
     if (!scratchContext || !surfaceContext || typeof scratchContext.filter !== 'string') return false;
 
     scratchContext.save();
@@ -2531,7 +2766,8 @@ export class SceneRenderer {
     const source = ctx.canvas;
     const matrix = ctx.getTransform?.();
     const visible = effects.filter(effect => effect.visible !== false);
-    const radius = visible.reduce((maximum, effect) => Math.max(maximum, effect.radius), 0);
+    const radius = visible.reduce((maximum, effect) => Math.max(maximum, effect.radius || 0,
+      effect.blurType === 'PROGRESSIVE' ? effect.startRadius || 0 : 0), 0);
     const drawOwnContent = () => {
       const copy = { ...node, effects: (node.effects || []).filter(effect => !['background-blur', 'glass'].includes(effect.type)) };
       const originalNoiseIndices = new Map((node.effects || []).map((effect, index) => [effect.id, index]));
@@ -2596,15 +2832,70 @@ export class SceneRenderer {
     const sourceTop = Math.max(0, top);
     const sourceRight = Math.min(source.width, right);
     const sourceBottom = Math.min(source.height, bottom);
-    if (sourceRight > sourceLeft && sourceBottom > sourceTop) {
-      backdropContext.drawImage(source, sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop,
-        (sourceLeft - left) * rasterScale, (sourceTop - top) * rasterScale,
-        (sourceRight - sourceLeft) * rasterScale, (sourceBottom - sourceTop) * rasterScale);
+    const effect = visible[0];
+    const progressive = effect?.blurType === 'PROGRESSIVE' && effect.startOffset && effect.endOffset
+      && sourceRight > sourceLeft && sourceBottom > sourceTop;
+    const drawBackdropSource = filter => {
+      backdropContext.save();
+      backdropContext.setTransform(1, 0, 0, 1, 0, 0);
+      backdropContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      backdropContext.filter = filter;
+      if (sourceRight > sourceLeft && sourceBottom > sourceTop) {
+        backdropContext.drawImage(source, sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop,
+          (sourceLeft - left) * rasterScale, (sourceTop - top) * rasterScale,
+          (sourceRight - sourceLeft) * rasterScale, (sourceBottom - sourceTop) * rasterScale);
+      }
+      backdropContext.restore();
+    };
+    if (progressive && typeof backdropContext.createLinearGradient === 'function' && typeof backdropContext.fillRect === 'function') {
+      const pointOnCanvas = offset => {
+        const dx = node.width * offset.x - node.width / 2;
+        const dy = node.height * offset.y - node.height / 2;
+        const worldX = centerX + dx * Math.cos(angle) - dy * Math.sin(angle);
+        const worldY = centerY + dx * Math.sin(angle) + dy * Math.cos(angle);
+        const screenX = matrix.a * worldX + matrix.c * worldY + matrix.e;
+        const screenY = matrix.b * worldX + matrix.d * worldY + matrix.f;
+        return { x: (screenX - left) * rasterScale, y: (screenY - top) * rasterScale };
+      };
+      const points = [pointOnCanvas(effect.startOffset), pointOnCanvas(effect.endOffset)];
+      const tierCount = progressiveBlurStepCount(effect, pixelWidth * pixelHeight);
+      resultContext.save();
+      resultContext.setTransform(1, 0, 0, 1, 0, 0);
+      resultContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      resultContext.globalCompositeOperation = 'source-over';
+      resultContext.filter = 'none';
+      let supported = true;
+      for (let index = 0; index < tierCount; index += 1) {
+        const progress = index / (tierCount - 1);
+        const gradient = progressiveBlurGradient(backdropContext, points, index, tierCount);
+        if (!gradient) { supported = false; break; }
+        drawBackdropSource(`blur(${progressiveBlurRadius(effect, progress) * displayScale * rasterScale}px)`);
+        if (!maskProgressiveBlurTier(backdropContext, gradient, pixelWidth, pixelHeight)) { supported = false; break; }
+        resultContext.globalCompositeOperation = index === 0 ? 'source-over' : 'lighter';
+        resultContext.drawImage(backdrop, 0, 0);
+      }
+      resultContext.restore();
+      if (!supported) {
+        drawBackdropSource('none');
+        resultContext.save();
+        resultContext.setTransform(1, 0, 0, 1, 0, 0);
+        resultContext.clearRect(0, 0, pixelWidth, pixelHeight);
+        resultContext.globalCompositeOperation = 'source-over';
+        resultContext.filter = `blur(${effect.radius * displayScale * rasterScale}px)`;
+        resultContext.drawImage(backdrop, 0, 0);
+        resultContext.restore();
+      }
+    } else {
+      if (sourceRight > sourceLeft && sourceBottom > sourceTop) {
+        backdropContext.drawImage(source, sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop,
+          (sourceLeft - left) * rasterScale, (sourceTop - top) * rasterScale,
+          (sourceRight - sourceLeft) * rasterScale, (sourceBottom - sourceTop) * rasterScale);
+      }
+      resultContext.save();
+      resultContext.filter = `blur(${radius * displayScale * rasterScale}px)`;
+      resultContext.drawImage(backdrop, 0, 0);
+      resultContext.restore();
     }
-    resultContext.save();
-    resultContext.filter = `blur(${radius * displayScale * rasterScale}px)`;
-    resultContext.drawImage(backdrop, 0, 0);
-    resultContext.restore();
     backdropContext.clearRect(0, 0, pixelWidth, pixelHeight);
     backdropContext.setTransform(matrix.a * rasterScale, matrix.b * rasterScale, matrix.c * rasterScale, matrix.d * rasterScale,
       (matrix.e - left) * rasterScale, (matrix.f - top) * rasterScale);
@@ -2642,11 +2933,29 @@ export class SceneRenderer {
     const transform = ctx.getTransform?.();
     const displayScale = transform ? Math.hypot(transform.a, transform.b) : Math.max(.1, (window.devicePixelRatio || 1) * (this.getState().zoom || 1));
     const radians = (Number(node.rotation) || 0) * Math.PI / 180;
-    const rotatedWidth = Math.abs(node.width * Math.cos(radians)) + Math.abs(node.height * Math.sin(radians));
-    const rotatedHeight = Math.abs(node.height * Math.cos(radians)) + Math.abs(node.width * Math.sin(radians));
     const effectPadding = layerEffectPadding(effects);
-    const padX = effectPadding.x + Math.max(0, rotatedWidth - node.width) / 2;
-    const padY = effectPadding.y + Math.max(0, rotatedHeight - node.height) / 2;
+    const affine = node.affineTransform || { a: 1, b: 0, c: 0, d: 1 };
+    const centerX = node.width / 2;
+    const centerY = node.height / 2;
+    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([x, y]) => {
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const rotatedX = centerX + dx * Math.cos(radians) - dy * Math.sin(radians);
+      const rotatedY = centerY + dx * Math.sin(radians) + dy * Math.cos(radians);
+      return {
+        x: affine.a * rotatedX + affine.c * rotatedY,
+        y: affine.b * rotatedX + affine.d * rotatedY
+      };
+    });
+    const minX = Math.min(...corners.map(point => point.x));
+    const maxX = Math.max(...corners.map(point => point.x));
+    const minY = Math.min(...corners.map(point => point.y));
+    const maxY = Math.max(...corners.map(point => point.y));
+    // Include the transformed geometry and its effect apron. `drawNode` applies
+    // affineTransform inside this surface, so padding from only the untransformed
+    // width/height clips scaled and sheared content before its effects run.
+    const padX = Math.max(effectPadding.x - minX, effectPadding.x + maxX - node.width, 0);
+    const padY = Math.max(effectPadding.y - minY, effectPadding.y + maxY - node.height, 0);
     const logicalWidth = Math.max(1, node.width + padX * 2);
     const logicalHeight = Math.max(1, node.height + padY * 2);
     const pixelBudget = 4_000_000;
@@ -2673,11 +2982,13 @@ export class SceneRenderer {
     delete copy.variableBindings.opacity;
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
-    // Plain shape and image layers use the layer paint phases: fill, inner
-    // shadow, stroke, then the top-effect stack. Containers and text retain
-    // their established flattened paths until their own phase models exist.
+    // Plain paint layers use explicit fill, inner-shadow, and stroke phases.
+    // Containers stay flattened, but their inner shadows sit below the top
+    // effect stack (blur/noise/texture), matching the group effect order.
     const stagePaints = !node.mask && !(node.children?.length)
       && EFFECT_PAINT_STAGEABLE_TYPES.has(node.type);
+    const containerEffectOrder = node.type === 'group' || node.type === 'frame' || node.type === 'section'
+      || Boolean(node.mask) || Boolean(node.children?.length);
     const hasInnerShadow = effects.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
     const hasVisibleStroke = stagePaints && strokeStackForNode(node).some(stroke => {
       if (stroke.visible === false || stroke.opacity <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return false;
@@ -2711,7 +3022,7 @@ export class SceneRenderer {
       } else stagedPaints = true;
 
       if (stagedPaints) {
-        if (hasInnerShadow) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, shadowAlphaSurface);
+        if (hasInnerShadow) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, shadowAlphaSurface, node);
         drawPaintStage(effectContext, 'stroke');
       } else {
         // Preserve the established appearance if a mixed-paint shadow cannot
@@ -2730,31 +3041,47 @@ export class SceneRenderer {
     }
     const topEffects = effects.filter(effect => ['layer-blur', 'noise', 'texture'].includes(effect.type));
     const deferredLayerBlurIds = new Set();
+    if (containerEffectOrder) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, surface, node);
     for (const effect of topEffects) {
       if (effect.type === 'layer-blur') {
-        if (!this.applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight)) deferredLayerBlurIds.add(effect.id);
+        if (!this.applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight,
+          { width: node.width, height: node.height, rotation: node.rotation, padX, padY })) deferredLayerBlurIds.add(effect.id);
       } else if (effect.type === 'noise') {
         this.applyNoiseEffects(surface, node, [effect], rasterScale,
           Math.max(1, Math.ceil(node.width * rasterScale)), Math.max(1, Math.ceil(node.height * rasterScale)), padX, padY, renderOptions);
       } else this.applyTextureEffects(surface, node, [effect], pixelWidth, pixelHeight, rasterScale, renderOptions);
     }
-    if (!stagedPaints) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
+    if (!stagedPaints && !containerEffectOrder) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, surface, node);
     const x = parentX + node.x; const y = parentY + node.y;
     const nodeOpacity = getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
-    const hasBlendedDropShadow = effects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
+    const needsShadowGeometryMask = effects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
+      && effect.opacity > 0 && effect.showShadowBehindNode !== true);
+    const shadowGeometryMask = needsShadowGeometryMask
+      ? createShadowGeometryMask(copy, this.getState().document || null, rasterScale, pixelWidth, pixelHeight, padX, padY,
+        this.getState().shapeLocalTextRun || null)
+      : null;
+    // If a bounded geometry mask cannot be allocated, omit only the affected
+    // shadows rather than silently showing through transparent layer areas.
+    const shadowEffects = needsShadowGeometryMask && !shadowGeometryMask
+      ? effects.filter(effect => effect.type !== 'drop-shadow' || effect.showShadowBehindNode === true)
+      : effects;
+    const hasBlendedDropShadow = shadowEffects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
       && effect.opacity > 0 && effect.blendMode && effect.blendMode !== 'normal');
-    if (hasBlendedDropShadow) this.drawDropShadowsWithBlendMode(ctx, surface, node, effects,
-      rasterScale, pixelWidth, pixelHeight, x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity);
+    if (hasBlendedDropShadow) this.drawDropShadowsWithBlendMode(ctx, surface, node, shadowEffects,
+      rasterScale, pixelWidth, pixelHeight, x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity, shadowGeometryMask);
     // If the bounded shadow surface cannot be allocated, omit this non-normal
     // effect instead of silently rendering it with the wrong blend mode.
     const spreadDropShadowSurface = hasBlendedDropShadow
-      ? null : this.applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight);
+      ? null : this.applyDropShadows(surface, node, shadowEffects, rasterScale, pixelWidth, pixelHeight,
+        padX, padY, shadowGeometryMask);
     const renderedSurface = spreadDropShadowSurface || surface;
     const customDropShadowsApplied = Boolean(spreadDropShadowSurface);
     ctx.save();
     ctx.globalAlpha *= nodeOpacity;
-    ctx.filter = buildLayerEffectFilter(effects.filter(effect => deferredLayerBlurIds.has(effect.id)
-      || (effect.type === 'drop-shadow' && !hasBlendedDropShadow && !customDropShadowsApplied)), displayScale);
+    ctx.filter = buildLayerEffectFilter([
+      ...effects.filter(effect => deferredLayerBlurIds.has(effect.id)),
+      ...shadowEffects.filter(effect => effect.type === 'drop-shadow' && !hasBlendedDropShadow && !customDropShadowsApplied)
+    ], displayScale);
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(renderedSurface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
@@ -2782,7 +3109,7 @@ export class SceneRenderer {
           roundedRect(ctx, x, y, width, height, radius, cornerSmoothing);
           break;
         case 'ellipse':
-          ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
+          traceEllipseArc(ctx, node, x, y, width, height);
           break;
         case 'line':
           if (node.lineReverseY === true) { ctx.moveTo(x, y + height); ctx.lineTo(x + width, y); }
@@ -3297,7 +3624,7 @@ export class SceneRenderer {
         { x: left, y: bottom }, { x: left, y: middleY }
       ];
       const hitSize = 48 * scale;
-      const visibleSize = 10 * scale;
+      const visibleSize = 14 * scale;
       for (const point of handles) {
         const mapped = pagePoint(point);
         // Match the 24 CSS-pixel radius used by imageCropHandleAt(); this
@@ -3447,6 +3774,39 @@ export class SceneRenderer {
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
           ctx.strokeRect(labelX, labelY, labelWidth, labelHeight);
+          ctx.fillStyle = BLUE;
+          ctx.fillText(handle.label, point.x, labelY + labelHeight / 2);
+          ctx.restore();
+        }
+      }
+      if (selected.length === 1 && node.type === 'ellipse' && state.tool === 'select'
+        && !state.layerSelectionMode && !state.presenting && !state.imageCropMode
+        && !(state.inspectorTab === 'motion' && state.motionPreview)
+        && !node.locked && !ancestors.some(parent => parent.locked)) {
+        const source = findNode(state.document, node.id)?.node || node;
+        const controls = ellipseArcControlHandles({ ...node, arcData: source.arcData || node.arcData }, zoom);
+        for (const handle of controls) {
+          const point = pagePoint(handle.point);
+          const active = state.interaction?.kind === 'ellipse-arc-control'
+            && state.interaction.node?.id === node.id && state.interaction.handle?.kind === handle.kind;
+          ctx.save();
+          ctx.strokeStyle = BLUE;
+          ctx.fillStyle = active ? BLUE : '#ffffff';
+          ctx.lineWidth = 1.5 / zoom;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 5 / zoom, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = active ? '#ffffff' : BLUE;
+          ctx.font = `${9 / zoom}px system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const labelWidth = (handle.label.length * 5.5 + 10) / zoom;
+          const labelHeight = 13 / zoom;
+          const labelY = point.y + 8 / zoom;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(point.x - labelWidth / 2, labelY, labelWidth, labelHeight);
+          ctx.strokeRect(point.x - labelWidth / 2, labelY, labelWidth, labelHeight);
           ctx.fillStyle = BLUE;
           ctx.fillText(handle.label, point.x, labelY + labelHeight / 2);
           ctx.restore();
@@ -3682,35 +4042,44 @@ export class SceneRenderer {
     }
   }
 
-  drawComponentPropertyHighlight(ctx, nodes, targetId) {
+  drawComponentPropertyHighlights(ctx, nodes, targetIds) {
     const state = this.getState();
-    let target = null;
+    const remaining = new Set((Array.isArray(targetIds) ? targetIds : [targetIds])
+      .filter(targetId => typeof targetId === 'string' && targetId));
+    if (!remaining.size) return 0;
+    const targets = [];
     const visit = (list, ancestors = []) => {
       for (const node of list) {
+        if (!remaining.size) return true;
         const geometry = getNodeGeometry(state.document, node);
         const resolvedNode = { ...node, ...geometry, ...(state.motionPreview?.get(node.id) || {}) };
-        if (node.id === targetId) {
-          target = { node: resolvedNode, ancestors };
-          return;
-        }
-        if (visit(node.children || [], [...ancestors, resolvedNode])) return;
+        if (remaining.delete(node.id)) targets.push({ node: resolvedNode, ancestors });
+        if (remaining.size && visit(node.children || [], [...ancestors, resolvedNode])) return true;
       }
       return false;
     };
     visit(nodes);
-    if (!target || target.node.visible === false || target.ancestors.some(ancestor => ancestor.visible === false)) return false;
     const zoom = Math.max(.08, state.zoom || 1);
-    const { corners } = selectionOverlayGeometry(target.node, target.ancestors, { zoom, rotateOffset: 0 });
-    ctx.save();
-    ctx.strokeStyle = '#9747ff';
-    ctx.lineWidth = 2 / zoom;
-    ctx.beginPath();
-    ctx.moveTo(corners[0].x, corners[0].y);
-    for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-    return true;
+    let drawn = 0;
+    for (const target of targets) {
+      if (target.node.visible === false || target.ancestors.some(ancestor => ancestor.visible === false)) continue;
+      const { corners } = selectionOverlayGeometry(target.node, target.ancestors, { zoom, rotateOffset: 0 });
+      ctx.save();
+      ctx.strokeStyle = '#9747ff';
+      ctx.lineWidth = 2 / zoom;
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+      drawn += 1;
+    }
+    return drawn;
+  }
+
+  drawComponentPropertyHighlight(ctx, nodes, targetId) {
+    return this.drawComponentPropertyHighlights(ctx, nodes, [targetId]) > 0;
   }
 
   drawCommentPins(ctx, page, state, width, height) {

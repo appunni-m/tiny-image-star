@@ -92,6 +92,11 @@ function cssClass(node) {
 const codegenEffectNames = Object.freeze({ glass: 'Glass', noise: 'Noise', texture: 'Texture' });
 
 function codegenEffectWarning(node) {
+  const progressiveBlur = (node?.effects || []).some(effect => effect && effect.visible !== false
+    && ['layer-blur', 'background-blur'].includes(effect.type) && effect.blurType === 'PROGRESSIVE');
+  if (progressiveBlur) {
+    return 'Progressive blur is preserved in layer data but cannot be represented by generated CSS; the emitted CSS omits it.';
+  }
   const blendedEffects = (node?.effects || []).filter(effect => effect && effect.visible !== false
     && effect.blendMode && effect.blendMode !== 'normal');
   if (blendedEffects.length) {
@@ -271,6 +276,7 @@ function cssForEntry(document, entry) {
   const unsupportedEffectWarning = codegenEffectWarning(node);
   if (unsupportedEffectWarning) declarations.push(`/* ${unsupportedEffectWarning} */`);
   const backdropFilter = (node.effects || []).filter(effect => effect.type === 'background-blur' && effect.visible !== false)
+    .filter(effect => effect.blurType !== 'PROGRESSIVE')
     .map(effect => `blur(${number(effect.radius)}px)`).join(' ');
   if (backdropFilter) declarations.push(`backdrop-filter: ${backdropFilter};`);
   const effectBoxShadow = buildLayerEffectBoxShadow(node.effects);
