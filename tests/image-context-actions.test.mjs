@@ -15,8 +15,8 @@ test('the canvas image action bar exposes crop, save-recipe, and batch-recipe co
   assert.match(html, /id="image-crop-toolbar-done"[^>]*>Crop image<\/button>/);
   assert.match(html, /id="image-context-recipe"[^>]*aria-label="Choose a saved recipe to apply to selected images"/);
   assert.match(html, /id="image-context-apply-recipe"[^>]*disabled>Apply recipe<\/button>/);
-  assert.match(html, /Choose Crop image, drag across what to keep, then Finish crop\./);
-  assert.match(main, /Choose Crop image, drag across what to keep, then Finish crop\./);
+  assert.match(html, /Choose Crop image, drag to select what to keep, then Finish crop\./);
+  assert.match(main, /Choose Crop image, drag to select what to keep, then Finish crop\./);
   assert.match(main, /Unlock this image to crop it\. Adjust image opens controls; Save recipe reuses edits\./,
     'a locked image should explain why the crop action is unavailable');
   assert.match(css, /\.image-crop-toolbar-copy span \{[^}]*font-size: 12px;[^}]*line-height: 1\.4/,
@@ -28,9 +28,11 @@ test('image cropping explains the complete gesture before the user enters crop m
     'the empty Layers state should tell the user where cropping starts');
   assert.match(main, /To crop a photo, select it and choose Crop image\./,
     'the empty inspector should explain the end-to-end crop flow');
-  assert.match(main, /Drag across the part you want to keep\. Drag an edge or corner to adjust it\. Undo crop reverses the last step; Finish crop keeps it\./,
+  assert.match(main, /Drag to select the area you want to keep\. Adjust an edge or corner, then choose Finish crop\. Undo crop reverses the last change\./,
     'crop mode should explain what to drag, how to keep the result, and where to find Undo');
-  assert.match(html, /title="Drag over the part of the image to keep, then choose Finish crop"/,
+  assert.match(main, /choose a crop shape such as square, portrait, landscape, or widescreen/,
+    'crop mode should explain ratio presets in familiar words');
+  assert.match(html, /title="Drag to select the area you want to keep, then choose Finish crop"/,
     'the Crop image action should explain its result before entering crop mode');
   const fillControls = main.match(/function imageFillControls\(node, imageFill = node\.imageFill, fillId = ''\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.ok(fillControls, 'expected the image-fill controls');
@@ -38,6 +40,25 @@ test('image cropping explains the complete gesture before the user enters crop m
     'the shape-fill control should use the word crop and explain that it changes which part of the image shows');
   assert.match(fillControls, /aria-label="\$\{fillCropActive \? 'Finish positioning image fill' : 'Crop or position image fill on canvas'\}"/,
     'the image-fill action should expose its crop and positioning purpose to assistive technology');
+});
+
+test('crop has a discoverable aspect-ratio control that locks drawing and handle resizing', () => {
+  const ratio = html.match(/<label class="image-crop-ratio-control"[\s\S]*?<\/label>/)?.[0] || '';
+  assert.ok(ratio, 'expected a labeled crop ratio control in the image action bar');
+  assert.match(ratio, /Crop shape/);
+  for (const choice of ['Free \\(any shape\\)', 'Square \\(1:1\\)', 'Portrait \\(4:5\\)', 'Landscape \\(3:2\\)', 'Widescreen \\(16:9\\)']) assert.match(ratio, new RegExp(`>${choice}<`));
+  assert.match(main, /imageCropAspectRatio: 'free'/, 'the ratio is ephemeral tool state by default');
+  assert.match(main, /aspectRatioControl\.hidden = !\(active && isImage\)/,
+    'the control belongs to image layer crop, not the separate photo-fill positioning flow');
+  assert.match(html, /aria-label="Crop shape"/);
+  assert.match(main, /constrainImageCropDisplayDrag\(\{[\s\S]*?aspectRatio: currentImageCropAspectRatio\(\)/,
+    'the live selection marquee and completed crop should use the selected ratio');
+  assert.match(main, /moveImageCropHandle\(\{[\s\S]*?aspectRatio: currentImageCropAspectRatio\(\)/,
+    'edge and corner resizing should preserve the selected ratio');
+  assert.match(main, /Object\.hasOwn\(IMAGE_CROP_ASPECT_RATIOS, value\)/,
+    'unsupported option values should not become crop state');
+  assert.match(css, /\.image-crop-ratio-control select\s*\{[^}]*width:\s*100%;[^}]*min-height:\s*44px/,
+    'the ratio selector should remain finger-sized on mobile');
 });
 
 test('selected images provide a direct route to their edit controls, including on phones', () => {

@@ -47,7 +47,7 @@
             <p class="layer-selection-hint" id="layer-selection-hint" hidden>A recipe is a reusable image preset. Click or tap layer rows or canvas objects to add or remove them; choose Done, then choose a recipe. Other selected layers stay unchanged.</p>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
-          <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or create a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button></div></div>
+          <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Add an image or draw a frame. To crop, select an image and choose Crop image.</span><div class="empty-layer-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Draw a frame</button></div></div>
           </section>
           <section class="assets-section" id="assets-section" role="tabpanel" aria-labelledby="sidebar-tab-assets" tabindex="0" hidden>
             <details class="assets-group" open>
@@ -105,7 +105,7 @@
               <div class="empty-canvas-card">
                 <span class="modal-eyebrow">START HERE</span>
                 <h2 id="empty-canvas-guide-title">Start designing</h2>
-                <p>Add a photo, draw a fixed-size frame, or add text. A Page is an open workspace; frames set the size of a design such as a phone screen or social post.</p>
+                <p>Add a photo, draw a frame, or add text. A Page is an open workspace. Frames have fixed sizes, like a phone screen or social post. To crop a photo, add it, select it, then choose Crop image.</p>
                 <div class="empty-canvas-actions">
                   <button class="primary-button" type="button" data-empty-canvas-action="add-image">＋ Add image</button>
                   <button class="secondary-button" type="button" data-empty-canvas-action="create-frame">▧ Draw a frame</button>
@@ -116,13 +116,14 @@
             <div class="image-crop-toolbar" id="image-crop-toolbar" role="toolbar" aria-label="Image actions" aria-describedby="image-crop-toolbar-hint" hidden>
               <div class="image-crop-toolbar-copy">
                 <strong id="image-crop-toolbar-title">Edit image</strong>
-                <span id="image-crop-toolbar-hint">Choose Crop image, drag across what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.</span>
+                <span id="image-crop-toolbar-hint">Choose Crop image, drag to select what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.</span>
               </div>
               <div class="image-context-single" id="image-context-single">
                 <button class="secondary-button image-context-adjustments" id="image-context-adjustments" type="button" title="Open the image adjustment controls">Adjust image</button>
                 <button class="secondary-button image-context-save-recipe" id="image-context-save-recipe" type="button" title="Save these image edits to reuse them on other images">Save recipe</button>
+                <label class="image-crop-ratio-control" id="image-crop-ratio-control" hidden title="Choose a crop shape. Its proportions stay correct after rotation and flips."><span>Crop shape</span><select class="select-field" id="image-crop-aspect-ratio" aria-label="Crop shape"><option value="free">Free (any shape)</option><option value="1:1">Square (1:1)</option><option value="4:5">Portrait (4:5)</option><option value="3:2">Landscape (3:2)</option><option value="16:9">Widescreen (16:9)</option></select></label>
                 <button class="secondary-button image-context-undo" id="image-crop-toolbar-undo" type="button" hidden>Undo crop</button>
-                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Drag over the part of the image to keep, then choose Finish crop">Crop image</button>
+                <button class="image-crop-toolbar-done" id="image-crop-toolbar-done" type="button" title="Drag to select the area you want to keep, then choose Finish crop">Crop image</button>
               </div>
               <div class="image-context-batch" id="image-context-batch" hidden>
                 <select class="select-field image-context-recipe-picker" id="image-context-recipe" aria-label="Choose a saved recipe to apply to selected images"></select>

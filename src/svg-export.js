@@ -575,6 +575,9 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
     && !(node.type === 'path' && hasFillablePathContour(node))) return 'gradient fills';
   if (!Array.isArray(node.fills) && node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (node.effects?.some(effect => effect.visible !== false && effect.blendMode && effect.blendMode !== 'normal')) {
+    return 'per-effect blend modes (editable SVG filters cannot blend an individual effect against the live scene backdrop; use raster export or reset the effect blend mode to Normal)';
+  }
   if (node.effects?.some(effect => effect.type === 'noise' && effect.visible !== false)) {
     return 'noise effects (random pixel grain cannot be represented by editable SVG filters; rasterize the layer or hide/remove the effect)';
   }
@@ -1279,6 +1282,10 @@ function textMarkup(node, document, measureText, {
   if (richLines) {
     const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
     const decorations = [];
+    const pdfAscent = typeof measureText?.pdfBaselineOffset === 'function'
+      ? Number(measureText.pdfBaselineOffset({ ...resolvedNode, variableBindings: {} })) : NaN;
+    const pdfAscentAttribute = Number.isFinite(pdfAscent) && pdfAscent > 0
+      ? ` data-tiny-image-star-pdf-ascent="${number(pdfAscent)}"` : '';
     const richTspans = lines.map(line => {
       const textLength = line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
       const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
@@ -1286,6 +1293,8 @@ function textMarkup(node, document, measureText, {
       const lineTextAnchor = svgTextAnchor(line.align || node.align || 'left');
       const lineTextAnchorOverride = lineTextAnchor === svgTextAnchor(node.align || 'left') ? '' : ` text-anchor="${lineTextAnchor}"`;
       const justificationOffsets = line.justify ? richLineJustificationOffsets(line) : null;
+      const pdfScaleX = line.justify || line.naturalWidth <= 0 ? 1 : line.width / line.naturalWidth;
+      const pdfLineStartX = textLineStartX(node, line);
       const parts = line.parts.map(part => {
         const style = part.style;
         const rawPartColor = fillValue === undefined ? style.color : fillValue;
@@ -1298,11 +1307,23 @@ function textMarkup(node, document, measureText, {
           throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
         }
         const baselineShiftAttribute = baselineShift === 0 ? '' : ` baseline-shift="${number(baselineShift)}px"`;
-        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)}${baselineShiftAttribute} fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
+        const justification = justificationOffsets?.get(part);
+        const pdfX = pdfLineStartX + (part.offsetX + (justification?.before || 0)) * pdfScaleX;
+        const pdfY = line.y + verticalOffset;
+        const pdfWidth = part.width * pdfScaleX + (justification?.within || 0);
+        const pdfMetricStyle = { ...resolvedNode, ...style, variableBindings: {} };
+        const pdfNaturalWidth = typeof measureText?.pdfNaturalWidth === 'function'
+          ? [...part.text].reduce((total, character) => total + Number(measureText.pdfNaturalWidth(character, pdfMetricStyle)), 0)
+          : NaN;
+        const pdfRunAttributes = Number.isFinite(pdfX) && Number.isFinite(pdfY)
+          && Number.isFinite(pdfWidth) && pdfWidth > 0
+          && Number.isFinite(pdfNaturalWidth) && pdfNaturalWidth > 0
+          ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(pdfX)}" data-tiny-image-star-pdf-y="${number(pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"`
+          : '';
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)}${baselineShiftAttribute} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
         if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);
-        const justification = justificationOffsets?.get(part);
         const x = lineStartX + (part.offsetX + (justification?.before || 0)) * scaleX;
         const decoratedWidth = part.width + (justification?.within || 0);
         const decorationWidth = Math.max(1, style.fontSize / 16);
@@ -1315,7 +1336,7 @@ function textMarkup(node, document, measureText, {
         + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
     const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
-    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
+    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap"${pdfAscentAttribute}>${richTspans}</text>`;
     return clipTruncatedTextMarkup(node, element + decorations.join(''), clipSuffix);
   }
   const tspans = lines.map(line => {

@@ -92,6 +92,11 @@ function cssClass(node) {
 const codegenEffectNames = Object.freeze({ glass: 'Glass', noise: 'Noise', texture: 'Texture' });
 
 function codegenEffectWarning(node) {
+  const blendedEffects = (node?.effects || []).filter(effect => effect && effect.visible !== false
+    && effect.blendMode && effect.blendMode !== 'normal');
+  if (blendedEffects.length) {
+    return 'Non-normal effect blend modes are preserved in layer data but need the live scene backdrop and are not reproduced by generated CSS.';
+  }
   const effects = (node?.effects || []).filter(effect => effect && effect.visible !== false
     && Object.hasOwn(codegenEffectNames, effect.type));
   if (!effects.length) return null;

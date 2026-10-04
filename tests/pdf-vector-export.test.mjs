@@ -99,6 +99,15 @@ function pdfTextMeasurer() {
   return measure;
 }
 
+function pdfRichTextMeasurer() {
+  const measure = (text, style = {}) => [...String(text)].length * Number(style.fontSize || 16)
+    * (Number(style.fontWeight) >= 700 ? 0.6 : 0.5);
+  measure.pdfNaturalWidth = (text, style = {}) => [...String(text)].length * Number(style.fontSize || 16)
+    * (Number(style.fontWeight) >= 700 ? 0.58 : 0.48);
+  measure.pdfBaselineOffset = style => Number(style.fontSize || 16) * 0.72;
+  return measure;
+}
+
 test('exports editor SVG paths as vector PDF while retaining geometry, transforms, opacity, and clipping', () => {
   const svg = '<!-- generated --><svg xmlns="http://www.w3.org/2000/svg" width="100px" height="60px" viewBox="10 20 200 120">'
     + '<defs><clipPath id="clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="50" height="30" rx="4" ry="4"/></clipPath></defs>'
@@ -535,6 +544,78 @@ test('editor-generated positioned lines preserve WinAnsi characters and alignmen
   assert.ok(text.includes('1 0 0 1 22 12 Tm\n<4372E86D652080> Tj'),
     'editor line measurements and centered placement survive encoded vector text output');
   assertValidXref(pdf);
+});
+
+test('editor-generated inline rich text preserves measured WinAnsi run positions and standard Helvetica variants', () => {
+  const measureText = pdfRichTextMeasurer();
+  const node = createNode('text', {
+    text: 'Crème €', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 120, height: 24, align: 'center',
+    textRuns: [
+      { text: 'Crème', color: '#204060' },
+      { text: ' ', fontWeight: 700, color: '#e11d48' },
+      { text: '€', fontWeight: 700, fontStyle: 'italic', color: '#e11d48' },
+    ],
+  });
+  const svg = exportNodeToSvg(node, { measureText });
+  assert.match(svg, /data-tiny-image-star-pdf-ascent="11\.52"/,
+    'rich editor text carries the measured standard-font ascent needed by vector PDF');
+  assert.match(svg, /data-tiny-image-star-pdf-x="30\.4" data-tiny-image-star-pdf-y="0" data-tiny-image-star-pdf-width="40" data-tiny-image-star-pdf-natural-width="38\.4"/,
+    'the first run carries its measured position, rendered width, and Helvetica natural width');
+  assert.match(svg, /data-tiny-image-star-pdf-x="70\.4" data-tiny-image-star-pdf-y="0" data-tiny-image-star-pdf-width="9\.6" data-tiny-image-star-pdf-natural-width="9\.28"> <\/tspan>/,
+    'whitespace-only styled runs keep their exact position and width in PDF metadata');
+  assert.match(svg, /data-tiny-image-star-pdf-x="80" data-tiny-image-star-pdf-y="0" data-tiny-image-star-pdf-width="9\.6" data-tiny-image-star-pdf-natural-width="9\.28"/,
+    'the next styled run begins at the measured end of the whitespace run');
+
+  const pdf = createVectorPdf(svg);
+  const text = pdfText(pdf);
+  assert.match(text, /\/BaseFont \/Helvetica \/Encoding \/WinAnsiEncoding/);
+  assert.match(text, /\/BaseFont \/Helvetica-BoldOblique \/Encoding \/WinAnsiEncoding/);
+  assert.match(text, /104\.166666667 Tz\n1 0 0 1 30\.4 11\.52 Tm\n<4372E86D65> Tj/,
+    'regular WinAnsi text uses its measured x and a width-preserving horizontal scale');
+  assert.match(text, /103\.448275862 Tz\n1 0 0 1 70\.4 11\.52 Tm\n\( \) Tj/,
+    'a standalone encoded space advances using its measured width');
+  assert.match(text, /103\.448275862 Tz\n1 0 0 1 80 11\.52 Tm\n<80> Tj/,
+    'the accented currency glyph uses the selected bold-oblique standard face and exact run position');
+  assertValidXref(pdf);
+
+  const unsupported = createNode('text', {
+    text: 'No substitution', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 160, height: 24,
+    textRuns: [{ text: 'No substitution', fontFamily: 'Inter' }],
+  });
+  assert.throws(() => createVectorPdf(exportNodeToSvg(unsupported, { measureText })), error =>
+    error instanceof PdfVectorExportError && error.feature === 'custom text fonts',
+  'a measured run with a custom family still fails closed instead of substituting Helvetica');
+
+  const unsupportedGlyph = createNode('text', {
+    text: '漢字', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 80, height: 24,
+    textRuns: [{ text: '漢字' }],
+  });
+  assert.throws(() => createVectorPdf(exportNodeToSvg(unsupportedGlyph, { measureText })), error =>
+    error instanceof PdfVectorExportError && error.feature === 'text glyph coverage',
+  'unsupported glyphs remain a hard error instead of being replaced by standard-font glyphs');
+
+  const missingMetricsSvg = exportNodeToSvg(node, { measureText: text => [...String(text)].length * 8 });
+  assert.throws(() => createVectorPdf(missingMetricsSvg), error =>
+    error instanceof PdfVectorExportError && error.feature === 'rich text' && /measured PDF baseline/.test(error.message),
+  'SVG without PDF-specific run metrics stays fail-closed');
+
+  const largerRun = createNode('text', {
+    text: 'Large', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 120, height: 30,
+    textRuns: [{ text: 'Large', fontSize: 20 }],
+  });
+  assert.throws(() => createVectorPdf(exportNodeToSvg(largerRun, { measureText })), error =>
+    error instanceof PdfVectorExportError && error.feature === 'rich text font metrics',
+  'run-specific sizes fail closed until their baseline positions have separate measurements');
+
+  const justified = createNode('text', {
+    text: 'one two three', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 80, height: 48,
+    align: 'justify', textRuns: [{ text: 'one ' }, { text: 'two three', fontWeight: 700 }],
+  });
+  const justifiedSvg = exportNodeToSvg(justified, { measureText });
+  assert.match(justifiedSvg, /word-spacing="[1-9]/, 'the fixture contains a genuinely justified rich line');
+  assert.throws(() => createVectorPdf(justifiedSvg), error =>
+    error instanceof PdfVectorExportError && error.feature === 'rich text justification',
+  'justified word gaps remain fail-closed until the PDF writer can preserve per-word spacing');
 });
 
 test('editor-generated text rejects custom fonts and preserves centered and right-aligned PDF line placement', () => {

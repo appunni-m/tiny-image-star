@@ -15,6 +15,7 @@ const [html, main, styles, readme] = await Promise.all([
 const actions = [
   { id: 'add-image', label: 'Add image', description: 'Choose a photo from this device.', keywords: ['images', 'photo', 'photos', 'picture', 'pictures', 'import', 'crop image'] },
   { id: 'crop-image', label: 'Crop image', description: 'Drag over the part to keep, then finish the crop.', keywords: ['trim', 'cut', 'photo', 'photos', 'image', 'images', 'cropping'] },
+  { id: 'create-frame', label: 'Draw a frame', description: 'Choose the Frame tool, then drag on the canvas or select a size preset.', keywords: ['create a frame', 'create frame', 'artboard', 'phone screen'] },
   { id: 'create-component', label: 'Create a component from this layer', description: 'Turn the selected layer and its children into a reusable component.', keywords: ['component', 'components', 'make component', 'reusable component', 'create reusable'] },
   { id: 'add-text', label: 'Add text', description: 'Choose the text tool, then click or drag on the canvas.', keywords: ['type', 'label', 'title', 'copy'] },
   { id: 'export-pdf', label: 'Export page as PDF', description: 'Choose a paper size and save a local PDF.', keywords: ['print', 'document'] },
@@ -31,6 +32,8 @@ test('action search understands full questions, aliases, and accented text', () 
   assert.deepEqual(searchActions(actions, 'How do I crop an image?').map(action => action.id), ['crop-image', 'add-image']);
   assert.deepEqual(searchActions(actions, 'How do you crop an image?').map(action => action.id), ['crop-image', 'add-image']);
   assert.deepEqual(searchActions(actions, 'How do I create a component?').map(action => action.id), ['create-component']);
+  assert.deepEqual(searchActions(actions, 'create a frame').map(action => action.id), ['create-frame']);
+  assert.deepEqual(searchActions(actions, 'draw a frame').map(action => action.id), ['create-frame']);
   assert.deepEqual(searchActions(actions, 'crop images').map(action => action.id), ['crop-image', 'add-image']);
   assert.deepEqual(searchActions(actions, 'cropping photos').map(action => action.id), ['crop-image']);
   assert.deepEqual(searchActions(actions, 'photo').map(action => action.id), ['add-image', 'crop-image', 'remove-image-background', 'expand-image', 'boost-image-resolution']);
@@ -152,7 +155,7 @@ test('the editor exposes image cropping through searchable keyboard and menu act
   assert.match(html, /id="quick-actions-empty"[^>]*>No matching action\.[\s\S]*shorter word/);
   assert.match(main, /\{ label: 'Search actions…', shortcut: '⌘K', action: \(\) => openQuickActions\(\) \}/);
   assert.match(main, /key === 'k'[\s\S]*?openQuickActions\(\)/);
-  assert.match(main, /id: 'crop-image', label: 'Crop image'[\s\S]*?drag across the area to keep[\s\S]*?toggleSelectedImageCropMode/i);
+  assert.match(main, /id: 'crop-image', label: 'Crop image'[\s\S]*?drag to select the area to keep[\s\S]*?toggleSelectedImageCropMode/i);
   assert.match(main, /import \{ createEditorToolActions \} from '\.\/editor-tool-tasks\.js'/);
   assert.match(main, /import \{ createEditorLayerActions \} from '\.\/editor-layer-tasks\.js'/);
   assert.match(main, /const drawingAndNavigationActions = createEditorToolActions\(\{ setTool, disabledReason: batchReason \}\)[\s\S]*?\.\.\.drawingAndNavigationActions/,
@@ -227,7 +230,11 @@ test('empty canvas offers direct start actions and explains pages versus fixed-s
   for (const action of ['add-image', 'create-frame', 'add-text']) {
     assert.match(html, new RegExp(`data-empty-canvas-action="${action}"`), `empty canvas should offer ${action}`);
   }
-  assert.match(html, /A Page is an open workspace; frames set the size of a design/);
+  assert.match(html, /A Page is an open workspace\. Frames have fixed sizes, like a phone screen or social post\. To crop a photo, add it, select it, then choose Crop image\./);
+  assert.match(html, /data-action="create-frame">▧ Draw a frame/);
+  assert.match(main, /data-action="create-frame">▧ Draw a frame/);
+  assert.match(main, /id: 'create-frame', label: 'Draw a frame'[\s\S]*?keywords: \['create a frame', 'create frame'/,
+    'the visible button and Help result should use the same action name while still understanding “create a frame” searches');
   assert.match(html, /id="layer-selection-hint"[^>]*hidden>A recipe is a reusable image preset\./);
   assert.match(main, /function syncEmptyCanvasGuide\(\)[\s\S]*?Boolean\(page\.children\?\.length\)[\s\S]*?state\.emptyCanvasGuideDismissedPageId === page\.id/);
   assert.match(main, /\$\('#empty-canvas-guide'\)\.addEventListener\('click'[\s\S]*?setTool\('frame'\)[\s\S]*?setTool\('text'\)/);

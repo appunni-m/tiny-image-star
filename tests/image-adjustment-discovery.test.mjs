@@ -9,8 +9,10 @@ test('image controls are grouped by the task users want to do', () => {
   const section = main.match(/function imageAdjustmentsSection\(node\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.ok(section, 'expected the image adjustment inspector section');
   assert.match(section, /'Crop & transform', 'Choose what shows · rotate · flip', imageTransformControls/);
-  assert.match(section, /'Light & color', 'Exposure · brightness · contrast · color'/);
-  assert.match(section, /'Detail & effects', 'Sharpness · blur · stylized effects'/);
+  assert.match(section, /'Light & color', 'Lighten or darken · recover detail · shift color'/);
+  assert.match(section, /'Detail & effects', 'Sharpen · soften · simplify or invert colors'/);
+  assert.match(section, /Brightness and Exposure change overall light[\s\S]*?Temperature warms or cools[\s\S]*?Saturation changes color strength/);
+  assert.match(section, /Auto contrast stretches the tonal range[\s\S]*?Solarize reverses tones above its threshold/);
   assert.match(section, /sliderField\('Exposure'/);
   assert.match(section, /sliderField\('Brightness'/);
   assert.match(section, /sliderField\('Contrast'/);

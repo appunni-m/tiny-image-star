@@ -133,7 +133,7 @@ test('appearance apply preserves target state and order while regenerating all d
         { id: 'src-stroke-stop-a', color: '#000000', position: 0 },
         { id: 'src-stroke-stop-b', color: '#ffffff', position: 1 }
       ] } }],
-    effects: [{ id: 'src-effect', type: 'inner-shadow', visible: true, color: '#000000', opacity: 0.3, offsetX: 2, offsetY: 3, blur: 5 }],
+    effects: [{ id: 'src-effect', type: 'inner-shadow', visible: true, blendMode: 'multiply', color: '#000000', opacity: 0.3, offsetX: 2, offsetY: 3, blur: 5 }],
     radius: 8
   };
   const target = {
@@ -172,6 +172,7 @@ test('appearance apply preserves target state and order while regenerating all d
   assert.deepEqual(result.node.strokes[0].sideWidths, { top: 1.5, right: 0, bottom: 3.25, left: 2 },
     'appearance copy carries independent rectangle edge widths');
   assert.deepEqual(result.node.effects.map(effect => effect.type), ['inner-shadow']);
+  assert.equal(result.node.effects[0].blendMode, 'multiply', 'copy/paste appearance preserves the individual effect blend mode');
   assert.equal(result.node.radius, 8);
 
   const sourceInnerIds = new Set([

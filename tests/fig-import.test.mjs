@@ -1759,16 +1759,76 @@ test('keeps supported effects editable while explicitly reporting effect feature
   assert.equal(layer.effects.length, 9, 'eight shadows and one blur fit the local stack');
   assert.equal(layer.effects.filter(effect => effect.type === 'drop-shadow').length, 8);
   assert.equal(layer.effects[0].spread, 5, 'supported shadow spread stays editable instead of being reset');
+  assert.equal(layer.effects[0].blendMode, 'multiply', 'supported individual effect blends remain editable');
   assert.equal(imported.report.flattenedTypes.EFFECT_SPREAD || 0, 0, 'supported spread is preserved without a loss warning');
   assert.equal(layer.effects.filter(effect => effect.type === 'layer-blur').length, 1);
   assert.equal(layer.effects.some(effect => effect.type === 'background-blur'), false,
     'the local model permits only one foreground or background blur');
   assert.equal(imported.report.unsupportedTypes.EFFECT_STACK, 2, 'the ninth shadow and competing blur are reported');
   assert.equal(imported.report.unsupportedTypes.REPEAT, 1, 'unsupported effect types are omitted and identified');
-  for (const warningType of ['EFFECT_BLEND', 'EFFECT_ORDER']) {
-    assert.equal(imported.report.flattenedTypes[warningType], 1, `${warningType} loss is reported`);
-  }
+  assert.equal(imported.report.flattenedTypes.EFFECT_BLEND || 0, 0, 'a supported effect blend is preserved without a loss warning');
+  assert.equal(imported.report.flattenedTypes.EFFECT_ORDER, 1, 'unsupported shadow ordering is still reported');
   assert.equal(parseDocument(serializeDocument(imported.document)).pages[0].children[0].effects.length, 9);
+});
+
+test('imports supported shadow blend modes and reports unsupported individual effect blends', () => {
+  const pageGuid = { sessionID: 73, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Effect blends', effects: [
+          { type: 'DROP_SHADOW', blendMode: 'SCREEN', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3 },
+          { type: 'INNER_SHADOW', blendMode: 'NORMAL', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3 },
+          { type: 'DROP_SHADOW', blendMode: 'PASS_THROUGH', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3 },
+          { type: 'DROP_SHADOW', blendMode: 'FUTURE_BLEND', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3 }
+        ]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const effects = imported.document.pages[0].children[0].effects;
+  assert.deepEqual(effects.map(effect => effect.blendMode || 'normal'), ['screen', 'normal', 'normal', 'normal']);
+  assert.equal(imported.report.flattenedTypes.EFFECT_BLEND, 2, 'pass-through and unknown effect modes are explicitly downgraded');
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].effects.map(effect => effect.blendMode || 'normal'), ['screen', 'normal', 'normal', 'normal']);
+});
+
+test('imports Figma Noise colors, geometry, opacity, and per-effect blend mode when representable', () => {
+  const pageGuid = { sessionID: 74, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Noise blends', effects: [
+          { type: 'NOISE', noiseType: 'DUOTONE', blendMode: 'OVERLAY', color: { r: 1, g: 0, b: 0, a: 0.4 },
+            secondaryColor: { r: 0, g: 0, b: 1, a: 0.4 }, noiseSize: 3, noiseSizeVector: { x: 3, y: 5 }, density: 72 },
+          { type: 'NOISE', noiseType: 'MULTITONE', blendMode: 'SCREEN', color: { r: 0, g: 0, b: 0, a: 1 },
+            noiseSize: 2, density: 40, opacity: 0.3 }
+        ]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const effects = imported.document.pages[0].children[0].effects;
+  assert.deepEqual(effects.map(({ mode, blendMode, color, color2, sizeX, sizeY, density, opacity }) =>
+    ({ mode, blendMode, color, color2, sizeX, sizeY, density, opacity })), [
+    { mode: 'duo', blendMode: 'overlay', color: '#ff0000', color2: '#0000ff', sizeX: 3, sizeY: 5, density: 72, opacity: 0.4 },
+    { mode: 'multi', blendMode: 'screen', color: '#000000', color2: '#ffffff', sizeX: 2, sizeY: 2, density: 40, opacity: 0.3 }
+  ]);
+  assert.equal(imported.report.flattenedTypes.EFFECT_BLEND || 0, 0, 'known Noise effect modes are retained');
+  assert.deepEqual(parseDocument(serializeDocument(imported.document)).pages[0].children[0].effects, effects);
+
+  const mismatchedAlpha = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', { name: 'Unequal Noise', effects: [
+        { type: 'NOISE', noiseType: 'DUOTONE', blendMode: 'MULTIPLY', color: { r: 1, g: 0, b: 0, a: 0.4 },
+          secondaryColor: { r: 0, g: 0, b: 1, a: 0.8 }, noiseSize: 2, density: 50 }
+      ] })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  assert.equal(mismatchedAlpha.document.pages[0].children[0].effects?.length || 0, 0,
+    'the local shared Noise opacity cannot faithfully represent two different input color alphas');
+  assert.equal(mismatchedAlpha.report.unsupportedTypes.NOISE_ALPHA, 1);
 });
 
 test('imports supported mixed character styles as editable rich-text runs', () => {

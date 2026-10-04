@@ -18,7 +18,9 @@ const LIMITS = Object.freeze({
  * PNG/JPEG image XObjects and isolated group-opacity forms remain editable PDF
  * objects. Simple positioned text in the printable ASCII and
  * WinAnsi/Windows-1252 extended Latin repertoire uses standard Helvetica PDF
- * fonts. Custom fonts, rich text, gradient strokes, filters,
+ * fonts. Measured, flat inline rich-text runs also use standard Helvetica
+ * variants when the SVG contains the editor's PDF placement metadata. Custom
+ * fonts, shaped rich text, text paths, gradient strokes, filters,
  * luminance masks, and blend modes are rejected with feature-specific errors.
  */
 export class PdfVectorExportError extends TypeError {
@@ -155,7 +157,9 @@ function parseSvg(svg) {
       }
       continue;
     }
-    if (value.trim()) stack.at(-1).children.push({ name: '#text', text: decodeXml(value), children: [] });
+    if (value.trim() || ['text', 'tspan'].includes(stack.at(-1).name)) {
+      stack.at(-1).children.push({ name: '#text', text: decodeXml(value), children: [] });
+    }
   }
   if (cursor !== svg.length || stack.length !== 1) throw new TypeError('SVG contains incomplete XML.');
   if (root.children.length !== 1 || root.children[0].name !== 'svg') throw new TypeError('Vector PDF export requires one SVG root element.');
@@ -543,6 +547,67 @@ function textFont(attributes, context) {
   return context.fontNames.get(standardName);
 }
 
+function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent, alpha, context) {
+  const runs = line.children.filter(child => child.name !== '#text');
+  if (!runs.length) return null;
+  if (line.children.some(child => child.name === '#text' && child.text.length)) {
+    fail('rich text', 'positioned rich-text lines require every run to carry measured PDF coordinates');
+  }
+  if (runs.some(run => run.name !== 'tspan')) {
+    fail('rich text', 'only flat inline text runs with measured PDF positions are supported');
+  }
+
+  const commands = [];
+  for (const run of runs) {
+    const attrs = run.attributes;
+    assertAttributes(run, new Set([
+      'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing',
+      'fill', 'baseline-shift',
+    ]));
+    if (attrs['data-tiny-image-star-pdf-rich-run'] !== '1'
+      || ['x', 'y', 'width', 'natural-width'].some(name => attrs[`data-tiny-image-star-pdf-${name}`] == null)) {
+      fail('rich text metrics', 'the SVG does not contain measured PDF positions and widths for every inline run');
+    }
+    if (run.children.some(child => child.name !== '#text')) {
+      fail('rich text', 'nested styled spans need font shaping and per-run positioning');
+    }
+    const letterSpacing = finite(attrs['letter-spacing'] ?? 0, 'rich text letter spacing');
+    if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF text subset requires zero letter spacing on every run');
+    const baselineShift = finite(attrs['baseline-shift'] ?? 0, 'rich text baseline shift');
+    if (baselineShift !== 0) fail('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics; use raster PDF');
+    const size = finite(attrs['font-size'] ?? parentSize, 'rich text font size');
+    if (size <= 0) throw new TypeError('SVG rich text font sizes must be positive.');
+    if (size !== parentSize) {
+      fail('rich text font metrics', 'inline runs must use the text layer font size so the measured baseline remains exact');
+    }
+
+    const value = run.children.map(child => child.text).join('');
+    if (!value) continue;
+    const literal = pdfTextLiteral(value);
+    const x = finite(attrs['data-tiny-image-star-pdf-x'], 'rich text run x');
+    const y = finite(attrs['data-tiny-image-star-pdf-y'], 'rich text run y') + ascent;
+    const desiredWidth = finite(attrs['data-tiny-image-star-pdf-width'], 'rich text run width');
+    const naturalWidth = finite(attrs['data-tiny-image-star-pdf-natural-width'], 'standard-font rich text run width');
+    if (desiredWidth <= 0 || naturalWidth <= 0) {
+      fail('rich text font metrics', 'the editor did not provide positive measured run widths; use raster PDF');
+    }
+    const horizontalScale = desiredWidth / naturalWidth * 100;
+    if (!Number.isFinite(horizontalScale) || horizontalScale <= 0 || horizontalScale > 10_000) {
+      fail('rich text font metrics', 'the requested inline run width is outside the supported PDF text scale');
+    }
+    const font = textFont(attrs, context);
+    const fill = colorOperator(attrs.fill ?? parentAttributes.fill ?? '#000000', 'fill');
+    if (!fill) continue;
+    const state = alphaState(alpha, 1, context.stateNames);
+    commands.push(
+      'q', `1 0 0 -1 0 ${pdfNumber(2 * y)} cm`, fill, state,
+      'BT', `/${font} ${pdfNumber(size)} Tf`, `${pdfNumber(horizontalScale)} Tz`,
+      `1 0 0 1 ${pdfNumber(x)} ${pdfNumber(y)} Tm`, `${literal} Tj`, 'ET', 'Q'
+    );
+  }
+  return commands.flat().filter(Boolean).join('\n');
+}
+
 function paintText(node, inheritedOpacity, context) {
   const attrs = node.attributes;
   assertAttributes(node, new Set([
@@ -565,7 +630,7 @@ function paintText(node, inheritedOpacity, context) {
   const hasPositionedLines = node.children.some(child => child.name === 'tspan');
   const hasEditorTextMetrics = attrs['data-tiny-image-star-pdf-ascent'] != null;
   if (hasPositionedLines && !hasEditorTextMetrics) {
-    fail('rich text', 'nested tspans need font shaping and run layout');
+    fail('rich text', 'positioned runs need measured PDF baseline and run-layout metadata; text paths and unmeasured runs are unsupported');
   }
   if (hasEditorTextMetrics && !hasPositionedLines) {
     fail('text line metrics', 'editor text metrics require positioned line spans');
@@ -581,20 +646,33 @@ function paintText(node, inheritedOpacity, context) {
     }
     const size = finite(attrs['font-size'] ?? 16, 'font size');
     if (size <= 0) throw new TypeError('SVG text font size must be positive.');
-    const fill = colorOperator(attrs.fill ?? '#000000', 'fill');
-    if (!fill) return '';
     const alpha = inheritedOpacity * parseOpacity(attrs['fill-opacity'], 'text fill opacity');
-    const state = alphaState(alpha, 1, context.stateNames);
-    const font = textFont(attrs, context);
+    textFont(attrs, context);
     const commands = [];
     for (const line of node.children) {
-      assertAttributes(line, new Set(['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust']));
-      if (line.attributes['data-tiny-image-star-list-marker'] != null) {
+      assertAttributes(line, new Set(['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust', 'word-spacing']));
+      if (line.attributes['data-tiny-image-star-list-marker'] != null
+        || line.children.some(child => child.attributes?.['data-tiny-image-star-list-marker'] != null)) {
         fail('paragraph lists', 'list marker spans need rich text positioning');
+      }
+      if (line.children.some(child => child.name === 'tspan')) {
+        if (line.attributes['word-spacing'] != null && finite(line.attributes['word-spacing'], 'text word spacing') !== 0) {
+          fail('rich text justification', 'justified word spacing needs per-word PDF positions; use raster PDF');
+        }
+        const richLine = paintPositionedRichTextRuns(line, attrs, size, ascent, alpha, context);
+        if (richLine) commands.push(richLine);
+        continue;
+      }
+      if (line.attributes['word-spacing'] != null) {
+        fail('text word spacing', 'justified text needs measured rich-run positioning; use raster PDF when those metrics are unavailable');
       }
       if (line.children.some(child => child.name !== '#text')) {
         fail('rich text', 'nested styled spans need font shaping and per-run positioning');
       }
+      const fill = colorOperator(attrs.fill ?? '#000000', 'fill');
+      if (!fill) return '';
+      const state = alphaState(alpha, 1, context.stateNames);
+      const font = textFont(attrs, context);
       const textAnchor = line.attributes['text-anchor'] ?? attrs['text-anchor'] ?? 'start';
       if (!['start', 'middle', 'end'].includes(textAnchor)) {
         fail('text alignment', 'positioned lines support only start, middle, or end text anchors');

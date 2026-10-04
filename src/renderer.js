@@ -2070,7 +2070,7 @@ export class SceneRenderer {
 
       surfaceContext.save();
       surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
-      surfaceContext.globalCompositeOperation = 'source-over';
+      surfaceContext.globalCompositeOperation = canvasBlendOperation(effect.blendMode || 'normal');
       surfaceContext.globalAlpha = Math.max(0, Math.min(1, effect.opacity));
       surfaceContext.filter = 'none';
       surfaceContext.drawImage(overlay, 0, 0);
@@ -2130,6 +2130,68 @@ export class SceneRenderer {
       spare = previous;
     }
     return current;
+  }
+
+  drawDropShadowsWithBlendMode(ctx, source, node, effects, rasterScale, pixelWidth, pixelHeight,
+    x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity) {
+    const shadows = effects.filter(effect => effect?.type === 'drop-shadow' && effect.visible !== false && effect.opacity > 0);
+    if (!shadows.length) return false;
+    let working = createTextSurface(pixelWidth, pixelHeight);
+    const colorMask = createTextSurface(pixelWidth, pixelHeight);
+    const blurred = createTextSurface(pixelWidth, pixelHeight);
+    let workingContext = working?.getContext?.('2d');
+    const colorContext = colorMask?.getContext?.('2d');
+    const blurContext = blurred?.getContext?.('2d');
+    if (!workingContext || !colorContext || !blurContext || typeof blurContext.filter !== 'string') return false;
+    workingContext.drawImage(source, 0, 0);
+
+    for (const effect of shadows) {
+      const spread = supportsShadowSpread(node) ? (effect.spread ?? 0) * rasterScale : 0;
+      const mask = spread ? createShadowSpreadSurface(working, spread) : working;
+      if (!mask) return false;
+
+      colorContext.save();
+      colorContext.setTransform(1, 0, 0, 1, 0, 0);
+      colorContext.globalAlpha = 1;
+      colorContext.globalCompositeOperation = 'source-over';
+      colorContext.filter = 'none';
+      colorContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      colorContext.fillStyle = effect.color;
+      colorContext.fillRect(0, 0, pixelWidth, pixelHeight);
+      colorContext.globalCompositeOperation = 'destination-in';
+      colorContext.drawImage(mask, 0, 0);
+      colorContext.restore();
+
+      blurContext.save();
+      blurContext.setTransform(1, 0, 0, 1, 0, 0);
+      blurContext.globalAlpha = 1;
+      blurContext.globalCompositeOperation = 'source-over';
+      blurContext.filter = `blur(${Math.max(0, effect.blur) * rasterScale}px)`;
+      blurContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      blurContext.drawImage(colorMask, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
+      blurContext.restore();
+
+      // A drop shadow blends with the scene beneath the layer. Apply it to the
+      // live destination before the foreground layer is drawn over it.
+      ctx.save();
+      ctx.globalAlpha *= nodeOpacity * Math.max(0, Math.min(1, effect.opacity));
+      ctx.globalCompositeOperation = canvasBlendOperation(effect.blendMode || 'normal');
+      ctx.filter = 'none';
+      ctx.drawImage(blurred, x - padX, y - padY, logicalWidth, logicalHeight);
+      ctx.restore();
+
+      // Keep the source silhouette plus prior shadows without mutating the
+      // foreground surface used for the final layer draw. Destination-over
+      // also preserves Figma's ordering with earlier shadows above later ones.
+      workingContext.save();
+      workingContext.setTransform(1, 0, 0, 1, 0, 0);
+      workingContext.globalCompositeOperation = 'destination-over';
+      workingContext.globalAlpha = Math.max(0, Math.min(1, effect.opacity));
+      workingContext.filter = 'none';
+      workingContext.drawImage(blurred, 0, 0);
+      workingContext.restore();
+    }
+    return true;
   }
 
   applyLayerBlurEffect(surface, effect, rasterScale, pixelWidth, pixelHeight) {
@@ -2206,15 +2268,43 @@ export class SceneRenderer {
       }
       surfaceContext.save();
       surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
-      surfaceContext.globalCompositeOperation = 'source-atop';
       surfaceContext.globalAlpha = 1;
-      surfaceContext.filter = 'none';
       surfaceContext.imageSmoothingEnabled = false;
       const texture = cacheEntry.texture;
       const cellWidth = Math.max(1, Math.round(effect.sizeX * rasterScale));
       const cellHeight = Math.max(1, Math.round(effect.sizeY * rasterScale));
-      surfaceContext.drawImage(texture, Math.round(padX * rasterScale), Math.round(padY * rasterScale),
+      const drawNoise = context => context.drawImage(texture, Math.round(padX * rasterScale), Math.round(padY * rasterScale),
         texture.width * cellWidth, texture.height * cellHeight);
+      const blendMode = effect.blendMode || 'normal';
+      if (blendMode === 'normal') {
+        surfaceContext.globalCompositeOperation = 'source-atop';
+        surfaceContext.filter = 'none';
+        drawNoise(surfaceContext);
+      } else {
+        const overlay = typeof OffscreenCanvas === 'function'
+          ? new OffscreenCanvas(surface.width, surface.height)
+          : ownerDocument?.createElement ? Object.assign(ownerDocument.createElement('canvas'), { width: surface.width, height: surface.height }) : null;
+        const overlayContext = overlay?.getContext('2d');
+        // Blend modes need the original layer alpha as a clip, then blend the
+        // clipped color over the evolving layer surface.
+        if (overlayContext) {
+          overlayContext.save();
+          overlayContext.setTransform(1, 0, 0, 1, 0, 0);
+          overlayContext.globalCompositeOperation = 'source-over';
+          overlayContext.globalAlpha = 1;
+          overlayContext.filter = 'none';
+          overlayContext.imageSmoothingEnabled = false;
+          drawNoise(overlayContext);
+          overlayContext.globalCompositeOperation = 'destination-in';
+          overlayContext.imageSmoothingEnabled = true;
+          overlayContext.drawImage(surface, 0, 0);
+          overlayContext.restore();
+
+          surfaceContext.globalCompositeOperation = canvasBlendOperation(blendMode);
+          surfaceContext.filter = 'none';
+          surfaceContext.drawImage(overlay, 0, 0);
+        }
+      }
       surfaceContext.restore();
     }
   }
@@ -2649,14 +2739,22 @@ export class SceneRenderer {
       } else this.applyTextureEffects(surface, node, [effect], pixelWidth, pixelHeight, rasterScale, renderOptions);
     }
     if (!stagedPaints) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
-    const spreadDropShadowSurface = this.applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight);
+    const x = parentX + node.x; const y = parentY + node.y;
+    const nodeOpacity = getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+    const hasBlendedDropShadow = effects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
+      && effect.opacity > 0 && effect.blendMode && effect.blendMode !== 'normal');
+    if (hasBlendedDropShadow) this.drawDropShadowsWithBlendMode(ctx, surface, node, effects,
+      rasterScale, pixelWidth, pixelHeight, x, y, padX, padY, logicalWidth, logicalHeight, nodeOpacity);
+    // If the bounded shadow surface cannot be allocated, omit this non-normal
+    // effect instead of silently rendering it with the wrong blend mode.
+    const spreadDropShadowSurface = hasBlendedDropShadow
+      ? null : this.applyDropShadows(surface, node, effects, rasterScale, pixelWidth, pixelHeight);
     const renderedSurface = spreadDropShadowSurface || surface;
     const customDropShadowsApplied = Boolean(spreadDropShadowSurface);
-    const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
-    ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+    ctx.globalAlpha *= nodeOpacity;
     ctx.filter = buildLayerEffectFilter(effects.filter(effect => deferredLayerBlurIds.has(effect.id)
-      || (effect.type === 'drop-shadow' && !customDropShadowsApplied)), displayScale);
+      || (effect.type === 'drop-shadow' && !hasBlendedDropShadow && !customDropShadowsApplied)), displayScale);
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(renderedSurface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();

@@ -750,6 +750,14 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
   assert.match(effectSvg, /<filter id="tis-effect-0" filterUnits="userSpaceOnUse" x="-14" y="-11" width="128" height="72"><feDropShadow in="SourceGraphic" dx="5" dy="-2" stdDeviation="3" flood-color="#112233" flood-opacity="0\.25" result="tis-effect-0-result-0"\/><\/filter>/);
   assert.match(effectSvg, /<g opacity="1" filter="url\(#tis-effect-0\)" style="mix-blend-mode:multiply" data-tiny-image-star-type="rectangle" data-tiny-image-star-node-id="shadow-layer">/);
   assert.equal(effectSvg, exportNodeToSvg(effected), 'generated paint and effect IDs remain stable across exports');
+
+  const separatelyBlended = createNode('rectangle', {
+    width: 30, height: 20,
+    effects: [{ id: 'screen-shadow', type: 'drop-shadow', visible: true, blendMode: 'screen', color: '#112233',
+      opacity: 0.5, offsetX: 1, offsetY: 2, blur: 3, spread: 0 }]
+  });
+  assert.throws(() => exportNodeToSvg(separatelyBlended), error => error instanceof SvgExportError
+    && /per-effect blend modes/.test(error.feature), 'editable SVG export fails closed when it cannot blend an effect against the live scene backdrop');
 });
 
 test('SVG export rejects angular gradients with an explicit raster-export fallback', () => {

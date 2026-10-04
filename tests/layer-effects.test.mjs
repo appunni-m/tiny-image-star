@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createLayerEffect, createNode, addNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
+import { createDocument, createEffectStyle, createLayerEffect, createNode, addNode, applyEffectStyle, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
 import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding, moveLayerEffect, supportsShadowSpread } from '../src/layer-effects.js';
 
 test('drop shadows and layer blur are saved as editable layer effects', () => {
@@ -85,6 +85,36 @@ test('effect validation allows eight shadows of each kind and one mutually exclu
   assert.equal(isValidLayerEffects([{ ...innerShadows[0], visible: 1 }]), false);
 });
 
+test('per-effect blend modes default to normal, validate, and survive serialization and effect-style copies', () => {
+  const document = createDocument();
+  const shadow = createLayerEffect('drop-shadow', { blendMode: 'multiply' });
+  const noise = createLayerEffect('noise', { blendMode: 'screen' });
+  const legacyShadow = createLayerEffect('inner-shadow');
+  delete legacyShadow.blendMode;
+  const source = createNode('rectangle', { effects: [shadow, noise, legacyShadow] });
+  const target = createNode('rectangle');
+  addNode(document, source);
+  addNode(document, target);
+
+  assert.equal(createLayerEffect('drop-shadow').blendMode, 'normal');
+  assert.equal(createLayerEffect('inner-shadow').blendMode, 'normal');
+  assert.equal(createLayerEffect('noise').blendMode, 'normal');
+  assert.equal(isValidLayerEffects(source.effects), true, 'legacy effects without blendMode still mean Normal');
+  assert.equal(isValidLayerEffects([{ ...shadow, blendMode: 'pass-through' }]), false);
+  assert.equal(isValidLayerEffects([{ ...shadow, blendMode: 'not-a-mode' }]), false);
+  assert.equal(isValidLayerEffects([{ ...legacyShadow, type: 'layer-blur', radius: 3, blendMode: 'multiply' }]), false,
+    'only shadows and noise have per-effect blend modes');
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.deepEqual(restored.pages[0].children[0].effects, source.effects);
+  const style = createEffectStyle(restored, source.id, 'Blended shadows');
+  assert.equal(applyEffectStyle(restored, target.id, style.id), true);
+  const applied = restored.pages[0].children[1].effects;
+  assert.deepEqual(applied.map(effect => effect.blendMode || 'normal'), ['multiply', 'screen', 'normal']);
+  assert.notEqual(applied[0].id, shadow.id, 'applying a style gives the effect a fresh identity');
+  assert.equal(isValidLayerEffects(applied), true);
+});
+
 test('effect stack reordering is stable, directional, and bounded at both ends', () => {
   const effects = ['drop-shadow', 'inner-shadow', 'layer-blur'].map((type, index) => createLayerEffect(type, { id: `ordered-${index}` }));
   assert.equal(moveLayerEffect(effects, 'ordered-0', 'up'), false);
@@ -120,5 +150,9 @@ test('effect filters use documented layer-blur/drop-shadow phases, scale with re
   const hidden = createLayerEffect('layer-blur', { radius: 20, visible: false });
   assert.equal(buildLayerEffectFilter([shadow, blur, hidden], 2), 'blur(10px) drop-shadow(4px -6px 8px rgba(18, 52, 86, 0.5))');
   assert.equal(buildLayerEffectFilter([hidden]), 'none');
+  assert.equal(buildLayerEffectFilter([{ ...shadow, blendMode: 'multiply' }, blur]), 'blur(5px)',
+    'CSS filter export must not silently approximate a backdrop blend mode as Normal');
+  assert.equal(buildLayerEffectBoxShadow([{ ...createLayerEffect('inner-shadow'), blendMode: 'screen' }]), 'none',
+    'CSS box shadows must not discard an authored non-normal effect blend');
   assert.deepEqual(layerEffectPadding([shadow, blur, hidden]), { x: 29, y: 30 });
 });

@@ -2,10 +2,12 @@ import { isValidNoiseEffect } from './noise-effect.js';
 import { isValidTextureEffect } from './texture-effect.js';
 import { isValidGlassEffect, MAX_GLASS_EFFECTS_PER_LAYER } from './glass-effect.js';
 import { fillStackForNode } from './fills.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 export { MAX_GLASS_EFFECTS_PER_LAYER };
 export const MAX_SHADOW_SPREAD = 1000;
 export const layerEffectTypes = new Set(['drop-shadow', 'inner-shadow', 'layer-blur', 'background-blur', 'noise', 'texture', 'glass']);
+export const layerEffectBlendTypes = new Set(['drop-shadow', 'inner-shadow', 'noise']);
 export const MAX_DROP_SHADOWS_PER_LAYER = 8;
 export const MAX_INNER_SHADOWS_PER_LAYER = 8;
 export const MAX_LAYER_BLURS_PER_LAYER = 1;
@@ -27,6 +29,7 @@ export function isValidLayerEffects(effects) {
   for (const effect of effects) {
     if (!effect || typeof effect.id !== 'string' || !effect.id || ids.has(effect.id)
       || !layerEffectTypes.has(effect.type) || typeof effect.visible !== 'boolean') return false;
+    if (effect.blendMode != null && (!layerEffectBlendTypes.has(effect.type) || !isValidLayerBlendMode(effect.blendMode))) return false;
     ids.add(effect.id);
     if (effect.type === 'drop-shadow') dropShadowCount += 1;
     if (effect.type === 'inner-shadow') innerShadowCount += 1;
@@ -105,7 +108,10 @@ function cssColorWithOpacity(color, opacity) {
 
 export function buildLayerEffectFilter(effects, scale = 1) {
   const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  const visible = (effects || []).filter(effect => effect?.visible !== false);
+  // CSS filters can only blend shadows in normal mode. Other effect blend
+  // modes need the renderer's live backdrop and must never be approximated.
+  const visible = (effects || []).filter(effect => effect?.visible !== false
+    && (effect.blendMode == null || effect.blendMode === 'normal'));
   const layerBlurs = visible.filter(effect => effect.type === 'layer-blur')
     .map(effect => `blur(${Math.max(0, effect.radius) * factor}px)`);
   const dropShadows = visible.filter(effect => effect.type === 'drop-shadow')
@@ -116,7 +122,8 @@ export function buildLayerEffectFilter(effects, scale = 1) {
 }
 
 export function buildLayerEffectBoxShadow(effects) {
-  return (effects || []).filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false).map(effect =>
+  return (effects || []).filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false
+    && (effect.blendMode == null || effect.blendMode === 'normal')).map(effect =>
     `inset ${effect.offsetX}px ${effect.offsetY}px ${Math.max(0, effect.blur)}px ${cssColorWithOpacity(effect.color, effect.opacity)}`
   ).join(', ') || 'none';
 }

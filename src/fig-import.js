@@ -9,7 +9,7 @@ import { createAutoLayout } from './layout-engine.js';
 import { nodeToParentTransform, transformPoint } from './transform-geometry.js';
 import {
   MAX_BACKGROUND_BLURS_PER_LAYER, MAX_DROP_SHADOWS_PER_LAYER,
-  MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER, MAX_SHADOW_SPREAD
+  MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_SHADOW_SPREAD
 } from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
@@ -95,6 +95,20 @@ function mappedPaintBlendMode(paint, report, name, warningType = 'PAINT_BLEND') 
     : `The unsupported paint blend mode “${sourceMode.slice(0, 80)}” was reset to normal.`;
   warn(report, 'flattened', warningType, name, detail);
   return {};
+}
+
+function mapEffectBlendMode(source, effect, report, name) {
+  if (source.blendMode == null || source.blendMode === '') return;
+  const sourceMode = String(source.blendMode).toUpperCase();
+  const mapped = figLayerBlendModes[sourceMode];
+  if (mapped && isValidLayerBlendMode(mapped)) {
+    if (mapped !== 'normal') effect.blendMode = mapped;
+    return;
+  }
+  const detail = sourceMode === 'PASS_THROUGH'
+    ? 'PASS_THROUGH is not supported on an individual effect and was reset to normal.'
+    : `The unsupported effect blend mode “${sourceMode.slice(0, 80)}” was reset to normal.`;
+  warn(report, 'flattened', 'EFFECT_BLEND', name, detail);
 }
 
 // Text runs do not share the editable local fill stack. Preserve an import
@@ -445,16 +459,17 @@ function boundedEffectMetric(value, fallback, minimum, maximum, report, name, pr
 function mapLayerEffects(effects, node, report) {
   if (!Array.isArray(effects)) return [];
   const result = [];
-  const counts = { 'drop-shadow': 0, 'inner-shadow': 0, 'layer-blur': 0, 'background-blur': 0 };
+  const counts = { 'drop-shadow': 0, 'inner-shadow': 0, 'layer-blur': 0, 'background-blur': 0, noise: 0 };
   const typeMap = {
     DROP_SHADOW: 'drop-shadow', INNER_SHADOW: 'inner-shadow',
-    FOREGROUND_BLUR: 'layer-blur', BACKGROUND_BLUR: 'background-blur'
+    FOREGROUND_BLUR: 'layer-blur', BACKGROUND_BLUR: 'background-blur', NOISE: 'noise'
   };
   const limits = {
     'drop-shadow': MAX_DROP_SHADOWS_PER_LAYER,
     'inner-shadow': MAX_INNER_SHADOWS_PER_LAYER,
     'layer-blur': MAX_LAYER_BLURS_PER_LAYER,
-    'background-blur': MAX_BACKGROUND_BLURS_PER_LAYER
+    'background-blur': MAX_BACKGROUND_BLURS_PER_LAYER,
+    noise: MAX_NOISE_EFFECTS_PER_LAYER
   };
   for (const source of effects) {
     if (!source || source.visible === false) continue;
@@ -474,7 +489,35 @@ function mapLayerEffects(effects, node, report) {
     }
 
     const effect = { id: createId('effect'), type, visible: true };
-    if (type === 'drop-shadow' || type === 'inner-shadow') {
+    if (type === 'noise') {
+      const mode = ({ MONOTONE: 'mono', DUOTONE: 'duo', MULTITONE: 'multi' })[String(source.noiseType || '').toUpperCase()];
+      if (!mode) {
+        warn(report, 'unsupported', 'NOISE_TYPE', node.name, 'This Noise effect uses an unknown color mode and was omitted.');
+        continue;
+      }
+      const primaryColor = hexColor(source.color);
+      const secondaryColor = hexColor(source.secondaryColor);
+      if ((mode !== 'multi' && !primaryColor) || (mode === 'duo' && !secondaryColor)) {
+        warn(report, 'unsupported', 'EFFECT_COLOR', node.name, `The ${mode} Noise effect did not have all required colors and was omitted.`);
+        continue;
+      }
+      const colorAlpha = finite(source.color?.a, 1, 0, 1);
+      const secondaryAlpha = finite(source.secondaryColor?.a, 1, 0, 1);
+      if (mode === 'duo' && Math.abs(colorAlpha - secondaryAlpha) > EPSILON) {
+        warn(report, 'unsupported', 'NOISE_ALPHA', node.name, 'The two Noise colors use different alpha values that the local effect cannot represent; this effect was omitted.');
+        continue;
+      }
+      const size = boundedEffectMetric(source.noiseSize, 1, 1, 100, report, node.name, 'noise size');
+      const vector = source.noiseSizeVector && typeof source.noiseSizeVector === 'object' ? source.noiseSizeVector : {};
+      effect.mode = mode;
+      effect.sizeX = boundedEffectMetric(vector.x, size, 1, 100, report, node.name, 'noise size x');
+      effect.sizeY = boundedEffectMetric(vector.y, size, 1, 100, report, node.name, 'noise size y');
+      effect.density = boundedEffectMetric(source.density, 40, 0, 100, report, node.name, 'noise density');
+      effect.color = primaryColor || '#000000';
+      effect.color2 = secondaryColor || '#ffffff';
+      effect.opacity = boundedEffectMetric(source.opacity, colorAlpha, 0, 1, report, node.name, 'noise opacity');
+      mapEffectBlendMode(source, effect, report, node.name);
+    } else if (type === 'drop-shadow' || type === 'inner-shadow') {
       const color = hexColor(source.color);
       if (!color) {
         warn(report, 'unsupported', 'EFFECT_COLOR', node.name, `The ${type} had no valid color and was omitted.`);
@@ -487,17 +530,12 @@ function mapLayerEffects(effects, node, report) {
       effect.offsetY = boundedEffectMetric(offset.y, 0, -1000, 1000, report, node.name, 'effect offset y');
       effect.blur = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
       effect.spread = boundedEffectMetric(source.spread, 0, -MAX_SHADOW_SPREAD, MAX_SHADOW_SPREAD, report, node.name, 'shadow spread');
-      if (source.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(source.blendMode).toUpperCase())) {
-        warn(report, 'flattened', 'EFFECT_BLEND', node.name, 'The effect blend mode was reset to normal.');
-      }
+      mapEffectBlendMode(source, effect, report, node.name);
       if (source.showShadowBehindNode === false) {
         warn(report, 'flattened', 'EFFECT_ORDER', node.name, 'The source shadow ordering was reduced to the local shadow rendering order.');
       }
     } else {
       effect.radius = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
-      if (source.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(source.blendMode).toUpperCase())) {
-        warn(report, 'flattened', 'EFFECT_BLEND', node.name, 'The effect blend mode was reset to normal.');
-      }
     }
     result.push(effect);
     counts[type] += 1;

@@ -12,7 +12,7 @@ import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { clipboardImageFilename, routeClipboardPaste } from './image-clipboard.js';
 import { createImageTransforms, flipImageTransforms, rotateImageTransforms } from './image-transforms.js';
 import { imagePreviewMaxDimensionForNode } from './image-preview-surface.js';
-import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFromDisplayRect, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
+import { calculateImageCropDisplayBounds, constrainImageCropDisplayDrag, imageCropFromDisplayDrag, imageCropFromDisplayRect, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
 import { imageErasePointFromDisplay, imageEraseRadiusFraction, imageEraseRadiusLocal } from './image-erase-geometry.js';
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
 import { createFallbackImage, createPillowFallbackImage, FALLBACK_IMAGE_MAX_EDGE, fallbackImageDimensions } from './fallback-image-bitmap.js';
@@ -217,7 +217,7 @@ const state = {
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest', prototypeScrollPosition: 'preserve',
-  imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null,
+  imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null, imageCropAspectRatio: 'free',
   imageEraseMode: false, imageEraseBrushDiameter: 32, imageEraseDraft: null, inpaintControllers: new Map(),
   objectIsolationMode: false, objectIsolationBrushMode: OBJECT_ISOLATION_BRUSH_MODE.LASSO,
   objectIsolationStrokes: [], objectIsolationDraft: null, objectIsolationProgress: '',
@@ -234,6 +234,11 @@ const state = {
   presenting: null,
   motionPreview: null, motionPlayheadMs: 0, motionPlaying: false
 };
+
+const IMAGE_CROP_ASPECT_RATIOS = Object.freeze({ free: null, '1:1': 1, '4:5': 4 / 5, '3:2': 3 / 2, '16:9': 16 / 9 });
+function currentImageCropAspectRatio() {
+  return IMAGE_CROP_ASPECT_RATIOS[state.imageCropAspectRatio] ?? null;
+}
 let liveViewOnlyInertState = null;
 let liveViewSyncTimer = 0;
 let livePresenceSyncTimer = 0;
@@ -2769,7 +2774,8 @@ function imageAdjustmentsSection(node) {
     return `<details class="image-adjustment-group" data-image-adjustment-group="${key}" data-image-adjustment-node-id="${escapeHtml(node.id)}"${open ? ' open' : ''}><summary><span>${title}</span><small>${hint}</small></summary><div class="image-adjustment-group-content">${content}</div></details>`;
   };
   const transformControls = disclosure('crop-transform', 'Crop & transform', 'Choose what shows · rotate · flip', imageTransformControls(node.transforms, 'layer', node.locked, '', node.id), true);
-  const lightAndColor = disclosure('light-color', 'Light & color', 'Exposure · brightness · contrast · color', [
+  const lightAndColor = disclosure('light-color', 'Light & color', 'Lighten or darken · recover detail · shift color', [
+    '<p class="image-adjustment-help">Brightness and Exposure change overall light. Highlights and Shadows target the brightest and darkest areas. Temperature warms or cools the image; Tint shifts green or magenta, and Saturation changes color strength.</p>',
     sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked),
     sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked),
     sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked),
@@ -2779,7 +2785,8 @@ function imageAdjustmentsSection(node) {
     sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked),
     sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked),
   ].join(''), true);
-  const detailAndEffects = disclosure('detail-effects', 'Detail & effects', 'Sharpness · blur · stylized effects', [
+  const detailAndEffects = disclosure('detail-effects', 'Detail & effects', 'Sharpen · soften · simplify or invert colors', [
+    '<p class="image-adjustment-help">Sharpness emphasizes edges; Blur softens. Auto contrast stretches the tonal range. Posterize reduces color steps, Solarize reverses tones above its threshold, and Invert reverses colors.</p>',
     sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked),
     sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked),
     imageToneControls(adjustments, { disabled: node.locked }),
@@ -2869,7 +2876,10 @@ function layerEffectsSection(node) {
       : ['drop-shadow', 'inner-shadow'].includes(effect.type)
       ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 0.01, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 0.01, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 0.01, 0, 100)}${effectNumberField('Spread', effect, 'spread', 0.01, -MAX_SHADOW_SPREAD, MAX_SHADOW_SPREAD, locked || !supportsShadowSpread(node))}</div>${supportsShadowSpread(node) ? '' : '<div class="image-properties-note">Spread applies to rectangles and ellipses, or to clipped frames and components with a visible fill.</div>'}`
       : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 0.01, 0, 100)}</div>`;
-    return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="up" aria-label="Move ${name.toLowerCase()} up" title="Move up"${locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="down" aria-label="Move ${name.toLowerCase()} down" title="Move down"${locked || index === effects.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${locked ? ' disabled' : ''}>×</button></div>${fields}</div>`;
+    const blendModeField = ['drop-shadow', 'inner-shadow', 'noise'].includes(effect.type)
+      ? `<label class="fill-type-row"><span>Blend mode</span><select class="select-field" data-effect-field="blendMode" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} blend mode"${locked ? ' disabled' : ''}>${layerBlendModes.map(mode => `<option value="${mode}"${(effect.blendMode || 'normal') === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('')}</select></label>`
+      : '';
+    return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="up" aria-label="Move ${name.toLowerCase()} up" title="Move up"${locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="down" aria-label="Move ${name.toLowerCase()} down" title="Move down"${locked || index === effects.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${locked ? ' disabled' : ''}>×</button></div>${blendModeField}${fields}</div>`;
   }).join('');
   const dropShadowCount = effects.filter(effect => effect.type === 'drop-shadow').length;
   const innerShadowCount = effects.filter(effect => effect.type === 'inner-shadow').length;
@@ -4401,7 +4411,7 @@ function renderInspector() {
   if (!entries.length) {
     const page = activePage();
     const framePresets = state.tool === 'frame' ? framePresetPicker() : '';
-    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, draw a frame, or add text. To crop a photo, select it and choose Crop image.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><p class="image-properties-note">A Page is an open workspace. Frames are fixed-size areas inside it. Choose a paper size when exporting a PDF.</p>`)}`;
+    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, draw a frame, or add text. To crop a photo, select it and choose Crop image.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Draw a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><p class="image-properties-note">A Page is an open workspace. Frames are fixed-size areas inside it. Choose a paper size when exporting a PDF.</p>`)}`;
     return;
   }
   if (entries.length > 1) {
@@ -6910,7 +6920,14 @@ function onCanvasPointerMove(event) {
     interaction.end = cropPoint;
     interaction.moved ||= checkPointDistance(interaction.start, cropPoint) > 2 / Math.max(.08, state.zoom);
     if (interaction.mode === 'select') {
-      state.imageCropDraftSelection = { nodeId: interaction.node.id, start: interaction.start, end: cropPoint };
+      const constrained = constrainImageCropDisplayDrag({
+        start: interaction.start, end: cropPoint, bounds: interaction.bounds,
+        rotation: interaction.rotation, flipHorizontal: interaction.flipHorizontal,
+        flipVertical: interaction.flipVertical, sourceWidth: interaction.sourceWidth,
+        sourceHeight: interaction.sourceHeight, aspectRatio: currentImageCropAspectRatio(),
+      });
+      state.imageCropDraftSelection = constrained
+        ? { nodeId: interaction.node.id, start: constrained.start, end: constrained.end } : null;
       renderer.invalidate();
       return;
     }
@@ -6920,7 +6937,8 @@ function onCanvasPointerMove(event) {
       point: { x: local.x - interaction.handleOffset.x, y: local.y - interaction.handleOffset.y },
       bounds: interaction.bounds, rotation: interaction.rotation,
       flipHorizontal: interaction.flipHorizontal, flipVertical: interaction.flipVertical,
-      sourceWidth: interaction.sourceWidth, sourceHeight: interaction.sourceHeight
+      sourceWidth: interaction.sourceWidth, sourceHeight: interaction.sourceHeight,
+      aspectRatio: currentImageCropAspectRatio(),
     });
     const transforms = createImageTransforms({ ...interaction.transforms, crop });
     if (JSON.stringify(transforms) === JSON.stringify(interaction.node.transforms || createImageTransforms())) return;
@@ -7288,7 +7306,8 @@ function onCanvasPointerUp(event) {
         start: interaction.start, end, bounds: interaction.bounds,
         rotation: interaction.rotation, sourceWidth: interaction.sourceWidth,
         sourceHeight: interaction.sourceHeight,
-        flipHorizontal: interaction.flipHorizontal, flipVertical: interaction.flipVertical
+        flipHorizontal: interaction.flipHorizontal, flipVertical: interaction.flipVertical,
+        aspectRatio: currentImageCropAspectRatio(),
       });
       if (crop) {
         const transforms = createImageTransforms({ ...interaction.originalTransforms, crop });
@@ -8859,6 +8878,8 @@ function updateLayerEffectInput(input) {
   if (!state.controlEdit) { checkpoint('Edit layer effect'); state.controlEdit = true; }
   const field = input.dataset.effectField;
   if (field === 'visible') effect.visible = input.checked;
+  else if (field === 'blendMode' && ['drop-shadow', 'inner-shadow', 'noise'].includes(effect.type)
+    && layerBlendModes.includes(input.value)) effect.blendMode = input.value;
   else if (field === 'color') effect.color = input.value;
   else if (field === 'color2' && effect.type === 'noise' && /^#[0-9a-f]{6}$/i.test(input.value)) effect.color2 = input.value;
   else if (field === 'mode' && effect.type === 'noise' && ['mono', 'duo', 'multi'].includes(input.value)) {
@@ -9143,6 +9164,10 @@ function syncImageCropToolbar() {
   const adjustAction = $('#image-context-adjustments');
   const saveRecipeAction = $('#image-context-save-recipe');
   const undoCropAction = $('#image-crop-toolbar-undo');
+  const aspectRatioControl = $('#image-crop-ratio-control');
+  const aspectRatioSelect = $('#image-crop-aspect-ratio');
+  aspectRatioControl.hidden = !(active && isImage);
+  aspectRatioSelect.value = state.imageCropAspectRatio;
   singleActions.hidden = !(active || singleImage || singleShapeImageFill);
   adjustAction.hidden = active || !singleImage;
   adjustAction.disabled = Boolean(node?.locked || active);
@@ -9190,10 +9215,10 @@ function syncImageCropToolbar() {
     $('#image-crop-toolbar-hint').textContent = node.locked
       ? 'Unlock this image to crop it. Adjust image opens controls; Save recipe reuses edits.'
       : cropContext
-        ? 'Choose Crop image, drag across what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.'
+      ? 'Choose Crop image, drag to select what to keep, then Finish crop. Adjust image opens controls; Save recipe reuses edits.'
         : 'Cropping is unavailable because this image’s dimensions are missing.';
     action.textContent = 'Crop image';
-    action.title = node.locked ? 'Unlock this image to crop it' : 'Drag over the part of the image to keep, then choose Finish crop';
+    action.title = node.locked ? 'Unlock this image to crop it' : 'Drag to select the area you want to keep, then choose Finish crop';
     action.disabled = node.locked || !cropContext;
     return;
   }
@@ -9211,7 +9236,7 @@ function syncImageCropToolbar() {
   $('#image-crop-toolbar-title').textContent = adjustingFill ? 'Adjust image fill' : 'Crop image';
   $('#image-crop-toolbar-hint').textContent = adjustingFill
     ? 'Drag to reposition the image, or pinch / use Zoom to resize it. Undo position reverses the last step; Done positioning keeps it.'
-    : 'Drag across the part you want to keep. Drag an edge or corner to adjust it. Undo crop reverses the last step; Finish crop keeps it.';
+    : 'Drag to select the area you want to keep. Adjust an edge or corner, then choose Finish crop. Undo crop reverses the last change. Optional: choose a crop shape such as square, portrait, landscape, or widescreen; it stays the same when you rotate or flip the photo.';
   action.textContent = adjustingFill ? 'Done positioning' : 'Finish crop';
   action.title = adjustingFill
     ? 'Keep this image position and return to the canvas'
@@ -14552,10 +14577,10 @@ function quickActionCatalog() {
     {
       id: 'crop-image', label: 'Crop image',
       description: cropContext
-        ? 'Drag across the area to keep, adjust its edges, then choose Finish crop.'
+        ? 'Drag to select the area to keep, adjust its edges, then choose Finish crop.'
         : selectedImageFills.length
           ? 'This photo is inside a shape. Choose Crop image inside shape to position or zoom it.'
-          : 'Select an image, choose Crop image, drag over the area to keep, then choose Finish crop.',
+          : 'Select an image, choose Crop image, drag to select the area to keep, then choose Finish crop.',
       keywords: ['trim', 'cut', 'photo', 'photos', 'picture', 'pictures', 'image', 'images', 'cropping', 'crop tool'],
       disabled: Boolean(cropDisabledReason), unavailableReason: cropDisabledReason,
       run: () => toggleSelectedImageCropMode(),
@@ -14579,8 +14604,8 @@ function quickActionCatalog() {
       unavailableReason: batchReason, run: chooseImageFiles,
     },
     {
-      id: 'create-frame', label: 'Create a frame', description: 'Choose the frame tool, then drag on the canvas or select a preset.',
-      keywords: ['artboard', 'size', 'phone screen', 'layout'], disabled: Boolean(batchReason),
+      id: 'create-frame', label: 'Draw a frame', description: 'Choose the Frame tool, then drag on the canvas or select a size preset.',
+      keywords: ['create a frame', 'create frame', 'artboard', 'size', 'phone screen', 'layout'], disabled: Boolean(batchReason),
       unavailableReason: batchReason, run: () => setTool('frame'),
     },
     {
@@ -22268,6 +22293,12 @@ function initEvents() {
     else if (action === 'add-text') setTool('text');
   });
   $('#image-crop-toolbar-done').addEventListener('click', toggleSelectedImageCropMode);
+  $('#image-crop-aspect-ratio').addEventListener('change', event => {
+    const value = event.currentTarget.value;
+    if (!Object.hasOwn(IMAGE_CROP_ASPECT_RATIOS, value)) return;
+    state.imageCropAspectRatio = value;
+    syncImageCropToolbar();
+  });
   $('#image-crop-toolbar-undo').addEventListener('click', () => {
     if (!$('#image-crop-toolbar-undo').hidden) undo();
   });

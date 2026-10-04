@@ -465,6 +465,19 @@ test('Inspect output hands off enabled layer effects as CSS filters and structur
   assert.deepEqual(output.layers[0].effects, shape.effects);
 });
 
+test('Inspect preserves non-normal effect blend data but does not approximate it as a normal CSS shadow', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { effects: [
+    createLayerEffect('drop-shadow', { blendMode: 'multiply' }),
+    createLayerEffect('inner-shadow', { blendMode: 'screen' })
+  ] });
+  addNode(document, shape);
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.doesNotMatch(output.css, /filter:\s*drop-shadow|box-shadow:/);
+  assert.match(output.css, /Non-normal effect blend modes are preserved in layer data but need the live scene backdrop/);
+  assert.deepEqual(output.layers[0].effects, shape.effects);
+});
+
 test('Inspect warns in every generated handoff when Glass, Noise, or Texture have no CSS equivalent', () => {
   const document = createDocument();
   const shape = createNode('rectangle', { name: 'Styled card', effects: [

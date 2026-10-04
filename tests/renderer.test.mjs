@@ -784,7 +784,9 @@ test('inner-shadow raster composition clips a shifted blurred mask back to the s
         setTransform: (...args) => this.operations.push(['transform', ...args]),
         clearRect: (...args) => this.operations.push(['clearRect', ...args]),
         fillRect: (...args) => this.operations.push(['fillRect', ...args]),
-        drawImage: (...args) => this.operations.push(['drawImage', ...args])
+        drawImage: (...args) => this.operations.push(['drawImage', ...args, {
+          globalAlpha: this.context.globalAlpha, globalCompositeOperation: this.context.globalCompositeOperation
+        }])
       };
       created.push(this);
     }
@@ -796,7 +798,7 @@ test('inner-shadow raster composition clips a shifted blurred mask back to the s
     const source = new RecordingCanvas(160, 80);
     const renderer = Object.create(SceneRenderer.prototype);
     renderer.applyInnerShadows(source, [
-      { type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: 4, offsetY: -2, blur: 3 }
+      { type: 'inner-shadow', visible: true, blendMode: 'multiply', color: '#123456', opacity: 0.4, offsetX: 4, offsetY: -2, blur: 3 }
     ], 2, 160, 80);
     const overlay = created[1];
     assert.deepEqual(overlay.operations.find(operation => operation[0] === 'transform'), ['transform', 1, 0, 0, 1, 0, 0]);
@@ -804,7 +806,51 @@ test('inner-shadow raster composition clips a shifted blurred mask back to the s
     assert.equal(overlay.context.filter, 'none');
     assert.equal(overlay.context.globalCompositeOperation, 'destination-in');
     assert.equal(source.context.globalAlpha, 0.4);
-    assert.ok(source.operations.some(operation => operation[0] === 'drawImage' && operation[1] === overlay));
+    const blendedShadow = source.operations.find(operation => operation[0] === 'drawImage' && operation[1] === overlay);
+    assert.ok(blendedShadow);
+    assert.deepEqual(blendedShadow.at(-1), { globalAlpha: 0.4, globalCompositeOperation: 'multiply' },
+      'an inner shadow blends against the existing layer paint at its own effect opacity');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('individual drop-shadow blend modes composite onto the live backdrop before the foreground layer', () => {
+  const previousCanvas = globalThis.OffscreenCanvas;
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.draws = [];
+      const stack = [];
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none', fillStyle: '#000000',
+        save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, filter: this.filter }); },
+        restore() { Object.assign(this, stack.pop()); },
+        setTransform() {}, clearRect() {}, fillRect() {},
+        drawImage: (...args) => this.draws.push({ args, operation: this.context.globalCompositeOperation, alpha: this.context.globalAlpha })
+      };
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const source = new RecordingCanvas(40, 30);
+    const destination = new RecordingCanvas(80, 60);
+    destination.context.globalAlpha = 0.75;
+    const renderer = Object.create(SceneRenderer.prototype);
+    const rendered = renderer.drawDropShadowsWithBlendMode(destination.context, source, { type: 'rectangle' }, [
+      { id: 'screen-shadow', type: 'drop-shadow', visible: true, blendMode: 'screen', color: '#112233',
+        opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, spread: 0 }
+    ], 1, 40, 30, 11, 13, 4, 6, 40, 30, 0.5);
+
+    assert.equal(rendered, true);
+    assert.equal(canvases.length, 5, 'the bounded path uses one working alpha surface and two reusable shadow surfaces');
+    assert.equal(destination.draws.length, 1, 'only the shadow is drawn into the live backdrop by this pass');
+    assert.equal(destination.draws[0].operation, 'screen');
+    assert.ok(Math.abs(destination.draws[0].alpha - 0.15) < 1e-12, 'effect and layer opacity multiply before backdrop blending');
+    assert.deepEqual(destination.draws[0].args.slice(1), [7, 7, 40, 30], 'the shadow uses the padded layer bounds');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -3101,12 +3147,15 @@ test('noise effect rendering composites deterministic layer-local grain and keep
       this.width = width;
       this.height = height;
       this.textureContext = {
+        globalCompositeOperation: 'source-over', globalAlpha: 1, filter: 'none', imageSmoothingEnabled: true, calls: [],
         createImageData: (imageWidth, imageHeight) => ({
           width: imageWidth,
           height: imageHeight,
           data: new Uint8ClampedArray(imageWidth * imageHeight * 4)
         }),
-        putImageData: imageData => { this.imageData = Uint8ClampedArray.from(imageData.data); }
+        putImageData: imageData => { this.imageData = Uint8ClampedArray.from(imageData.data); },
+        save() {}, restore() {}, setTransform() {},
+        drawImage: (...args) => this.textureContext.calls.push({ args, operation: this.textureContext.globalCompositeOperation })
       };
       this.context = {
         calls: [],
@@ -3154,6 +3203,18 @@ test('noise effect rendering composites deterministic layer-local grain and keep
     renderer.applyNoiseEffects(otherSurface, { id: 'different-layer', effects }, effects, 1, 12, 9, 4, 5);
     assert.equal(textures.length, 2, 'a new layer receives a separate cached texture');
     assert.notDeepEqual(textures[1].imageData, textures[0].imageData, 'different layers receive independent stable grain patterns');
+
+    const blendedSurfaceContext = {
+      globalCompositeOperation: 'source-over', globalAlpha: 1, filter: 'none', imageSmoothingEnabled: true, calls: [],
+      save() {}, restore() {}, setTransform() {},
+      drawImage(...args) { this.calls.push({ args, operation: this.globalCompositeOperation }); }
+    };
+    const blendedSurface = { width: 16, height: 14, getContext: () => blendedSurfaceContext };
+    const blendedNoise = { ...noise, id: 'noise-screen', blendMode: 'multiply' };
+    renderer.applyNoiseEffects(blendedSurface, { id: 'layer-stable', effects: [blendedNoise] }, [blendedNoise], 1, 12, 9, 2, 3);
+    assert.equal(blendedSurfaceContext.calls.at(-1).operation, 'multiply', 'non-normal noise blends after it is clipped to the layer alpha');
+    assert.deepEqual(textures.at(-1).textureContext.calls.map(call => call.operation), ['source-over', 'destination-in'],
+      'the non-normal grain is masked by the original layer alpha before blend composition');
   } finally {
     if (previous) Object.defineProperty(globalThis, 'OffscreenCanvas', previous);
     else delete globalThis.OffscreenCanvas;

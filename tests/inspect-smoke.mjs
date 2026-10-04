@@ -306,6 +306,10 @@ try {
   assert(addShadow && addShadow.getBoundingClientRect().right <= rightPanel.right, 'effect actions should fit inside the phone inspector');
   click(addShadow);
   await waitForSaveCycle(app, 'drop shadow');
+  const shadowBlend = app.querySelector('[data-effect-field="blendMode"]');
+  assert(shadowBlend && [...shadowBlend.options].some(option => option.value === 'multiply'), 'the effect inspector should expose per-shadow blend modes');
+  assert(shadowBlend.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the shadow blend control should fit in the phone inspector');
+  shadowBlend.value = 'multiply'; shadowBlend.dispatchEvent(new Event('input', { bubbles: true })); shadowBlend.dispatchEvent(new Event('change', { bubbles: true }));
   const shadowX = app.querySelector('[data-effect-field="offsetX"]');
   const shadowOpacity = app.querySelector('[data-effect-field="opacity"]');
   assert(shadowX && shadowOpacity, 'the inspector should expose shadow offset and opacity controls');
@@ -319,7 +323,7 @@ try {
   await waitForSaveCycle(app, 'blur tuning');
   const effectRecords = await readDocuments(); effectRecords.sort((a, b) => b.savedAt - a.savedAt);
   const effectButton = effectRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
-  assert(effectButton?.effects?.length === 2 && effectButton.effects[0].offsetX === 6 && effectButton.effects[0].opacity === 0.45 && effectButton.effects[1].radius === 3, 'shadow and blur settings should save together on the selected layer');
+  assert(effectButton?.effects?.length === 2 && effectButton.effects[0].offsetX === 6 && effectButton.effects[0].opacity === 0.45 && effectButton.effects[0].blendMode === 'multiply' && effectButton.effects[1].radius === 3, 'shadow, blend, and blur settings should save together on the selected layer');
   click(app.querySelector('[data-inspector-tab="prototype"]'));
   let prototypeTransition = app.querySelector('#prototype-transition');
   assert([...prototypeTransition.options].some(option => option.value === 'smart-animate') && prototypeTransition.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'Smart animate should remain available inside the phone prototype inspector');

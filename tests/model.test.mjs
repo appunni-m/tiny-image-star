@@ -742,7 +742,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
     assetId: 'asset-a', adjustments: { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
     transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true },
     opacity: 0.91, outputFormat: 'webp', outputQuality: 74, blendMode: 'multiply',
-    effects: [createLayerEffect('drop-shadow', { color: '#336699', opacity: 0.4, offsetX: 5, blur: 12 })],
+    effects: [createLayerEffect('drop-shadow', { blendMode: 'screen', color: '#336699', opacity: 0.4, offsetX: 5, blur: 12 })],
   });
   const target = createNode('image', {
     assetId: 'asset-b', opacity: 0.61, blendMode: 'screen',
@@ -766,6 +766,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   assert.equal(recipe.opacity, 0.37, 'bound opacity snapshots the source node’s visible, mode-resolved value');
   assert.equal(recipe.blendMode, 'multiply');
   assert.deepEqual(recipe.effects, source.effects, 'recipes retain the full ordered editable effect stack');
+  assert.equal(recipe.effects[0].blendMode, 'screen', 'image recipes retain the individual effect blend mode');
   assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop, rotation, and flip');
   assert.deepEqual([target.outputFormat, target.outputQuality], ['webp', 74], 'recipe output format and quality follow the image layer');
   assert.equal(target.opacity, 0.37);
