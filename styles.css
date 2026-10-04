@@ -2282,6 +2282,12 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 
 @media (max-width: 820px) and (pointer: coarse) {
   .mobile-panel-toggle, .present-button { min-width: 44px; min-height: 44px; }
+  /* Touch devices cannot rely on hover tooltips. Keep every canvas tool named
+     on landscape phones and small tablets as well as narrow portrait phones. */
+  .bottom-toolbar .tool-button { width: 60px; min-width: 60px; height: 48px; flex-basis: 60px; flex-direction: column; gap: 2px; justify-content: center; }
+  .bottom-toolbar .tool-button::after { content: attr(data-tool-label); display: block; max-width: 100%; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .bottom-toolbar .tool-button.is-selected::after { color: var(--accent); font-weight: 600; }
+  .bottom-toolbar .tool-button kbd { display: none; }
   .present-button { width: 44px; }
   .presentation-toolbar { height: 60px; gap: 5px; padding: 6px; }
   .presentation-control { width: 44px; min-width: 44px; height: 44px; min-height: 44px; flex-basis: 44px; }

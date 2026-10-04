@@ -97,6 +97,22 @@ test('short landscape inspector stays inside very narrow phone viewports', () =>
     'the landscape inspector may prefer a 280px minimum but must clamp to the workspace on narrower phones');
 });
 
+test('touch toolbars keep action labels visible across phone and small-tablet widths', async () => {
+  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /data-tool="image" data-tool-label="Add image"/,
+    'the image tool should say that it adds an image rather than only naming its content');
+  assert.match(html, /data-tool="eyedropper" data-tool-label="Pick color"/,
+    'the eyedropper should use an action label that makes sense without its desktop tooltip');
+  const coarseStart = stylesheet.lastIndexOf('@media (max-width: 820px) and (pointer: coarse) {');
+  const coarseEnd = stylesheet.indexOf('\n}', coarseStart);
+  assert.ok(coarseStart >= 0 && coarseEnd > coarseStart, 'expected the touch-viewport toolbar rules');
+  const coarseRules = stylesheet.slice(coarseStart, coarseEnd);
+  assert.match(coarseRules, /\.bottom-toolbar \.tool-button::after\s*\{[^}]*content:\s*attr\(data-tool-label\)/,
+    'touch users should not need hover to identify canvas tools');
+  assert.match(coarseRules, /\.bottom-toolbar \.tool-button\s*\{[^}]*width:\s*60px[^}]*flex-direction:\s*column/,
+    'labels need enough room on landscape phones and small tablets');
+});
+
 test('descriptive numeric-field labels stay within their input instead of spilling into adjacent controls', () => {
   assert.match(source, /function propertyFieldLabelClass\(label\)\s*\{\s*return String\(label\)\.trim\(\)\.length > 2 \? ' property-field--descriptive' : '';/);
   assert.match(source, /property-field\$\{propertyFieldLabelClass\(label\)\}[\s\S]*?<label title="\$\{escapeHtml\(label\)\}">/,

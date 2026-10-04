@@ -10,10 +10,10 @@ This review traces the current source-defined flows, checks the existing UX cont
 
 ## Direct answer: can a new user figure out how to crop?
 
-For a photo layer, the current source gives a clear sequence:
+There is no separate Crop icon. Cropping is a contextual image action. For a photo layer, the current source gives a clear sequence:
 
 1. Choose **Add image** from the empty Layers or Properties state, or from the new empty-canvas start card.
-2. Select the photo. The image action bar shows **Crop image** and explains that the user should drag across the part to keep.
+2. Select the photo with **Move / Select**. The image action bar shows **Crop image** and explains that the user should drag across the part to keep.
 3. In crop mode, the on-canvas instructions explain edge/corner adjustment, **Undo crop**, and **Finish crop**. A crosshair now signals that the canvas is in crop mode.
 4. If the user asks **? Help** “How do I crop an image?”, the action search returns the crop flow. If no image is selected, it explains the prerequisite and offers **Add image**.
 
@@ -27,6 +27,7 @@ That flow is understandable in the source and tests, but has not been validated 
 - Crop mode changes the desktop canvas cursor to a crosshair. Phone panel toggles display **Layers** and **Properties** labels; active Multi-select mode now shows its tap instructions in the Layers panel.
 - The Assets image area labels page-placed layers **On this page** and the original-source library **Reusable images**. The batch speed slider now displays its memory trade-off beside the control, with the same hint connected to the slider for screen readers.
 - Removed the old passive canvas hint so the actionable start card is the single empty-state instruction.
+- Touch tool labels now appear across the full compact-device range (up to 820 px), including landscape phones and small tablets; “Image” and “Color” are now the actions “Add image” and “Pick color.”
 
 ## Task review
 
@@ -38,14 +39,14 @@ That flow is understandable in the source and tests, but has not been validated 
 | Make a fixed-size design | Empty-canvas card → **Draw a frame**; use a preset in Properties or drag to draw | Page/frame distinction is now explained at first use. Preset discovery still depends on Properties. |
 | Apply a recipe to multiple images | Open **Layers** → **Multi-select** → tap image layers → select recipe → **Apply to N images** | Help and active-mode instructions explain selection. The Layers drawer and row selection still need a phone usability check. |
 | Export a PDF | Search PDF or use File → choose paper size → export page; editable vector PDF is a separate choice | Copy distinguishes paper size, image-based output, and editable vector output. Users still need to choose the intended result correctly. |
-| Identify canvas tools | Desktop hover/focus tooltip; phone toolbar labels; **? Help** for task search | Tooltips are useful once found. The tool strip is long, and labels such as “Image” and “Color” are less explicit than “Add image” and “Eyedropper.” |
+| Identify canvas tools | Desktop hover/focus tooltip; touch toolbar labels; **? Help** for task search | Every touch tool now has a visible label through 820 px, and ambiguous “Image”/“Color” labels were changed to “Add image”/“Pick color.” The long tool strip still needs a real-device check. |
 
 ## Remaining findings
 
 1. **High — real task success is unverified.** Existing tests check copy, search matching, responsive rules, and event wiring; they do not show whether an unfamiliar person can find the controls. Run uncoached desktop and phone tasks before claiming the UI is easy to learn.
 2. **Medium — advanced image controls are a long inspector run.** Crop/transform, basic adjustments, tonal controls, and local AI operations have different purposes. Keep the beginner path near the top and group less frequent controls so they do not read as one undifferentiated form.
 3. **Medium — the mobile recipe bar needs visual validation.** The speed hint and controls have automated responsive coverage, but check phone portrait and landscape to confirm the bar does not cover too much canvas during real processing.
-4. **Low — desktop still begins with icon-only tools.** Hover and keyboard-focus descriptions exist, and the phone toolbar has short labels. Consider naming the most common tools directly or grouping the rest into a labeled overflow menu; use action names rather than ambiguous nouns.
+4. **Low — desktop still begins with icon-only tools.** Hover and keyboard-focus descriptions exist; touch screens have labels. Consider naming the most common tools directly or grouping the rest into a labeled overflow menu if user observation shows the desktop tooltips are not enough.
 
 ## Validation still needed
 
