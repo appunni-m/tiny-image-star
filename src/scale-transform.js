@@ -71,6 +71,55 @@ function scaledAppearance(node, factor) {
   return patch;
 }
 
+const SCALE_GEOMETRY_PROPERTIES = ['x', 'y', 'width', 'height'];
+const SCALE_APPEARANCE_PROPERTIES = ['strokeWidth', 'radius', 'fontSize', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing'];
+
+function resolveNumericBinding(node, property, resolveBoundProperty) {
+  if (!node.variableBindings?.[property]) return node[property];
+  if (typeof resolveBoundProperty !== 'function') {
+    throw new TypeError(`Cannot scale bound ${property} on “${node.name || node.id}” without a variable resolver.`);
+  }
+  const value = resolveBoundProperty(node, property);
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`Cannot scale “${node.name || node.id}”: bound ${property} does not resolve to a finite number.`);
+  }
+  return value;
+}
+
+function resolvePlanningGeometry(node, resolveBoundProperty) {
+  const resolved = { ...node };
+  for (const property of [...SCALE_GEOMETRY_PROPERTIES, 'rotation']) {
+    if (node.variableBindings?.[property]) resolved[property] = resolveNumericBinding(node, property, resolveBoundProperty);
+  }
+  return resolved;
+}
+
+function resolveScaleNode(node, resolveBoundProperty) {
+  const resolved = resolvePlanningGeometry(node, resolveBoundProperty);
+  const detach = [];
+  for (const property of SCALE_GEOMETRY_PROPERTIES) {
+    if (node.variableBindings?.[property]) detach.push(property);
+  }
+  for (const property of SCALE_APPEARANCE_PROPERTIES) {
+    if (node.variableBindings?.[property]) {
+      resolved[property] = resolveNumericBinding(node, property, resolveBoundProperty);
+      detach.push(property);
+    }
+  }
+  if (node.lineHeightUnit === 'pixels' && node.variableBindings?.lineHeight) {
+    resolved.lineHeight = resolveNumericBinding(node, 'lineHeight', resolveBoundProperty);
+    detach.push('lineHeight');
+  }
+  return { node: resolved, detach };
+}
+
+function bindingPatch(node, detachedProperties) {
+  if (!detachedProperties.length) return {};
+  const variableBindings = { ...(node.variableBindings || {}) };
+  for (const property of detachedProperties) delete variableBindings[property];
+  return { variableBindings: Object.keys(variableBindings).length ? variableBindings : null };
+}
+
 function pageAnchor(bounds, name) {
   const coordinates = ANCHOR_COORDINATES[name];
   if (!coordinates) throw new TypeError(`Unknown scale anchor: ${name}`);
@@ -102,7 +151,7 @@ function scaledRootGeometry(node, ancestors, factor, anchor, currentCenter) {
  * Nested frames scale their children directly without running layout constraints;
  * a locked node and a nested component instance form a protected subtree.
  */
-export function planScaleTransform(entries, factor, anchorName = 'center') {
+export function planScaleTransform(entries, factor, anchorName = 'center', { resolveBoundProperty } = {}) {
   if (!Array.isArray(entries) || !entries.length) throw new TypeError('Scale needs at least one selected layer.');
   finitePositive(factor, 'Scale factor');
   const normalized = [];
@@ -113,43 +162,41 @@ export function planScaleTransform(entries, factor, anchorName = 'center') {
     if (entry.ancestors?.some(ancestor => selectedIds.has(ancestor.id))) continue;
     normalized.push({ ...entry, ancestors: entry.ancestors || [] });
   }
-  const editable = normalized.filter(({ node, ancestors }) => !node.locked && !ancestors.some(parent => parent.locked || parent.isInstance));
+  const editableEntries = normalized.filter(({ node, ancestors }) => !node.locked && !ancestors.some(parent => parent.locked || parent.isInstance));
+  const editable = editableEntries.map(entry => ({
+    ...entry,
+    node: resolvePlanningGeometry(entry.node, resolveBoundProperty),
+    ancestors: entry.ancestors.map(ancestor => resolvePlanningGeometry(ancestor, resolveBoundProperty))
+  }));
   if (!editable.length) return { patches: [], excludedIds: normalized.map(({ node }) => node.id), bounds: null, anchor: null };
   const bounds = selectionBounds(editable.map(({ node, ancestors }) => ({ node, ancestors })));
   const anchor = pageAnchor(bounds, anchorName);
   const patches = new Map();
-  const excludedIds = new Set(normalized.filter(entry => !editable.includes(entry)).map(({ node }) => node.id));
+  const editableIds = new Set(editableEntries.map(({ node }) => node.id));
+  const excludedIds = new Set(normalized.filter(entry => !editableIds.has(entry.node.id)).map(({ node }) => node.id));
 
   const addNode = (node, { root = false, ancestors = [], inheritedProtection = false, parentAutoLayout = false } = {}) => {
     if (inheritedProtection || node.locked || (!root && node.isInstance)) {
       excludedIds.add(node.id);
       return;
     }
-    if (![node.x, node.y, node.width, node.height].every(Number.isFinite) || node.width < 0 || node.height < 0) {
+    const { node: scaleNode, detach } = resolveScaleNode(node, resolveBoundProperty);
+    if (![scaleNode.x, scaleNode.y, scaleNode.width, scaleNode.height].every(Number.isFinite) || scaleNode.width < 0 || scaleNode.height < 0) {
       throw new TypeError(`Layer “${node.name || node.id}” has invalid geometry and cannot be scaled.`);
-    }
-    const boundScaleProperties = Object.keys(node.variableBindings || {}).filter(property => (
-      ['x', 'y', 'width', 'height', 'radius', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing'].includes(property)
-      && node.variableBindings[property]
-    ));
-    if (boundScaleProperties.length) {
-      throw new TypeError(
-        `Cannot safely scale “${node.name || node.id}” because ${boundScaleProperties.join(', ')} is bound to a variable. `
-        + 'Scaling the variable could change other layers or modes, and this scale plan cannot inspect all variable consumers.'
-      );
     }
     let patch;
     if (root) {
-      const center = nodeLocalToPage(node, { x: node.width / 2, y: node.height / 2 }, ancestors);
-      patch = scaledRootGeometry(node, ancestors, factor, anchor, center);
+      const center = nodeLocalToPage(scaleNode, { x: scaleNode.width / 2, y: scaleNode.height / 2 }, ancestors);
+      patch = scaledRootGeometry(scaleNode, ancestors, factor, anchor, center);
     } else {
       patch = {
-        x: scaleNumber(node.x, factor), y: scaleNumber(node.y, factor),
-        width: scaleNumber(node.width, factor), height: scaleNumber(node.height, factor),
-        ...(parentAutoLayout && node.layoutPositioning !== 'absolute' ? { layoutPositioning: 'absolute' } : {}),
-        ...scaledAppearance(node, factor)
+        x: scaleNumber(scaleNode.x, factor), y: scaleNumber(scaleNode.y, factor),
+        width: scaleNumber(scaleNode.width, factor), height: scaleNumber(scaleNode.height, factor),
+        ...(parentAutoLayout && scaleNode.layoutPositioning !== 'absolute' ? { layoutPositioning: 'absolute' } : {}),
+        ...scaledAppearance(scaleNode, factor)
       };
     }
+    Object.assign(patch, bindingPatch(node, detach));
     patches.set(node.id, patch);
     const insideInstance = root ? node.isInstance === true : false;
     for (const child of node.children || []) addNode(child, { inheritedProtection: insideInstance, parentAutoLayout: Boolean(node.autoLayout) });

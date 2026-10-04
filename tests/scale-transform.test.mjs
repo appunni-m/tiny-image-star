@@ -89,26 +89,117 @@ test('scale rejects invalid or overflowing plans before returning any mutations'
   assert.equal(root.width, 60_000);
 });
 
-test('scale refuses shared variable-bound geometry without editing the selection', () => {
+test('scale materializes shared bound geometry per selected layer without editing variables', () => {
   const variableId = 'variable-shared-width';
   const left = {
-    id: 'left', x: 0, y: 0, width: 40, height: 20, rotation: 0,
+    id: 'left', x: 0, y: 0, width: 10, height: 20, rotation: 0,
     variableBindings: { width: variableId }, children: []
   };
   const right = {
-    id: 'right', x: 60, y: 0, width: 40, height: 20, rotation: 0,
+    id: 'right', x: 60, y: 0, width: 10, height: 20, rotation: 0,
     variableBindings: { width: variableId }, children: []
   };
-  const before = structuredClone([left, right]);
+  const unselected = {
+    id: 'unselected', x: 130, y: 0, width: 10, height: 20, rotation: 0,
+    variableBindings: { width: variableId }, children: []
+  };
+  const before = structuredClone([left, right, unselected]);
+  const variableValues = { [variableId]: 40 };
+  const variableValuesBefore = structuredClone(variableValues);
 
+  assert.throws(() => planScaleTransform([{ node: left }, { node: right }], 1.5), /without a variable resolver/);
+  const plan = planScaleTransform([{ node: left }, { node: right }], 1.5, 'center', {
+    resolveBoundProperty: (node, property) => node.variableBindings?.[property]
+      ? variableValues[node.variableBindings[property]] : node[property]
+  });
+  const patches = new Map(plan.patches.map(patch => [patch.id, patch]));
+
+  assert.equal(patches.get('left').width, 60);
+  assert.equal(patches.get('right').width, 60);
+  assert.equal(plan.bounds.width, 100, 'selection bounds use variable-resolved root dimensions');
+  assert.equal(patches.get('left').variableBindings, null);
+  assert.equal(patches.get('right').variableBindings, null);
+  assert.deepEqual([left, right, unselected], before, 'planning leaves selected and unselected layers untouched');
+  assert.deepEqual(variableValues, variableValuesBefore, 'scaling never changes the shared variable value');
+});
+
+test('scale uses resolved bound geometry on the root and its ancestors for page-space bounds', () => {
+  const root = {
+    id: 'root', x: 5, y: 0, width: 10, height: 10, rotation: 0,
+    variableBindings: { width: 'root-width' }, children: []
+  };
+  const parent = {
+    id: 'parent', x: 2, y: 0, width: 80, height: 60, rotation: 0,
+    variableBindings: { x: 'parent-x' }
+  };
+  const plan = planScaleTransform([{ node: root, ancestors: [parent] }], 2, 'center', {
+    resolveBoundProperty: (node, property) => {
+      if (node.id === 'root' && property === 'width') return 20;
+      if (node.id === 'parent' && property === 'x') return 30;
+      return node[property];
+    }
+  });
+
+  assert.equal(plan.bounds.x, 35, 'the page bounds include the resolved parent x and child x');
+  assert.equal(plan.patches.find(patch => patch.id === 'root').width, 40);
+  assert.equal(plan.patches.find(patch => patch.id === 'root').variableBindings, null);
+  assert.deepEqual(parent.variableBindings, { x: 'parent-x' }, 'unscaled ancestors remain bound');
+});
+
+test('scale resolves nested geometry from each node mode and detaches only scaled numeric bindings', () => {
+  const variableId = 'variable-responsive-width';
+  const collectionId = 'collection-responsive';
+  const child = {
+    id: 'child', x: 10, y: 5, width: 20, height: 12, rotation: 0,
+    strokeWidth: 2, listSpacing: 4,
+    variableBindings: { width: variableId, strokeWidth: 'variable-stroke', listSpacing: 'variable-list-spacing', lineHeight: 'variable-leading' },
+    variableModes: { [collectionId]: 'compact' }, lineHeightUnit: 'ratio', lineHeight: 1.2,
+    children: []
+  };
+  const wideChild = {
+    id: 'wide-child', x: 45, y: 5, width: 20, height: 12, rotation: 0,
+    variableBindings: { width: variableId, lineHeight: 'variable-leading' },
+    variableModes: { [collectionId]: 'wide' }, lineHeightUnit: 'ratio', lineHeight: 1.5,
+    children: []
+  };
+  const root = { id: 'root', x: 0, y: 0, width: 100, height: 60, rotation: 0, children: [child, wideChild] };
+  const documentVariables = {
+    width: { valuesByMode: { compact: 20, wide: 40 } },
+    leading: { valuesByMode: { compact: 1.2, wide: 1.5 } }
+  };
+  const before = structuredClone({ root, documentVariables });
+  const plan = planScaleTransform([{ node: root, ancestors: [] }], 2, 'center', {
+    resolveBoundProperty: (node, property) => {
+      if (property === 'width' && node.variableBindings?.width) {
+        return documentVariables.width.valuesByMode[node.variableModes?.[collectionId] || 'wide'];
+      }
+      if (property === 'lineHeight' && node.variableBindings?.lineHeight) {
+        return documentVariables.leading.valuesByMode[node.variableModes?.[collectionId] || 'wide'];
+      }
+      return node[property];
+    }
+  });
+  const patches = new Map(plan.patches.map(patch => [patch.id, patch]));
+
+  assert.equal(patches.get('child').width, 40, 'compact mode width is materialized and scaled');
+  assert.equal(patches.get('child').strokeWidth, 4);
+  assert.equal(patches.get('child').listSpacing, 8);
+  assert.equal(patches.get('wide-child').width, 80, 'the sibling uses its own wide mode value');
+  assert.deepEqual(patches.get('child').variableBindings, { lineHeight: 'variable-leading' });
+  assert.deepEqual(patches.get('wide-child').variableBindings, { lineHeight: 'variable-leading' });
+  assert.equal(patches.get('child').lineHeight, undefined, 'ratio line height is not scaled or detached');
+  assert.deepEqual({ root, documentVariables }, before, 'planning leaves source geometry and all variable modes unchanged');
+});
+
+test('scale fails closed for bound properties that do not resolve to finite numbers', () => {
+  const root = {
+    id: 'root', x: 0, y: 0, width: 60, height: 20, rotation: 0,
+    variableBindings: { width: 'broken-width' }, children: []
+  };
   assert.throws(
-    () => planScaleTransform([{ node: left }, { node: right }], 1.5),
-    error => error instanceof TypeError
-      && /width is bound to a variable/.test(error.message)
-      && /could change other layers or modes/.test(error.message)
-      && /cannot inspect all variable consumers/.test(error.message)
+    () => planScaleTransform([{ node: root }], 2, 'center', { resolveBoundProperty: () => 'wide' }),
+    /bound width does not resolve to a finite number/
   );
-  assert.deepEqual([left, right], before, 'a rejected plan must leave all selected layers and bindings untouched');
 });
 
 test('toolbar, shortcut, scale multiplier, and nine-point anchor are exposed accessibly', async () => {
@@ -125,6 +216,10 @@ test('toolbar, shortcut, scale multiplier, and nine-point anchor are exposed acc
   assert.match(main, /class="scale-anchor-point/);
   assert.match(main, /role="group" aria-label="Scale anchor"/);
   assert.match(main, /Object\.entries\(ANCHOR_COORDINATES\)/);
+  assert.match(main, /resolveBoundProperty: resolveScaleBoundProperty/);
+  assert.match(main, /if \(property === 'variableBindings' && patch\[property\] == null\) delete node\.variableBindings;/);
+  assert.match(main, /recordNodeComponentOverrides\(node, properties\)/);
+  assert.match(main, /Bound numeric values detach on scaled layers/);
   assert.equal(Object.keys(ANCHOR_COORDINATES).length, 9);
   assert.match(scaleModule, /export \{ ANCHOR_COORDINATES \}/);
 });

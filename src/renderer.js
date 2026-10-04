@@ -2996,7 +2996,11 @@ export class SceneRenderer {
     const cropTargetIsRoot = cropTargetId && roots.some(entry => entry.node.id === cropTargetId);
     let scalePlan = null;
     if (state.tool === 'scale' && roots.length && !cropTargetIsRoot) {
-      try { scalePlan = planScaleTransform(roots, 1, state.scaleAnchor); } catch { scalePlan = null; }
+      try {
+        scalePlan = planScaleTransform(roots, 1, state.scaleAnchor, {
+          resolveBoundProperty: (node, property) => getNodePropertyValue(state.document, node, property)
+        });
+      } catch { scalePlan = null; }
     }
     if (scalePlan?.bounds && scalePlan.patches.length) {
       const bounds = scalePlan.bounds;

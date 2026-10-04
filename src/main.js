@@ -477,6 +477,7 @@ function drawRulerScale(rail, axis, currentState) {
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
 function resolvedGeometry(node) { return getNodeGeometry(state.document, node); }
+function resolveScaleBoundProperty(node, property) { return getNodePropertyValue(state.document, node, property); }
 function isLocalLinkedComponent(node) { return node?.linkedComponent?.schema === 'tiny-image-star/linked-component-instance/1'; }
 const systemFontFamilyPresets = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Georgia, serif', 'monospace', 'system-ui, sans-serif', 'Verdana, sans-serif', 'Trebuchet MS, sans-serif', 'Times New Roman, serif', 'Courier New, monospace'];
 
@@ -4295,7 +4296,7 @@ function scaleToolInspector(entries) {
   if (!entries.length) return `<div class="inspector-empty"><div class="empty-layer-icon">↗</div><strong>Scale tool</strong><span>Select a layer or a group of layers, then drag a corner or enter a scale value.</span></div>`;
   let plan;
   try {
-    plan = planScaleTransform(transformEntriesForSelection(), 1, state.scaleAnchor);
+    plan = planScaleTransform(transformEntriesForSelection(), 1, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty });
   } catch (error) {
     return section('Scale', `<div class="image-properties-note">${escapeHtml(error.message)}</div>`);
   }
@@ -4307,7 +4308,7 @@ function scaleToolInspector(entries) {
     return `<button class="scale-anchor-point${state.scaleAnchor === name ? ' is-selected' : ''}" type="button" data-scale-anchor="${name}" aria-label="Scale anchor ${label}" title="${label}" aria-pressed="${state.scaleAnchor === name}" style="--anchor-x:${x * 100}%;--anchor-y:${y * 100}%"${disabled ? ' disabled' : ''}></button>`;
   }).join('');
   const field = (label, value, key) => `<label class="property-field"><span class="field-caption">${label}</span><input type="number" inputmode="decimal" min="0.01" max="100000" step="0.01" value="${formatInspectorNumber(value)}" data-scale-field="${key}" aria-label="Scale ${label.toLowerCase()}"${disabled ? ' disabled' : ''}/></label>`;
-  return `${section('Scale', `<div class="scale-anchor-grid" role="group" aria-label="Scale anchor">${anchors}</div><div class="property-grid">${field('Scale · %', state.scaleMultiplier * 100, 'factor')}${field('W', bounds.width, 'width')}${field('H', bounds.height, 'height')}</div><div class="image-properties-note">Scale changes layer geometry, strokes, effects, and text together. Layout-managed children become absolute so their scaled positions are preserved.${plan.excludedIds.length ? ` ${plan.excludedIds.length} locked or component-contained layer${plan.excludedIds.length === 1 ? ' is' : 's are'} protected.` : ''}</div>`)}`;
+  return `${section('Scale', `<div class="scale-anchor-grid" role="group" aria-label="Scale anchor">${anchors}</div><div class="property-grid">${field('Scale · %', state.scaleMultiplier * 100, 'factor')}${field('W', bounds.width, 'width')}${field('H', bounds.height, 'height')}</div><div class="image-properties-note">Scale changes layer geometry, strokes, effects, and text together. Bound numeric values detach on scaled layers so other variable consumers keep their values. Layout-managed children become absolute so their scaled positions are preserved.${plan.excludedIds.length ? ` ${plan.excludedIds.length} locked or component-contained layer${plan.excludedIds.length === 1 ? ' is' : 's are'} protected.` : ''}</div>`)}`;
 }
 
 function createAssetEmptyState(className, iconLabel, messageText) {
@@ -5467,7 +5468,7 @@ function scaleHandleAt(event) {
   const entries = transformEntriesForSelection();
   if (!entries.length) return null;
   let plan;
-  try { plan = planScaleTransform(entries, 1, state.scaleAnchor); }
+  try { plan = planScaleTransform(entries, 1, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty }); }
   catch { return null; }
   if (!plan.bounds || !plan.patches.length) return null;
   const handles = selectionGroupHandles(plan.bounds);
@@ -6469,7 +6470,7 @@ function onCanvasPointerMove(event) {
     const world = screenToWorld(event, canvas, state);
     const factor = scaleFactorFromPointer(interaction.anchor, interaction.start, world);
     try {
-      const plan = planScaleTransform(interaction.entries, factor, state.scaleAnchor);
+      const plan = planScaleTransform(interaction.entries, factor, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty });
       applyScalePlan(plan, { recordOverrides: false });
       interaction.factor = factor;
       interaction.changed = Math.abs(factor - 1) > 1e-8;
@@ -6856,7 +6857,7 @@ function onCanvasPointerUp(event) {
       state.interaction = null; renderInspector(); renderer.invalidate(); return;
     }
     try {
-      const plan = planScaleTransform(interaction.entries, interaction.factor, state.scaleAnchor);
+      const plan = planScaleTransform(interaction.entries, interaction.factor, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty });
       for (const patch of plan.patches) {
         const node = findNode(state.document, patch.id)?.node;
         if (node) recordNodeComponentOverrides(node, Object.keys(patch).filter(property => property !== 'id'));
@@ -11157,7 +11158,10 @@ function applyScalePlan(plan, { recordOverrides = true } = {}) {
   for (const patch of plan.patches) {
     const node = findNode(state.document, patch.id).node;
     const properties = Object.keys(patch).filter(property => property !== 'id');
-    for (const property of properties) node[property] = patch[property];
+    for (const property of properties) {
+      if (property === 'variableBindings' && patch[property] == null) delete node.variableBindings;
+      else node[property] = patch[property];
+    }
     if (recordOverrides) recordNodeComponentOverrides(node, properties);
   }
   renderer.invalidate();
@@ -11174,11 +11178,11 @@ function updateScaleInspectorInput(input) {
   }));
   if (!state.scaleEditBase) state.scaleEditBase = entries;
   try {
-    const baseline = planScaleTransform(entries, 1, state.scaleAnchor);
+    const baseline = planScaleTransform(entries, 1, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty });
     if (!baseline.bounds || !baseline.patches.length) return true;
     const factor = field === 'factor' ? entered / 100
       : entered / baseline.bounds[field];
-    const plan = planScaleTransform(entries, factor, state.scaleAnchor);
+    const plan = planScaleTransform(entries, factor, state.scaleAnchor, { resolveBoundProperty: resolveScaleBoundProperty });
     if (!state.controlEdit) { checkpoint('Scale selection'); state.controlEdit = true; }
     applyScalePlan(plan);
     state.scaleMultiplier = factor;
