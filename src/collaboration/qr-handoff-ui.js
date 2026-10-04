@@ -5,6 +5,7 @@ import {
   createQrTransferFrames,
   readLiveQrPayload
 } from './qr-transport.js';
+import { bindDialogDismissal, closeDialog as dismissDialog, openDialog } from './dialog-dismissal.js';
 
 function makeButton(id, label, { hidden = false, disabled = false } = {}) {
   const button = document.createElement('button');
@@ -26,7 +27,7 @@ function installDialog() {
     <section class="live-qr-content">
       <div class="modal-title-row">
         <div><span class="modal-eyebrow">SHARE BY QR CODE</span><h2 id="live-qr-title">Share live design</h2></div>
-        <button class="icon-button" id="live-qr-close" type="button" aria-label="Close QR sharing">×</button>
+        <form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-qr-close" type="submit" value="close" data-dialog-dismiss aria-label="Close sharing">×</button></form>
       </div>
       <p class="modal-copy" id="live-qr-note"></p>
       <div id="live-qr-display" hidden>
@@ -43,14 +44,14 @@ function installDialog() {
           <button class="secondary-button" id="live-qr-reset-scan" type="button">Start over</button>
         </div>
       </div>
-      <div class="dialog-actions"><button class="secondary-button" id="live-qr-close-action" type="button">Close</button></div>
+      <div class="dialog-actions"><form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-qr-close-action" type="submit" value="close" data-dialog-dismiss>Close sharing</button></form></div>
     </section>`;
   document.body.append(dialog);
   return dialog;
 }
 
 /** Add the local QR transport beside the existing text-based collaboration controls. */
-export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHandoff, onHostAnswer, onInvitationShown = () => {}, notify = () => {} } = {}) {
+export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHandoff, onHostAnswer, onInvitationShown = () => {}, closeSharing = () => dismissDialog(document.querySelector('#live-collaboration-dialog'), 'close'), notify = () => {} } = {}) {
   const invitationField = document.querySelector('#live-invite-value');
   const offerField = document.querySelector('#live-offer-value');
   const shareButton = document.querySelector('#live-share-capsules');
@@ -85,6 +86,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   const dialog = installDialog();
   let runtimePromise = null;
   let playback = null;
+  let stopActivitiesPromise = null;
   let scanner = null;
   let assembler = null;
   let mode = null;
@@ -96,29 +98,34 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
     return runtimePromise;
   }
   async function stopActivities() {
+    if (stopActivitiesPromise) return stopActivitiesPromise;
+    const activeScanner = scanner;
+    scanner = null;
     if (playback?.timer) clearTimeout(playback.timer);
     if (playback?.frames) playback.frames.fill('');
     playback = null;
     frameIndex = 0;
-    const activeScanner = scanner;
-    scanner = null;
     assembler?.reset();
     assembler = null;
     mode = null;
     decodeBusy = false;
-    if (activeScanner) {
-      try { await activeScanner.stop(); } catch {}
-    }
-    const canvas = dialog.querySelector('#live-qr-canvas');
-    canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-    const video = dialog.querySelector('#live-qr-video');
-    if (video && !scanner) video.srcObject = null;
-    const imageInput = dialog.querySelector('#live-qr-image-input');
-    if (imageInput) imageInput.value = '';
+    stopActivitiesPromise = (async () => {
+      if (activeScanner) {
+        try { await activeScanner.stop(); } catch {}
+      }
+      const canvas = dialog.querySelector('#live-qr-canvas');
+      canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+      const video = dialog.querySelector('#live-qr-video');
+      if (video && !scanner) video.srcObject = null;
+      const imageInput = dialog.querySelector('#live-qr-image-input');
+      if (imageInput) imageInput.value = '';
+    })();
+    try { await stopActivitiesPromise; }
+    finally { stopActivitiesPromise = null; }
   }
   function closeDialog() {
-    if (dialog.open) dialog.close();
-    else void stopActivities();
+    dismissDialog(dialog, 'close');
+    void stopActivities();
   }
   async function drawFrame() {
     const current = playback;
@@ -143,7 +150,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
   async function showTransfer(payload, title, note) {
     try {
       await stopActivities();
-      if (dialog.open) dialog.close();
+      if (dialog.open) dismissDialog(dialog, 'close');
       const [qrRuntime, transfer] = await Promise.all([runtime(), createQrTransferFrames(payload)]);
       mode = 'display';
       playback = { runtime: qrRuntime, frames: transfer.frames, timer: 0 };
@@ -151,7 +158,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       dialog.querySelector('#live-qr-note').textContent = note;
       dialog.querySelector('#live-qr-display').hidden = false;
       dialog.querySelector('#live-qr-scan').hidden = true;
-      dialog.showModal();
+      openDialog(dialog);
       await drawFrame();
       return true;
     } catch (error) {
@@ -191,7 +198,7 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       dialog.querySelector('#live-qr-scan-status').textContent = 'Start your camera, or choose a saved QR image.';
       dialog.querySelector('#live-qr-start-camera').disabled = false;
       dialog.querySelector('#live-qr-start-camera').textContent = 'Use camera';
-      dialog.showModal();
+      openDialog(dialog);
       scanner = qrRuntime.createLiveSharingScanner(dialog.querySelector('#live-qr-video'), value => { void acceptFrame(value); }, () => {});
     } catch (error) {
       void stopActivities();
@@ -281,9 +288,14 @@ export function initializeCollaborationQrHandoff({ validateInvitation, onGuestHa
       void drawFrame();
     });
   }
-  dialog.querySelector('#live-qr-close').addEventListener('click', closeDialog);
-  dialog.querySelector('#live-qr-close-action').addEventListener('click', closeDialog);
-  dialog.addEventListener('close', () => { void stopActivities(); });
+  bindDialogDismissal(dialog, [], { onDismiss: () => {
+    void stopActivities();
+    closeSharing();
+  } });
+  dialog.addEventListener('close', () => {
+    void stopActivities();
+    if (dialog.returnValue === 'close') closeSharing();
+  });
   const actionsObserver = new MutationObserver(syncActions);
   actionsObserver.observe(shareButton, { attributes: true, attributeFilter: ['hidden'] });
   actionsObserver.observe(copyAnswerButton, { attributes: true, attributeFilter: ['hidden'] });
