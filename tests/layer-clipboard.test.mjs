@@ -208,17 +208,22 @@ test('copying a component master preserves its property definitions and remaps t
   const document = createDocument();
   const master = createNode('frame', { name: 'Card' });
   const label = createNode('text', { name: 'Label', text: 'Default label' });
-  addNode(document, master); addNode(document, label, { parentId: master.id });
+  const subtitle = createNode('text', { name: 'Subtitle', text: 'Default subtitle' });
+  addNode(document, master); addNode(document, label, { parentId: master.id }); addNode(document, subtitle, { parentId: master.id });
   const component = createComponent(document, master.id);
   const property = createComponentProperty(document, component.id, { name: 'Label', type: 'TEXT', targetNodeId: label.id });
+  property.targetSourceIds = [label.id, subtitle.id];
   const pasted = pasteLayerClipboard(document, createLayerClipboard(document, [findNode(document, master.id)]));
   const copiedMaster = pasted.nodes[0];
   const copiedComponent = pasted.document.components.find(item => item.id === copiedMaster.componentId);
   const copiedProperty = copiedComponent.componentProperties[0];
+  const copiedTargetIds = copiedMaster.children.filter(node => node.type === 'text').map(node => node.id);
 
   assert.notEqual(copiedProperty.id, property.id);
   assert.notEqual(copiedProperty.targetSourceId, property.targetSourceId);
   assert.equal(findNode(pasted.document, copiedProperty.targetSourceId).node.id, copiedMaster.children[0].id);
+  assert.deepEqual(copiedProperty.targetSourceIds, copiedTargetIds);
+  assert.ok(copiedProperty.targetSourceIds.every(id => id !== label.id && id !== subtitle.id));
   assert.equal(copiedProperty.defaultValue, 'Default label');
   assert.equal(validateDocument(pasted.document), true);
 });

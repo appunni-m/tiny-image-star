@@ -112,7 +112,7 @@ async function loadStorageForTest() {
   return import(`../src/storage.js?component-library-storage-${Math.random()}`);
 }
 
-test('component libraries use a separate local database and upgrade legacy document storage to v7', async () => {
+test('component libraries use a separate local database and upgrade legacy document storage to v8', async () => {
   const document = createDocument();
   document.name = 'Existing local design';
   const imageBytes = new Uint8Array([3, 1, 4, 1, 5]);
@@ -125,7 +125,7 @@ test('component libraries use a separate local database and upgrade legacy docum
 
   assert.deepEqual(await storage.listComponentLibraries(), []);
   assert.equal((await storage.loadDocumentById(document.id)).name, 'Existing local design');
-  assert.equal(mock.databaseFor('figma-local-documents').version, 7);
+  assert.equal(mock.databaseFor('figma-local-documents').version, 8);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('documents'), true);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('assets'), true);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('componentLibraries'), false);
@@ -147,11 +147,11 @@ test('opening a legacy v2 document database upgrades without losing designs or l
   const storage = await loadStorageForTest();
 
   assert.equal((await storage.loadDocumentById(document.id)).name, 'Existing upgraded local design');
-  assert.equal(mock.databaseFor('figma-local-documents').version, 7);
+  assert.equal(mock.databaseFor('figma-local-documents').version, 8);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('componentLibraries'), true);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('recipeBatchRecovery'), true);
   await storage.saveComponentLibrary(makeLibrary());
-  assert.equal(mock.databaseFor('figma-local-documents').version, 7, 'saving a library does not alter the document-schema version');
+  assert.equal(mock.databaseFor('figma-local-documents').version, 8, 'saving a library does not alter the document-schema version');
 });
 
 test('recipe batch recovery round-trips defensive copies and is keyed by document ID', async () => {

@@ -147,6 +147,33 @@ test('component-set publishing rejects incomplete axes, duplicate combinations, 
   }), /missing source layer/);
 });
 
+test('component library publications preserve and validate multi-target component properties', () => {
+  const library = createComponentLibrary({ id: 'library-multi-target', name: 'Shared labels' });
+  const root = {
+    id: 'shared-root', type: 'frame', children: [
+      { id: 'label-a', type: 'text', text: 'Default', children: [] },
+      { id: 'label-b', type: 'text', text: 'Default', children: [] }
+    ]
+  };
+  const property = {
+    id: 'shared-label', name: 'Label', type: 'TEXT', targetSourceId: 'label-a',
+    targetSourceIds: ['label-a', 'label-b'], defaultValue: 'Default'
+  };
+  const published = publishComponent(library, {
+    componentId: 'component-shared', name: 'Shared labels', root, componentProperties: [property]
+  });
+  assert.equal(validateComponentLibrary(published.library), true);
+  assert.deepEqual(published.publication.componentProperties[0].targetSourceIds, ['label-a', 'label-b']);
+
+  const danglingTarget = structuredClone(published.library);
+  danglingTarget.components[0].versions[0].componentProperties[0].targetSourceIds[1] = 'missing-label';
+  assert.throws(() => validateComponentLibrary(danglingTarget), /missing source layer/);
+  assert.throws(() => publishComponent(library, {
+    componentId: 'component-slot', name: 'Invalid shared slot', root,
+    componentProperties: [{ ...property, id: 'bad-slot', type: 'SLOT' }]
+  }), /Invalid target source IDs/);
+});
+
 test('libraries require stable identities and validate globally monotonic publication revisions', () => {
   assert.throws(() => createComponentLibrary({ id: '', name: 'Design system' }), /Library ID/);
   assert.throws(() => createComponentLibrary({ id: 'library-1', name: '   ' }), /Library name/);

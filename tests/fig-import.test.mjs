@@ -6,7 +6,7 @@ import { zipSync } from 'fflate';
 import { encodeCommandsBlob, encodeVectorNetwork, encodeVectorNetworkBlob } from 'openfig-core';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
 import { componentPropertyExposureGroups } from '../src/component-property-exposure.js';
-import { parseDocument, serializeDocument, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
+import { parseDocument, serializeDocument, setComponentPropertyValue, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
 import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transformPoint } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout, gridTrackLayout } from '../src/layout-engine.js';
@@ -1080,24 +1080,136 @@ test('imports component slots as editable frames and preserves instance-authored
   assert.deepEqual(restored.pages[0].children.find(item => item.isInstance).children[0].children.map(child => child.name), ['Custom card body', 'Body label']);
 });
 
-test('reports component properties whose one source value controls several local layers', () => {
-  const page = { sessionID: 79, localID: 1 };
-  const component = { sessionID: 79, localID: 2 };
+test('imports shared component properties bound to multiple compatible layers', () => {
+  const sessionID = 79;
+  const page = { sessionID, localID: 1 };
+  const iconPrimary = { sessionID, localID: 10 };
+  const iconAlternate = { sessionID, localID: 12 };
+  const card = { sessionID, localID: 20 };
+  const cardUse = { sessionID, localID: 30 };
+  const definitions = {
+    'Visible#0:0': { type: 'BOOLEAN', defaultValue: true },
+    'Label#0:1': { type: 'TEXT', defaultValue: 'Continue' },
+    'Icon#0:2': {
+      type: 'INSTANCE_SWAP', defaultValue: `${sessionID}:${iconPrimary.localID}`,
+      preferredValues: [{ type: 'COMPONENT', key: 'icon-alternate-key' }]
+    }
+  };
   const imported = convertFigDocument({
     header: { version: 106 },
     nodes: [
       node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
-      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Icon', componentPropertyDefinitions: {
-        'Visible#0:0': { type: 'BOOLEAN', defaultValue: true }
+      node('COMPONENT', 10, page, 'a', { guid: iconPrimary, name: 'Icon/Primary' }),
+      node('ELLIPSE', 11, iconPrimary, 'a', { name: 'Primary artwork' }),
+      node('COMPONENT', 12, page, 'b', { guid: iconAlternate, name: 'Icon/Alternate', key: 'icon-alternate-key' }),
+      node('ELLIPSE', 13, iconAlternate, 'a', { name: 'Alternate artwork' }),
+      node('COMPONENT', 20, page, 'c', { guid: card, name: 'Card', componentPropertyDefinitions: definitions }),
+      node('ELLIPSE', 21, card, 'a', { name: 'Outer', visible: true, componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('ELLIPSE', 22, card, 'b', { name: 'Inner', visible: true, componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('TEXT', 23, card, 'c', { name: 'Primary label', textData: { characters: 'Continue' }, componentPropertyReferences: { characters: 'Label#0:1' } }),
+      node('TEXT', 24, card, 'd', { name: 'Secondary label', textData: { characters: 'Continue' }, componentPropertyReferences: { characters: 'Label#0:1' } }),
+      node('INSTANCE', 25, card, 'e', { name: 'Leading icon', componentId: iconPrimary, componentPropertyReferences: { mainComponent: 'Icon#0:2' } }),
+      node('INSTANCE', 26, card, 'f', { name: 'Trailing icon', componentId: iconPrimary, componentPropertyReferences: { mainComponent: 'Icon#0:2' } }),
+      node('ELLIPSE', 27, { sessionID: 1, localID: 25 }, 'a', { name: 'Primary artwork' }),
+      node('ELLIPSE', 28, { sessionID: 1, localID: 26 }, 'a', { name: 'Primary artwork' }),
+      node('INSTANCE', 30, page, 'd', { guid: cardUse, name: 'Card use', componentId: card, componentProperties: {
+        'Visible#0:0': { type: 'BOOLEAN', value: false },
+        'Label#0:1': { type: 'TEXT', value: 'Go now' },
+        'Icon#0:2': { type: 'INSTANCE_SWAP', value: `${sessionID}:${iconAlternate.localID}` }
       } }),
-      node('ELLIPSE', 3, component, 'a', { name: 'Outer', componentPropertyReferences: { visible: 'Visible#0:0' } }),
-      node('ELLIPSE', 4, component, 'b', { name: 'Inner', componentPropertyReferences: { visible: 'Visible#0:0' } })
+      node('ELLIPSE', 31, cardUse, 'a', { name: 'Outer', visible: false, componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('ELLIPSE', 32, cardUse, 'b', { name: 'Inner', visible: false, componentPropertyReferences: { visible: 'Visible#0:0' } }),
+      node('TEXT', 33, cardUse, 'c', { name: 'Primary label', textData: { characters: 'Go now' }, componentPropertyReferences: { characters: 'Label#0:1' } }),
+      node('TEXT', 34, cardUse, 'd', { name: 'Secondary label', textData: { characters: 'Go now' }, componentPropertyReferences: { characters: 'Label#0:1' } }),
+      node('INSTANCE', 35, cardUse, 'e', { name: 'Leading icon', componentId: iconPrimary }),
+      node('INSTANCE', 36, cardUse, 'f', { name: 'Trailing icon', componentId: iconPrimary }),
+      node('ELLIPSE', 37, { sessionID: 1, localID: 35 }, 'a', { name: 'Primary artwork' }),
+      node('ELLIPSE', 38, { sessionID: 1, localID: 36 }, 'a', { name: 'Primary artwork' })
     ],
     images: new Map(), message: { blobs: [] }
   });
-  const localComponent = imported.document.components.find(item => item.name === 'Icon');
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const propertiesByName = new Map(localComponent.componentProperties.map(property => [property.name, property]));
+  const instance = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  const named = name => instance.children.filter(child => child.name === name);
+  const bySourceId = property => property.targetSourceIds.map(sourceId => instance.children.find(child => child.componentSourceId === sourceId));
+  const visibleProperty = propertiesByName.get('Visible');
+  const textProperty = propertiesByName.get('Label');
+  const swapProperty = propertiesByName.get('Icon');
+
+  assert.equal(visibleProperty.targetSourceIds.length, 2);
+  assert.equal(textProperty.targetSourceIds.length, 2);
+  assert.equal(swapProperty.targetSourceIds.length, 2);
+  assert.deepEqual(bySourceId(visibleProperty).map(child => child.visible), [false, false]);
+  assert.deepEqual(named('Primary label').map(child => child.text), ['Go now']);
+  assert.deepEqual(named('Secondary label').map(child => child.text), ['Go now']);
+  assert.deepEqual(instance.children.filter(child => child.isInstance).map(child => child.componentId), [
+    imported.document.components.find(item => item.name === 'Icon/Alternate').id,
+    imported.document.components.find(item => item.name === 'Icon/Alternate').id
+  ]);
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY, undefined);
+
+  setComponentPropertyValue(imported.document, instance.id, visibleProperty.id, true);
+  setComponentPropertyValue(imported.document, instance.id, textProperty.id, 'Updated copy');
+  setComponentPropertyValue(imported.document, instance.id, swapProperty.id, imported.document.components.find(item => item.name === 'Icon/Primary').id);
+  assert.deepEqual(bySourceId(visibleProperty).map(child => child.visible), [true, true]);
+  assert.deepEqual(named('Primary label').concat(named('Secondary label')).map(child => child.text), ['Updated copy', 'Updated copy']);
+  assert.deepEqual(instance.children.filter(child => child.isInstance).map(child => child.componentId), [
+    imported.document.components.find(item => item.name === 'Icon/Primary').id,
+    imported.document.components.find(item => item.name === 'Icon/Primary').id
+  ]);
+
+  const restored = parseDocument(serializeDocument(imported.document));
+  syncAllComponentInstances(restored);
+  const restoredCardId = restored.components.find(item => item.name === 'Card').id;
+  const restoredInstance = restored.pages[0].children.find(item => item.isInstance && item.componentId === restoredCardId);
+  assert.deepEqual(restoredInstance.children.filter(child => ['Outer', 'Inner'].includes(child.name)).map(child => child.visible), [true, true]);
+  assert.deepEqual(restoredInstance.children.filter(child => child.type === 'text').map(child => child.text), ['Updated copy', 'Updated copy']);
+  assert.deepEqual(restoredInstance.children.filter(child => child.isInstance).map(child => child.componentId), [
+    restored.components.find(item => item.name === 'Icon/Primary').id,
+    restored.components.find(item => item.name === 'Icon/Primary').id
+  ]);
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY_VALUE, undefined);
+});
+
+test('leaves multi-target slot properties in import review because slot content is target-specific', () => {
+  const page = { sessionID: 80, localID: 1 };
+  const component = { sessionID: 80, localID: 2 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropertyDefinitions: {
+        'Content#0:0': { type: 'SLOT', defaultValue: [] }
+      } }),
+      node('FRAME', 3, component, 'a', { name: 'Main content', componentPropertyReferences: { slotContentId: 'Content#0:0' } }),
+      node('FRAME', 4, component, 'b', { name: 'Secondary content', componentPropertyReferences: { slotContentId: 'Content#0:0' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
   assert.equal(localComponent.componentProperties, undefined);
-  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /multiple layers/u);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /cannot be represented safely across several local targets/u);
+});
+
+test('leaves multi-target properties in import review when their declared default conflicts with a referenced layer', () => {
+  const page = { sessionID: 82, localID: 1 };
+  const component = { sessionID: 82, localID: 2 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Labels', componentPropertyDefinitions: {
+        'Label#0:0': { type: 'TEXT', defaultValue: 'Default' }
+      } }),
+      node('TEXT', 3, component, 'a', { name: 'Primary', textData: { characters: 'Default' }, componentPropertyReferences: { characters: 'Label#0:0' } }),
+      node('TEXT', 4, component, 'b', { name: 'Secondary', textData: { characters: 'Different' }, componentPropertyReferences: { characters: 'Label#0:0' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Labels');
+  assert.equal(localComponent.componentProperties, undefined);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'COMPONENT_PROPERTY').detail, /declared default does not match every referenced layer/u);
 });
 
 test('imports exposed nested component instances and reveals their controls on the outer instance', () => {

@@ -304,7 +304,8 @@ function assertLibrary(library) {
       assertJsonValue(publication.root, `Published component “${component.id}”`);
       const sourceLayers = collectSourceLayers(publication.root, `Published component “${component.id}”`);
       for (const property of publication.componentProperties || []) {
-        if (!sourceLayers.has(property.targetSourceId)) fail(`Component property “${property.name}” refers to a missing source layer.`);
+        const targets = property.targetSourceIds || [property.targetSourceId];
+        if (targets.some(targetSourceId => !sourceLayers.has(targetSourceId))) fail(`Component property “${property.name}” refers to a missing source layer.`);
       }
     }
   }
@@ -348,12 +349,18 @@ function validateComponentMetadata(publication) {
       validName(property.name, 'Component property name');
       validIdentity(property.type, 'Component property type');
       validIdentity(property.targetSourceId, 'Component property target source ID');
+      if (property.targetSourceIds != null
+        && (!Array.isArray(property.targetSourceIds) || property.targetSourceIds.length < 2 || property.targetSourceIds.length > 100
+          || new Set(property.targetSourceIds).size !== property.targetSourceIds.length
+          || property.targetSourceIds.some(targetSourceId => typeof targetSourceId !== 'string' || !targetSourceId)
+          || property.targetSourceIds[0] !== property.targetSourceId
+          || !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP'].includes(property.type))) fail(`Invalid target source IDs for component property “${property.name}”.`);
       if (ids.has(property.id)) fail(`Duplicate component property ID “${property.id}”.`);
       ids.add(property.id);
       if (!['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT'].includes(property.type)) fail(`Unsupported component property type “${property.type}”.`);
       assertJsonValue(property.defaultValue, `Default value for component property “${property.name}”`);
       if (property.preferredComponentIds != null && (!Array.isArray(property.preferredComponentIds) || property.preferredComponentIds.some(id => typeof id !== 'string'))) fail(`Invalid preferred component IDs for “${property.name}”.`);
-      if (Object.keys(property).some(key => !['id', 'name', 'type', 'targetSourceId', 'defaultValue', 'preferredComponentIds'].includes(key))) fail(`Unknown field in component property “${property.name}”.`);
+      if (Object.keys(property).some(key => !['id', 'name', 'type', 'targetSourceId', 'targetSourceIds', 'defaultValue', 'preferredComponentIds'].includes(key))) fail(`Unknown field in component property “${property.name}”.`);
     }
   }
 }
@@ -524,7 +531,8 @@ export function publishComponent(library, input = {}) {
   validateComponentMetadata(metadata);
   const sourceLayers = collectSourceLayers(root, `Component “${componentId}”`);
   for (const property of metadata.componentProperties || []) {
-    if (!sourceLayers.has(property.targetSourceId)) fail(`Component property “${property.name}” refers to a missing source layer.`);
+    const targets = property.targetSourceIds || [property.targetSourceId];
+    if (targets.some(targetSourceId => !sourceLayers.has(targetSourceId))) fail(`Component property “${property.name}” refers to a missing source layer.`);
   }
 
   const revision = library.revision + 1;

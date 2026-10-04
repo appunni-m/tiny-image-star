@@ -55,7 +55,8 @@ import { encodeRenderedImageOutput } from './image-output.js';
 import { ImageSourceResidencyManager } from './image-source-residency.js';
 import { collectEditedImagePreviewRequests, collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewMatchesSettings, imagePreviewRenderSettingsForNode, imagePreviewRequiresRenderedPixels, imagePreviewSettingsChanged, imagePreviewSettingsForNode, imagePreviewSettingsSignature, offscreenPreviewEvictionCandidates, parseImagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, selectedImagePreviewKeysForNodes, setImagePreviewFailureStatus, shouldRestoreImageAssetSource } from './image-preview-runtime.js';
 import { collectVisibleImagePreviewKeys } from './visible-image-previews.js';
-import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, releaseRecipeBatchRecoveryLease, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFigSourceArchive as deleteIndexedDbFigSourceArchive, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadFigSourceArchive as loadIndexedDbFigSourceArchive, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, releaseRecipeBatchRecoveryLease, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFigSourceArchive as saveIndexedDbFigSourceArchive, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
+import { readFigSourceArchive as readWorkspaceFigSourceArchive, saveFigSourceArchive as saveWorkspaceFigSourceArchive } from './workspace/fig-source-archive-store.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
 import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
 import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
@@ -130,7 +131,10 @@ import { snapToAlignmentGuides } from './smart-guides.js';
 import { preserveCanvasWorldCenterOnResize } from './canvas-viewport.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { getFramePreset, groupFramePresetsByCategory } from './frame-presets.js';
+import { FRAME_PRESETS, getFramePreset, groupFramePresetsByCategory } from './frame-presets.js';
+import { resizeFrameToPreset } from './frame-preset-resize.js';
+import { planFrameResizeToFit } from './frame-resize-to-fit.js';
+import { parseNumericFieldExpression } from './numeric-field-expression.js';
 import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, commentPinOverridesCanvasSelection, commentPinSelectionCycle, commentPinSelectionCycleMatches, commentSelectionEntryForHit, commentSelectionTarget, commentPanelCanvasIsInteractive, commentPlacementGesturePans, commentPanelNeedsCanvasCaptureRelease, commentSelectionOverridesCanvasTool } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
@@ -1174,6 +1178,52 @@ async function loadActiveFontAsset(fontId) {
   return validateLocalFontAsset({ ...saved.metadata, bytes: saved.bytes });
 }
 
+async function readFigSourceArchiveForDesign(designId, workspace = state.workspace, { copyToWorkspace = true } = {}) {
+  if (workspace) {
+    const retained = await readWorkspaceFigSourceArchive(workspace, designId);
+    if (retained) return retained.bytes;
+  }
+  const mirrored = await loadIndexedDbFigSourceArchive(designId);
+  if (mirrored && workspace && copyToWorkspace) {
+    try { await saveWorkspaceFigSourceArchive(workspace, designId, mirrored); }
+    catch (error) { console.warn(`Could not copy the retained .fig source for design ${designId} into its folder workspace.`, error); }
+  }
+  return mirrored;
+}
+
+async function copyIndexedDbFigSourceArchivesToWorkspace(workspace, designIds) {
+  const copied = [];
+  const failed = [];
+  for (const designId of [...new Set(designIds)]) {
+    try {
+      const existing = await readWorkspaceFigSourceArchive(workspace, designId);
+      if (existing) continue;
+      const bytes = await loadIndexedDbFigSourceArchive(designId);
+      if (!bytes) continue;
+      await saveWorkspaceFigSourceArchive(workspace, designId, bytes);
+      copied.push(designId);
+    } catch (error) {
+      // Original archives are optional fidelity sidecars. Preserve the editable
+      // design and keep folder activation available if one source is damaged or
+      // the selected filesystem refuses this optional copy.
+      console.warn(`Could not transfer the retained .fig source for design ${designId} into the folder workspace.`, error);
+      failed.push(designId);
+    }
+  }
+  return { copied, failed };
+}
+
+async function persistFigSourceArchiveForDesign(designId, bytes, workspace = state.workspace) {
+  if (bytes == null) return;
+  if (workspace) {
+    await saveWorkspaceFigSourceArchive(workspace, designId, bytes);
+    try { await saveIndexedDbFigSourceArchive(designId, bytes); }
+    catch (error) { console.warn(`The folder copy of the original .fig source for design ${designId} was saved, but its optional browser mirror could not be updated.`, error); }
+    return;
+  }
+  await saveIndexedDbFigSourceArchive(designId, bytes);
+}
+
 async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
   let workspace;
   try { workspace = await openWorkspace(handle); }
@@ -1204,9 +1254,22 @@ async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
   const updatedDesignIds = designIds.length ? designIds : await listWorkspaceDesignIds(workspace);
   const designId = updatedDesignIds.includes(state.document.id) ? state.document.id : updatedDesignIds[0];
   if (!designId) throw new Error('The selected folder has no completed designs. Save a design before reconnecting this workspace.');
+  let figSourceArchiveTransferFailures = [];
+  if (migrate) {
+    const savedDesigns = await listSavedDocuments();
+    const transfer = await copyIndexedDbFigSourceArchivesToWorkspace(workspace,
+      [...new Set([...savedDesigns.map(saved => saved.id).filter(id => updatedDesignIds.includes(id)), designId])]);
+    figSourceArchiveTransferFailures = transfer.failed;
+  } else {
+    try { await readFigSourceArchiveForDesign(designId, workspace); }
+    catch (error) {
+      console.warn(`Could not restore the retained .fig source for design ${designId} from its browser mirror.`, error);
+      figSourceArchiveTransferFailures.push(designId);
+    }
+  }
   const opened = await openWorkspaceDesign(workspace, designId);
   await saveWorkspaceDirectoryHandle(handle);
-  return { workspace, opened };
+  return { workspace, opened, figSourceArchiveTransferFailures };
 }
 
 async function activateWorkspace(handle, { migrate = true, reconnect = false } = {}) {
@@ -1219,7 +1282,7 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
   $('.workspace').inert = true;
   setSaveState('saving', migrate ? 'Preparing folder workspace…' : 'Reconnecting folder…');
   try {
-    const { workspace, opened } = await initializeWorkspaceForHandle(handle, { migrate });
+    const { workspace, opened, figSourceArchiveTransferFailures = [] } = await initializeWorkspaceForHandle(handle, { migrate });
     const pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
     const previousDocument = state.document;
     state.imageExportAbortController?.abort();
@@ -1255,7 +1318,9 @@ async function activateWorkspace(handle, { migrate = true, reconnect = false } =
     await restoreImageAssets(++state.documentGeneration);
     if (previousDocument !== state.document) history.undoStack.length = history.redoStack.length = 0;
     setSaveState('saved', savedStatusText());
-    showToast(reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
+    showToast(figSourceArchiveTransferFailures.length
+      ? `Workspace ready, but ${figSourceArchiveTransferFailures.length} original .fig source archive${figSourceArchiveTransferFailures.length === 1 ? '' : 's'} could not be copied. The editable designs remain available.`
+      : reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
     renderRecipeRecoveryPrompt();
     if (!state.pendingRecipeRecovery && isLiveJoinHash()) startJoinFromStableLink();
     return true;
@@ -2015,15 +2080,35 @@ function framePresetPicker() {
   const markup = groups.map(group => `<details class="frame-preset-group"${group.id === preferredCategory ? ' open' : ''}><summary><span>${escapeHtml(group.name)}</span><span class="frame-preset-count">${group.presets.length}</span></summary><div class="frame-preset-options">${group.presets.map(preset => `<button class="frame-preset-option" type="button" data-action="create-frame-preset" data-preset-id="${escapeHtml(preset.id)}" aria-label="Create ${escapeHtml(preset.name)} frame, ${preset.width} by ${preset.height} pixels"><span>${escapeHtml(preset.name)}</span><span class="frame-preset-dimensions">${preset.width} × ${preset.height}</span></button>`).join('')}</div></details>`).join('');
   return section('Frame presets', `<p class="image-properties-note frame-preset-hint">Choose a preset or drag on the canvas to draw a custom frame.</p><div class="frame-preset-picker">${markup}</div>`);
 }
+function framePresetResizeSection(node) {
+  const entry = findNode(state.document, node.id);
+  const geometry = resolvedGeometry(node);
+  const matchingPresets = FRAME_PRESETS.filter(preset => preset.width === geometry.width
+    && preset.height === geometry.height);
+  const selectedPresetId = matchingPresets.length === 1 ? matchingPresets[0].id : '';
+  const groups = groupFramePresetsByCategory();
+  const options = groups.map(group => `<optgroup label="${escapeHtml(group.name)}">${group.presets.map(preset => `<option value="${escapeHtml(preset.id)}"${preset.id === selectedPresetId ? ' selected' : ''}>${escapeHtml(preset.name)} · ${preset.width} × ${preset.height}</option>`).join('')}</optgroup>`).join('');
+  const disabled = node.locked || entry?.parents.some(parent => parent.locked) || state.documentTransitioning
+    || state.presenting || state.interaction || isLiveHostViewOnly() || state.workspacePermissionNeeded;
+  const sizeLabel = `${formatInspectorNumber(geometry.width)} × ${formatInspectorNumber(geometry.height)}`;
+  const fitBlocked = node.autoLayout ? ' Auto-layout frames use Hug contents for this behavior.' : '';
+  return section('Frame preset', `<div class="frame-preset-fit-control"><button class="add-fill frame-resize-to-fit" type="button" data-action="resize-frame-to-fit" aria-label="Resize frame to fit visible contents" title="Option/Alt + Shift + Command/Ctrl + R"${disabled || node.autoLayout ? ' disabled' : ''}>Resize to fit</button><kbd class="frame-resize-to-fit-shortcut">⌥⇧⌘R</kbd></div><div class="image-properties-note">Wrap this frame around the outermost visible content while preserving child positions.${fitBlocked}</div><label class="property-label frame-preset-resize-label"><span>Preset</span><select class="prop-input select-field frame-preset-resize-select" data-frame-preset-select aria-label="Resize frame to preset"${disabled ? ' disabled' : ''}><option value=""${selectedPresetId ? '' : ' selected'}>Custom size · ${escapeHtml(sizeLabel)}</option>${options}</select></label><div class="image-properties-note">Choose a preset to resize this frame. Child layers follow their constraints; unconstrained layers keep their size and position.</div>`);
+}
 function propertyFieldLabelClass(label) {
   return String(label).trim().length > 2 ? ' property-field--descriptive' : '';
 }
 function numberField(label, prop, value, step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, ariaLabel = label) {
-  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${formatInspectorNumber(value)}" aria-label="${escapeHtml(ariaLabel)}" /></div>`;
+  const expression = ['x', 'y', 'width', 'height'].includes(prop);
+  const expressionAttributes = expression ? ` inputmode="text" data-numeric-expression data-expression-base="${formatInspectorNumber(value)}" title="Enter a value or calculation, such as +100, *2, or 50%"` : '';
+  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="${prop}" type="${expression ? 'text' : 'number'}"${expression ? '' : ` step="${step}"`}${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${expressionAttributes}${disabled ? ' disabled' : ''} value="${formatInspectorNumber(value)}" aria-label="${escapeHtml(ariaLabel)}" /></div>`;
 }
 function selectionNumberField(label, property, value, { step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, mixed = false } = {}) {
   const shownValue = !mixed && Number.isFinite(value) ? ` value="${formatInspectorNumber(value)}"` : '';
-  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
+  const expression = ['x', 'y', 'width', 'height'].includes(property);
+  const expressionAttributes = expression && Number.isFinite(value)
+    ? ` inputmode="text" data-numeric-expression data-expression-base="${formatInspectorNumber(value)}" title="Enter a value or calculation, such as +100, *2, or 50%"`
+    : '';
+  return `<div class="property-field${propertyFieldLabelClass(label)}"><label title="${escapeHtml(label)}">${escapeHtml(label)}</label><input class="prop-input" data-prop="selection.${property}" type="${expression ? 'text' : 'number'}"${expression ? '' : ` step="${step}"`}${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${expressionAttributes}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
 }
 function optionalNumberField(label, prop, value, { min = 0, max = null, step = '0.01', disabled = false } = {}) {
   return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="${min}"${max == null ? '' : ` max="${max}"`} step="${step}" value="${Number.isFinite(value) ? formatInspectorNumber(value) : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"${disabled ? ' disabled' : ''}/></label>`;
@@ -4224,7 +4309,7 @@ function renderInspector() {
     content.innerHTML = `${slicePositionSection(node)}${exportSettingsSection(node)}${deleteLayerControl}`;
     return;
   }
-  let body = `${deleteLayerControl}${shapeBuilderControl}${componentSection(node)}${transformSection(node)}${blendingSection(node)}`;
+  let body = `${deleteLayerControl}${shapeBuilderControl}${componentSection(node)}${transformSection(node)}${node.type === 'frame' ? framePresetResizeSection(node) : ''}${blendingSection(node)}`;
   if (node.type === 'image' && isActiveImageRecipeTarget(node.id)) {
     body = `<div class="image-properties-note image-batch-edit-lock">This image is in the active recipe batch. Manual edits remain available, and newer edits replace stale batch previews.</div>${body}`;
   }
@@ -5298,7 +5383,7 @@ function selectionResizeBounds(entries, bounds, property, targetSize) {
 function updateSelectionInspectorInput(input) {
   const property = input.dataset.prop.slice('selection.'.length);
   if (!['x', 'y', 'width', 'height', 'rotation', 'opacity'].includes(property) || !input.value.trim()) return;
-  const value = Number(input.value);
+  const value = Number(input.dataset.expressionValue ?? input.value);
   if (!Number.isFinite(value)) return;
   const entries = transformEntriesForSelection();
   if (!entries.length) return;
@@ -10930,13 +11015,59 @@ function applyImageTransformAction(node, targetName, action, direction, fillId =
   renderInspector(); queueSave(); renderer.invalidate();
 }
 
+function numericFieldExpressionValue(input) {
+  const base = Number(input.dataset.expressionBase);
+  const value = parseNumericFieldExpression(input.value, base);
+  if (!Number.isFinite(value)) return null;
+  const property = input.dataset.prop.replace(/^selection\./u, '');
+  if (['width', 'height'].includes(property) && value < 0) return null;
+  const min = input.getAttribute('min');
+  const max = input.getAttribute('max');
+  if (min !== null && value < Number(min)) return null;
+  if (max !== null && value > Number(max)) return null;
+  return value;
+}
+
+function numericFieldExpressionBase(input) {
+  const prop = input.dataset.prop || '';
+  if (prop.startsWith('selection.')) {
+    const property = prop.slice('selection.'.length);
+    const entries = transformEntriesForSelection();
+    if (!entries.length || !['x', 'y', 'width', 'height'].includes(property)) return null;
+    return selectionBounds(entries)[property];
+  }
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  if (!node || !['x', 'y', 'width', 'height'].includes(prop)) return null;
+  return resolvedGeometry(node)[prop];
+}
+
+function commitNumericFieldExpression(input) {
+  const value = numericFieldExpressionValue(input);
+  if (Number.isFinite(value)) {
+    input.dataset.expressionValue = String(value);
+    updateInspectorInput({ target: input, type: 'change' });
+    const current = numericFieldExpressionBase(input);
+    input.value = formatInspectorNumber(Number.isFinite(current) ? current : value);
+  } else {
+    const current = numericFieldExpressionBase(input);
+    if (Number.isFinite(current)) input.value = formatInspectorNumber(current);
+  }
+  delete input.dataset.expressionValue;
+  delete input.dataset.expressionBase;
+  finishInspectorInput();
+}
+
 function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
   if (event.target.closest('[data-scale-field]') && updateScaleInspectorInput(event.target.closest('[data-scale-field]'))) return;
   const selected = selectedNodes();
   if (!input || !selected.length) return;
+  const expressionField = input.matches('[data-numeric-expression]');
+  const expressionValue = expressionField ? numericFieldExpressionValue(input) : null;
+  if (expressionField && !Number.isFinite(expressionValue)) return;
+  if (expressionField) input.dataset.expressionValue = String(expressionValue);
   if (selected.length === 1 && selected[0].type === 'slice' && ['width', 'height'].includes(input.dataset.prop)) {
-    if (!isValidSliceDimensionInput(input.value)) {
+    if (!isValidSliceDimensionInput(expressionField ? expressionValue : input.value)) {
       if (event.type === 'change') {
         const hadPendingEdit = state.controlEdit;
         state.controlEdit = false;
@@ -10962,7 +11093,7 @@ function updateInspectorInput(event) {
     return;
   }
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
-  const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
+  const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : expressionField ? expressionValue : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
   const propertyValue = fontAxisMatch ? Math.max(Number(input.min), Math.min(Number(input.max), value))
     : fontFeatureMatch ? value === 'auto' ? null : value === 'off' ? 0 : value === 'on' ? 1 : Number(value)
     : prop === 'opacity' ? value / 100
@@ -16984,6 +17115,10 @@ async function buildLocalDesignPackageSnapshot() {
   };
   for (const { reference, metadata } of assetReferences) admitBinaryLength(metadata.byteLength, `image “${reference.name || reference.assetId}”`);
   for (const font of fontReferences) admitBinaryLength(font.byteLength, `font “${font.family}”`);
+  // The retained archive is an opaque package payload, independent of the
+  // serialized editor document. Account for it before reading image/font data.
+  const figSourceArchive = await readFigSourceArchiveForDesign(design.id);
+  if (figSourceArchive) admitBinaryLength(figSourceArchive.byteLength, 'the retained original .fig source');
 
   // Check the complete binary budget before retrieving any source bytes. The
   // package builder applies the same hard limit including serialized design
@@ -17007,7 +17142,7 @@ async function buildLocalDesignPackageSnapshot() {
     throw new Error('The design changed while its local package was being prepared. Try again to include the latest edits.');
   }
   return {
-    blob: buildLocalPackageBlob(design, assets, fonts),
+    blob: buildLocalPackageBlob(design, assets, fonts, { figSourceArchive }),
     filename: localPackageFilename(design.name),
     title: design.name || 'Tiny Image Star design',
     sourceDocument, sourceGeneration, sourceRevision
@@ -17282,6 +17417,7 @@ async function confirmFigImport() {
     const switched = await switchToDocument(result.document, {
       message: 'Design imported locally. Review the import report for any simplified features.',
       beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, result.assets || [])).document),
+      figSourceArchive: result.figSourceArchive,
       versionLabel: 'Imported .fig design'
     });
     if (switched) $('#fig-import-dialog').close();
@@ -17290,7 +17426,7 @@ async function confirmFigImport() {
   }
 }
 
-async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, versionLabel = 'Opened design', expectedStorageRevision = undefined } = {}) {
+async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, figSourceArchive = null, versionLabel = 'Opened design', expectedStorageRevision = undefined } = {}) {
   if (state.workspacePermissionNeeded) { showToast('Reconnect the saved folder workspace before opening or creating designs.'); return false; }
   if (state.localPackageBuilding) { showToast('Wait for the local design package to finish before switching designs.'); return false; }
   if (isImageRecipeBatchActive(state.bulk)) {
@@ -17322,6 +17458,11 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
       }
       nextDocument = opened.document;
       nextWorkspaceHead = opened.head;
+    }
+    if (figSourceArchive != null) await persistFigSourceArchiveForDesign(nextDocument.id, figSourceArchive);
+    else if (state.workspace) {
+      try { await readFigSourceArchiveForDesign(nextDocument.id, state.workspace); }
+      catch (error) { console.warn(`Could not restore the retained .fig source for design ${nextDocument.id} from its browser mirror.`, error); }
     }
     try { await ensureImageLibraryCompatibility(nextDocument); }
     catch (error) { console.warn('Could not add legacy image sources to the reusable image library.', error); }
@@ -17500,11 +17641,16 @@ async function handleDesignLibraryAction(action, id) {
         duplicate.id = createId('file');
         duplicate.name = `${String(source.name || 'Untitled').slice(0, 114)} copy`;
         let created = false;
+        let duplicateFigSourceArchive = null;
         try {
           // Initialize a valid but empty revision first. The fully populated snapshot
           // is published only after every referenced asset has been copied and verified.
           const initial = await createWorkspaceDesign(state.workspace, workspaceSeedDocument(duplicate));
           created = true;
+          duplicateFigSourceArchive = await readWorkspaceFigSourceArchive(state.workspace, id);
+          if (duplicateFigSourceArchive) {
+            await saveWorkspaceFigSourceArchive(state.workspace, duplicate.id, duplicateFigSourceArchive.bytes);
+          }
           const requirements = collectReferencedAssets(duplicate);
           for (const assetId of requirements.imageAssetIds) {
             const sourceAsset = await readWorkspaceImageAsset(state.workspace, id, assetId);
@@ -17524,6 +17670,10 @@ async function handleDesignLibraryAction(action, id) {
           state.workspaceVerifiedFontIds.set(duplicate.id, new Set(usedFonts.map(font => font.metadata.id)));
           try { await saveDocument(duplicate, { expectedRevision: null }); }
           catch (error) { console.warn('The folder duplicate succeeded, but its optional browser library mirror could not be updated.', error); }
+          if (duplicateFigSourceArchive) {
+            try { await saveIndexedDbFigSourceArchive(duplicate.id, duplicateFigSourceArchive.bytes); }
+            catch (error) { console.warn('The folder duplicate succeeded, but its optional browser .fig archive mirror could not be updated.', error); }
+          }
         } catch (error) {
           if (created) {
             try { await state.workspace.designsDirectory.removeEntry(duplicate.id, { recursive: true }); }
@@ -17580,6 +17730,10 @@ async function handleDesignLibraryAction(action, id) {
           if (error?.code === 'DESIGN_DELETE_PENDING') await renderDesignLibrary();
           throw error;
         }
+        // deleteWorkspaceDesign removes the sidecar with its design directory;
+        // clear the optional IndexedDB mirror even if its document index is stale.
+        try { await deleteIndexedDbFigSourceArchive(id); }
+        catch (error) { console.warn('The workspace design was deleted, but its optional browser .fig archive mirror could not be removed.', error); }
         state.workspaceVerifiedImageIds.delete(id);
         state.workspaceVerifiedFontIds.delete(id);
         try { await deleteStoredDocument(id); }
@@ -17598,11 +17752,15 @@ async function handleDesignLibraryAction(action, id) {
           message: 'Design deleted. A new local design is ready.',
           beforeSwitch: async () => {
             if (!await deleteStoredDocument(id)) throw new Error('That saved design is no longer available.');
+            try { await deleteIndexedDbFigSourceArchive(id); }
+            catch (error) { console.warn('The design was deleted, but its optional browser .fig archive mirror could not be removed.', error); }
           }
         });
         if (!switched) return;
       } else {
         await deleteStoredDocument(id);
+        try { await deleteIndexedDbFigSourceArchive(id); }
+        catch (error) { console.warn('The design was deleted, but its optional browser .fig archive mirror could not be removed.', error); }
       }
       await renderDesignLibrary();
     }
@@ -19167,6 +19325,181 @@ function createFrameFromPreset(presetId) {
   }
 }
 
+function applyFramePresetToSelection(presetId) {
+  const preset = getFramePreset(presetId);
+  const entries = selectedEntries();
+  if (!preset || entries.length !== 1 || entries[0].node.type !== 'frame') {
+    renderInspector();
+    return false;
+  }
+  const { node, parents } = entries[0];
+  if (node.locked || parents.some(parent => parent.locked) || state.documentTransitioning || state.presenting
+    || state.interaction || isLiveHostViewOnly() || state.workspacePermissionNeeded) {
+    renderInspector();
+    showToast('Unlock the frame and finish the current editor action before changing its preset.');
+    return false;
+  }
+  const widthBinding = node.variableBindings?.width;
+  const heightBinding = node.variableBindings?.height;
+  if (widthBinding && widthBinding === heightBinding && preset.width !== preset.height) {
+    renderInspector();
+    showToast('This frame uses one variable for both width and height. Unbind one dimension before choosing a non-square preset.');
+    return false;
+  }
+  const current = resolvedGeometry(node);
+  if (current.width === preset.width && current.height === preset.height) return false;
+
+  const previousSaveLabel = state.versionSaveLabel;
+  checkpoint(`Resize frame to ${preset.name}`);
+  const resizeCheckpoint = history.undoStack.at(-1);
+  try {
+    const result = resizeFrameToPreset(node, preset, {
+      geometryOf: resolvedGeometry,
+      setDimensions: (frame, width, height) => setNodePropertyValue(frame, 'width', width)
+        && setNodePropertyValue(frame, 'height', height),
+      applyAutoLayout,
+      parentOf: frame => findNode(state.document, frame.id)?.parent || null,
+    });
+    if (!result.changed) return false;
+    const frameEntry = findNode(state.document, node.id);
+    const afterResize = resolvedGeometry(node);
+    const changedDimensions = ['width', 'height'].filter(property => !Object.is(result.before[property], afterResize[property]));
+    const boundDimensions = changedDimensions.filter(property => node.variableBindings?.[property]);
+    if (boundDimensions.length) recordNodeComponentOverrides(node, ['variableBindings'], frameEntry);
+    recordNodeComponentOverrides(node, changedDimensions.filter(property => !node.variableBindings?.[property]), frameEntry);
+    const recordChangedChildGeometry = (container, snapshot) => {
+      if (!container || !snapshot) return;
+      for (const child of container.children || []) {
+        const before = snapshot.get(child.id);
+        if (!before) continue;
+        const changed = ['x', 'y', 'width', 'height'].filter(property => !Object.is(before[property], child[property]));
+        if (changed.length) recordNodeComponentOverrides(child, changed);
+      }
+    };
+    recordChangedChildGeometry(node, result.childrenBefore);
+    recordChangedChildGeometry(result.parent, result.parentChildrenBefore);
+    renderUI();
+    queueSave();
+    renderer.invalidate();
+    const after = afterResize;
+    if (after.width !== preset.width || after.height !== preset.height) {
+      showToast(`Applied ${preset.name}; its Auto layout sizing controls the final ${formatInspectorNumber(after.width)} × ${formatInspectorNumber(after.height)} frame size.`);
+    } else showToast(`Resized frame to ${preset.name} · ${preset.width} × ${preset.height}.`);
+    return true;
+  } catch (error) {
+    if (resizeCheckpoint && history.undoStack.at(-1) === resizeCheckpoint) {
+      history.undoStack.pop();
+      state.document = resizeCheckpoint.document;
+      state.versionSaveLabel = previousSaveLabel;
+      renderUI();
+      renderer.invalidate();
+    }
+    showToast(error.message || 'Could not apply this frame preset.');
+    renderInspector();
+    return false;
+  }
+}
+
+function resizeSelectedFrameToFit() {
+  const entries = selectedEntries();
+  if (entries.length !== 1 || entries[0].node.type !== 'frame') {
+    showToast('Select one frame to resize it to fit its contents.');
+    return false;
+  }
+  const { node, parents, parent } = entries[0];
+  if (node.locked || parents.some(ancestor => ancestor.locked) || state.documentTransitioning || state.presenting
+    || state.interaction || isLiveHostViewOnly() || state.workspacePermissionNeeded) {
+    showToast('Unlock the frame and finish the current editor action before resizing it to fit.');
+    return false;
+  }
+  if (node.autoLayout) {
+    showToast('Set this Auto layout frame to Hug contents to fit its children.');
+    return false;
+  }
+  const hasVisibleChild = (node.children || []).some(child => child.type !== 'slice'
+    && getNodePropertyValue(state.document, child, 'visible') !== false);
+  if (!hasVisibleChild) {
+    showToast('This frame has no visible content to fit.');
+    return false;
+  }
+
+  try {
+    const bounds = getPageContentBounds({ children: node.children || [] }, {
+      document: state.document,
+      measureText: createSvgTextMeasurer()
+    });
+    const plan = planFrameResizeToFit(node, bounds, { geometryOf: resolvedGeometry });
+    if (!plan.changed) {
+      showToast('This frame already fits its visible contents.');
+      return false;
+    }
+    const changedFrameProperties = ['x', 'y', 'width', 'height'].filter(property =>
+      !Object.is(plan.before[property], plan.after[property]));
+    const changedChildPlans = plan.children.filter(child =>
+      !Object.is(child.before.x, child.after.x) || !Object.is(child.before.y, child.after.y));
+    if (changedFrameProperties.some(property => node.variableBindings?.[property])) {
+      showToast('Detach the frame’s bound position or size variables before resizing it to fit.');
+      return false;
+    }
+    const childrenById = new Map((node.children || []).map(child => [child.id, child]));
+    if (changedChildPlans.some(child => childrenById.get(child.id)?.locked)) {
+      showToast('Unlock the outermost child layers before fitting the frame around them.');
+      return false;
+    }
+    if (changedChildPlans.some(child => ['x', 'y'].some(property => childrenById.get(child.id)?.variableBindings?.[property]))) {
+      showToast('Detach the child position variables before moving the frame bounds around its contents.');
+      return false;
+    }
+
+    const parentGeometryBefore = parent?.autoLayout ? captureChildGeometry(parent) : null;
+    const previousSaveLabel = state.versionSaveLabel;
+    checkpoint('Resize frame to fit');
+    const resizeCheckpoint = history.undoStack.at(-1);
+    try {
+      Object.assign(node, plan.after);
+      for (const childPlan of changedChildPlans) {
+        const child = childrenById.get(childPlan.id);
+        child.x = childPlan.after.x;
+        child.y = childPlan.after.y;
+      }
+      if (parent?.autoLayout) applyAutoLayout(parent);
+      validateDocument(state.document);
+      const frameEntry = findNode(state.document, node.id);
+      recordNodeComponentOverrides(node, changedFrameProperties.filter(property => !node.variableBindings?.[property]), frameEntry);
+      for (const childPlan of changedChildPlans) {
+        const child = childrenById.get(childPlan.id);
+        recordNodeComponentOverrides(child, ['x', 'y']);
+      }
+      if (parentGeometryBefore) {
+        for (const child of parent.children || []) {
+          const before = parentGeometryBefore.get(child.id);
+          if (!before) continue;
+          const changed = ['x', 'y', 'width', 'height'].filter(property => !Object.is(before[property], child[property]));
+          if (changed.length) recordNodeComponentOverrides(child, changed);
+        }
+      }
+      renderUI();
+      queueSave();
+      renderer.invalidate();
+      showToast(`Resized frame to ${formatInspectorNumber(plan.after.width)} × ${formatInspectorNumber(plan.after.height)} px.`);
+      return true;
+    } catch (error) {
+      if (resizeCheckpoint && history.undoStack.at(-1) === resizeCheckpoint) {
+        history.undoStack.pop();
+        state.document = resizeCheckpoint.document;
+        state.versionSaveLabel = previousSaveLabel;
+        renderUI();
+        renderer.invalidate();
+      }
+      throw error;
+    }
+  } catch (error) {
+    showToast(error.message || 'Could not resize this frame to fit its contents.');
+    renderInspector();
+    return false;
+  }
+}
+
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'expand-image' && node?.type === 'image') {
@@ -19968,7 +20301,8 @@ function applyInspectorAction(action, details = {}) {
     checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover'; node.inpaintStrokes = [];
     recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit', 'inpaintStrokes']);
     schedulePreview(node, true); renderInspector(); queueSave();
-  } else if (action === 'create-frame-preset') { createFrameFromPreset(details.presetId); }
+  } else if (action === 'resize-frame-to-fit') { resizeSelectedFrameToFit(); }
+  else if (action === 'create-frame-preset') { createFrameFromPreset(details.presetId); }
   else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
   else if (action === 'ios-corner-smoothing') {
     const targets = selectedNodes().filter(target => !target.locked && ['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(target.type));
@@ -20544,7 +20878,8 @@ function initEvents() {
       const importedDocument = parseDocument(packageData.document);
       const switched = await switchToDocument(importedDocument, {
         message: 'Local design opened on this device.',
-        beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, packageData.assets, packageData.fonts)).document)
+        beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, packageData.assets, packageData.fonts)).document),
+        figSourceArchive: packageData.figSourceArchive
       });
       if (switched) {
         await refreshLocalFontAssets({ showFailureToast: true });
@@ -20832,6 +21167,13 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    const numericExpression = event.target.closest('[data-numeric-expression]');
+    if (numericExpression) { commitNumericFieldExpression(numericExpression); return; }
+    if (event.target.matches('[data-frame-preset-select]')) {
+      if (event.target.value) applyFramePresetToSelection(event.target.value);
+      else renderInspector();
+      return;
+    }
     if (event.target.matches('[data-scale-field]')) { finishInspectorInput(); return; }
     const networkVertexRadius = event.target.closest('[data-network-vertex-radius]');
     if (networkVertexRadius) {
@@ -21073,6 +21415,12 @@ function initEvents() {
     clearComponentPropertyTarget();
   });
   $('#inspector-content').addEventListener('focusin', event => {
+    const numericExpression = event.target.closest('[data-numeric-expression]');
+    if (numericExpression) {
+      const base = numericFieldExpressionBase(numericExpression);
+      if (Number.isFinite(base)) numericExpression.dataset.expressionBase = String(base);
+      delete numericExpression.dataset.expressionValue;
+    }
     showComponentPropertyTarget(event.target.closest('[data-component-property-highlight]'));
   });
   $('#inspector-content').addEventListener('focusout', event => {
@@ -21768,6 +22116,13 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (mod && event.altKey && event.shiftKey && key === 'r') {
+    if (selectedEntries().length === 1 && selectedEntries()[0].node.type === 'frame') {
+      event.preventDefault();
+      resizeSelectedFrameToFit();
+      return;
+    }
+  }
   if (key === 'escape' && state.tool === 'eyedropper') { setTool('select'); event.preventDefault(); return; }
   if (mod && key === 'g') { event.preventDefault(); event.shiftKey ? ungroupSelectedLayers() : groupSelectedLayers(); return; }
   if (event.shiftKey && key === 'g') { event.preventDefault(); toggleLayoutGuides(); return; }
@@ -21845,6 +22200,8 @@ async function restoreSavedWorkspaceOnBoot() {
     const designId = designIds.includes(state.document.id) ? state.document.id : designIds[0];
     if (!designId) throw new Error('The selected folder workspace has no completed designs to open.');
     const opened = await openWorkspaceDesign(workspace, designId);
+    try { await readFigSourceArchiveForDesign(opened.document.id, workspace); }
+    catch (error) { console.warn(`Could not restore the retained .fig source for design ${opened.document.id} from its browser mirror.`, error); }
     state.workspace = workspace;
     state.workspaceHead = opened.head;
     state.document = opened.document;

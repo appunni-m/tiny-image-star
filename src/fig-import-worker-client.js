@@ -1,7 +1,11 @@
 export const MAX_FIG_IMPORT_BYTES = 32 * 1024 * 1024;
 const FIG_IMPORT_TIMEOUT_MS = 45_000;
 
-/** Run the local .fig decoder in an isolated worker and transfer the source bytes without copying them. */
+/**
+ * Run the local .fig decoder in an isolated worker. The source bytes are
+ * transferred into the worker and returned as result.figSourceArchive, so the
+ * caller can preserve the original archive without an extra full-size copy.
+ */
 export async function parseLocalFigFile(file, { timeoutMs = FIG_IMPORT_TIMEOUT_MS } = {}) {
   if (!file || typeof file.arrayBuffer !== 'function') throw new TypeError('Choose a local .fig file to import.');
   if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > MAX_FIG_IMPORT_BYTES) {

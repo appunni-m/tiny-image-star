@@ -245,13 +245,17 @@ function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, co
       node.componentId = componentId;
       delete node.variantNodeKey;
       const componentProperties = (sourceComponent.componentProperties || []).map(property => {
-        const targetSourceId = idMap.ids.get(property.targetSourceId);
-        if (!targetSourceId) return null;
-        return {
+        const sourceIds = Array.isArray(property.targetSourceIds) ? property.targetSourceIds : [property.targetSourceId];
+        const targetSourceIds = sourceIds.map(sourceId => idMap.ids.get(sourceId));
+        if (!targetSourceIds.length || targetSourceIds.some(sourceId => !sourceId)) return null;
+        const copy = {
           ...structuredClone(property),
           id: freshId('component-property', idMap.reserved),
-          targetSourceId
+          targetSourceId: targetSourceIds[0]
         };
+        if (targetSourceIds.length > 1) copy.targetSourceIds = targetSourceIds;
+        else delete copy.targetSourceIds;
+        return copy;
       }).filter(Boolean);
       componentRecords.push({
         id: componentId,

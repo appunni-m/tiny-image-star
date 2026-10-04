@@ -543,6 +543,10 @@ const componentOverrideProperties = new Set([
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
+function componentPropertyTargetSourceIds(property) {
+  return Array.isArray(property?.targetSourceIds) ? property.targetSourceIds : [property?.targetSourceId].filter(Boolean);
+}
+
 function vectorPathContours(node) {
   return [{ points: node?.points, closed: node?.closed ?? false }, ...(Array.isArray(node?.subpaths) ? node.subpaths : [])];
 }
@@ -2609,7 +2613,9 @@ export function createComponentProperty(document, componentId, { id = null, name
   const exposedNestedPropertyCount = exposedNestedInstancePropertyCount(document, component);
   if (componentPropertyDefinitionCount(document, component) + exposedNestedPropertyCount >= 100) throw new Error('A component can expose at most 100 properties.');
   if (component.componentProperties.some(property => property.name.toLocaleLowerCase() === propertyName.toLocaleLowerCase())) throw new Error('Component property names must be unique.');
-  if (component.componentProperties.some(property => property.type === type && property.targetSourceId === target.id)) throw new Error('That layer already has a property of this type.');
+  if (component.componentProperties.some(property => property.type === type && componentPropertyTargetSourceIds(property).includes(target.id))) {
+    throw new Error('That layer already has a property of this type.');
+  }
 
   let defaultValue;
   if (type === 'BOOLEAN' && typeof getNodePropertyValue(document, target, 'visible') === 'boolean') defaultValue = getNodePropertyValue(document, target, 'visible');
@@ -2636,7 +2642,7 @@ export function createComponentProperty(document, componentId, { id = null, name
 function nestedComponentIdsAllowedForExposure(ownerComponent, nestedInstanceSourceId, nestedInstance) {
   const allowed = new Set(nestedInstance?.componentId ? [nestedInstance.componentId] : []);
   for (const property of ownerComponent.componentProperties || []) {
-    if (property.type !== 'INSTANCE_SWAP' || property.targetSourceId !== nestedInstanceSourceId) continue;
+    if (property.type !== 'INSTANCE_SWAP' || !componentPropertyTargetSourceIds(property).includes(nestedInstanceSourceId)) continue;
     if (typeof property.defaultValue === 'string') allowed.add(property.defaultValue);
     for (const candidateId of property.preferredComponentIds || []) allowed.add(candidateId);
   }
@@ -2777,8 +2783,8 @@ function collectNestedInstanceSlotContents(document, rootInstance) {
   return contents;
 }
 
-function assignComponentPropertyValue(document, component, instance, property, value) {
-  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+function assignComponentPropertyValue(document, component, instance, property, value, targetSourceId = property.targetSourceId) {
+  const target = findInstancePropertyTarget(instance, targetSourceId);
   if (!target) return false;
   if (property.type === 'BOOLEAN') {
     target.visible = value;
@@ -2819,7 +2825,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       // Overrides authored on the owning component instance are keyed by the
       // swappable layer's source ID. Keep compatible ones after replacing the
       // nested component's subtree.
-      const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
+      const ownerOverrides = instance.componentOverrides?.[targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
         if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
@@ -2838,7 +2844,9 @@ function applyComponentPropertyValues(document, instance) {
     const values = instance.componentPropertyValues || {};
     for (const property of component.componentProperties || []) {
       const value = Object.hasOwn(values, property.id) ? values[property.id] : property.defaultValue;
-      assignComponentPropertyValue(document, component, instance, property, value);
+      for (const targetSourceId of componentPropertyTargetSourceIds(property)) {
+        assignComponentPropertyValue(document, component, instance, property, value, targetSourceId);
+      }
     }
   }
   const applyNested = node => {
@@ -3233,9 +3241,12 @@ export function addComponentVariantFromMaster(document, setId, sourceComponentId
     if (node.componentSourceId) cloneBySourceId.set(node.componentSourceId, node.id);
   });
   const sourceProperties = (sourceComponent.componentProperties || []).map(property => {
-    const targetSourceId = cloneBySourceId.get(property.targetSourceId);
-    if (!targetSourceId) throw new Error(`Cannot copy component property “${property.name}” because its target is outside the source variant.`);
-    return { ...clone(property), id: createId('component-property'), targetSourceId };
+    const targetSourceIds = componentPropertyTargetSourceIds(property).map(sourceId => cloneBySourceId.get(sourceId));
+    if (!targetSourceIds.length || targetSourceIds.some(sourceId => !sourceId)) throw new Error(`Cannot copy component property “${property.name}” because a target is outside the source variant.`);
+    const copy = { ...clone(property), id: createId('component-property'), targetSourceId: targetSourceIds[0] };
+    if (targetSourceIds.length > 1) copy.targetSourceIds = targetSourceIds;
+    else delete copy.targetSourceIds;
+    return copy;
   });
   const exposedNestedInstances = (sourceComponent.exposedNestedInstances || []).map(sourceId => {
     const nestedInstanceSourceId = cloneBySourceId.get(sourceId);
@@ -3437,10 +3448,16 @@ function removeDanglingComponentProperties(document, removedNodeIds, removedComp
   const removedPropertyIds = new Set();
   for (const component of document.components || []) {
     component.componentProperties = (component.componentProperties || []).filter(property => {
-      const invalid = removedNodeIds.has(property.targetSourceId)
+      const remainingTargets = componentPropertyTargetSourceIds(property).filter(sourceId => !removedNodeIds.has(sourceId));
+      const invalid = !remainingTargets.length
         || (property.type === 'INSTANCE_SWAP' && removedComponentIds.has(property.defaultValue));
       if (invalid) removedPropertyIds.add(property.id);
-      else if (property.preferredComponentIds) property.preferredComponentIds = property.preferredComponentIds.filter(id => !removedComponentIds.has(id));
+      else {
+        property.targetSourceId = remainingTargets[0];
+        if (remainingTargets.length > 1) property.targetSourceIds = remainingTargets;
+        else delete property.targetSourceIds;
+        if (property.preferredComponentIds) property.preferredComponentIds = property.preferredComponentIds.filter(id => !removedComponentIds.has(id));
+      }
       return !invalid;
     });
     if (!component.componentProperties.length) delete component.componentProperties;
@@ -4417,21 +4434,38 @@ export function validateDocument(document) {
       const propertyNames = new Set(); const propertyTargets = new Set();
       for (const property of component.componentProperties || []) {
         const nameKey = typeof property?.name === 'string' ? property.name.trim().toLocaleLowerCase() : '';
-        const target = property?.targetSourceId && findComponentPropertyTarget(document, component, property.targetSourceId);
-        const allowedKeys = new Set(['id', 'name', 'type', 'targetSourceId', 'defaultValue', 'preferredComponentIds']);
+        const targetSourceIds = componentPropertyTargetSourceIds(property);
+        const targets = targetSourceIds.map(sourceId => findComponentPropertyTarget(document, component, sourceId));
+        const target = targets[0];
+        const targetIdsValid = targetSourceIds.length >= 1 && targetSourceIds.length <= 100
+          && new Set(targetSourceIds).size === targetSourceIds.length
+          && targets.every(Boolean)
+          && (targetSourceIds.length === 1
+            ? property?.targetSourceIds == null
+            : Array.isArray(property?.targetSourceIds) && property.targetSourceIds.length > 1
+              && property.targetSourceIds[0] === property.targetSourceId);
+        const allowedKeys = new Set(['id', 'name', 'type', 'targetSourceId', 'targetSourceIds', 'defaultValue', 'preferredComponentIds']);
         if (!property || typeof property !== 'object' || Array.isArray(property)
           || Object.keys(property).some(key => !allowedKeys.has(key))
           || typeof property.id !== 'string' || !property.id || componentPropertyIds.has(property.id)
           || !nameKey || nameKey.length > 80 || propertyNames.has(nameKey)
           || !componentPropertyTypes.has(property.type)
-          || typeof property.targetSourceId !== 'string' || !target
-          || (property.type === 'SLOT' && !isComponentSlotTarget(target, component))) throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
-        const targetKey = `${property.type}:${property.targetSourceId}`;
-        if (propertyTargets.has(targetKey)) throw new TypeError(`Duplicate component property target on ${component.name || component.id}.`);
-        propertyTargets.add(targetKey); propertyNames.add(nameKey); componentPropertyIds.add(property.id);
+          || typeof property.targetSourceId !== 'string' || !targetIdsValid
+          || (targetSourceIds.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP'].includes(property.type))
+          || (property.type === 'SLOT' && (targets.length !== 1 || !isComponentSlotTarget(target, component)))) {
+          throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
+        }
+        for (const targetSourceId of targetSourceIds) {
+          const targetKey = `${property.type}:${targetSourceId}`;
+          if (propertyTargets.has(targetKey)) throw new TypeError(`Duplicate component property target on ${component.name || component.id}.`);
+          propertyTargets.add(targetKey);
+        }
+        propertyNames.add(nameKey); componentPropertyIds.add(property.id);
         if ((property.type === 'BOOLEAN' && typeof property.defaultValue !== 'boolean')
-          || (property.type === 'TEXT' && (target.type !== 'text' || typeof property.defaultValue !== 'string' || property.defaultValue.length > 1_000_000))
-          || (property.type === 'INSTANCE_SWAP' && (!target.isInstance || !componentPropertyValueIsValid(document, component, property, property.defaultValue)))
+          || (property.type === 'TEXT' && (targets.some(candidate => candidate.type !== 'text')
+            || typeof property.defaultValue !== 'string' || property.defaultValue.length > 1_000_000))
+          || (property.type === 'INSTANCE_SWAP' && (targets.some(candidate => !candidate.isInstance)
+            || !componentPropertyValueIsValid(document, component, property, property.defaultValue)))
           || (property.type === 'SLOT' && (!componentPropertyValueIsValid(document, component, property, property.defaultValue) || property.defaultValue.length !== 0))) throw new TypeError(`Invalid ${property.type} default on component property ${property.name}.`);
         if (property.preferredComponentIds != null) {
           if (property.type !== 'INSTANCE_SWAP' || !Array.isArray(property.preferredComponentIds)

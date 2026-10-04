@@ -1861,37 +1861,64 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
         continue;
       }
       const targets = sourceComponentPropertyTargets(sourceId, sourceName, referenceField, childrenMap, sourcesById);
-      if (targets.length !== 1) {
+      if (!targets.length) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
-          targets.length > 1
-            ? `The “${figPropertyDisplayName(sourceName)}” property targets multiple layers; the local model supports one target, so this property was not imported.`
-            : `The “${figPropertyDisplayName(sourceName)}” property has no matching ${referenceField} layer reference and was not imported.`);
+          `The “${figPropertyDisplayName(sourceName)}” property has no matching ${referenceField} layer reference and was not imported.`);
+        continue;
+      }
+      if (targets.length > 100) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY_LIMIT', source.name,
+          `The “${figPropertyDisplayName(sourceName)}” property references more than the local 100-target limit and was not imported.`);
+        continue;
+      }
+      if (targets.length > 1 && !['BOOLEAN', 'TEXT', 'INSTANCE_SWAP'].includes(type)) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
+          `The “${figPropertyDisplayName(sourceName)}” property targets multiple layers, but its ${type} value cannot be represented safely across several local targets; it was not imported.`);
         continue;
       }
       const sourceTarget = targets[0];
-      const target = context.convertedNodesBySourceId.get(idOf(sourceTarget));
+      const localTargets = targets.map(candidate => context.convertedNodesBySourceId.get(idOf(candidate)));
       const supportedTarget = type === 'BOOLEAN'
-        || (type === 'TEXT' && target?.type === 'text')
-        || (type === 'INSTANCE_SWAP' && target?.isInstance)
-        || (type === 'SLOT' && ['frame', 'group', 'section'].includes(target?.type));
-      if (!target || !supportedTarget) {
+        || (type === 'TEXT' && localTargets.every(target => target?.type === 'text'))
+        || (type === 'INSTANCE_SWAP' && localTargets.every(target => target?.isInstance))
+        || (type === 'SLOT' && localTargets.length === 1 && ['frame', 'group', 'section'].includes(localTargets[0]?.type));
+      if (localTargets.some(target => !target) || !supportedTarget) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
           `The “${figPropertyDisplayName(sourceName)}” property target was not converted to a compatible editable layer.`);
         continue;
       }
+      const target = localTargets[0];
       let defaultValue;
-      if (type === 'BOOLEAN') defaultValue = typeof definition.defaultValue === 'boolean' ? definition.defaultValue : target.visible;
-      else if (type === 'TEXT') defaultValue = typeof definition.defaultValue === 'string' ? definition.defaultValue : target.text;
+      if (type === 'BOOLEAN') {
+        const targetDefaults = localTargets.map(candidate => candidate.visible);
+        defaultValue = typeof definition.defaultValue === 'boolean' ? definition.defaultValue
+          : targetDefaults.every(value => value === targetDefaults[0]) ? targetDefaults[0] : undefined;
+      } else if (type === 'TEXT') {
+        const targetDefaults = localTargets.map(candidate => candidate.text);
+        defaultValue = typeof definition.defaultValue === 'string' ? definition.defaultValue
+          : targetDefaults.every(value => value === targetDefaults[0]) ? targetDefaults[0] : undefined;
+      }
       else if (type === 'INSTANCE_SWAP') {
         defaultValue = resolveImportedComponentId(definition.defaultValue, sourcesById, componentsBySourceId, sourceComponentsByKey)
-          || target.componentId;
+          || (localTargets.every(candidate => candidate.componentId === target.componentId) ? target.componentId : undefined);
       } else defaultValue = [];
+      const declaredDefaultDisagrees = (type === 'BOOLEAN' && typeof definition.defaultValue === 'boolean'
+          && localTargets.some(candidate => candidate.visible !== definition.defaultValue))
+        || (type === 'TEXT' && typeof definition.defaultValue === 'string'
+          && localTargets.some(candidate => candidate.text !== definition.defaultValue))
+        || (type === 'INSTANCE_SWAP' && typeof defaultValue === 'string'
+          && localTargets.some(candidate => candidate.componentId !== defaultValue));
+      if (declaredDefaultDisagrees) {
+        warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
+          `The “${figPropertyDisplayName(sourceName)}” declared default does not match every referenced layer; the binding was not imported.`);
+        continue;
+      }
       if ((type === 'BOOLEAN' && typeof defaultValue !== 'boolean')
         || (type === 'TEXT' && (typeof defaultValue !== 'string' || defaultValue.length > 1_000_000))
-        || (type === 'INSTANCE_SWAP' && typeof defaultValue !== 'string')
+        || (type === 'INSTANCE_SWAP' && (typeof defaultValue !== 'string' || !canSwapComponentTo(document, component.id, defaultValue)))
         || (type === 'SLOT' && !Array.isArray(defaultValue))) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', sourceTarget.name,
-          `The “${figPropertyDisplayName(sourceName)}” property has no safe local default and was not imported.`);
+          `The “${figPropertyDisplayName(sourceName)}” property has no safe local default for every linked layer and was not imported.`);
         continue;
       }
       let name = figPropertyDisplayName(sourceName);
@@ -1906,6 +1933,7 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
         id: createId('component-property'), name, type,
         targetSourceId: target.id, defaultValue
       };
+      if (localTargets.length > 1) property.targetSourceIds = localTargets.map(candidate => candidate.id);
       if (type === 'INSTANCE_SWAP' && Array.isArray(definition.preferredValues)) {
         const preferred = [];
         let unresolved = false;

@@ -6,10 +6,11 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 const COMPONENT_LIBRARY_DB_VERSION = 1;
 export const MAX_LOCAL_DOCUMENT_VERSIONS = 30;
 export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
+export const MAX_FIG_SOURCE_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_RECIPE_BATCH_TARGET_IDS = 100_000;
 const MAX_RECIPE_BATCH_ID_LENGTH = 256;
 const MAX_RECIPE_BATCH_RECIPE_BYTES = 256 * 1024;
@@ -53,7 +54,7 @@ export class RecipeBatchRecoveryLeaseError extends Error {
   }
 }
 
-function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery', 'workspaceSettings'], version = DB_VERSION) {
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery', 'workspaceSettings', 'figSourceArchives'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
@@ -146,6 +147,12 @@ const PNG_CRC_TABLE = (() => {
   }
   return table;
 })();
+
+function byteChecksum32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = PNG_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 function pngCrc32(bytes, start, end) {
   let crc = 0xffffffff;
@@ -400,6 +407,61 @@ export async function saveDocument(document, options = {}) {
   await done;
   if (conflict) throw conflict;
   return savedRevision;
+}
+
+function validFigSourceArchiveId(id) {
+  return typeof id === 'string' && id.trim() === id && id.length > 0 && id.length <= 256;
+}
+
+function validatedFigSourceArchiveBytes(record, id) {
+  const bytes = asBytes(record?.bytes);
+  if (!record || record.id !== id || !Number.isSafeInteger(record.byteLength) || record.byteLength < 1
+    || record.byteLength > MAX_FIG_SOURCE_ARCHIVE_BYTES || !bytes || bytes.byteLength !== record.byteLength
+    || !Number.isSafeInteger(record.checksum32) || byteChecksum32(bytes) !== record.checksum32) {
+    throw new Error('The saved .fig source archive is damaged. The editable design remains available.');
+  }
+  return bytes;
+}
+
+/** Store original imported .fig bytes separately from autosaved design JSON. */
+export async function saveFigSourceArchive(id, source) {
+  if (!validFigSourceArchiveId(id)) throw new TypeError('A valid design ID is required to save a .fig source archive.');
+  const input = asBytes(source);
+  if (!input || input.byteLength < 1) throw new TypeError('The .fig source archive must contain readable bytes.');
+  if (input.byteLength > MAX_FIG_SOURCE_ARCHIVE_BYTES) {
+    throw new RangeError(`The .fig source archive exceeds the ${Math.floor(MAX_FIG_SOURCE_ARCHIVE_BYTES / (1024 * 1024))} MiB preservation limit.`);
+  }
+  const bytes = input.slice();
+  const db = await openDatabase();
+  const tx = db.transaction('figSourceArchives', 'readwrite');
+  tx.objectStore('figSourceArchives').put({
+    id,
+    byteLength: bytes.byteLength,
+    checksum32: byteChecksum32(bytes),
+    bytes: bytes.buffer
+  });
+  await transactionDone(tx);
+  return true;
+}
+
+/** Load and validate the original imported .fig bytes without copying design snapshots. */
+export async function loadFigSourceArchive(id) {
+  if (!validFigSourceArchiveId(id)) throw new TypeError('A valid design ID is required to load a .fig source archive.');
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('figSourceArchives').objectStore('figSourceArchives').get(id));
+  if (!record) return null;
+  const bytes = validatedFigSourceArchiveBytes(record, id);
+  return bytes.slice().buffer;
+}
+
+/** Delete one preserved source archive without affecting its editable design. */
+export async function deleteFigSourceArchive(id) {
+  if (!validFigSourceArchiveId(id)) return false;
+  const db = await openDatabase();
+  const tx = db.transaction('figSourceArchives', 'readwrite');
+  tx.objectStore('figSourceArchives').delete(id);
+  await transactionDone(tx);
+  return true;
 }
 
 /** Persist a user-selected directory handle locally so later launches can recheck its permission. */
@@ -808,21 +870,36 @@ export async function renameStoredDocument(id, name, options = {}) {
 export async function duplicateStoredDocument(id, name = null) {
   if (name != null && (!String(name).trim() || String(name).trim().length > 120)) throw new TypeError('A design name must contain 1–120 characters.');
   const db = await openDatabase();
-  const tx = db.transaction('documents', 'readwrite');
+  const tx = db.transaction(['documents', 'figSourceArchives'], 'readwrite');
   const store = tx.objectStore('documents');
+  const archives = tx.objectStore('figSourceArchives');
   let duplicate = null;
-  const done = transactionDone(tx);
-  const request = store.get(id);
-  request.onsuccess = () => {
-    const existing = request.result;
+  let documentReady = false;
+  let archiveReady = false;
+  let sourceArchive = null;
+  let operationError = null;
+  const duplicateWhenReady = () => {
+    if (!documentReady || !archiveReady) return;
+    const existing = documentRequest.result;
     if (!existing?.document) return;
+    if (sourceArchive) {
+      try { validatedFigSourceArchiveBytes(sourceArchive, id); }
+      catch (error) { operationError = error; return; }
+    }
     duplicate = structuredClone(existing.document);
     duplicate.id = createId('file');
     const suggestedName = `${String(duplicate.name || 'Untitled').slice(0, 114)} copy`;
     duplicate.name = name == null ? suggestedName : String(name).trim();
     store.put({ id: duplicate.id, savedAt: Date.now(), revision: 0, document: duplicate });
+    if (sourceArchive) archives.put({ ...sourceArchive, id: duplicate.id, bytes: validatedFigSourceArchiveBytes(sourceArchive, id).slice().buffer });
   };
+  const done = transactionDone(tx);
+  const documentRequest = store.get(id);
+  const archiveRequest = archives.get(id);
+  documentRequest.onsuccess = () => { documentReady = true; duplicateWhenReady(); };
+  archiveRequest.onsuccess = () => { archiveReady = true; sourceArchive = archiveRequest.result || null; duplicateWhenReady(); };
   await done;
+  if (operationError) throw operationError;
   return duplicate && structuredClone(duplicate);
 }
 
@@ -830,10 +907,11 @@ export async function duplicateStoredDocument(id, name = null) {
 export async function deleteStoredDocument(id) {
   if (typeof id !== 'string' || !id) return false;
   const db = await openDatabase();
-  const tx = db.transaction(['documents', 'versions', 'recipeBatchRecovery'], 'readwrite');
+  const tx = db.transaction(['documents', 'versions', 'recipeBatchRecovery', 'figSourceArchives'], 'readwrite');
   const store = tx.objectStore('documents');
   const versions = tx.objectStore('versions');
   const recipeRecovery = tx.objectStore('recipeBatchRecovery');
+  const sourceArchives = tx.objectStore('figSourceArchives');
   let found = false;
   let operationError = null;
   const done = transactionDone(tx);
@@ -851,6 +929,7 @@ export async function deleteStoredDocument(id) {
       found = true;
       store.delete(id);
       recipeRecovery.delete(id);
+      sourceArchives.delete(id);
       const versionRequest = versions.index('byDocument').getAll(id);
       versionRequest.onsuccess = () => {
         for (const version of versionRequest.result || []) versions.delete(version.id);
@@ -1573,7 +1652,17 @@ export async function deleteImageAsset(id) {
   await transactionDone(tx);
 }
 
-function localPackageParts(design, assets, fonts = [], maxPackageBytes = MAX_LOCAL_PACKAGE_BYTES) {
+function localPackageFigSourceArchiveBytes(value) {
+  if (value == null) return null;
+  const bytes = asBytes(value);
+  if (!bytes || bytes.byteLength < 1) throw new TypeError('Local design package .fig source archive must contain readable bytes.');
+  if (bytes.byteLength > MAX_FIG_SOURCE_ARCHIVE_BYTES) {
+    throw new RangeError(`The .fig source archive exceeds the ${Math.floor(MAX_FIG_SOURCE_ARCHIVE_BYTES / (1024 * 1024))} MiB preservation limit.`);
+  }
+  return bytes;
+}
+
+function localPackageParts(design, assets, fonts = [], { maxBytes = MAX_LOCAL_PACKAGE_BYTES, figSourceArchive = null } = {}) {
   if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
   const packageAssets = assets.map(asset => {
     if (!asset || typeof asset.id !== 'string' || !asset.id || typeof asset.name !== 'string' || typeof asset.type !== 'string') {
@@ -1590,37 +1679,45 @@ function localPackageParts(design, assets, fonts = [], maxPackageBytes = MAX_LOC
     return { id: asset.id, name: asset.name, type: asset.type, bytes };
   });
   const packageFonts = validatePackageFonts(fonts, { copyBytes: false });
+  const packageFigSourceArchive = localPackageFigSourceArchiveBytes(figSourceArchive);
   assertPackageAssetReferences(design, packageAssets);
   const manifest = new TextEncoder().encode(JSON.stringify({
     schema: design.schema,
     document: design,
     assets: packageAssets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })),
-    fonts: packageFonts.map(({ id, name, type, family, weight, style, bytes }) => ({ id, name, type, family, weight, style, length: bytes.byteLength }))
+    fonts: packageFonts.map(({ id, name, type, family, weight, style, bytes }) => ({ id, name, type, family, weight, style, length: bytes.byteLength })),
+    ...(packageFigSourceArchive ? { figSourceArchive: {
+      length: packageFigSourceArchive.byteLength,
+      checksum32: byteChecksum32(packageFigSourceArchive)
+    } } : {})
   }));
   const length = new Uint8Array(4); new DataView(length.buffer).setUint32(0, manifest.length, true);
-  const parts = [new Uint8Array([70, 76, 79, 67, 65, 76, 1]), length, manifest];
+  // Version 1 remains the exact format for packages without a source archive.
+  // Version 2 adds one bounded, checksummed opaque payload after fonts.
+  const parts = [new Uint8Array([70, 76, 79, 67, 65, 76, packageFigSourceArchive ? 2 : 1]), length, manifest];
   for (const asset of packageAssets) parts.push(asset.bytes);
   for (const font of packageFonts) parts.push(font.bytes);
+  if (packageFigSourceArchive) parts.push(packageFigSourceArchive);
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
-  if (!Number.isSafeInteger(maxPackageBytes) || maxPackageBytes < 11) throw new RangeError('Local design package size limit is invalid.');
-  if (total > maxPackageBytes) {
-    throw new RangeError(`This local design package is ${(total / (1024 * 1024)).toFixed(1)} MiB. The local package limit is ${Math.floor(maxPackageBytes / (1024 * 1024))} MiB; remove unused images or fonts and try again.`);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 11) throw new RangeError('Local design package size limit is invalid.');
+  if (total > maxBytes) {
+    throw new RangeError(`This local design package is ${(total / (1024 * 1024)).toFixed(1)} MiB. The local package limit is ${Math.floor(maxBytes / (1024 * 1024))} MiB; remove unused images, fonts, or source data and try again.`);
   }
   return parts;
 }
 
-export function packLocalPackage(design, assets, fonts = [], { maxBytes = MAX_LOCAL_PACKAGE_BYTES } = {}) {
-  const parts = localPackageParts(design, assets, fonts, maxBytes);
+export function packLocalPackage(design, assets, fonts = [], options = {}) {
+  const parts = localPackageParts(design, assets, fonts, options);
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
   const packed = new Uint8Array(total); let offset = 0;
   for (const part of parts) { packed.set(part, offset); offset += part.byteLength; }
   return packed;
 }
 
-export function buildLocalPackageBlob(design, assets, fonts = [], { maxBytes = MAX_LOCAL_PACKAGE_BYTES } = {}) {
+export function buildLocalPackageBlob(design, assets, fonts = [], options = {}) {
   // Passing validated chunks to Blob avoids a second full-size Uint8Array
   // allocation on top of the immutable Blob data, which matters on phones.
-  return new Blob(localPackageParts(design, assets, fonts, maxBytes), { type: 'application/octet-stream' });
+  return new Blob(localPackageParts(design, assets, fonts, options), { type: 'application/octet-stream' });
 }
 
 export function localPackageFilename(name) {
@@ -1637,8 +1734,8 @@ export function localPackageFilename(name) {
   return `${stem}${suffix}`;
 }
 
-export async function downloadLocalPackage(design, assets, fonts = []) {
-  const blob = buildLocalPackageBlob(design, assets, fonts);
+export async function downloadLocalPackage(design, assets, fonts = [], options = {}) {
+  const blob = buildLocalPackageBlob(design, assets, fonts, options);
   const url = URL.createObjectURL(blob);
   const anchor = Object.assign(globalThis.document.createElement('a'), { href: url, download: localPackageFilename(design.name) });
   anchor.click();
@@ -1650,8 +1747,10 @@ export function unpackLocalPackage(input) {
   if (bytes.byteLength > MAX_LOCAL_PACKAGE_BYTES) {
     throw new RangeError(`This local design package is larger than the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit.`);
   }
-  const magic = [70, 76, 79, 67, 65, 76, 1];
-  if (bytes.length < 11 || magic.some((value, index) => bytes[index] !== value)) throw new TypeError('Invalid local design package.');
+  const magicPrefix = [70, 76, 79, 67, 65, 76];
+  if (bytes.length < 11 || magicPrefix.some((value, index) => bytes[index] !== value)
+    || ![1, 2].includes(bytes[6])) throw new TypeError('Invalid local design package.');
+  const packageVersion = bytes[6];
   const manifestLength = new DataView(bytes.buffer, bytes.byteOffset + 7, 4).getUint32(0, true);
   if (manifestLength > bytes.length - 11) throw new TypeError('Invalid local design package manifest.');
   let manifest;
@@ -1659,6 +1758,20 @@ export function unpackLocalPackage(input) {
   catch { throw new TypeError('Invalid local design package manifest.'); }
   if (manifest.schema !== 'figma-local/1' || !manifest.document || !Array.isArray(manifest.assets)) throw new TypeError('Unsupported local design package.');
   if (manifest.fonts !== undefined && !Array.isArray(manifest.fonts)) throw new TypeError('Invalid local design package font manifest.');
+  const figSourceDescriptor = manifest.figSourceArchive;
+  if (packageVersion === 1 && figSourceDescriptor !== undefined) {
+    throw new TypeError('Invalid local design package: a source archive requires package version 2.');
+  }
+  if (packageVersion === 2 && (!figSourceDescriptor || typeof figSourceDescriptor !== 'object'
+    || Array.isArray(figSourceDescriptor)
+    || Object.keys(figSourceDescriptor).some(key => !['length', 'checksum32'].includes(key))
+    || Object.keys(figSourceDescriptor).length !== 2
+    || !Number.isSafeInteger(figSourceDescriptor.length) || figSourceDescriptor.length < 1
+    || figSourceDescriptor.length > MAX_FIG_SOURCE_ARCHIVE_BYTES
+    || !Number.isSafeInteger(figSourceDescriptor.checksum32) || figSourceDescriptor.checksum32 < 0
+    || figSourceDescriptor.checksum32 > 0xffffffff)) {
+    throw new TypeError('Invalid local design package .fig source archive metadata.');
+  }
   // Bound the untrusted layer tree before the reference walk recurses through it.
   assertDocumentTreeBounds(manifest.document);
   let offset = 11 + manifestLength;
@@ -1703,8 +1816,19 @@ export function unpackLocalPackage(input) {
     seenFontIds.add(entry.id);
     offset += entry.length;
   }
+  let figSourceArchive = null;
+  if (figSourceDescriptor) {
+    if (figSourceDescriptor.length > bytes.length - offset) {
+      throw new TypeError('Invalid local design package .fig source archive data.');
+    }
+    figSourceArchive = bytes.subarray(offset, offset + figSourceDescriptor.length);
+    if (byteChecksum32(figSourceArchive) !== figSourceDescriptor.checksum32) {
+      throw new TypeError('The local design package .fig source archive failed its checksum.');
+    }
+    offset += figSourceDescriptor.length;
+  }
   if (offset !== bytes.length) throw new TypeError('Invalid local design package: unexpected trailing data.');
   assertPackageAssetReferences(manifest.document, assets);
   validatePackageFonts(fonts, { copyBytes: false });
-  return { document: manifest.document, assets, fonts };
+  return { document: manifest.document, assets, fonts, figSourceArchive };
 }

@@ -538,6 +538,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .frame-preset-group > summary { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: var(--surface-subtle); color: var(--ink); cursor: pointer; list-style-position: inside; font-size: 10px; font-weight: 550; }
 .frame-preset-count { margin-left: auto; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
 .frame-preset-options { display: grid; gap: 4px; padding: 5px; }
+.frame-preset-fit-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.frame-resize-to-fit { flex: 1 1 auto; min-width: 0; }
+.frame-resize-to-fit-shortcut { flex: 0 0 auto; color: var(--muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.frame-preset-resize-label { display: grid; gap: 6px; }
+.frame-preset-resize-select { width: 100%; min-width: 0; min-height: 36px; }
 .frame-preset-option { width: 100%; min-width: 0; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--ink); text-align: left; }
 .frame-preset-option:hover { background: var(--surface-hover); }
 .frame-preset-option > span:first-child { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 10px; }
@@ -1185,6 +1190,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .vector-point-actions .add-fill { min-height: 44px; }
   .recipe-picker { box-sizing: border-box; min-height: 44px; font-size: 16px; }
   .frame-preset-group > summary { min-height: 44px; padding: 8px 9px; font-size: 12px; }
+  .frame-preset-resize-select { min-height: 44px; font-size: 16px; }
+  .frame-resize-to-fit { min-height: 44px; }
+  .frame-resize-to-fit-shortcut { display: none; }
   .frame-preset-option { min-height: 46px; padding: 8px; }
   .frame-preset-option > span:first-child { font-size: 12px; }
   .frame-preset-dimensions { font-size: 10px; }

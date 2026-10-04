@@ -766,6 +766,33 @@ test('typed component properties project defaults and instance values through sy
   assert.deepEqual(reloaded.components[0].componentProperties, [visibleProperty, textProperty]);
 });
 
+test('multi-target component properties update every linked layer and contract safely when a target is removed', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Shared labels' });
+  const first = createNode('text', { name: 'Primary label', text: 'Default' });
+  const second = createNode('text', { name: 'Secondary label', text: 'Default' });
+  addNode(document, main);
+  addNode(document, first, { parentId: main.id });
+  addNode(document, second, { parentId: main.id });
+  const component = createComponent(document, main.id, 'Shared labels');
+  const property = createComponentProperty(document, component.id, { name: 'Label', type: 'TEXT', targetNodeId: first.id });
+  property.targetSourceIds = [first.id, second.id];
+  const instance = createComponentInstance(document, component.id);
+  assert.deepEqual(instance.children.filter(node => node.type === 'text').map(node => node.text), ['Default', 'Default']);
+
+  setComponentPropertyValue(document, instance.id, property.id, 'One value');
+  assert.deepEqual(instance.children.filter(node => node.type === 'text').map(node => node.text), ['One value', 'One value']);
+  assert.equal(validateDocument(document), true);
+
+  removeNode(document, second.id);
+  assert.equal(property.targetSourceId, first.id);
+  assert.equal(property.targetSourceIds, undefined, 'a one-target property returns to the legacy representation');
+  syncAllComponentInstances(document);
+  const remainingInstance = findNode(document, instance.id).node;
+  assert.deepEqual(remainingInstance.children.filter(node => node.type === 'text').map(node => node.text), ['One value']);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
 test('nested component instances expose all properties on an owner and remain source-scoped', () => {
   const document = createDocument();
   const innerMain = createNode('frame', { name: 'Label and icon' });

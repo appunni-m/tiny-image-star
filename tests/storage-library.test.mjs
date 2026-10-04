@@ -201,7 +201,7 @@ test('selected workspace handles persist locally and are returned for a fresh pe
   assert.equal(await storage.loadWorkspaceDirectoryHandle(), null);
   assert.equal(await storage.saveWorkspaceDirectoryHandle(handle), true);
   assert.equal(await storage.loadWorkspaceDirectoryHandle(), handle);
-  assert.equal(indexedDb.observations.openVersion, 7);
+  assert.equal(indexedDb.observations.openVersion, 8);
   assert.equal(indexedDb.inspect('workspaceSettings', 'active-workspace-directory-handle').handle, handle);
   await assert.rejects(storage.saveWorkspaceDirectoryHandle({ kind: 'file' }), /supported writable workspace folder handle/i);
 
@@ -264,6 +264,38 @@ test('local library lists, retrieves, renames, duplicates, and deletes documents
   assert.ok(await loadDocumentById(duplicate.id));
   assert.deepEqual(new Uint8Array((await loadImageAsset('library-asset')).bytes), bytes,
     'assets remain intact because the v1 asset store has no document ownership metadata');
+});
+
+test('original .fig archives persist independently, follow local duplicates, and delete with their design', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?fig-source-archive-storage-test');
+  const document = createDocument();
+  const source = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]);
+
+  await storage.saveDocument(document);
+  assert.equal(await storage.loadFigSourceArchive(document.id), null);
+  assert.equal(await storage.saveFigSourceArchive(document.id, source), true);
+  assert.deepEqual(new Uint8Array(await storage.loadFigSourceArchive(document.id)), source);
+
+  const corrupt = indexedDb.inspect('figSourceArchives', document.id);
+  new Uint8Array(corrupt.bytes)[0] ^= 0xff;
+  indexedDb.database.seed('figSourceArchives', corrupt);
+  await assert.rejects(storage.loadFigSourceArchive(document.id), /source archive is damaged/i);
+  await storage.saveFigSourceArchive(document.id, source);
+
+  const duplicate = await storage.duplicateStoredDocument(document.id);
+  assert.ok(duplicate?.id);
+  assert.deepEqual(new Uint8Array(await storage.loadFigSourceArchive(duplicate.id)), source,
+    'duplicating a design copies its original archive without embedding it in the document snapshot');
+  assert.equal(await storage.deleteStoredDocument(document.id), true);
+  assert.equal(await storage.loadFigSourceArchive(document.id), null);
+  assert.deepEqual(new Uint8Array(await storage.loadFigSourceArchive(duplicate.id)), source,
+    'deleting one design leaves its duplicate archive intact');
+
+  await assert.rejects(storage.saveFigSourceArchive(document.id, new Uint8Array()), /readable bytes/i);
+  assert.equal(await storage.deleteFigSourceArchive(duplicate.id), true);
+  assert.equal(await storage.loadFigSourceArchive(duplicate.id), null);
 });
 
 test('boot recovery selects the newest parseable snapshot and retains corrupt rows for repair', async () => {
@@ -478,7 +510,7 @@ test('font catalog migration stays metadata-only, writes cannot replace faces, a
 
   const catalog = await storage.listFontAssets();
   assert.deepEqual(catalog.map(font => [font.id, font.byteLength]), [['old-display', 12], ['old-other', 12]]);
-  assert.equal(indexedDb.observations.openVersion, 7, 'the local version history, recipe recovery, and selected workspace stores use a forward-only database upgrade');
+  assert.equal(indexedDb.observations.openVersion, 8, 'the local version history, recipe recovery, workspace, and optional source-archive stores use a forward-only database upgrade');
   assert.equal(indexedDb.observations.fontCursorRecordsRead, 2, 'existing font metadata is backfilled one record at a time');
   assert.equal(indexedDb.observations.fontBinaryGetAllCalls, 0, 'font catalogs never materialize all installed binaries');
   assert.deepEqual(indexedDb.observations.fontBinaryGets, [], 'the migration cursor avoids point reads and duplicate copies');
@@ -763,7 +795,7 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.equal(Object.hasOwn(metadata, 'bytes'), false, 'catalog reads never return source image bytes');
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
-  assert.equal(indexedDb.observations.openVersion, 7, 'opening the store upgrades the legacy schema for local fonts, metadata, versions, recipe recovery, and workspace handles');
+  assert.equal(indexedDb.observations.openVersion, 8, 'opening the store upgrades the legacy schema for local fonts, metadata, versions, recipe recovery, workspace handles, and optional source archives');
 });
 
 test('small image-library PNG and JPEG thumbnails share compact metadata without reading source bytes', async () => {
@@ -789,7 +821,7 @@ test('small image-library PNG and JPEG thumbnails share compact metadata without
   assert.deepEqual(await storage.loadImageAssetThumbnail('thumb-jpeg'), jpeg);
   assert.deepEqual(indexedDb.observations.assetBinaryGets, [], 'thumbnail save and load only check the source key; they never retrieve source bytes');
   assert.deepEqual(indexedDb.observations.assetKeyChecks, ['thumb-png', 'thumb-jpeg', 'thumb-png', 'thumb-jpeg']);
-  assert.equal(indexedDb.observations.openVersion, 7, 'thumbnail persistence reuses assetMetadata and the workspace-settings upgrade');
+  assert.equal(indexedDb.observations.openVersion, 8, 'thumbnail persistence reuses assetMetadata and the current local-storage schema');
 
   const detached = await storage.loadImageAssetThumbnail('thumb-png');
   detached[0] = 0;

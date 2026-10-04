@@ -51,7 +51,51 @@ test('choosing a preset creates and selects a top-level frame centered in the vi
 
   assert.match(source, /if \(action === 'create-frame-preset'\) \{ createFrameFromPreset\(details\.presetId\); \}/,
     'the inspector action routes the selected stable preset ID into the creator');
-  assert.match(source, /import \{ getFramePreset, groupFramePresetsByCategory \} from '\.\/frame-presets\.js'/);
+  assert.match(source, /import \{[^}]*getFramePreset[^}]*groupFramePresetsByCategory[^}]*\} from '\.\/frame-presets\.js'/);
+});
+
+test('a selected frame can change to a preset while preserving constraints and local editor invariants', () => {
+  const resizeSection = functionBody('framePresetResizeSection', 'propertyFieldLabelClass');
+  assert.match(resizeSection, /FRAME_PRESETS\.filter/);
+  assert.match(resizeSection, /data-frame-preset-select/);
+  assert.match(resizeSection, /data-action="resize-frame-to-fit"/);
+  assert.match(resizeSection, /aria-label="Resize frame to fit visible contents"/);
+  assert.match(resizeSection, /Choose a preset to resize this frame/);
+  assert.match(resizeSection, /Child layers follow their constraints/);
+
+  const inspector = source.slice(source.indexOf('function renderInspector()'), source.indexOf('\nfunction ', source.indexOf('function renderInspector()') + 1));
+  assert.match(inspector, /node\.type === 'frame' \? framePresetResizeSection\(node\) : ''/,
+    'the frame preset field belongs to the existing selected-frame Inspector');
+
+  const resize = functionBody('applyFramePresetToSelection', 'resizeSelectedFrameToFit');
+  assert.match(resize, /entries\.length !== 1 \|\| entries\[0\]\.node\.type !== 'frame'/);
+  assert.match(resize, /parents\.some\(parent => parent\.locked\)/);
+  assert.match(resize, /widthBinding && widthBinding === heightBinding/,
+    'one numeric variable cannot safely supply two different preset dimensions');
+  assert.match(resize, /checkpoint\(`Resize frame to \$\{preset\.name\}`\)/);
+  assert.match(resize, /resizeFrameToPreset\(node, preset/);
+  assert.match(resize, /recordChangedChildGeometry\(node, result\.childrenBefore\)/);
+  assert.match(resize, /recordChangedChildGeometry\(result\.parent, result\.parentChildrenBefore\)/);
+  assert.match(source, /event\.target\.matches\('\[data-frame-preset-select\]'\)[\s\S]*?applyFramePresetToSelection\(event\.target\.value\)/,
+    'the selected preset is applied through the Inspector change handler');
+});
+
+test('resize-to-fit measures visible artwork, preserves child placement, and has the Figma shortcut', () => {
+  const resize = functionBody('resizeSelectedFrameToFit', 'applyInspectorAction');
+  assert.match(resize, /getPageContentBounds\(\{ children: node\.children \|\| \[\] \}/,
+    'the same transformed visible bounds used by SVG export determine the frame size');
+  assert.match(resize, /planFrameResizeToFit\(node, bounds, \{ geometryOf: resolvedGeometry \}\)/);
+  assert.match(resize, /child\.x = childPlan\.after\.x[\s\S]*?child\.y = childPlan\.after\.y/);
+  assert.match(resize, /parent\?\.autoLayout\) applyAutoLayout\(parent\)/,
+    'a containing auto-layout frame is recalculated after the selected frame changes size');
+  assert.match(resize, /node\.autoLayout/,
+    'auto-layout frames fail closed and direct users to Hug contents');
+  assert.match(resize, /node\.variableBindings\?\./,
+    'shared bound geometry is never silently changed by a fit operation');
+  assert.match(source, /action === 'resize-frame-to-fit'\) \{ resizeSelectedFrameToFit\(\); \}/);
+  assert.match(source, /mod && event\.altKey && event\.shiftKey && key === 'r'/,
+    'Option/Alt + Shift + Command/Ctrl + R invokes resize-to-fit');
+  assert.match(source, /import \{ planFrameResizeToFit \} from '\.\/frame-resize-to-fit\.js'/);
 });
 
 test('the existing canvas drag and click-to-create frame behavior remains available', () => {
@@ -67,4 +111,8 @@ test('frame preset labels stay readable and all controls are touch-sized on mobi
   assert.match(stylesheet, /\.frame-preset-dimensions\s*\{[^}]*white-space:\s*nowrap/);
   assert.match(stylesheet, /@media \(max-width: 820px\)\s*\{[\s\S]*?\.frame-preset-group > summary\s*\{[^}]*min-height:\s*44px/);
   assert.match(stylesheet, /\.frame-preset-option\s*\{\s*min-height:\s*46px/);
+  assert.match(stylesheet, /\.frame-preset-resize-select\s*\{\s*min-height:\s*44px;\s*font-size:\s*16px/,
+    'changing a selected frame preset remains comfortable on phones');
+  assert.match(stylesheet, /\.frame-resize-to-fit\s*\{\s*min-height:\s*44px/,
+    'resize-to-fit remains a comfortable tap target on phones');
 });

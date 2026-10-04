@@ -27,3 +27,13 @@ Before calling this production-ready, add permission-cleared Figma Design export
 Run `node --test tests/fig-import.test.mjs` for focused import checks, `node scripts/ci-test.mjs` for the full Node test suite, and `npm run verify:static` for deployment-input checks. The browser smoke suite is intentionally not part of this importer change's verification yet.
 
 No `.fig` export, live Figma API access, Figma authentication, `.jam`/`.deck`/`.buzz`/`.site` import, or round-trip preservation is implemented.
+
+## `.flocal` source-archive sidecar
+
+The isolated import worker now returns the exact selected archive as `result.figSourceArchive`, an `ArrayBuffer` transferred back to the caller. The caller can pass those bytes to the local package codec, which optionally retains the archive as an opaque, byte-exact sidecar. Packages without that payload remain in the existing FLOCAL v1 format; a package with it uses FLOCAL v2, which the current decoder reads alongside v1. The sidecar is bounded to 32 MiB, included in the overall 128 MiB package limit, and checked for declared length and CRC-32 corruption. CRC-32 detects accidental damage; it is not an authenticity or tamper-resistance mechanism. Older application versions that only understand v1 may not open v2 packages.
+
+The editor saves the source sidecar only after the user confirms the `.fig` import. It stays outside the editable design snapshot: IndexedDB stores it by design ID, while a selected folder workspace stores it in that design's `fig-source` directory. Workspace activation copies retained IndexedDB archives one design at a time; reconnect and design switching lazily restore a missing folder copy from the IndexedDB mirror. Duplicating a workspace design copies the sidecar, and deleting a design removes its folder sidecar with the design directory. Export includes the retained sidecar after checking its exact byte length against the package budget, and package import restores it for later export.
+
+The original archive remains an opaque source-preservation payload, not a lossless rehydration mechanism. The editor still imports only the features represented by its editable model; exporting a `.flocal` package preserves the original archive alongside those editable changes rather than rewriting the `.fig` file.
+
+This is source-retention groundwork only. The editor does not yet pass the worker's returned bytes into package creation, automatic local saves/workspaces do not retain them, collaboration does not transfer them, and no `.fig` export consumes them. Retaining the archive preserves unsupported source bytes only when a caller explicitly supplies it to the package builder; it does not make local edits round-trip to Figma.

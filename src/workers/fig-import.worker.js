@@ -7,7 +7,11 @@ self.addEventListener('message', event => {
   try {
     const result = importFigBytes(new Uint8Array(bytes), { fileName });
     result.report.parseMilliseconds = Math.max(0, Math.round(performance.now() - startedAt));
-    const transfers = result.assets.map(asset => asset.bytes.buffer);
+    // The input archive was transferred into this worker. Transfer that same
+    // buffer back as an opaque source sidecar so callers can preserve fields
+    // the editable local model does not represent, without making a 32 MiB copy.
+    result.figSourceArchive = bytes;
+    const transfers = [...new Set([bytes, ...result.assets.map(asset => asset.bytes.buffer)])];
     self.postMessage({ requestId, ok: true, result }, transfers);
   } catch (error) {
     self.postMessage({

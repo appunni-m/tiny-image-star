@@ -1,7 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createDocument, createNode, createFillLayer, addNode, MAX_DOCUMENT_TREE_DEPTH, serializeDocument } from '../src/model.js';
-import { buildLocalPackageBlob, importLocalPackage, localPackageFilename, packLocalPackage, unpackLocalPackage } from '../src/storage.js';
+import {
+  buildLocalPackageBlob, importLocalPackage, localPackageFilename, MAX_FIG_SOURCE_ARCHIVE_BYTES,
+  packLocalPackage, unpackLocalPackage
+} from '../src/storage.js';
+
+function packageWithManifest(source, mutate) {
+  const manifestLength = new DataView(source.buffer, source.byteOffset + 7, 4).getUint32(0, true);
+  const manifestStart = 11;
+  const manifestEnd = manifestStart + manifestLength;
+  const manifest = JSON.parse(new TextDecoder().decode(source.subarray(manifestStart, manifestEnd)));
+  mutate(manifest);
+  const nextManifest = new TextEncoder().encode(JSON.stringify(manifest));
+  const output = new Uint8Array(11 + nextManifest.byteLength + source.byteLength - manifestEnd);
+  output.set(source.subarray(0, 7));
+  new DataView(output.buffer).setUint32(7, nextManifest.byteLength, true);
+  output.set(nextManifest, 11);
+  output.set(source.subarray(manifestEnd), 11 + nextManifest.byteLength);
+  return output;
+}
+
+function legacyPackageWithoutFontManifest(document) {
+  const manifest = new TextEncoder().encode(JSON.stringify({ schema: document.schema, document, assets: [] }));
+  const bytes = new Uint8Array(11 + manifest.byteLength);
+  bytes.set([70, 76, 79, 67, 65, 76, 1]);
+  new DataView(bytes.buffer).setUint32(7, manifest.byteLength, true);
+  bytes.set(manifest, 11);
+  return bytes;
+}
 
 test('portable local design restores its metadata and byte-exact image assets', () => {
   const document = createDocument();
@@ -77,6 +105,65 @@ test('portable local design packages byte-exact font faces and remains compatibl
 
   const fontless = unpackLocalPackage(packLocalPackage(createDocument(), []));
   assert.deepEqual(fontless.fonts, [], 'older local packages remain readable without a font manifest');
+  assert.equal(fontless.figSourceArchive, null, 'legacy packages have no preserved .fig source archive');
+});
+
+test('portable package v2 preserves an optional original .fig archive byte-for-byte', async () => {
+  const source = new Uint8Array(await readFile(new URL('./fixtures/fig-import/circle-v101.fig', import.meta.url)));
+  const imageBytes = new Uint8Array([9, 8, 7, 6]);
+  const fontBytes = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 1, 2, 3, 4, 5, 6, 7, 8]);
+  const packed = packLocalPackage(createDocument(), [{
+    id: 'source-image', name: 'source.png', type: 'image/png', bytes: imageBytes
+  }], [{
+    id: 'source-font', name: 'source.woff2', type: 'font/woff2', family: 'Source Sans',
+    weight: 400, style: 'normal', bytes: fontBytes
+  }], { figSourceArchive: source });
+  assert.equal(packed[6], 2, 'the optional source payload is explicitly versioned');
+  const manifestLength = new DataView(packed.buffer, packed.byteOffset + 7, 4).getUint32(0, true);
+  const manifest = JSON.parse(new TextDecoder().decode(packed.subarray(11, 11 + manifestLength)));
+  assert.deepEqual(manifest.figSourceArchive, { length: source.byteLength, checksum32: 1_103_869_895 },
+    'the descriptor stores the standard CRC-32 of the pinned fixture');
+
+  const unpacked = unpackLocalPackage(packed);
+  assert.deepEqual(unpacked.assets[0].bytes, imageBytes);
+  assert.deepEqual(unpacked.fonts[0].bytes, fontBytes);
+  assert.deepEqual(unpacked.figSourceArchive, source);
+  assert.equal(unpacked.figSourceArchive.buffer, packed.buffer,
+    'source bytes remain a zero-copy view into the bounded package buffer');
+
+  const legacy = unpackLocalPackage(legacyPackageWithoutFontManifest(createDocument()));
+  assert.deepEqual(legacy.fonts, []);
+  assert.equal(legacy.figSourceArchive, null,
+    'pre-font FLOCAL v1 packages remain readable without inventing a source payload');
+});
+
+test('portable package v2 rejects a truncated, modified, malformed, or oversized .fig source archive', async () => {
+  const source = new Uint8Array(await readFile(new URL('./fixtures/fig-import/circle-v101.fig', import.meta.url)));
+  const packed = packLocalPackage(createDocument(), [], [], { figSourceArchive: source });
+  assert.throws(() => unpackLocalPackage(packed.subarray(0, packed.length - 1)), /source archive data/i);
+
+  const corrupted = packed.slice();
+  corrupted[corrupted.length - 1] ^= 0xff;
+  assert.throws(() => unpackLocalPackage(corrupted), /source archive.*checksum/i);
+
+  const wrongLength = packageWithManifest(packed, manifest => { manifest.figSourceArchive.length += 1; });
+  assert.throws(() => unpackLocalPackage(wrongLength), /source archive data/i);
+  const badChecksum = packageWithManifest(packed, manifest => { manifest.figSourceArchive.checksum32 ^= 1; });
+  assert.throws(() => unpackLocalPackage(badChecksum), /source archive.*checksum/i);
+  const missingDescriptor = packageWithManifest(packed, manifest => { delete manifest.figSourceArchive; });
+  assert.throws(() => unpackLocalPackage(missingDescriptor), /source archive metadata/i);
+  const zeroLength = packageWithManifest(packed, manifest => { manifest.figSourceArchive.length = 0; });
+  assert.throws(() => unpackLocalPackage(zeroLength), /source archive metadata/i);
+
+  assert.throws(() => packLocalPackage(createDocument(), [], [], {
+    figSourceArchive: new Uint8Array(MAX_FIG_SOURCE_ARCHIVE_BYTES + 1)
+  }), /source archive.*preservation limit/i);
+});
+
+test('portable packages without .fig source data keep the legacy FLOCAL v1 representation', () => {
+  const packaged = packLocalPackage(createDocument(), []);
+  assert.equal(packaged[6], 1);
+  assert.equal(unpackLocalPackage(packaged).figSourceArchive, null);
 });
 
 test('portable local design rejects invalid font metadata, duplicate IDs, and truncated font payloads', () => {
