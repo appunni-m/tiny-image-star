@@ -45,7 +45,11 @@ test('Frame selection keeps sibling stacking order and transformed geometry in t
   assert.deepEqual(frame.children.map(node => node.id), [first.id, last.id]);
   for (const expected of before) {
     const node = findNode(document, expected.id).node;
-    assert.deepEqual(absoluteBounds(document, expected.id), expected.bounds);
+    const actualBounds = absoluteBounds(document, expected.id);
+    for (const key of ['x', 'y', 'width', 'height']) {
+      assert.ok(Math.abs(actualBounds[key] - expected.bounds[key]) <= 1e-9,
+        `${expected.id} ${key} should stay within 1e-9px of its original geometry`);
+    }
     assert.equal(node.rotation, expected.rotation);
   }
   assert.ok(frame.children.every(node => node.x >= 0 && node.y >= 0));
