@@ -105,6 +105,29 @@ function edgeBandsBmp() {
   return new Uint8Array(bytes);
 }
 
+function sharpnessScalePng(width = 128, height = 64) {
+  const raw = Buffer.alloc(height * (width * 3 + 1));
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * 3 + 1);
+    for (let x = 0; x < width; x += 1) {
+      const edge = x < Math.floor(width * 0.46) ? 30
+        : x < Math.floor(width * 0.5) ? 30 + (x - Math.floor(width * 0.46)) * 38 : 220;
+      const texture = ((x * 17 + y * 31 + x * y * 7) % 29) - 14;
+      const value = Math.max(0, Math.min(255, edge + texture));
+      const offset = row + 1 + x * 3;
+      raw[offset] = value;
+      raw[offset + 1] = Math.max(0, Math.min(255, value + (x % 13)));
+      raw[offset + 2] = value;
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = 2;
+  return new Uint8Array(Buffer.concat([
+    PNG_SIGNATURE, pngChunk('IHDR', header), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0)),
+  ]));
+}
+
 function fourPixelRgbaPng() {
   const image = new pillow.Image('RGBA', 4, 1, null);
   try {
@@ -345,6 +368,55 @@ test('Pillow-RS sharpness strengthens or softens edges from the unchanged source
       assert.equal(pixel(original, 4, 3)[0], 128, 'preview rendering must leave the original WASM image unchanged');
     } finally {
       baselineImage.free(); sharpenedImage.free(); softenedImage.free();
+    }
+  } finally { original.free(); }
+});
+
+test('sharpness preview strength tracks full-resolution sharpness at the displayed scale', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, sharpnessScalePng());
+  const cases = [
+    { adjustments: { sharpness: 100 }, maxDifference: 3 },
+    { adjustments: { sharpness: -100 }, maxDifference: 3 },
+    { adjustments: { sharpness: 100, brightness: 20, saturation: 20 }, maxDifference: 4 },
+    { adjustments: { sharpness: -100, brightness: -15, saturation: 25 }, maxDifference: 4 },
+  ];
+  try {
+    for (const { adjustments, maxDifference } of cases) {
+      const neutralAdjustments = { ...adjustments, sharpness: 0 };
+      const fullEdited = decodeOriginal(pillow, renderImage(original, adjustments).bytes);
+      const fullNeutral = decodeOriginal(pillow, renderImage(original, neutralAdjustments).bytes);
+      fullEdited.thumbnail(32, 32); fullNeutral.thumbnail(32, 32);
+      const previewEdited = decodeOriginal(pillow, renderImage(original, adjustments, {}, pillow, { previewMaxDimension: 32 }).bytes);
+      const previewNeutral = decodeOriginal(pillow, renderImage(original, neutralAdjustments, {}, pillow, { previewMaxDimension: 32 }).bytes);
+      try {
+        assert.deepEqual([previewEdited.width, previewEdited.height], [32, 16]);
+        let maximum = 0; let total = 0; let samples = 0;
+        for (let y = 0; y < previewEdited.height; y += 1) {
+          for (let x = 0; x < previewEdited.width; x += 1) {
+            const fullEditedPixel = pixel(fullEdited, x, y);
+            const fullNeutralPixel = pixel(fullNeutral, x, y);
+            const previewEditedPixel = pixel(previewEdited, x, y);
+            const previewNeutralPixel = pixel(previewNeutral, x, y);
+            for (const [channel, value] of previewEditedPixel.entries()) {
+              const expectedSharpness = fullEditedPixel[channel] - fullNeutralPixel[channel];
+              const previewSharpness = value - previewNeutralPixel[channel];
+              const difference = Math.abs(expectedSharpness - previewSharpness);
+              maximum = Math.max(maximum, difference);
+              total += difference;
+              samples += 1;
+            }
+          }
+        }
+        assert.ok(maximum <= maxDifference,
+          `sharpness preview max channel difference ${maximum} exceeds ${maxDifference} for ${JSON.stringify(adjustments)}`);
+        assert.ok(total / samples < maxDifference / 2,
+          `sharpness preview mean effect difference is too large for ${JSON.stringify(adjustments)}`);
+        assert.deepEqual([original.width, original.height], [128, 64], 'preview comparison must keep the retained source intact');
+      } finally {
+        fullEdited.free(); fullNeutral.free(); previewEdited.free(); previewNeutral.free();
+      }
     }
   } finally { original.free(); }
 });

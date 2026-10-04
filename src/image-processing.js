@@ -316,7 +316,13 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     if (brightness) image = replaceImage(image, image.enhanceBrightness(1 + brightness / 100));
     if (contrast) image = replaceImage(image, image.enhanceContrast(1 + contrast / 100));
     if (saturation) image = replaceImage(image, image.enhanceColor(1 + saturation / 100));
-    if (sharpness) image = replaceImage(image, image.enhanceSharpness(1 + sharpness / 100));
+    // Pillow-RS sharpness uses a 3×3 edge kernel. Once the source is reduced,
+    // the same slider factor acts on a much larger portion of the displayed
+    // image than it will in a full-resolution export. Scale its deviation
+    // from neutral by the preview scale squared so a resized preview stays
+    // visually close to that full-resolution result.
+    const previewSharpness = sharpness * previewScale * previewScale;
+    if (previewSharpness) image = replaceImage(image, image.enhanceSharpness(1 + previewSharpness / 100));
     if (settings.posterizeBits > 0) image = replaceImage(image, applyToneEffect(api, image, 'posterize', settings.posterizeBits));
     if (settings.solarize) image = replaceImage(image, applyToneEffect(api, image, 'solarize', settings.solarizeThreshold));
     if (settings.invert) image = replaceImage(image, applyToneEffect(api, image, 'invert'));
