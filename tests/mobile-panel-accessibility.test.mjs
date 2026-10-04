@@ -83,6 +83,20 @@ test('inspector content stays inside the sidebar without horizontal page overflo
   assert.match(stylesheet, /\.inspect-code-card pre\s*\{[^}]*box-sizing:\s*border-box[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
 });
 
+test('phone Assets content uses the available sidebar width while the catalog scrolls as one panel', () => {
+  assert.match(stylesheet, /\.assets-section\s*\{[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/,
+    'the Assets catalog should own vertical scrolling so all collections remain reachable');
+  const mobileAssets = stylesheet.match(/@media \(max-width: 820px\)\s*\{\s*\.assets-section\s*\{[^}]*scrollbar-gutter:\s*auto;[^}]*\}\s*\.assets-section\s*>\s*\*\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+  assert.ok(mobileAssets,
+    'phone Assets content should reclaim the narrow scrollbar gutter and keep each section within the sidebar');
+});
+
+test('short landscape inspector stays inside very narrow phone viewports', () => {
+  const shortLandscape = stylesheet.match(/@media \(max-width: 820px\) and \(max-height: 560px\)\s*\{\s*\.right-panel\s*\{[^}]*width:\s*min\(400px,\s*max\(280px,\s*54vw\)\);[^}]*max-width:\s*100%/);
+  assert.ok(shortLandscape,
+    'the landscape inspector may prefer a 280px minimum but must clamp to the workspace on narrower phones');
+});
+
 test('descriptive numeric-field labels stay within their input instead of spilling into adjacent controls', () => {
   assert.match(source, /function propertyFieldLabelClass\(label\)\s*\{\s*return String\(label\)\.trim\(\)\.length > 2 \? ' property-field--descriptive' : '';/);
   assert.match(source, /property-field\$\{propertyFieldLabelClass\(label\)\}[\s\S]*?<label title="\$\{escapeHtml\(label\)\}">/,

@@ -89,6 +89,28 @@ test('scale rejects invalid or overflowing plans before returning any mutations'
   assert.equal(root.width, 60_000);
 });
 
+test('scale refuses shared variable-bound geometry without editing the selection', () => {
+  const variableId = 'variable-shared-width';
+  const left = {
+    id: 'left', x: 0, y: 0, width: 40, height: 20, rotation: 0,
+    variableBindings: { width: variableId }, children: []
+  };
+  const right = {
+    id: 'right', x: 60, y: 0, width: 40, height: 20, rotation: 0,
+    variableBindings: { width: variableId }, children: []
+  };
+  const before = structuredClone([left, right]);
+
+  assert.throws(
+    () => planScaleTransform([{ node: left }, { node: right }], 1.5),
+    error => error instanceof TypeError
+      && /width is bound to a variable/.test(error.message)
+      && /could change other layers or modes/.test(error.message)
+      && /cannot inspect all variable consumers/.test(error.message)
+  );
+  assert.deepEqual([left, right], before, 'a rejected plan must leave all selected layers and bindings untouched');
+});
+
 test('toolbar, shortcut, scale multiplier, and nine-point anchor are exposed accessibly', async () => {
   const [html, main, scaleModule] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),

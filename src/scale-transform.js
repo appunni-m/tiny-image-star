@@ -128,10 +128,16 @@ export function planScaleTransform(entries, factor, anchorName = 'center') {
     if (![node.x, node.y, node.width, node.height].every(Number.isFinite) || node.width < 0 || node.height < 0) {
       throw new TypeError(`Layer “${node.name || node.id}” has invalid geometry and cannot be scaled.`);
     }
-    if (node.variableBindings && Object.keys(node.variableBindings).some(property => (
+    const boundScaleProperties = Object.keys(node.variableBindings || {}).filter(property => (
       ['x', 'y', 'width', 'height', 'radius', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing'].includes(property)
       && node.variableBindings[property]
-    ))) throw new TypeError(`Unbind geometry variables on “${node.name || node.id}” before scaling.`);
+    ));
+    if (boundScaleProperties.length) {
+      throw new TypeError(
+        `Cannot safely scale “${node.name || node.id}” because ${boundScaleProperties.join(', ')} is bound to a variable. `
+        + 'Scaling the variable could change other layers or modes, and this scale plan cannot inspect all variable consumers.'
+      );
+    }
     let patch;
     if (root) {
       const center = nodeLocalToPage(node, { x: node.width / 2, y: node.height / 2 }, ancestors);

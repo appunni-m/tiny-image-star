@@ -2886,7 +2886,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 }
 
 @media (max-width: 820px) {
-  .assets-section { padding: 8px 10px max(18px, env(safe-area-inset-bottom)); }
+  .assets-section {
+    padding: 8px 10px max(18px, env(safe-area-inset-bottom));
+    scrollbar-gutter: auto;
+  }
+  .assets-section > * { box-sizing: border-box; min-width: 0; max-width: 100%; }
   .assets-section > .section-heading { min-height: 44px; font-size: 13px; }
   .assets-section > .section-heading:not(:first-child) { min-height: 48px; margin-top: 12px; }
   .assets-section .tiny-icon-button { width: 44px; min-width: 44px; height: 44px; }
@@ -2957,7 +2961,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     right: 0;
     bottom: 0;
     left: auto;
-    width: min(100vw, 400px, max(280px, 54vw));
+    width: min(400px, max(280px, 54vw));
+    max-width: 100%;
     height: auto;
     max-height: none;
     border-radius: 14px 0 0 14px;

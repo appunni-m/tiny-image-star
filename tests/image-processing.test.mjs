@@ -7,6 +7,7 @@ import { decodeOriginal, imagePreviewDimensions, imagePreviewResolutionMatches, 
 import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
 import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
+import { DecodedSourceCache } from '../src/decoded-source-cache.js';
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -478,6 +479,57 @@ test('successive edits and previews always render from the same retained origina
       'Pillow-RS preview renders preserve the retained decoded original across repeated edits'
     );
   } finally { original.free(); }
+});
+
+test('warm decoded-source cache keeps previews and exports anchored to immutable asset bytes', async () => {
+  await pillow.default();
+  const sourceBytes = fourColorBmp();
+  const sourceSnapshot = sourceBytes.slice();
+  const cache = new DecodedSourceCache({ pixelBudget: 4 });
+  cache.setActive('edited-layer-asset');
+  let decodeCount = 0;
+
+  const renderFromCache = (adjustments, transforms, render) => cache.withSource(
+    'edited-layer-asset',
+    () => {
+      decodeCount += 1;
+      return decodeOriginal(pillow, sourceBytes);
+    },
+    decodedOriginal => render(decodedOriginal, adjustments, transforms),
+  );
+  const renderFresh = (adjustments, transforms, render) => {
+    const decodedOriginal = decodeOriginal(pillow, sourceBytes);
+    try { return render(decodedOriginal, adjustments, transforms); }
+    finally { decodedOriginal.free(); }
+  };
+
+  try {
+    const previewCases = [
+      [{ invert: true }, {}, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
+      [{ brightness: 24, saturation: -15 }, { rotation: 90 }, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
+      [{ blur: 2, temperature: 35 }, { crop: { left: 0, top: 0, right: 0.5, bottom: 1 } }, (source, adjustments, transforms) => renderImage(source, adjustments, transforms, pillow)],
+    ];
+    for (const [adjustments, transforms, renderer] of previewCases) {
+      const warm = renderFromCache(adjustments, transforms, renderer);
+      const expected = renderFresh(adjustments, transforms, renderer);
+      assert.deepEqual(warm.result.bytes, expected.bytes,
+        'a warm-cache preview matches a fresh decode rendered from the original asset bytes');
+      assert.equal(warm.retained, true);
+    }
+
+    const outputSettings = [{ brightness: -18, contrast: 12 }, { rotation: 270 }];
+    const warmOutput = renderFromCache(...outputSettings, (source, adjustments, transforms) =>
+      renderImageOutput(source, adjustments, transforms, pillow, { format: 'png' }));
+    const freshOutput = renderFresh(...outputSettings, (source, adjustments, transforms) =>
+      renderImageOutput(source, adjustments, transforms, pillow, { format: 'png' }));
+    assert.deepEqual(warmOutput.result.bytes, freshOutput.bytes,
+      'a full-resolution export also starts from the original asset, independent of prior previews');
+    assert.equal(warmOutput.retained, true);
+    assert.equal(decodeCount, 1, 'all fitting edits reuse one warm decoded source');
+    assert.deepEqual(sourceBytes, sourceSnapshot, 'worker-style decoding leaves the editor-owned asset bytes unchanged');
+  } finally {
+    cache.clear();
+  }
 });
 
 test('Pillow-RS validates normalized crop bounds and quarter-turn rotation', async () => {
