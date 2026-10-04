@@ -197,7 +197,7 @@ test('short mobile viewports use a full-height side inspector and keep the canva
     'the app shell must constrain its implicit grid column to the viewport');
 });
 
-test('phone floating controls clear device cutouts and primary actions keep 44px targets', () => {
+test('phone floating controls clear device cutouts and tools show visible labels', () => {
   const start = stylesheet.lastIndexOf('/* Respect cutouts and home indicators');
   assert.notEqual(start, -1);
   const block = enclosingRuleBlock(start);
@@ -208,7 +208,8 @@ test('phone floating controls clear device cutouts and primary actions keep 44px
   assert.match(phoneRules, /\.zoom-controls\s*\{[^}]*right:\s*max\(10px, env\(safe-area-inset-right\)\)/);
   assert.match(phoneRules, /\.modal\s*\{[^}]*max-height:\s*calc\(100dvh - max\(16px, env\(safe-area-inset-top\)\) - max\(16px, env\(safe-area-inset-bottom\)\)\)/);
   assert.match(phoneRules, /\.mobile-panel-toggle,[\s\S]*?\.canvas-top-actions \.canvas-action-button\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
-  assert.match(phoneRules, /\.bottom-toolbar \.tool-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+  assert.match(phoneRules, /\.bottom-toolbar \.tool-button\s*\{[^}]*width:\s*60px[^}]*min-width:\s*60px[^}]*height:\s*48px[^}]*flex-direction:\s*column/);
+  assert.match(phoneRules, /\.bottom-toolbar \.tool-button::after\s*\{[^}]*content:\s*attr\(data-tool-label\)/);
   const landscapeStart = stylesheet.lastIndexOf('@media (max-width: 820px) and (max-height: 520px)');
   assert.ok(landscapeStart > start, 'landscape bulk-bar clearance must override the portrait offset');
   assert.match(enclosingRuleBlock(landscapeStart).content, /\.bulk-bar\s*\{[^}]*bottom:\s*calc\(66px \+ max\(env\(safe-area-inset-bottom\), 8px\)\)/);

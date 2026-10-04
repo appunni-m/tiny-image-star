@@ -2259,7 +2259,7 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   const asset = state.assets.get(imageFill.assetId);
   const fillCropActive = state.imageCropMode && state.imageFillCropTarget?.nodeId === node.id && state.imageFillCropTarget?.fillId === fillId;
   const fillCropAvailable = Number.isSafeInteger(asset?.sourceWidth) && Number.isSafeInteger(asset?.sourceHeight);
-  const fillCropButton = `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" data-transform-target="fill" data-fill-id="${escapeHtml(fillId)}" aria-pressed="${fillCropActive}"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}>${fillCropActive ? 'Done adjusting image' : 'Adjust image on canvas'}</button>${fillCropActive ? '<div class="image-properties-note image-crop-mode-hint">Drag to reposition. Pinch with two fingers to zoom and move; Escape finishes. The image stays clipped to this shape.</div>' : imageFill.fit !== 'cover' ? '<div class="image-properties-note">Choose Fill to reposition or zoom this image on the canvas.</div>' : ''}`;
+  const fillCropButton = `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" data-transform-target="fill" data-fill-id="${escapeHtml(fillId)}" aria-pressed="${fillCropActive}"${node.locked || !fillCropAvailable || imageFill.fit !== 'cover' ? ' disabled' : ''}>${fillCropActive ? 'Done adjusting' : 'Adjust image'}</button>${fillCropActive ? '<div class="image-properties-note image-crop-mode-hint">Drag to reposition. Pinch with two fingers to zoom. Changes apply as you release; Undo reverses them. The image stays clipped to this shape.</div>' : imageFill.fit !== 'cover' ? '<div class="image-properties-note">Choose Fill to reposition or zoom this image on the canvas.</div>' : ''}`;
   const tileScale = Math.round((imageFill.scalingFactor ?? 1) * 100);
   const tileScaleControl = `<label class="slider-row image-fill-tile-scale"${imageFill.fit === 'tile' ? '' : ' hidden'}><span>Tile size</span><input type="range" min="1" max="1600" step="1" value="${tileScale}" data-image-fill-field="scalingFactor"${fillData} aria-label="Image fill tile size"${node.locked ? ' disabled' : ''}/><output>${tileScale}%</output></label>`;
   let zoomPercent = 100;
@@ -2451,7 +2451,7 @@ function imageTransformControls(transforms, target, disabled = false, fillId = '
     && Number.isSafeInteger(imageAsset?.sourceWidth || imageNode.sourceWidth)
     && Number.isSafeInteger(imageAsset?.sourceHeight || imageNode.sourceHeight);
   const cropTool = target === 'layer'
-    ? `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" aria-pressed="${state.imageCropMode && state.selectedIds[0] === nodeId}"${disabled || !cropAvailable ? ' disabled' : ''}>${state.imageCropMode && state.selectedIds[0] === nodeId ? 'Done cropping' : 'Crop on canvas'}</button>${state.imageCropMode && state.selectedIds[0] === nodeId ? '<div class="image-properties-note image-crop-mode-hint">The full source stays visible. The current edit appears inside the crop; the uncropped image provides context. Drag to choose a crop or move a handle; Escape finishes the crop.</div>' : ''}`
+    ? `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" aria-pressed="${state.imageCropMode && state.selectedIds[0] === nodeId}"${disabled || !cropAvailable ? ' disabled' : ''}>${state.imageCropMode && state.selectedIds[0] === nodeId ? 'Finish crop' : 'Crop image'}</button>${state.imageCropMode && state.selectedIds[0] === nodeId ? '<div class="image-properties-note image-crop-mode-hint">Drag on the image to choose what stays visible. Drag an edge or corner to fine-tune. Changes apply as you release; press Escape or Finish crop to leave. Undo reverses the last change.</div>' : ''}`
     : '';
   const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
     `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="0.01" value="${formatInspectorNumber(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
@@ -4234,6 +4234,7 @@ function submitCommentForm(form) {
 }
 
 function renderInspector() {
+  syncImageCropToolbar();
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
@@ -4251,7 +4252,7 @@ function renderInspector() {
   if (!entries.length) {
     const page = activePage();
     const framePresets = state.tool === 'frame' ? framePresetPicker() : '';
-    content.innerHTML = `<div class="inspector-empty"><div class="empty-layer-icon">✣</div><strong>Nothing selected</strong><span>Choose a layer or create something on the canvas. Everything is saved locally as you work.</span></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><button class="add-fill" data-action="create-frame">＋ Create a frame</button>`)}`;
+    content.innerHTML = `<div class="inspector-empty has-start-actions"><div class="empty-layer-icon">✣</div><strong>Start designing</strong><span>Add an image, frame, or text. Select an image and choose Crop image to edit its visible area.</span></div><div class="inspector-start-actions"><button class="primary-button" type="button" data-action="add-image">＋ Add image</button><button class="secondary-button" type="button" data-action="create-frame">▧ Create a frame</button><button class="secondary-button" type="button" data-action="create-text">T Add text</button></div>${framePresets}${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div>`)}`;
     return;
   }
   if (entries.length > 1) {
@@ -8929,6 +8930,58 @@ function syncImageCropOverlay() {
   return context;
 }
 
+function syncImageCropToolbar() {
+  const toolbar = $('#image-crop-toolbar');
+  if (!toolbar) return;
+  const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
+  const isImage = node?.type === 'image';
+  const active = Boolean(state.imageCropMode && node && (isImage || state.imageFillCropTarget?.nodeId === node.id));
+  toolbar.hidden = !(active || isImage);
+  const action = $('#image-crop-toolbar-done');
+  if (!active && isImage) {
+    $('#image-crop-toolbar-title').textContent = 'Image selected';
+    $('#image-crop-toolbar-hint').textContent = 'Choose Crop image to adjust which part of this photo stays visible.';
+    action.textContent = 'Crop image';
+    action.disabled = node.locked || !imageCropContext(node);
+    return;
+  }
+  if (!active) return;
+  const adjustingFill = Boolean(state.imageFillCropTarget);
+  $('#image-crop-toolbar-title').textContent = adjustingFill ? 'Adjust image fill' : 'Crop image';
+  $('#image-crop-toolbar-hint').textContent = adjustingFill
+    ? 'Drag to reposition the image, or pinch to zoom. Changes apply as you release; Undo reverses them.'
+    : 'Drag on the image to choose what stays visible. Drag an edge or corner to fine-tune. Changes apply as you release; Undo reverses them.';
+  action.textContent = adjustingFill ? 'Done adjusting' : 'Finish crop';
+  action.disabled = false;
+}
+
+function toggleSelectedImageCropMode() {
+  if (state.imageCropMode) {
+    finishImageCropMode();
+    return;
+  }
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  if (node?.type !== 'image' || node.locked || !imageCropContext(node)) return;
+  state.imageCropMode = true;
+  state.imageFillCropTarget = null;
+  state.imageCropDraftSelection = null;
+  syncImageCropOverlay();
+  renderInspector();
+  if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+  renderer.invalidate();
+}
+
+function finishImageCropMode() {
+  if (!state.imageCropMode) return;
+  if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction();
+  state.imageCropMode = false;
+  state.imageFillCropTarget = null;
+  state.imageCropDraftSelection = null;
+  syncImageCropOverlay();
+  renderInspector();
+  renderer.invalidate();
+}
+
 function imageCropHandlePoints(bounds) {
   const left = bounds.left; const top = bounds.top;
   const right = left + bounds.width; const bottom = top + bounds.height;
@@ -12110,6 +12163,7 @@ async function importImageFiles(files, point = null, { place = true, input = $('
   if (imported) {
     if (place && lastPlacedNodeId) setSelection([lastPlacedNodeId], { keepInspector: true, refreshLayers: false });
     renderUI(); queueSave();
+    if (place && lastPlacedNodeId && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
   }
   if (memoryLimitedFiles.length) {
     const examples = memoryLimitedFiles.slice(0, 3).join(', ');
@@ -13974,6 +14028,14 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   if (node?.type === 'image') {
     if (state.document.recipes?.length) items.splice(0, 0, { label: 'Refresh saved recipe from this image…', action: () => openImageRecipeDialog('update', { nodeId: node.id }) }, { separator: true });
     items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
+    items.splice(0, 0, {
+      label: 'Crop image on canvas',
+      disabled: node.locked || !imageCropContext(node),
+      action: () => {
+        setSelection([node.id], { source: 'programmatic' });
+        applyInspectorAction('toggle-image-crop-mode');
+      }
+    }, { separator: true });
   }
   if (node?.type === 'text') {
     items.splice(0, 0, { label: 'Save text style…', action: () => saveTypographyStyleFor(nodeId) }, { separator: true });
@@ -19502,6 +19564,16 @@ function resizeSelectedFrameToFit() {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'add-image') {
+    chooseImageFiles();
+    return;
+  }
+  if (action === 'create-text') {
+    setTool('text');
+    if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    showToast('Tap or click the canvas to add text.');
+    return;
+  }
   if (action === 'expand-image' && node?.type === 'image') {
     void expandSelectedImage(node);
     return;
@@ -19767,6 +19839,7 @@ function applyInspectorAction(action, details = {}) {
     state.imageCropDraftSelection = null;
     syncImageCropOverlay();
     renderInspector();
+    if (state.imageCropMode && innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
     renderer.invalidate();
     return;
   }
@@ -20303,7 +20376,11 @@ function applyInspectorAction(action, details = {}) {
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'resize-frame-to-fit') { resizeSelectedFrameToFit(); }
   else if (action === 'create-frame-preset') { createFrameFromPreset(details.presetId); }
-  else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
+  else if (action === 'create-frame') {
+    setTool('frame');
+    if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    showToast('Drag on the canvas to create a frame.');
+  }
   else if (action === 'ios-corner-smoothing') {
     const targets = selectedNodes().filter(target => !target.locked && ['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(target.type));
     if (!targets.length) return;
@@ -21470,6 +21547,7 @@ function initEvents() {
     if (!form) return;
     event.preventDefault(); submitCommentForm(form);
   });
+  $('#image-crop-toolbar-done').addEventListener('click', toggleSelectedImageCropMode);
   $('#shape-builder-bar').addEventListener('click', event => {
     const modeButton = event.target.closest('[data-shape-builder-mode]');
     if (modeButton && state.shapeBuilder) {
@@ -21478,6 +21556,10 @@ function initEvents() {
       return;
     }
     if (event.target.closest('[data-action="shape-builder-done"]')) exitShapeBuilderMode({ focusCanvas: true });
+  });
+  $('#layers-section').addEventListener('click', event => {
+    const action = event.target.closest('#empty-layers [data-action]');
+    if (action) applyInspectorAction(action.dataset.action);
   });
   $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
   $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
@@ -22052,13 +22134,7 @@ function onKeyDown(event) {
     return;
   }
   if (event.key === 'Escape' && state.imageCropMode && !editing && !document.querySelector('dialog[open]')) {
-    if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction();
-    state.imageCropMode = false;
-    state.imageFillCropTarget = null;
-    state.imageCropDraftSelection = null;
-    syncImageCropOverlay();
-    renderInspector();
-    renderer.invalidate();
+    finishImageCropMode();
     canvas.focus({ preventScroll: true });
     event.preventDefault();
     return;

@@ -140,6 +140,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .empty-sidebar strong { color: #666; font-size: 11px; font-weight: 550; }
 .empty-layer-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #e5e5e5; border-radius: 9px; font-size: 20px; color: #888; }
 .empty-sidebar span { font-size: 10px; line-height: 1.45; }
+.empty-layer-actions { width: 100%; display: grid; gap: 7px; margin-top: 5px; }
+.empty-layer-actions button { min-height: 38px; justify-content: center; }
 .sidebar-footer { height: 42px; display: flex; align-items: center; gap: 7px; padding: 0 15px; border-top: 1px solid var(--border); color: #888; font-size: 10px; }
 .sidebar-footer .tiny-icon-button { margin-left: auto; }
 .device-icon { color: #16a16a; font-size: 11px; }
@@ -337,6 +339,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .canvas-action-button.is-active { color: #0b76c5; background: #e6f4ff; }
 .canvas-scroll { position: absolute; inset: 40px 0 0; overflow: hidden; touch-action: none; }
 .canvas-scroll.is-text-editing { touch-action: auto; }
+.image-crop-toolbar { position: absolute; z-index: 5; left: 50%; bottom: 76px; box-sizing: border-box; width: max-content; max-width: calc(100% - 20px); display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 13px; transform: translateX(-50%); border: 1px solid var(--floating-panel-border); border-radius: 11px; background: var(--floating-panel-background); box-shadow: var(--toolbar-shadow); color: var(--ink); }
+.image-crop-toolbar[hidden] { display: none; }
+.image-crop-toolbar-copy { min-width: 0; display: grid; gap: 3px; }
+.image-crop-toolbar-copy strong { font-size: 11px; font-weight: 650; }
+.image-crop-toolbar-copy span { max-width: min(390px, 56vw); color: var(--muted); font-size: 10px; line-height: 1.35; }
+.image-crop-toolbar-done { min-width: 92px; min-height: 36px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--primary-action-border); border-radius: 7px; background: var(--primary-action-bg); color: #fff; font-size: 11px; font-weight: 600; }
+.image-crop-toolbar-done:hover { background: var(--primary-action-hover); }
 #scene-canvas { display: block; width: 100%; height: 100%; cursor: default; touch-action: none; }
 #shape-builder-bar[hidden] { display: none; }
 .shape-builder-bar { position: absolute; z-index: 4; left: 50%; bottom: 16px; display: flex; align-items: center; gap: 14px; max-width: calc(100% - 24px); padding: 8px 10px; transform: translateX(-50%); border: 1px solid rgba(20,25,32,.12); border-radius: 12px; background: var(--floating-panel-background); box-shadow: var(--toolbar-shadow); }
@@ -529,9 +538,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .export-button:hover { background: #f7f7f7; }
 .export-hint { color: #999; font-size: 10px; }
 .inspector-empty { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 52px 24px; color: #888; text-align: center; }
+.inspector-empty.has-start-actions { padding: 24px 16px 10px; }
 .inspector-empty .empty-layer-icon { width: 40px; height: 40px; font-size: 18px; }
 .inspector-empty strong { color: #666; font-weight: 550; }
 .inspector-empty span { font-size: 10px; line-height: 1.5; }
+.inspector-start-actions { display: grid; gap: 7px; padding: 0 16px 14px; }
+.inspector-start-actions button { min-height: 38px; justify-content: center; }
 .property-section { min-width: 0; border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
 .frame-preset-picker { display: grid; gap: 6px; }
 .frame-preset-group { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
@@ -1482,6 +1494,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     scroll-snap-type: x proximity;
     -webkit-overflow-scrolling: touch;
   }
+  .image-crop-toolbar { bottom: calc(74px + max(env(safe-area-inset-bottom), 8px)); width: calc(100% - 16px); max-width: none; gap: 8px; padding: 8px; border-radius: 12px; }
+  .image-crop-toolbar-copy { flex: 1 1 auto; }
+  .image-crop-toolbar-copy strong { font-size: 12px; }
+  .image-crop-toolbar-copy span { max-width: none; font-size: 10px; }
+  .image-crop-toolbar-done { min-width: 92px; min-height: 44px; font-size: 12px; }
   .bottom-toolbar::after {
     content: "›";
     position: sticky;
@@ -3130,7 +3147,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .canvas-top-actions .canvas-action-button { flex-shrink: 0; }
   .page-row-menu { flex-basis: 44px; }
   .page-row-menu > summary { width: 44px; min-width: 44px; height: 44px; }
-  .bottom-toolbar .tool-button { width: 44px; min-width: 44px; height: 44px; flex-basis: 44px; }
+  .bottom-toolbar .tool-button { width: 60px; min-width: 60px; height: 48px; flex-basis: 60px; flex-direction: column; gap: 2px; justify-content: center; }
+  .bottom-toolbar .tool-button::after { content: attr(data-tool-label); display: block; max-width: 100%; overflow: hidden; color: var(--muted); font-size: 8px; line-height: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .bottom-toolbar .tool-button.is-selected::after { color: var(--accent); font-weight: 600; }
+  .bottom-toolbar .tool-button kbd { display: none; }
   /* Shape Builder has its own temporary action bar. Lift the canvas tools
      above it on phones so both bars clear the home-indicator area. */
   #shape-builder-bar { bottom: max(8px, env(safe-area-inset-bottom)); }
