@@ -78,10 +78,14 @@ test('canvas tool buttons expose the active tool at startup and when it changes'
     'keyboard navigation should reveal offscreen tools in the horizontally scrollable phone toolbar');
 });
 
-test('compact phones keep direct Share reachable and preserve the main-menu route', () => {
+test('compact phones keep live Share reachable and preserve local-file actions in File', () => {
   const openMenu = main.match(/function openFileMenu\([\s\S]*?\n\}/)?.[0] || '';
   assert.match(openMenu, /label: 'Send design file…', action: shareDesignFile/);
   assert.match(openMenu, /label: 'Save local copy…'.*action: exportDesign/u);
+  assert.match(html, /id="share-button"[^>]*title="Invite someone to edit this design live">Share<\/button>/,
+    'the top-bar Share button should describe live collaboration');
+  assert.match(main, /#share-button'\)\.addEventListener\('click', \(\) => dispatchWorkspaceCollaborationIntent\('tiny-image-star:share-live'\)\)/,
+    'the direct Share action should open the live invitation flow');
   const directShareRules = [...stylesheet.matchAll(/#share-button\s*\{([^}]*)\}/g)].map(([, declarations]) => declarations);
   assert.ok(directShareRules.some(declarations => /\bdisplay\s*:\s*flex\b/u.test(declarations)),
     'a phone-specific rule must keep the direct Share button visible');

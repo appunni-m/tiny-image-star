@@ -17269,7 +17269,7 @@ async function attemptNativeDesignShare(packageData, file, { retryOnActivation =
         if (state.pendingLocalShare === pending) state.pendingLocalShare = null;
         state.pendingLocalShareTimer = 0;
       }, 60_000);
-      showToast('Your local package is ready. Tap Share again to open the device share sheet.');
+      showToast('Your local package is ready. Choose File → Send design file again to open the share sheet.');
       return 'retry';
     }
     return 'unsupported';
@@ -21892,7 +21892,7 @@ function initEvents() {
     const button = event.target.closest('[data-version-action="restore"]');
     if (button) void restoreDocumentVersion(button.dataset.versionId);
   });
-  $('#share-button').addEventListener('click', () => { void shareDesignFile(); });
+  $('#share-button').addEventListener('click', () => dispatchWorkspaceCollaborationIntent('tiny-image-star:share-live'));
   $('#mode-button').addEventListener('click', () => { const nextTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; clearPrototypeConnectPrompt(); setInspectorTab(nextTab); });
   $('#prototype-connect-cancel').addEventListener('click', cancelPrototypeConnection);
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));

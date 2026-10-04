@@ -20,15 +20,12 @@ function click(app, element) {
   assert(element, 'Expected a local-share workflow control.');
   element.click();
 }
-function assertVisibleButton(app, element, label) {
-  assert(element, `Expected the ${label} button to exist.`);
-  const style = app.defaultView.getComputedStyle(element);
-  const rect = element.getBoundingClientRect();
-  assert(style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0,
-    `The ${label} button should be visible at the local-share phone viewport.`);
-  assert(rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.right <= app.defaultView.innerWidth,
-    `The ${label} button should fit within the local-share phone viewport.`);
-  assert(!element.disabled, `The ${label} button should be enabled.`);
+function clickSendDesignFile(app) {
+  click(app, app.querySelector('#main-menu-button'));
+  const sendFile = [...app.querySelectorAll('#context-menu [role="menuitem"]')]
+    .find(item => item.textContent.includes('Send design file'));
+  assert(sendFile, 'File should offer a local design-file sharing action.');
+  click(app, sendFile);
 }
 function installDownloadCapture(app) {
   const view = app.defaultView;
@@ -143,9 +140,7 @@ try {
     return true;
   });
   restoreShare = setNavigatorMethod(app.defaultView, 'share', async data => { nativePayloads.push(data); });
-  const shareButton = app.querySelector('#share-button');
-  assertVisibleButton(app, shareButton, 'Share');
-  click(app, shareButton);
+  clickSendDesignFile(app);
   await waitFor(() => nativePayloads.length === 1, 'native file share');
   const nativeFile = nativePayloads[0].files?.[0];
   const safeName = design.name.replaceAll('/', '-').replace(/[. ]+$/g, '').trim() + '.flocal';
@@ -157,8 +152,7 @@ try {
   let shareCalls = 0;
   restoreCanShare = setNavigatorMethod(app.defaultView, 'canShare', () => false);
   restoreShare = setNavigatorMethod(app.defaultView, 'share', async () => { shareCalls += 1; });
-  assertVisibleButton(app, shareButton, 'Share');
-  click(app, shareButton);
+  clickSendDesignFile(app);
   await waitFor(() => downloadCapture.downloads.length === 1, 'unsupported-share download fallback');
   assert(shareCalls === 0, 'Unsupported file sharing should fall back without calling the device share API.');
   const unsupportedDownload = downloadCapture.downloads[0];
@@ -169,8 +163,7 @@ try {
   restoreShare(); restoreShare = null;
   restoreCanShare = setNavigatorMethod(app.defaultView, 'canShare', () => true);
   restoreShare = setNavigatorMethod(app.defaultView, 'share', async () => { throw new Error('Synthetic share-sheet failure.'); });
-  assertVisibleButton(app, shareButton, 'Share');
-  click(app, shareButton);
+  clickSendDesignFile(app);
   await waitFor(() => downloadCapture.downloads.length === 2, 'failed-share download fallback');
   const failedDownload = downloadCapture.downloads[1];
   const failedFile = new app.defaultView.File([failedDownload.blob], failedDownload.filename, { type: failedDownload.blob?.type || '' });
@@ -186,11 +179,11 @@ try {
     activationPayloads.push(data);
     if (activationCalls === 1) throw new app.defaultView.DOMException('Synthetic transient activation expired.', 'NotAllowedError');
   });
-  click(app, shareButton);
-  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('Tap Share again')),
+  clickSendDesignFile(app);
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('Send design file again')),
     'prepared native-share retry');
   assert(downloadCapture.downloads.length === 2, 'An expired activation should keep the prepared file ready instead of immediately downloading it.');
-  click(app, shareButton);
+  clickSendDesignFile(app);
   await waitFor(() => activationCalls === 2, 'native-share retry from a fresh button click');
   assert(activationPayloads[0].files[0] === activationPayloads[1].files[0], 'The fresh share tap should reuse the prepared File without rebuilding the package.');
   assert(downloadCapture.downloads.length === 2, 'A successful retry should not trigger a duplicate download.');

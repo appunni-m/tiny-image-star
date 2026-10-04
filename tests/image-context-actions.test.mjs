@@ -39,3 +39,12 @@ test('single-image and multi-image canvas actions route to the existing recipe a
 test('floating recipe controls retain finger-sized touch targets on mobile', () => {
   assert.match(css, /\.image-context-save-recipe, \.image-context-recipe-picker, \.image-context-apply-recipe, \.image-crop-toolbar-done\s*\{[^}]*min-height:\s*44px/);
 });
+
+test('the top-bar Share action opens live invitations and File keeps local package sharing', () => {
+  assert.match(html, /id="share-button"[^>]*>Share<\/button>/);
+  assert.match(main, /#share-button'\)\.addEventListener\('click', \(\) => dispatchWorkspaceCollaborationIntent\('tiny-image-star:share-live'\)\)/);
+  const menuStart = main.indexOf('function openFileMenu(');
+  const menuEnd = main.indexOf('\nfunction dispatchWorkspaceCollaborationIntent', menuStart);
+  assert.ok(menuStart >= 0 && menuEnd > menuStart, 'expected the File menu action list');
+  assert.match(main.slice(menuStart, menuEnd), /label: 'Send design file…', action: shareDesignFile/);
+});

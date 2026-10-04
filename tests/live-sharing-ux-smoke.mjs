@@ -36,7 +36,7 @@ try {
     await waitFor(() => !onboarding.open, 'editor workspace setup');
   }
 
-  assert(app.querySelector('#share-button').textContent.trim() === 'Send file', 'The local design-file action should be distinct from inviting someone to edit.');
+  assert(app.querySelector('#share-button').textContent.trim() === 'Share', 'The top-bar action should open the live invitation flow.');
   app.defaultView.dispatchEvent(new app.defaultView.CustomEvent('tiny-image-star:join-live', { cancelable: true }));
   const dialog = app.querySelector('#live-collaboration-dialog');
   await waitFor(() => dialog.open && !app.querySelector('#live-guest-panel').hidden, 'join design dialog');
@@ -65,7 +65,7 @@ try {
   const hostAdvanced = app.querySelector('#live-host-active .live-advanced');
   assert(hostAdvanced && !hostAdvanced.open, 'Extra host options should be collapsed by default.');
 
-  result.textContent = `PASS\n${JSON.stringify({ mobileWidth: app.defaultView.innerWidth, joinWithOneMessage: true, cameraScanAvailable: true, technicalDetailsCollapsed: true, progressiveSteps: true, localFileShareDifferentiated: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ mobileWidth: app.defaultView.innerWidth, joinWithOneMessage: true, cameraScanAvailable: true, technicalDetailsCollapsed: true, progressiveSteps: true, liveShareActionTopLevel: true, localFileShareUnderFileMenu: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
