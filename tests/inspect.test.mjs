@@ -556,7 +556,7 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, paragraphStyles: [], align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, paragraphStyles: [], align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none', textWrapStyle: 'auto'
   });
 });
 
@@ -619,6 +619,22 @@ test('Inspect keeps generated text markup and CSS stable for non-list paragraphs
   assert.doesNotMatch(output.css, /content: attr\(data-list-marker\)/);
   assert.equal(output.layers[0].typography.listSpacing, 0);
   assert.deepEqual(output.layers[0].typography.paragraphStyles, []);
+});
+
+test('Inspect exports layer and paragraph text wrap styles to HTML, JSX, Vue, CSS, and typography data', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    name: 'Balanced heading', text: 'First line\nSecond line', textWrapStyle: 'balance',
+    paragraphStyles: [{ textWrapStyle: 'pretty' }, { textWrapStyle: 'balance' }]
+  });
+  addNode(document, text);
+  const output = buildInspectOutput(document, [findNode(document, text.id)]);
+  assert.match(output.html, /data-text-wrap-style="pretty"/);
+  assert.match(output.jsx, /data-text-wrap-style=\{"pretty"\}/);
+  assert.match(output.vue, /data-text-wrap-style="pretty"/);
+  assert.match(output.css, /text-wrap: balance;/);
+  assert.match(output.css, /data-text-wrap-style="pretty"\] \{\n  text-wrap: pretty;/);
+  assert.equal(output.layers[0].typography.textWrapStyle, 'balance');
 });
 
 test('Inspect preserves vertical alignment in copyable CSS and typography data', () => {

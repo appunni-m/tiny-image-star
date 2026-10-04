@@ -273,6 +273,7 @@ function drawTextMask(ctx, node, document, x, y, width, height, shapeText = null
     paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing') || 0,
     listSpacing: node.listSpacing || 0,
     paragraphStyles: node.paragraphStyles || [],
+    textWrapStyle: node.textWrapStyle || 'auto',
     firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent') || 0,
     align: node.align || 'left',
     verticalAlign: node.verticalAlign || 'top',
@@ -316,6 +317,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   const lineHeight = resolvedLineHeight(lineHeightScale || 1.25, fontSize || 24, node.lineHeightUnit || 'ratio');
   const layout = layoutPlainText(text, Math.max(1, width), measureText, {
     lineHeight, paragraphSpacing, listSpacing: node.listSpacing,
+    textWrapStyle: node.textWrapStyle || 'auto',
     paragraphStyles: node.paragraphStyles, markerStyle: {
       fontFamily, fontSize: fontSize || 24,
       fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
@@ -406,6 +408,7 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
       paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing') || 0,
       listSpacing: node.listSpacing || 0,
       paragraphStyles: node.paragraphStyles || [],
+      textWrapStyle: node.textWrapStyle || 'auto',
       firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent') || 0,
       align: node.align || 'left',
       verticalAlign: node.verticalAlign || 'top',
@@ -1222,7 +1225,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
       textTruncation: baseStyle.textTruncation,
       maxLines: baseStyle.maxLines,
       maxHeight: baseStyle.maxHeight,
-      boxHeight: baseStyle.height
+      boxHeight: baseStyle.height,
+      textWrapStyle: baseStyle.textWrapStyle || 'auto'
     });
   } finally {
     ctx.font = previousFont;

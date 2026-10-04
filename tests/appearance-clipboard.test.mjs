@@ -233,7 +233,7 @@ test('text appearance copies typography but preserves target rich text, paragrap
     text: 'Source heading', fontFamily: 'Inter', fontSize: 32, fontWeight: 700,
     fontStyle: 'italic', lineHeight: 1.4, letterSpacing: 1.2,
     paragraphSpacing: 12, firstLineIndent: 4, listSpacing: 6,
-    color: '#224466', align: 'center', verticalAlign: 'bottom', textCase: 'uppercase', textDecoration: 'underline',
+    color: '#224466', align: 'center', verticalAlign: 'bottom', textCase: 'uppercase', textDecoration: 'underline', textWrapStyle: 'pretty',
     textRuns: [{ text: 'Source ', fontWeight: 700 }, { text: 'heading', fontStyle: 'italic' }],
     paragraphStyles: [{ listStyle: 'numbered', listLevel: 0, listStart: 3 }]
   };
@@ -263,6 +263,7 @@ test('text appearance copies typography but preserves target rich text, paragrap
   assert.equal(pasted.fontStyle, 'italic');
   assert.equal(pasted.lineHeight, 1.4);
   assert.equal(pasted.letterSpacing, 1.2);
+  assert.equal(pasted.textWrapStyle, 'pretty');
   assert.equal(pasted.color, '#224466');
   assert.equal(pasted.align, 'center');
   assert.equal(pasted.name, 'Target text');
@@ -386,6 +387,13 @@ test('invalid snapshots and duplicate-producing ID factories fail explicitly wit
   assert.throws(() => applyAppearance(target, null), /appearance is invalid/i);
   assert.throws(() => applyAppearance(target, sourceAppearance({ opacity: 2 })), /opacity is invalid/i);
   assert.deepEqual(target, before);
+
+  const textTarget = { type: 'text', id: 'text-target', opacity: 1, blendMode: 'normal', text: 'Keep' };
+  const invalidWrap = snapshotAppearance({ type: 'text', opacity: 1, blendMode: 'normal', text: 'Copy', textWrapStyle: 'loose' });
+  assert.equal(invalidWrap.textStyle?.textWrapStyle, undefined, 'unsupported source values are omitted from snapshots');
+  const invalidClipboard = snapshotAppearance({ type: 'text', opacity: 1, blendMode: 'normal', text: 'Copy', textWrapStyle: 'balance' });
+  invalidClipboard.textStyle.textWrapStyle = 'loose';
+  assert.throws(() => applyAppearance(textTarget, invalidClipboard), /text wrap style is invalid/i);
 
   const appearance = sourceAppearance({ fills: [{ id: 'fill-source', type: 'solid', color: '#112233', visible: true, opacity: 1 }] });
   assert.throws(() => applyAppearance(target, appearance, { idFactory: () => 'fill-source' }), /did not produce a unique/i);

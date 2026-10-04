@@ -180,6 +180,38 @@ test('scroll-to interactions persist, validate their screen, and resolve in pres
   }), /only instant or scroll/);
 });
 
+test('prototype navigation scroll position policy persists, defaults to preserve, and can be updated', () => {
+  const document = createDocument();
+  const source = createNode('frame', { name: 'Source' });
+  const destination = createNode('frame', { name: 'Destination' });
+  addNode(document, source);
+  addNode(document, destination);
+
+  const reset = addPrototypeInteraction(document, source.id, destination.id, { scrollPosition: 'reset' });
+  assert.equal(reset.scrollPosition, 'reset');
+  assert.equal(prototypeActionProgram(reset).steps[0].scrollPosition, 'reset');
+  const persisted = parseDocument(serializeDocument(document));
+  assert.equal(findNode(persisted, source.id).node.interactions[0].scrollPosition, 'reset');
+  validateDocument(persisted);
+
+  const preserve = addPrototypeInteraction(document, source.id, destination.id);
+  assert.notEqual(preserve.id, reset.id, 'different scroll policies are distinct routes');
+  assert.equal(preserve.scrollPosition, undefined, 'the default remains compact in saved legacy interactions');
+  assert.equal(prototypeActionProgram(preserve).steps[0].scrollPosition, undefined,
+    'older interactions without the field retain the default-preserve interpretation');
+
+  const secondSource = createNode('frame', { name: 'Second source' });
+  addNode(document, secondSource);
+  const secondReset = addPrototypeInteraction(document, secondSource.id, destination.id, { scrollPosition: 'reset' });
+  const updated = updatePrototypeInteraction(document, secondSource.id, secondReset.id, destination.id, { scrollPosition: 'preserve' });
+  assert.equal(updated.id, secondReset.id);
+  assert.equal(updated.scrollPosition, undefined);
+  const invalid = structuredClone(document);
+  findNode(invalid, source.id).node.interactions.find(item => item.id === reset.id).scrollPosition = 'restore';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { scrollPosition: 'restore' }), /scroll position policy/);
+});
+
 test('nested prototype screens scope scroll-to routes to the nearest active frame', () => {
   const document = createDocument();
   const outer = createNode('frame', { name: 'Outer screen', overflowBehavior: 'vertical' });

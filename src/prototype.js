@@ -92,7 +92,7 @@ const legacyActionFields = [
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
-  'smartAnimateMatchingLayers'
+  'smartAnimateMatchingLayers', 'scrollPosition'
 ];
 
 /** View a legacy one-action interaction as v2 without rewriting saved data. */
@@ -333,10 +333,12 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   valueExpression = null,
   scrollTargetId,
   scrollAlignment = 'nearest',
+  scrollPosition = 'preserve',
   smartAnimateMatchingLayers,
   condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
+  if (!['preserve', 'reset'].includes(scrollPosition)) throw new TypeError('Unsupported prototype scroll position policy.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
   if (trigger === 'after-delay' && (!delayedActions.has(action)
     || !Number.isInteger(delay) || delay < minPrototypeDelay || delay > maxPrototypeDelay)) {
@@ -430,7 +432,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
         ? item.valueExpression === valueExpression && !Object.hasOwn(item, 'value')
         : Object.is(item.value, value) && !Object.hasOwn(item, 'valueExpression'))))
     && (action !== 'change-variant' || item.targetVariantId === targetVariantId)
-    && (action !== 'scroll-to' || (item.scrollTargetId === scrollTargetId && item.scrollAlignment === scrollAlignment)));
+    && (action !== 'scroll-to' || (item.scrollTargetId === scrollTargetId && item.scrollAlignment === scrollAlignment))
+    && (item.scrollPosition ?? 'preserve') === scrollPosition);
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
@@ -475,6 +478,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     easing,
     duration: Math.max(0, Math.min(10_000, Number(duration) || 0))
   };
+  if (scrollPosition !== 'preserve') interaction.scrollPosition = scrollPosition;
   if (smartAnimateMatchingLayers !== undefined) interaction.smartAnimateMatchingLayers = smartAnimateMatchingLayers;
   if (normalizedEasingBezier) interaction.easingBezier = normalizedEasingBezier;
   if (action === 'open-link') interaction.url = linkUrl;

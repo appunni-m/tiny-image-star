@@ -177,13 +177,14 @@ function isValidTextParagraphStyles(styles, text = undefined) {
   for (let index = 0; index < styles.length; index += 1) {
     const style = styles[index];
     if (!style || typeof style !== 'object' || Array.isArray(style)
-      || Object.keys(style).some(key => !['listStyle', 'listLevel', 'listStart', 'align'].includes(key))) return false;
+      || Object.keys(style).some(key => !['listStyle', 'listLevel', 'listStart', 'align', 'textWrapStyle'].includes(key))) return false;
     const listStyle = style.listStyle ?? 'none';
     const listLevel = style.listLevel ?? 0;
     if (!paragraphListStyles.has(listStyle) || !Number.isInteger(listLevel) || listLevel < 0 || listLevel > 4) return false;
     if (listStyle === 'none' && listLevel !== 0) return false;
     if (style.listStart != null && (listStyle !== 'numbered' || !Number.isInteger(style.listStart) || style.listStart < 1 || style.listStart > 999_999)) return false;
     if (style.align != null && !textAlignments.has(style.align)) return false;
+    if (style.textWrapStyle != null && !textWrapStyles.has(style.textWrapStyle)) return false;
   }
   return true;
 }
@@ -348,6 +349,7 @@ function hasInvalidPrototypeInteractions(interactions, document) {
       ? (typeof item.instanceId !== 'string' || !item.instanceId || typeof item.targetVariantId !== 'string' || !item.targetVariantId)
       : (Object.hasOwn(item, 'instanceId') || Object.hasOwn(item, 'targetVariantId'))) return true;
     if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
+    if (item.scrollPosition != null && !['preserve', 'reset'].includes(item.scrollPosition)) return true;
     if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
     if (item.easing != null && !isValidPrototypeEasing(item.easing, item.easingBezier)) return true;
     if (item.easing == null && Object.hasOwn(item, 'easingBezier')) return true;
@@ -379,7 +381,7 @@ const prototypeActionProgramActionFields = new Set([
   'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor',
   'overlayBackgroundOpacity', 'delay', 'url', 'collectionId', 'modeId', 'targetVariantId',
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
-  'smartAnimateMatchingLayers'
+  'smartAnimateMatchingLayers', 'scrollPosition'
 ]);
 
 function invalidPrototypeCondition(condition, document) {
@@ -507,6 +509,7 @@ const MAX_LAYOUT_GUIDES_PER_FRAME = 32;
 const MAX_LAYOUT_GUIDE_STYLES = 1000;
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const textCases = new Set(['none', 'uppercase', 'lowercase', 'capitalize']);
+const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textDecorations = new Set(['none', 'underline', 'line-through']);
 const textTruncations = new Set(['disabled', 'ending']);
 const textAlignments = new Set(['left', 'center', 'right', 'justify']);
@@ -522,7 +525,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -2351,7 +2354,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textWrapStyle'];
 const legacyTypographyStyleProperties = ['color', 'align', 'verticalAlign'];
 
 function typographyStyleValues(document, node) {
@@ -2369,7 +2372,8 @@ function typographyStyleValues(document, node) {
     firstLineIndent: Number(node.firstLineIndent) || 0,
     listSpacing: Number(node.listSpacing) || 0,
     textCase: textCases.has(node.textCase) ? node.textCase : 'none',
-    textDecoration: textDecorations.has(node.textDecoration) ? node.textDecoration : 'none'
+    textDecoration: textDecorations.has(node.textDecoration) ? node.textDecoration : 'none',
+    textWrapStyle: textWrapStyles.has(node.textWrapStyle) ? node.textWrapStyle : 'auto'
   };
 }
 
@@ -2386,6 +2390,7 @@ function applyTypographyStyleValues(node, style) {
     }
     else if (property === 'textCase') node[property] = textCases.has(style[property]) ? style[property] : 'none';
     else if (property === 'textDecoration') node[property] = textDecorations.has(style[property]) ? style[property] : 'none';
+    else if (property === 'textWrapStyle') node[property] = textWrapStyles.has(style[property]) ? style[property] : 'auto';
     else node[property] = style[property];
   }
   // Files saved before linked typography styles existed included these
@@ -2813,7 +2818,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -3990,6 +3995,7 @@ export function validateDocument(document) {
       if (node.lineHeight != null && (node.type !== 'text' || !isValidLineHeight(node.lineHeight, node.lineHeightUnit || 'ratio'))) throw new TypeError(`Invalid line height on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
+      if (node.textWrapStyle != null && (node.type !== 'text' || !textWrapStyles.has(node.textWrapStyle))) throw new TypeError(`Invalid text wrap style on layer ${node.name || node.id}.`);
       if (node.align != null && (node.type !== 'text' || !textAlignments.has(node.align))) throw new TypeError(`Invalid text alignment on layer ${node.name || node.id}.`);
       if (node.verticalAlign != null && (node.type !== 'text' || !textVerticalAlignments.has(node.verticalAlign))) throw new TypeError(`Invalid text vertical alignment on layer ${node.name || node.id}.`);
       if (['paragraphSpacing', 'firstLineIndent'].some(property => node[property] != null
@@ -4001,6 +4007,9 @@ export function validateDocument(document) {
       }
       if (node.paragraphStyles != null && (node.type !== 'text' || typeof node.text !== 'string' || !isValidTextParagraphStyles(node.paragraphStyles, node.text))) {
         throw new TypeError(`Invalid text paragraph styles on layer ${node.name || node.id}.`);
+      }
+      if (node.componentOverrides && Object.values(node.componentOverrides).some(overrides => overrides?.textWrapStyle != null && !textWrapStyles.has(overrides.textWrapStyle))) {
+        throw new TypeError(`Invalid text wrap style override on layer ${node.name || node.id}.`);
       }
       if (node.textRuns != null && (node.type !== 'text' || !isValidTextRuns(node.textRuns, node.text))) throw new TypeError(`Invalid rich text runs on layer ${node.name || node.id}.`);
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
@@ -4667,6 +4676,7 @@ export function validateDocument(document) {
         || (style.verticalAlign != null && !textVerticalAlignments.has(style.verticalAlign))
         || (style.textCase != null && !textCases.has(style.textCase))
         || (style.textDecoration != null && !textDecorations.has(style.textDecoration))
+        || (style.textWrapStyle != null && !textWrapStyles.has(style.textWrapStyle))
         || (style.color != null && !/^#[0-9a-f]{6}$/i.test(style.color))) throw new TypeError('Invalid or duplicate text style.');
       styleIds.add(style.id);
     }

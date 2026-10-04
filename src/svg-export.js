@@ -1047,6 +1047,7 @@ function textLines(node, document, measureText) {
       firstLineIndent: resolvedNode.firstLineIndent || 0,
       listSpacing: node.listSpacing || 0,
       paragraphStyles: node.paragraphStyles,
+      textWrapStyle: node.textWrapStyle || 'auto',
       align: node.align || 'left',
       color: color(document, node, 'text'),
       textDecoration: node.textDecoration || 'none',
@@ -1059,7 +1060,8 @@ function textLines(node, document, measureText) {
       textTruncation: node.textTruncation,
       maxLines: node.maxLines,
       maxHeight: node.maxHeight,
-      boxHeight: node.height
+      boxHeight: node.height,
+      textWrapStyle: node.textWrapStyle || 'auto'
     });
     for (const line of layout.lines) {
       if (![line.naturalWidth, line.width, line.y, line.lineHeight].every(Number.isFinite)
@@ -1081,6 +1083,7 @@ function textLines(node, document, measureText) {
     listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles,
     align: node.align || 'left',
+    textWrapStyle: node.textWrapStyle || 'auto',
     textTruncation: node.textTruncation,
     maxLines: node.maxLines,
     maxHeight: node.maxHeight,

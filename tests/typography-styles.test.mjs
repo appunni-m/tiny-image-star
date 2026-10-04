@@ -113,6 +113,26 @@ test('typography styles preserve explicit line-height units through save, apply,
   assert.doesNotThrow(() => validateDocument(document));
 });
 
+test('wrap style persists on text layers and reusable typography styles', () => {
+  const document = createDocument();
+  const source = addNode(document, createNode('text', { text: 'A short headline', textWrapStyle: 'balance' }));
+  const style = createTypographyStyle(document, source.id, 'Balanced headline');
+  assert.equal(style.textWrapStyle, 'balance');
+  const target = addNode(document, createNode('text', { text: 'Another headline', textWrapStyle: 'pretty' }));
+  assert.equal(applyTypographyStyle(document, target.id, style.id), true);
+  assert.equal(target.textWrapStyle, 'balance');
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(reloaded.pages[0].children[1].textWrapStyle, 'balance');
+  assert.equal(reloaded.typographyStyles[0].textWrapStyle, 'balance');
+  assert.equal(validateDocument(reloaded), true);
+
+  for (const bad of ['balanced', 'Pretty']) {
+    const invalid = structuredClone(reloaded);
+    invalid.pages[0].children[1].textWrapStyle = bad;
+    assert.throws(() => validateDocument(invalid), /Invalid text wrap style/);
+  }
+});
+
 test('applying a typography style preserves text, geometry, color links, and layer-local alignment', () => {
   const { document, collection, frame, source } = makeTypographyFixture();
   const style = createTypographyStyle(document, source.id, 'Display');

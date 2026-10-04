@@ -821,6 +821,59 @@ function figTextLetterSpacing(value, fontSize, fallback = 0) {
   return finite(number, fallback, -10_000, 10_000);
 }
 
+function figEnumValueFromEmbeddedSchema(schema, fieldName, numericValue) {
+  if (!Number.isSafeInteger(numericValue) || numericValue < 0 || !Array.isArray(schema?.definitions)) return null;
+  const enumTypes = new Set(schema.definitions.flatMap(definition =>
+    Array.isArray(definition?.fields)
+      ? definition.fields.filter(field => field?.name === fieldName && typeof field.type === 'string').map(field => field.type)
+      : []));
+  if (enumTypes.size !== 1) return null;
+  const enumType = [...enumTypes][0];
+  const definitions = schema.definitions.filter(definition => definition?.kind === 'ENUM' && definition.name === enumType);
+  if (definitions.length !== 1) return null;
+  return definitions[0].fields?.find(field => field?.value === numericValue)?.name || null;
+}
+
+function figTextWrapStyle(value, context, name) {
+  if (value == null) return 'auto';
+  const raw = typeof value === 'string'
+    ? value
+    : figEnumValueFromEmbeddedSchema(context.parsed?.schema, 'textWrapStyle', value);
+  const mapped = ({ AUTO: 'auto', BALANCE: 'balance', PRETTY: 'pretty' })[String(raw || '').toUpperCase()];
+  if (mapped) return mapped;
+  const valueLabel = typeof value === 'string' ? `“${value.slice(0, 80)}”`
+    : Number.isSafeInteger(value) ? String(value) : `(${typeof value})`;
+  warn(context.report, 'flattened', 'TEXT_WRAP_STYLE', name,
+    `The text wrap style ${valueLabel} is unknown to this file's embedded schema or unsupported; automatic wrapping was used.`);
+  return 'auto';
+}
+
+function figParagraphTextWrapStyles(source, characters, context) {
+  const sourceStyles = source.textData?.paragraphStyle;
+  if (!Array.isArray(sourceStyles) || sourceStyles.length !== characters.split(/\r\n|\r|\n/u).length
+    || sourceStyles.length > 100_000) return null;
+  const styles = [];
+  let hasWrapStyle = false;
+  for (const paragraph of sourceStyles) {
+    if (!paragraph || typeof paragraph !== 'object' || Array.isArray(paragraph)) return null;
+    const style = {};
+    if (paragraph.textWrapStyle != null) {
+      hasWrapStyle = true;
+      const mapped = figTextWrapStyle(paragraph.textWrapStyle, context, source.name);
+      style.textWrapStyle = mapped;
+    }
+    styles.push(style);
+  }
+  return hasWrapStyle ? styles : null;
+}
+
+function hasOnlyFigParagraphWrapStyles(source, text) {
+  const paragraphs = source.textData?.paragraphStyle;
+  return Array.isArray(paragraphs) && paragraphs.length === String(text ?? '').split(/\r\n|\r|\n/u).length
+    && paragraphs.length <= 100_000 && paragraphs.every(paragraph => paragraph && typeof paragraph === 'object'
+    && !Array.isArray(paragraph) && Object.keys(paragraph).every(key => key === 'textWrapStyle'));
+}
+
 function inferredTextWeight(styleName) {
   const name = String(styleName || '');
   return /(?:thin|hairline)/iu.test(name) ? 100
@@ -972,6 +1025,10 @@ function textProperties(source, context) {
   const fontWeight = finite(style.fontWeight ?? source.fontWeight, inferredTextWeight(namedStyle), 1, 1000);
   const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight);
   const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
+  const paragraphStyles = figParagraphTextWrapStyles(source, characters, context);
+  const rawTextWrapStyle = source.textWrapStyle ?? style.textWrapStyle;
+  const textWrapStyle = paragraphStyles && String(rawTextWrapStyle || '').toUpperCase() === 'MIXED'
+    ? 'auto' : figTextWrapStyle(rawTextWrapStyle, context, source.name);
   const verticalAlign = ({ TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' })[String(source.textAlignVertical || '').toUpperCase()] || 'top';
   const textAutoResize = String(source.textAutoResize || '').toUpperCase();
   const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[textAutoResize] || 'fixed';
@@ -1011,6 +1068,8 @@ function textProperties(source, context) {
     align: ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(source.textAlignHorizontal || '').toUpperCase()] || 'left',
     verticalAlign,
     textFit,
+    textWrapStyle,
+    ...(paragraphStyles ? { paragraphStyles } : {}),
     ...(textTruncation ? { textTruncation } : {}),
     ...(maxLines !== undefined ? { maxLines } : {}),
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
@@ -1568,7 +1627,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       delete overrides.maxLines;
       warn(context.report, 'flattened', 'TEXT_MAX_LINES', name, 'The imported text has both a maximum line count and an auto-layout maximum height; the generic auto-layout size limit was preserved and the maximum line count was omitted.');
     }
-    if (source.textData?.paragraphStyle) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name, 'Paragraph layout settings were simplified.');
+    if (source.textData?.paragraphStyle && !hasOnlyFigParagraphWrapStyles(source, overrides.text)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name,
+      'Per-paragraph alignment, indentation, list, or other paragraph layout settings were simplified.');
   }
   if (source.type === 'LINE') overrides.fill = 'transparent';
   if (type === 'boolean' && !isValidBooleanChildren(overrides.children)) {
@@ -1592,7 +1652,7 @@ const componentOverrideProperties = [
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius',
   'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId',
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId',
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',

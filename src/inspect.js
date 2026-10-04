@@ -303,7 +303,8 @@ function cssForEntry(document, entry) {
         `justify-content: ${node.verticalAlign === 'middle' ? 'center' : 'flex-end'};`
       ] : []),
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
-      `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`
+      `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`,
+      ...(['balance', 'pretty'].includes(node.textWrapStyle) ? [`text-wrap: ${node.textWrapStyle};`] : [])
     );
     if (node.textTruncation === 'ending') {
       declarations.push('overflow: hidden;');
@@ -314,6 +315,7 @@ function cssForEntry(document, entry) {
     const paragraphClass = `${cssClass(node)}__paragraph`;
     additionalRules.push(
       `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
+      ...['balance', 'pretty'].map(style => `.${cssClass(node)} > .${paragraphClass}[data-text-wrap-style="${style}"] {\n  text-wrap: ${style};\n}`),
       `.${cssClass(node)} > .${paragraphClass} + .${paragraphClass} {\n  margin-block-start: ${number(paragraphSpacing)}px;\n}`
     );
     if (hasListParagraphs) {
@@ -393,8 +395,8 @@ function markupForNode(document, node) {
     const paragraphs = String(value).replace(/\r\n?/g, '\n').split('\n')
       .map((paragraph, index) => {
         const style = styles[index];
-        const attributes = style.listStyle === 'none' ? ''
-          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`;
+        const attributes = `${style.listStyle === 'none' ? ''
+          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`}${style.textWrapStyle ? ` data-text-wrap-style="${style.textWrapStyle}"` : ''}`;
         return `<span class="${className}__paragraph"${attributes}>${escapeMarkup(paragraph)}</span>`;
       }).join('');
     return `${warning}<span class="${className}" data-layer-type="text">${paragraphs}</span>`;
@@ -425,8 +427,8 @@ function jsxForNode(document, node, depth = 0) {
     const paragraphs = value.replace(/\r\n?/g, '\n').split('\n')
       .map((paragraph, index) => {
         const style = styles[index];
-        const attributes = style.listStyle === 'none' ? ''
-          : ` data-list-style={${jsxString(style.listStyle)}} data-list-level={${style.listLevel}} data-list-marker={${jsxString(markers[index])}}`;
+        const attributes = `${style.listStyle === 'none' ? ''
+          : ` data-list-style={${jsxString(style.listStyle)}} data-list-level={${style.listLevel}} data-list-marker={${jsxString(markers[index])}}`}${style.textWrapStyle ? ` data-text-wrap-style={${jsxString(style.textWrapStyle)}}` : ''}`;
         return `${indent}  <span className={${jsxString(`${cssClass(node)}__paragraph`)}}${attributes}>{${jsxString(paragraph)}}</span>`;
       }).join('\n');
     return `${warning}${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>\n${paragraphs}\n${indent}</span>`;
@@ -448,6 +450,7 @@ function normalizedParagraphStyles(text, paragraphStyles) {
     const listLevel = listStyle !== 'none' && Number.isInteger(source?.listLevel) && source.listLevel >= 0 && source.listLevel <= 4
       ? source.listLevel : 0;
     const style = { listStyle, listLevel };
+    if (['balance', 'pretty'].includes(source?.textWrapStyle)) style.textWrapStyle = source.textWrapStyle;
     if (listStyle === 'numbered' && Number.isInteger(source?.listStart) && source.listStart >= 1 && source.listStart <= 999_999) {
       style.listStart = source.listStart;
     }
@@ -521,8 +524,8 @@ function vueForNode(document, node, depth = 0) {
     const paragraphs = value.replace(/\r\n?/g, '\n').split('\n')
       .map((paragraph, index) => {
         const style = styles[index];
-        const attributes = style.listStyle === 'none' ? ''
-          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`;
+        const attributes = `${style.listStyle === 'none' ? ''
+          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`}${style.textWrapStyle ? ` data-text-wrap-style="${style.textWrapStyle}"` : ''}`;
         // v-text keeps authored text literal even when it contains Vue
         // interpolation delimiters, markup, or directive-looking content.
         return `${indent}  <span class="${escapeMarkup(`${cssClass(node)}__paragraph`)}"${attributes} v-text="${escapeMarkup(vueString(paragraph))}"></span>`;
@@ -620,6 +623,7 @@ function summaryForEntry(document, entry) {
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
       textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none',
+      textWrapStyle: ['auto', 'balance', 'pretty'].includes(node.textWrapStyle) ? node.textWrapStyle : 'auto',
       ...(node.textTruncation === 'ending' ? { textTruncation: node.textTruncation } : {}),
       ...(Number.isSafeInteger(node.maxLines) && node.maxLines > 0 ? { maxLines: node.maxLines } : {})
     };

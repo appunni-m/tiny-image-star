@@ -12,10 +12,11 @@ const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
 const vertexRadiusNodeTypes = new Set(['star', 'polygon']);
 const networkVertexRadiusNodeTypes = new Set(['network']);
+const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textStyleProperties = Object.freeze([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
-  'verticalAlign', 'textCase', 'textDecoration'
+  'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle'
 ]);
 
 /**
@@ -63,7 +64,8 @@ export function snapshotAppearance(sourceNode) {
     const textStyle = Object.fromEntries(textStyleProperties
       .filter(property => Object.hasOwn(sourceNode, property) && sourceNode[property] !== undefined
         && (property !== 'fontAxes' || isValidFontVariationValues(sourceNode[property]))
-        && (property !== 'fontFeatures' || isValidFontFeatureValues(sourceNode[property])))
+        && (property !== 'fontFeatures' || isValidFontFeatureValues(sourceNode[property]))
+        && (property !== 'textWrapStyle' || textWrapStyles.has(sourceNode[property])))
       .map(property => [property, clone(sourceNode[property])]));
     if (Object.keys(textStyle).length) snapshot.textStyle = textStyle;
   }
@@ -249,6 +251,9 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
       }
       if (appearance.textStyle.fontFeatures != null && !isValidFontFeatureValues(appearance.textStyle.fontFeatures)) {
         throw new TypeError('The copied OpenType feature settings are invalid.');
+      }
+      if (appearance.textStyle.textWrapStyle != null && !textWrapStyles.has(appearance.textStyle.textWrapStyle)) {
+        throw new TypeError('The copied text wrap style is invalid.');
       }
       for (const property of textStyleProperties) {
         if (!Object.hasOwn(appearance.textStyle, property)) continue;

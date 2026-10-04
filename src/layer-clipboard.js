@@ -49,6 +49,7 @@ function setNodePropertyValue(node, property, value) {
 
 function resolvedSnapshot(document, node) {
   const values = {};
+  if (node.typographyStyleId) values.textWrapStyle = getNodePropertyValue(document, node, 'textWrapStyle');
   if (node.fillVariableId || node.fillStyleId) values.fill = getNodeColor(document, node, 'fill');
   if (node.textVariableId || node.textStyleId) values.color = getNodeColor(document, node, 'text');
   if (node.strokeVariableId) values.stroke = getNodeColor(document, node, 'stroke');
@@ -202,11 +203,16 @@ function detachBrokenComponentTree(node) {
 
 function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, componentRecords) {
   const colors = new Set((document.colorStyles || []).map(style => style.id));
+  const typographyStyles = new Set((document.typographyStyles || []).map(style => style.id));
   const variables = new Map((document.variables || []).map(variable => [variable.id, variable]));
   const collections = new Map((document.variableCollections || []).map(collection => [collection.id, new Set(collection.modes.map(mode => mode.id))]));
 
   if (node.fillStyleId && !colors.has(node.fillStyleId)) { node.fill = fallbacks.fill ?? node.fill; delete node.fillStyleId; }
   if (node.textStyleId && !colors.has(node.textStyleId)) { node.color = fallbacks.color ?? node.color; delete node.textStyleId; }
+  if (node.typographyStyleId && !typographyStyles.has(node.typographyStyleId)) {
+    if (fallbacks.textWrapStyle !== undefined) node.textWrapStyle = fallbacks.textWrapStyle;
+    delete node.typographyStyleId;
+  }
   for (const [property, fallbackProperty] of [['fillVariableId', 'fill'], ['textVariableId', 'color'], ['strokeVariableId', 'stroke']]) {
     const variable = variables.get(node[property]);
     if (node[property] && (!variable || variable.type !== 'color')) {

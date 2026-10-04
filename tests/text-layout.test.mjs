@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight, textGraphemes, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight, textGraphemes, transformTextCase, wrapTextWithMeasure } from '../src/text-layout.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
@@ -39,6 +39,105 @@ function alignedTopAnchor(node) {
     y: node.y + height / 2 + sine * (localX - width / 2) - cosine * height / 2
   };
 }
+
+test('text wrap styles balance short copy, avoid a Pretty orphan, and keep explicit paragraphs', () => {
+  const measure = value => [...String(value)].length;
+  const copy = 'Balance these words into even lines';
+  assert.deepEqual(wrapTextWithMeasure(copy, 12, measure), ['Balance', 'these words', 'into even', 'lines'], 'Auto remains the default');
+  assert.deepEqual(wrapTextWithMeasure(copy, 12, measure, { textWrapStyle: 'balance' }),
+    ['Balance', 'these', 'words into', 'even lines']);
+
+  const headline = 'A longer headline makes a difference';
+  const pretty = wrapTextWithMeasure(headline, 12, measure, { textWrapStyle: 'pretty' });
+  assert.deepEqual(pretty, ['A longer', 'headline', 'makes', 'a difference']);
+  assert.ok(pretty.every(line => measure(line) <= 12));
+
+  assert.deepEqual(wrapTextWithMeasure('first line\nsecond line', 20, measure, { textWrapStyle: 'balance' }),
+    ['first line', 'second line'], 'an explicit newline remains a hard paragraph break');
+  assert.deepEqual(wrapTextWithMeasure('first line\nsecond line', Infinity, measure, { textWrapStyle: 'pretty' }),
+    ['first line', 'second line'], 'auto-width ignores wrap style');
+});
+
+test('paragraph wrap style overrides layer wrap style and keeps grapheme clusters intact', () => {
+  const value = '👨‍👩‍👧‍👦 alpha beta gamma';
+  const measure = text => [...text].length;
+  const layout = layoutPlainText(value, 15, measure, {
+    lineHeight: 10, textWrapStyle: 'auto', paragraphStyles: [{ textWrapStyle: 'pretty' }]
+  });
+  assert.equal(layout.lines.map(line => line.displayText).join(' ').replace(/\s+/gu, ' '), value);
+  assert.ok(layout.lines.every(line => !line.displayText.includes('\u200d') || line.displayText.includes('👨‍👩‍👧‍👦')));
+
+  const overridden = layoutPlainText('Balance these words into even lines\nBalance these words into even lines', 12, measure, {
+    lineHeight: 10, textWrapStyle: 'balance',
+    paragraphStyles: [{ textWrapStyle: 'auto' }, { textWrapStyle: 'pretty' }]
+  });
+  assert.deepEqual(overridden.lines.map(line => [line.paragraphIndex, line.displayText]), [
+    [0, 'Balance'], [0, 'these words'], [0, 'into even'], [0, 'lines'],
+    [1, 'Balance'], [1, 'these'], [1, 'words into'], [1, 'even lines']
+  ], 'paragraph wrap mode overrides the layer mode for plain text');
+});
+
+test('rich text applies base and paragraph Balance/Pretty styles while preserving inline styles', () => {
+  const measure = text => [...String(text)].length;
+  const base = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, textWrapStyle: 'balance'
+  };
+  const balanced = layoutTextRuns([
+    { text: 'Balance ', fontWeight: 700, color: '#a12' },
+    { text: 'these words into even lines' }
+  ], 12, base, measure);
+  assert.deepEqual(balanced.lines.map(line => line.displayText), ['Balance', 'these', 'words into', 'even lines']);
+  assert.deepEqual(balanced.lines[0].parts.map(part => [part.text, part.style.fontWeight, part.style.color]), [
+    ['Balance', 700, '#a12']
+  ], 'reflow keeps the style of each rich run');
+  assert.deepEqual(balanced.lines[2].parts.map(part => [part.text, part.style.fontWeight]), [
+    ['words into', 400]
+  ]);
+
+  const pretty = layoutTextRuns([
+    { text: 'A longer ' }, { text: 'headline', fontStyle: 'italic' }, { text: ' makes a difference' }
+  ], 12, { ...base, textWrapStyle: 'pretty' }, measure);
+  assert.deepEqual(pretty.lines.map(line => line.displayText), ['A longer', 'headline', 'makes', 'a difference']);
+  assert.equal(pretty.lines[1].parts[0].style.fontStyle, 'italic');
+
+  const overridden = layoutTextRuns([{ text: 'Balance these words into even lines\nBalance these words into even lines' }], 12, {
+    ...base,
+    paragraphStyles: [{ textWrapStyle: 'auto' }, { textWrapStyle: 'pretty' }]
+  }, measure);
+  assert.deepEqual(overridden.lines.map(line => [line.paragraphIndex, line.displayText]), [
+    [0, 'Balance'], [0, 'these words'], [0, 'into even'], [0, 'lines'],
+    [1, 'Balance'], [1, 'these'], [1, 'words into'], [1, 'even lines']
+  ], 'paragraph Auto and Pretty overrides take precedence over the layer Balance style');
+
+  const auto = layoutTextRuns([{ text: 'A longer headline makes a difference' }], 12, {
+    ...base, textWrapStyle: 'auto'
+  }, measure);
+  assert.deepEqual(auto.lines.map(line => line.displayText), ['A longer', 'headline', 'makes a', 'difference'],
+    'Auto retains existing greedy wrapping');
+});
+
+test('Balance/Pretty keeps complex-script, CJK, discretionary, and large-paragraph wrapping safe', () => {
+  const measure = text => [...String(text)].length;
+  const base = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal', lineHeight: 1,
+    letterSpacing: 0
+  };
+  for (const text of ['日本語の文章を折り返す', 'مرحبا بالعالم من حولك', 'soft\u00adhyphen breaks safely']) {
+    const auto = layoutTextRuns([{ text }], 12, { ...base, textWrapStyle: 'auto' }, measure);
+    const styled = layoutTextRuns([{ text }], 12, { ...base, textWrapStyle: 'pretty' }, measure);
+    assert.deepEqual(styled.lines.map(line => line.displayText), auto.lines.map(line => line.displayText), text);
+  }
+  const longParagraph = Array.from({ length: 100 }, (_, index) => `word${index}`).join(' ');
+  const auto = layoutTextRuns([{ text: longParagraph }], 30, { ...base, textWrapStyle: 'auto' }, measure);
+  const styled = layoutTextRuns([{ text: longParagraph }], 30, { ...base, textWrapStyle: 'balance' }, measure);
+  assert.deepEqual(styled.lines.map(line => line.displayText), auto.lines.map(line => line.displayText),
+    'very long rich paragraphs use the bounded Auto path');
+  const plainAuto = layoutPlainText(longParagraph, 30, measure, { lineHeight: 10 });
+  const plainStyled = layoutPlainText(longParagraph, 30, measure, { lineHeight: 10, textWrapStyle: 'balance' });
+  assert.deepEqual(plainStyled.lines.map(line => line.displayText), plainAuto.lines.map(line => line.displayText),
+    'large plain paragraphs use the bounded Auto path');
+});
 
 test('resolves Auto, pixel, percent, and legacy ratio line heights through text layout', () => {
   assert.equal(resolvedLineHeight(1, 20, 'auto'), 24);

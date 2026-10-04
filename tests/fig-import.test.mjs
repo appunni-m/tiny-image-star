@@ -924,15 +924,15 @@ test('preserves resolvable local component instances, property overrides, and na
       } }),
       node('COMPONENT', 3, set, 'a', { guid: small, name: 'Button/size=small', variantProperties: { Size: 'Small' } }),
       node('RECTANGLE', 4, small, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
-      node('TEXT', 9, small, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED' }),
+      node('TEXT', 9, small, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED', textWrapStyle: 'AUTO' }),
       node('COMPONENT', 5, set, 'b', { guid: large, name: 'Button/size=large', variantProperties: { Size: 'Large' } }),
       node('RECTANGLE', 6, large, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
-      node('TEXT', 10, large, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED' }),
+      node('TEXT', 10, large, 'b', { name: 'Caption', textData: { characters: 'Master caption' }, textAutoResize: 'NONE', textTruncation: 'DISABLED', textWrapStyle: 'BALANCE' }),
       node('INSTANCE', 7, page, 'b', { guid: instance, name: 'Primary button', componentId: small, componentProperties: {
         Size: { type: 'VARIANT', value: 'Large' }
       } }),
       node('RECTANGLE', 8, instance, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 1, a: 1 } }] }),
-      node('TEXT', 11, instance, 'b', { name: 'Caption', textData: { characters: 'Short caption' }, textAutoResize: 'NONE', textTruncation: 'ENDING', maxLines: 2 })
+      node('TEXT', 11, instance, 'b', { name: 'Caption', textData: { characters: 'Short caption' }, textAutoResize: 'NONE', textTruncation: 'ENDING', maxLines: 2, textWrapStyle: 'PRETTY' })
     ],
     images: new Map(), message: { blobs: [] }
   };
@@ -957,14 +957,20 @@ test('preserves resolvable local component instances, property overrides, and na
   assert.deepEqual(importedInstance.componentOverrides[masterChild.id].fills, instanceChild.fills,
     'the imported effective fill remains a local editable instance override');
   assert.deepEqual(importedInstance.componentOverrides[masterText.id], {
-    text: 'Short caption', textTruncation: 'ending', maxLines: 2
-  }, 'Figma text truncation properties survive as editable component overrides');
+    text: 'Short caption', textTruncation: 'ending', maxLines: 2, textWrapStyle: 'pretty'
+  }, 'Figma text, truncation, and wrap properties survive as editable component overrides');
+  assert.equal(masterText.textWrapStyle, 'balance');
+  assert.equal(instanceText.textWrapStyle, 'pretty');
   assert.equal(instanceText.maxLines, 2);
   assert.equal(report.flattenedTypes.INSTANCE, undefined);
   assert.equal(report.flattenedTypes.COMPONENT_SET, undefined);
 
   const restored = parseDocument(serializeDocument(document));
   assert.equal(restored.pages[0].children.find(child => child.name === 'Primary button').isInstance, true);
+  const restoredInstance = restored.pages[0].children.find(child => child.name === 'Primary button');
+  const restoredMaster = restored.pages[0].children[0].children.find(candidate => candidate.componentId === restoredInstance.componentId);
+  const restoredMasterText = restoredMaster.children.find(child => child.type === 'text');
+  assert.equal(restoredInstance.componentOverrides[restoredMasterText.id].textWrapStyle, 'pretty');
   assert.equal(restored.componentSets[0].properties[0].name, 'Size');
 });
 
@@ -1329,6 +1335,7 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(frame.children[0].align, 'right');
   assert.equal(frame.children[0].verticalAlign, 'middle');
   assert.equal(frame.children[0].textFit, 'auto-height');
+  assert.equal(frame.children[0].textWrapStyle, 'auto');
   assert.equal(frame.children[0].color, '#1a334d');
   assert.equal(frame.children[0].opacity, 1, 'base paint opacity stays on its own paint instead of changing layer opacity');
   assert.equal(frame.children[0].fills[0].type, 'solid');
@@ -1346,6 +1353,54 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(imported.report.unsupportedTypes.MYSTERY_LEAF, 1);
   assert.equal(imported.report.unsupportedTypes.__proto__, 1);
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
+});
+
+test('imports documented Figma text wrap styles and warns for values the embedded schema cannot identify', () => {
+  const page = { sessionID: 96, localID: 1 };
+  const parsed = {
+    header: { version: 106 },
+    schema: { definitions: [
+      { kind: 'MESSAGE', name: 'NodeChange', fields: [{ name: 'textWrapStyle', type: 'FigTextWrapMode' }] },
+      { kind: 'ENUM', name: 'FigTextWrapMode', fields: [
+        { name: 'AUTO', value: 7 }, { name: 'BALANCE', value: 3 }, { name: 'PRETTY', value: 11 }
+      ] }
+    ] },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('TEXT', 2, page, 'a', { name: 'Auto', textData: { characters: 'Default' }, textWrapStyle: 'AUTO' }),
+      node('TEXT', 3, page, 'b', { name: 'Balance', textData: { characters: 'Short heading' }, textWrapStyle: 'BALANCE' }),
+      node('TEXT', 4, page, 'c', { name: 'Pretty style', textData: { characters: 'Longer copy', style: { textWrapStyle: 'PRETTY' } } }),
+      node('TEXT', 5, page, 'd', { name: 'Schema enum', textData: { characters: 'Balanced' }, textWrapStyle: 3 }),
+      node('TEXT', 6, page, 'e', { name: 'Unknown enum', textData: { characters: 'Fallback' }, textWrapStyle: 4 }),
+      node('TEXT', 7, page, 'f', {
+        name: 'Mixed paragraphs', textData: { characters: 'First\nSecond', paragraphStyle: [{ textWrapStyle: 'BALANCE' }, { textWrapStyle: 'PRETTY' }] },
+        textWrapStyle: 'MIXED'
+      }),
+      node('TEXT', 8, page, 'g', {
+        name: 'Mixed paragraph extras', textData: { characters: 'First\nSecond', paragraphStyle: [
+          { textWrapStyle: 'BALANCE', textAlignHorizontal: 'CENTER' }, { textWrapStyle: 'PRETTY' }
+        ] },
+        textWrapStyle: 'MIXED'
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'text-wrap.fig' });
+  const texts = imported.document.pages[0].children;
+  assert.deepEqual(texts.map(text => text.textWrapStyle), ['auto', 'balance', 'pretty', 'balance', 'auto', 'auto', 'auto']);
+  assert.ok(imported.report.warnings.some(warning => warning.type === 'TEXT_WRAP_STYLE'
+    && warning.name === 'Unknown enum' && /embedded schema|unsupported/u.test(warning.detail)));
+  assert.deepEqual(texts[5].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
+  assert.ok(!imported.report.warnings.some(warning => warning.type === 'TEXT_WRAP_STYLE'
+    && warning.name === 'Mixed paragraphs'), 'known paragraph wrap styles explain the MIXED layer value');
+  assert.ok(!imported.report.warnings.some(warning => warning.type === 'TEXT_PARAGRAPH'
+    && warning.name === 'Mixed paragraphs'), 'fully preserved paragraph wrap styles do not receive a simplification warning');
+  assert.deepEqual(texts[6].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
+  assert.ok(imported.report.warnings.some(warning => warning.type === 'TEXT_PARAGRAPH'
+    && warning.name === 'Mixed paragraph extras' && /alignment, indentation, list/u.test(warning.detail)));
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children.map(text => text.textWrapStyle), ['auto', 'balance', 'pretty', 'balance', 'auto', 'auto', 'auto']);
+  assert.deepEqual(restored.pages[0].children[5].paragraphStyles, [{ textWrapStyle: 'balance' }, { textWrapStyle: 'pretty' }]);
 });
 
 test('preserves Figma image-fill filters as editable local adjustments and reviews invalid filter values', () => {

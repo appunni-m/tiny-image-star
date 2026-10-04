@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   addNode, bindColorVariable, bindVariable, createColorStyle, createColorVariable, createComponent,
   createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createMaskGroup, createNode,
-  createVariable, createVariableCollection, deleteVariable, findNode, getNodeGeometry, getNodePropertyValue,
+  createVariable, createVariableCollection, createTypographyStyle, deleteTypographyStyle, deleteVariable, findNode, getNodeGeometry, getNodePropertyValue,
   removeNode, setComponentSlotContent,
   serializeDocument, validateDocument
 } from '../src/model.js';
@@ -30,6 +30,19 @@ test('copying a nested mask tree remaps every layer reference and keeps one shar
   assert.equal('bytes' in pasted.children[0], false, 'clipboard snapshots never embed image bytes');
   assert.equal(validateDocument(pastedDocument), true);
   assert.equal(document.pages[0].children.length, 1, 'building a paste candidate never mutates the source document');
+});
+
+test('copying and pasting text layers preserves their text wrap style', () => {
+  const document = createDocument();
+  const text = createNode('text', { text: 'A balanced heading', textWrapStyle: 'balance' });
+  addNode(document, text);
+  const style = createTypographyStyle(document, text.id, 'Headline');
+  const clipboard = createLayerClipboard(document, [findNode(document, text.id)]);
+  deleteTypographyStyle(document, style.id);
+  const result = pasteLayerClipboard(document, clipboard);
+  assert.equal(result.nodes[0].textWrapStyle, 'balance');
+  assert.equal(result.nodes[0].typographyStyleId, undefined, 'a deleted copied style is detached cleanly');
+  assert.equal(validateDocument(result.document), true);
 });
 
 test('layer clipboard remaps internal scroll targets and drops routes whose targets are outside the pasted page', () => {

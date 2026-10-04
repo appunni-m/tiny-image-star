@@ -16,7 +16,7 @@ const roots = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
-  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'scalingFactor',
+  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textWrapStyle', 'fit', 'scalingFactor',
   'adjustments', 'transforms', 'fileName', 'sourceWidth', 'sourceHeight'
 ]);
 

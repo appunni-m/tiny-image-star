@@ -96,6 +96,7 @@ import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
 import { isScrollableFrame, isStickyScrollFrame, scrollPositionForNode } from './prototype-scroll-position.js';
+import { prototypeScrollOffsetsForFrame } from './prototype-scroll-state.js';
 import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
@@ -170,7 +171,7 @@ const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.ma
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textWrapStyle'
 ]);
 const state = {
   shapeBuilder: null,
@@ -202,7 +203,7 @@ const state = {
   prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
-  prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest',
+  prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest', prototypeScrollPosition: 'preserve',
   imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null,
   imageEraseMode: false, imageEraseBrushDiameter: 32, imageEraseDraft: null, inpaintControllers: new Map(),
   objectIsolationMode: false, objectIsolationBrushMode: OBJECT_ISOLATION_BRUSH_MODE.LASSO,
@@ -3117,6 +3118,7 @@ function textSection(node) {
   const listSpacing = node.listSpacing || 0;
   const firstLineIndent = getNodePropertyValue(state.document, node, 'firstLineIndent') || 0;
   const textFit = node.textFit || 'auto-height';
+  const textWrapStyle = ['auto', 'balance', 'pretty'].includes(node.textWrapStyle) ? node.textWrapStyle : 'auto';
   const textTruncation = ['disabled', 'ending'].includes(node.textTruncation) ? node.textTruncation : 'disabled';
   const maxLines = Number.isSafeInteger(node.maxLines) && node.maxLines >= 1 ? node.maxLines : '';
   const weightOptions = [[100, 'Thin'], [200, 'Extra light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi bold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']]
@@ -3139,7 +3141,7 @@ function textSection(node) {
     ? `<div class="image-properties-note">Linked to ${escapeHtml(pathSource?.name || 'source path')}. Geometry edits update this text path.</div><button class="add-fill" type="button" data-action="detach-text-path">Detach from source path</button>`
     : '<div class="image-properties-note">This text keeps its own path snapshot.</div>';
   const pathControls = currentTextPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(currentTextPath.width) * 4 + Number(currentTextPath.height) * 4)}" step="1" value="${Number(currentTextPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${currentTextPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>${pathLinkStatus}` : '';
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(fontFamily)}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontFamily', 'Font family')}${variablePropertyBindingControl(node, 'fontWeight', 'Font weight')}${variablePropertyBindingControl(node, 'fontStyle', 'Font style')}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}${variablePropertyBindingControl(node, 'paragraphSpacing', 'Paragraph spacing')}${variablePropertyBindingControl(node, 'firstLineIndent', 'First-line indent')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(fontFamily)}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select><label class="property-label">Wrap style<select class="prop-input select-field" data-prop="textWrapStyle" aria-label="Text wrap style"><option value="auto"${textWrapStyle === 'auto' ? ' selected' : ''}>Auto</option><option value="balance"${textWrapStyle === 'balance' ? ' selected' : ''}>Balance</option><option value="pretty"${textWrapStyle === 'pretty' ? ' selected' : ''}>Pretty</option></select></label>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width. Balance evens short copy; Pretty reduces a one-word final line. Auto width measures the text without wrapping.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontFamily', 'Font family')}${variablePropertyBindingControl(node, 'fontWeight', 'Font weight')}${variablePropertyBindingControl(node, 'fontStyle', 'Font style')}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}${variablePropertyBindingControl(node, 'paragraphSpacing', 'Paragraph spacing')}${variablePropertyBindingControl(node, 'firstLineIndent', 'First-line indent')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -3339,7 +3341,7 @@ function setPrototypeActionProjection(interaction, step, sourceId) {
   const fields = ['action', 'destinationId', 'destinationPageId', 'transition', 'easing', 'easingBezier', 'duration',
     'overlayPosition', 'overlayOutsideClick', 'overlayBackground', 'overlayBackgroundColor', 'overlayBackgroundOpacity',
     'delay', 'url', 'collectionId', 'modeId', 'targetVariantId', 'variableId', 'value', 'valueExpression',
-    'scrollTargetId', 'scrollAlignment', 'instanceId'];
+    'scrollTargetId', 'scrollAlignment', 'scrollPosition', 'instanceId'];
   for (const field of fields) delete interaction[field];
   for (const field of fields) if (Object.hasOwn(step, field)) interaction[field] = structuredClone(step[field]);
   if (step.action === 'change-variant' && sourceId) interaction.instanceId = sourceId;
@@ -3390,6 +3392,8 @@ function prototypeInteractionActionOptions() {
       ? ($('#prototype-scroll-target')?.value || state.prototypeScrollTargetId || null) : null,
     scrollAlignment: state.prototypeAction === 'scroll-to'
       ? ($('#prototype-scroll-alignment')?.value || state.prototypeScrollAlignment) : 'nearest',
+    scrollPosition: state.prototypeAction === 'navigate'
+      ? ($('#prototype-scroll-position')?.value || state.prototypeScrollPosition || 'preserve') : 'preserve',
     overlayPosition: state.prototypeOverlayPosition,
     overlayOutsideClick: state.prototypeOverlayOutsideClick,
     overlayBackground: state.prototypeOverlayBackground,
@@ -3439,6 +3443,7 @@ function loadPrototypeActionIntoComposer(interaction, action) {
   state.prototypeVariantTargetId = action.targetVariantId || null;
   state.prototypeScrollTargetId = action.scrollTargetId || null;
   state.prototypeScrollAlignment = action.scrollAlignment || 'nearest';
+  state.prototypeScrollPosition = action.scrollPosition || 'preserve';
   state.prototypeConditionVariableId = interaction.condition?.variableId || null;
   state.prototypeConditionOperator = interaction.condition?.operator || 'equals';
   state.prototypeConditionValue = interaction.condition ? String(interaction.condition.value) : null;
@@ -3699,6 +3704,9 @@ function prototypeInspector() {
       ? `<label>Scroll to layer<select id="prototype-scroll-target" class="select-field" aria-label="Scroll target layer">${scrollTargets.map(target => `<option value="${escapeHtml(target.id)}"${target.id === selectedScrollTarget.id ? ' selected' : ''}>${escapeHtml(target.name)}</option>`).join('')}</select></label><label>Alignment<select id="prototype-scroll-alignment" class="select-field" aria-label="Scroll target alignment">${[['nearest','Nearest visible edge'],['start','Align to start'],['center','Center in viewport'],['end','Align to end']].map(([value, label]) => `<option value="${value}"${value === (editingInteraction?.scrollAlignment || state.prototypeScrollAlignment) ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`
       : '<p class="prototype-hint">Add a scrollable frame, then choose one of its layers as the target.</p>'
     : '';
+  const scrollPositionControl = state.prototypeAction === 'navigate'
+    ? `<label>Scroll position<select id="prototype-scroll-position" class="select-field" aria-label="Scroll position between frames"><option value="preserve"${state.prototypeScrollPosition !== 'reset' ? ' selected' : ''}>Preserve</option><option value="reset"${state.prototypeScrollPosition === 'reset' ? ' selected' : ''}>Reset to top</option></select></label><small class="prototype-hint">Choose whether this destination keeps its previous scroll offsets or starts at the top.</small>`
+    : '';
   const destinationFrames = listPrototypeFrames(state.document);
   const destinationControl = editingInteraction && needsDestination
     ? `<label>Destination<select id="prototype-destination" class="select-field" aria-label="Prototype destination"><option value="" disabled${state.prototypeDestinationId ? '' : ' selected'}>Choose a frame</option>${destinationFrames.map(({ page, frame }) => `<option value="${escapeHtml(frame.id)}"${frame.id === state.prototypeDestinationId ? ' selected' : ''}>${escapeHtml(page.name)} · ${escapeHtml(frame.name)}</option>`).join('')}</select></label>`
@@ -3706,7 +3714,7 @@ function prototypeInspector() {
   const actionButtonLabel = state.prototypeProgramEditingActionId ? 'Save selected action' : editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
   const actionProgramControls = prototypeProgramEditor(editingInteraction);
   const composerTarget = state.prototypeProgramEditingActionId ? 'Selected sequence action' : editingInteraction ? 'Interaction action' : 'New interaction action';
-  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${smartAnimateMatchingControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls">${editingInteraction ? `<small class="prototype-hint">${escapeHtml(composerTarget)} · Trigger applies to this interaction.</small>` : ''}<label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${scrollPositionControl}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}${durationControl}${smartAnimateMatchingControl}${unsupportedOverlayTransition ? '<small class="prototype-hint">This saved directional transition is not available for overlays. Choose Dissolve or Instant.</small>' : ''}${overlayControls}` : ''}${editingInteraction && state.prototypeProgramEditingActionId ? '<small class="prototype-hint">Saving updates only this action; its stable ID and branch position are preserved.</small>' : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${actionProgramControls}${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `${scrollPositionSection(node, entry)}<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -6178,6 +6186,7 @@ function onCanvasPointerDown(event) {
         easingBezier: state.prototypeEasingBezier,
         duration: state.prototypeDuration,
         condition,
+        scrollPosition: state.prototypeAction === 'navigate' ? state.prototypeScrollPosition : 'preserve',
         overlayPosition: state.prototypeOverlayPosition,
         overlayOutsideClick: state.prototypeOverlayOutsideClick,
         overlayBackground: state.prototypeOverlayBackground,
@@ -7902,6 +7911,7 @@ function editTextNode(nodeId) {
   editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, textGeometry.width * state.zoom)}px`;
   editor.style.minHeight = `${Math.max(28, textGeometry.height * state.zoom)}px`;
   editor.style.whiteSpace = entry.node.textFit === 'auto-width' ? 'pre' : 'pre-wrap';
+  editor.style.setProperty('text-wrap-style', ['balance', 'pretty'].includes(entry.node.textWrapStyle) ? entry.node.textWrapStyle : 'auto');
   editor.style.textAlign = ['left', 'center', 'right', 'justify'].includes(entry.node.align) ? entry.node.align : 'left';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
   editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
@@ -11091,7 +11101,7 @@ function updateInspectorInput(event) {
     } else if (node.type === 'text' && prop === 'maxHeight' && propertyValue != null) {
       node.maxLines = null;
     }
-    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'text', 'width'].includes(prop))) {
+    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'text', 'width'].includes(prop))) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent'].includes(prop)) {
@@ -15174,7 +15184,7 @@ function pasteAppearanceToSelection() {
         componentProperties.add('radius'); componentProperties.add('cornerRadii'); componentProperties.add('vertexRadii');
       }
       if (changed.has('textStyle')) {
-        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
         if (resizeTextNode(result.node)) {
           componentProperties.add('width'); componentProperties.add('height');
           if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
@@ -16636,6 +16646,15 @@ function navigatePresentation(interaction) {
     cancelPresentationAnimation();
     showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.');
     return;
+  }
+  if (interaction.action === 'navigate' && result === 'navigated' && presentRenderState) {
+    presentRenderState.presentationScrollOffsets = prototypeScrollOffsetsForFrame(
+      runtimeDocument,
+      presentRenderState.presentationScrollOffsets || new Map(),
+      state.presenting.pageId,
+      state.presenting.frameId,
+      interaction.scrollPosition || 'preserve'
+    );
   }
   if (result === 'link-opened' && linkUrl) {
     window.open(linkUrl, '_blank', 'noopener,noreferrer');
@@ -19727,6 +19746,8 @@ function applyInspectorAction(action, details = {}) {
             ? ($('#prototype-scroll-target')?.value || state.prototypeScrollTargetId || null) : null,
           scrollAlignment: state.prototypeAction === 'scroll-to'
             ? ($('#prototype-scroll-alignment')?.value || state.prototypeScrollAlignment) : 'nearest',
+          scrollPosition: state.prototypeAction === 'navigate'
+            ? ($('#prototype-scroll-position')?.value || state.prototypeScrollPosition || 'preserve') : 'preserve',
           overlayPosition: state.prototypeOverlayPosition,
           overlayOutsideClick: state.prototypeOverlayOutsideClick,
           overlayBackground: state.prototypeOverlayBackground,
@@ -20944,6 +20965,7 @@ function initEvents() {
     if (event.target.id === 'prototype-destination') state.prototypeDestinationId = event.target.value || null;
     if (event.target.id === 'prototype-scroll-target') state.prototypeScrollTargetId = event.target.value || null;
     if (event.target.id === 'prototype-scroll-alignment') state.prototypeScrollAlignment = event.target.value;
+    if (event.target.id === 'prototype-scroll-position') state.prototypeScrollPosition = event.target.value;
     if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') {

@@ -349,38 +349,93 @@ export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
 }
 
 export function wrapTextWithMeasure(text, maxWidth, measure, options = {}) {
-  const lines = [];
+  const mode = ['auto', 'balance', 'pretty'].includes(options.textWrapStyle) ? options.textWrapStyle : 'auto';
+  const output = [];
   for (const paragraph of String(text ?? '').split(/\r\n|\r|\n/u)) {
-    const pieces = paragraphWrapPieces(paragraph, maxWidth, measure, options);
-    let line = '';
-    let pendingWhitespace = '';
-    for (const piece of pieces) {
-      if (/^\s+$/u.test(piece)) {
-        if (line) pendingWhitespace += piece;
-        else line += piece;
-        continue;
-      }
-      const candidate = `${line}${pendingWhitespace}${piece}`;
-      const lineHasContent = line && !/^\s+$/u.test(line);
-      if (lineHasContent && measure(visibleTextWithoutDiscretionaryBreaks(candidate)) > maxWidth) {
-        const linePrefix = `${line}${pendingWhitespace}`;
-        const discretionary = findPlainDiscretionaryBreak(piece, linePrefix, maxWidth, measure, options.graphemeSegmenter);
-        if (discretionary) {
-          lines.push(visibleTextWithoutDiscretionaryBreaks(`${linePrefix}${discretionary.prefix}`));
-          line = discretionary.suffix;
-        } else {
-          const trailingHyphenLine = plainLineWithTrailingSoftHyphen(
-            line, piece, Boolean(pendingWhitespace), maxWidth, measure, options.graphemeSegmenter
-          );
-          lines.push(trailingHyphenLine || visibleTextWithoutDiscretionaryBreaks(line));
-          line = piece;
-        }
-      } else line = candidate;
-      pendingWhitespace = '';
-    }
-    lines.push(visibleTextWithoutDiscretionaryBreaks(`${line}${pendingWhitespace}`));
+    const lines = wrapParagraphAuto(paragraph, maxWidth, measure, options);
+    output.push(...(mode === 'auto' || !Number.isFinite(Number(maxWidth))
+      ? lines : applyWrapStyle(paragraph, Number(maxWidth), measure, lines, mode)));
   }
+  return output;
+}
+
+function wrapParagraphAuto(paragraph, maxWidth, measure, options) {
+  const lines = [];
+  const pieces = paragraphWrapPieces(paragraph, maxWidth, measure, options);
+  let line = '';
+  let pendingWhitespace = '';
+  for (const piece of pieces) {
+    if (/^\s+$/u.test(piece)) {
+      if (line) pendingWhitespace += piece;
+      else line += piece;
+      continue;
+    }
+    const candidate = `${line}${pendingWhitespace}${piece}`;
+    const lineHasContent = line && !/^\s+$/u.test(line);
+    if (lineHasContent && measure(visibleTextWithoutDiscretionaryBreaks(candidate)) > maxWidth) {
+      const linePrefix = `${line}${pendingWhitespace}`;
+      const discretionary = findPlainDiscretionaryBreak(piece, linePrefix, maxWidth, measure, options.graphemeSegmenter);
+      if (discretionary) {
+        lines.push(visibleTextWithoutDiscretionaryBreaks(`${linePrefix}${discretionary.prefix}`));
+        line = discretionary.suffix;
+      } else {
+        const trailingHyphenLine = plainLineWithTrailingSoftHyphen(
+          line, piece, Boolean(pendingWhitespace), maxWidth, measure, options.graphemeSegmenter
+        );
+        lines.push(trailingHyphenLine || visibleTextWithoutDiscretionaryBreaks(line));
+        line = piece;
+      }
+    } else line = candidate;
+    pendingWhitespace = '';
+  }
+  lines.push(visibleTextWithoutDiscretionaryBreaks(`${line}${pendingWhitespace}`));
   return lines;
+}
+
+const maxStyledWrapWords = 96;
+
+function applyWrapStyle(paragraph, maxWidth, measure, autoLines, mode) {
+  // Keep existing Unicode break opportunities for scripts and tokens that do
+  // not form ordinary whitespace-delimited words.
+  const words = paragraph.match(/\S+/gu) || [];
+  if (words.length < 2 || words.length > maxStyledWrapWords
+    || /[\u00ad\u200b\u00a0\u2007\u202f\u2060\ufeff\u2011]/u.test(paragraph)
+    || textGraphemes(paragraph).some(cluster => isCjkLineBreakCharacter(cluster))) return autoLines;
+  const separators = [...paragraph.matchAll(/\s+/gu)].map(match => match[0]);
+  const requestedLines = autoLines.length;
+  if (mode === 'balance') return partitionWords(words, separators, maxWidth, measure, requestedLines, false) || autoLines;
+  for (let count = Math.min(requestedLines, words.length); count >= 1; count -= 1) {
+    const result = partitionWords(words, separators, maxWidth, measure, count, true);
+    if (result) return result;
+  }
+  return autoLines;
+}
+
+function partitionWords(words, separators, maxWidth, measure, lineCount, avoidOrphan) {
+  const memo = new Map();
+  const build = (start, linesLeft) => {
+    if (start === words.length) return linesLeft === 0 ? { cost: 0, lines: [] } : null;
+    if (linesLeft <= 0 || words.length - start < linesLeft) return null;
+    const key = `${start}:${linesLeft}`;
+    if (memo.has(key)) return memo.get(key);
+    let best = null;
+    for (let end = start; end <= words.length - linesLeft; end += 1) {
+      const line = words.slice(start, end + 1).reduce((value, word, index) =>
+        index ? `${value}${separators[start + index - 1] || ' '}${word}` : word, '');
+      const width = Number(measure(line));
+      if (width > maxWidth && end > start) break;
+      if (width > maxWidth) continue;
+      if (avoidOrphan && linesLeft === 1 && end === start && words.length > 1) continue;
+      const rest = build(end + 1, linesLeft - 1);
+      if (!rest) continue;
+      const raggedness = maxWidth - width;
+      const candidate = { cost: raggedness * raggedness + rest.cost, lines: [line, ...rest.lines] };
+      if (!best || candidate.cost < best.cost) best = candidate;
+    }
+    memo.set(key, best);
+    return best;
+  };
+  return build(0, lineCount)?.lines || null;
 }
 
 function nonNegativeTextMetric(value) {
@@ -402,6 +457,7 @@ function normalizedParagraphStyle(style) {
     normalized.listStart = style.listStart;
   }
   if (['left', 'center', 'right', 'justify'].includes(style?.align)) normalized.align = style.align;
+  if (['auto', 'balance', 'pretty'].includes(style?.textWrapStyle)) normalized.textWrapStyle = style.textWrapStyle;
   return normalized;
 }
 
@@ -623,6 +679,7 @@ export function layoutPlainText(text, maxWidth, measure, {
   align = 'left',
   listSpacing = 0,
   paragraphStyles = [],
+  textWrapStyle = 'auto',
   markerStyle = null,
   textTruncation = 'disabled',
   maxLines = null,
@@ -652,11 +709,12 @@ export function layoutPlainText(text, maxWidth, measure, {
       ? indentWithinWidth((isListItem ? plan.contentIndent : 0) + requestedIndent, limit) : 0;
     const continuationIndent = isListItem ? indentWithinWidth(plan.contentIndent, limit) : 0;
     const availableWidth = Number.isFinite(limit) ? Math.max(1, limit - firstIndent) : Infinity;
+    const wrapStyle = plan.textWrapStyle || textWrapStyle;
     const wrapped = isListItem
       ? wrapParagraphWithFirstLineWidth(paragraph, availableWidth, Number.isFinite(limit) ? Math.max(1, limit - continuationIndent) : Infinity, measure, {
         wordSegmenter, graphemeSegmenter: graphemes
       })
-      : wrapTextWithMeasure(paragraph, availableWidth, measure, { wordSegmenter, graphemeSegmenter: graphemes });
+      : wrapTextWithMeasure(paragraph, availableWidth, measure, { wordSegmenter, graphemeSegmenter: graphemes, textWrapStyle: wrapStyle });
     for (const [paragraphLineIndex, displayText] of wrapped.entries()) {
       const naturalWidth = Number(measure(displayText));
       const lineIndent = paragraphLineIndex === 0 ? firstIndent : continuationIndent;
@@ -790,6 +848,75 @@ function flushTrailingRichWhitespace(paragraph) {
 
 function measuredPartsWidth(parts, measure) {
   return visibleRichParts(parts).reduce((width, part) => width + Number(measure(part.text, part.style)), 0);
+}
+
+// Rich-text reflow explores candidate line breaks. Bound this optimization so
+// large paragraphs keep the ordinary linear wrapping path and cannot turn a
+// canvas measurement pass into cubic work.
+function richParagraphText(words) {
+  return words.map((word, index) => `${index ? word.separatorParts.map(part => part.text).join('') : ''}${word.parts.map(part => part.text).join('')}`).join('');
+}
+
+function canApplyRichWrapStyle(words, graphemes) {
+  if (words.length < 2 || words.length > maxStyledWrapWords) return false;
+  const text = richParagraphText(words);
+  if (requiresComplexTextShaping(text)
+    || /[\u00ad\u200b\u00a0\u2007\u202f\u2060\ufeff\u2011]/u.test(text)
+    || textGraphemes(text, graphemes).some(cluster => isCjkLineBreakCharacter(cluster))) return false;
+  return words.slice(1).every(word => word.separatorParts.length > 0
+    && /^\s+$/u.test(word.separatorParts.map(part => part.text).join('')));
+}
+
+function partitionRichWords(words, widthForLine, measure, lineCount, avoidOrphan) {
+  const memo = new Map();
+  const candidateCache = new Map();
+  const candidateFor = (start, end) => {
+    const key = `${start}:${end}`;
+    if (candidateCache.has(key)) return candidateCache.get(key);
+    const parts = [];
+    for (let index = start; index <= end; index += 1) {
+      if (index > start) for (const part of words[index].separatorParts) appendRichPart(parts, part.text, part.style);
+      for (const part of words[index].parts) appendRichPart(parts, part.text, part.style);
+    }
+    const candidate = { parts, width: measuredPartsWidth(parts, measure) };
+    candidateCache.set(key, candidate);
+    return candidate;
+  };
+  const build = (start, linesLeft) => {
+    if (start === words.length) return linesLeft === 0 ? { cost: 0, ranges: [] } : null;
+    if (linesLeft <= 0 || words.length - start < linesLeft) return null;
+    const key = `${start}:${linesLeft}`;
+    if (memo.has(key)) return memo.get(key);
+    const lineIndex = lineCount - linesLeft;
+    const lineLimit = widthForLine(lineIndex);
+    let best = null;
+    for (let end = start; end <= words.length - linesLeft; end += 1) {
+      const candidate = candidateFor(start, end);
+      if (candidate.width > lineLimit) continue;
+      if (avoidOrphan && linesLeft === 1 && end === start && words.length > 1) continue;
+      const rest = build(end + 1, linesLeft - 1);
+      if (!rest) continue;
+      const slack = lineLimit - candidate.width;
+      const result = { cost: slack * slack + rest.cost, ranges: [[start, end], ...rest.ranges] };
+      if (!best || result.cost < best.cost) best = result;
+    }
+    memo.set(key, best);
+    return best;
+  };
+  const result = build(0, lineCount);
+  if (!result) return null;
+  return result.ranges.map(([start, end]) => candidateFor(start, end).parts);
+}
+
+function richWrapStyleLines(words, mode, autoLineCount, widthForLine, measure, graphemes) {
+  if (!['balance', 'pretty'].includes(mode) || !Number.isFinite(widthForLine(0))
+    || !canApplyRichWrapStyle(words, graphemes)) return null;
+  if (mode === 'balance') return partitionRichWords(words, widthForLine, measure, autoLineCount, false);
+  for (let lineCount = Math.min(autoLineCount, words.length); lineCount >= 1; lineCount -= 1) {
+    const result = partitionRichWords(words, widthForLine, measure, lineCount, true);
+    if (result) return result;
+  }
+  return null;
 }
 
 function richDiscretionaryUnits(parts, segmenter) {
@@ -1005,6 +1132,7 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     const wordWidthLimit = Number.isFinite(limit)
       ? Math.max(1, limit - Math.max(firstIndent, continuationIndent)) : Infinity;
     const words = paragraph.words.flatMap(word => splitRichWordByWidth(word, wordWidthLimit, measure, graphemes));
+    const paragraphRawLines = [];
     let line = [];
     let firstLine = true;
     for (const word of words) {
@@ -1020,19 +1148,29 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
           word.parts, [...line, ...word.separatorParts], lineLimit, measure, graphemes
         );
         if (discretionary) {
-          rawLines.push({ parts: discretionary.prefixParts, paragraphIndex, firstLine, plan });
+          paragraphRawLines.push({ parts: discretionary.prefixParts, paragraphIndex, firstLine, plan });
           line = discretionary.suffixParts;
         } else {
           const trailingHyphenParts = richLineWithTrailingSoftHyphen(
             line, word.parts, word.separatorParts.length > 0, lineLimit, measure, graphemes
           );
-          rawLines.push({ parts: trailingHyphenParts || line, paragraphIndex, firstLine, plan });
+          paragraphRawLines.push({ parts: trailingHyphenParts || line, paragraphIndex, firstLine, plan });
           line = word.parts;
         }
         firstLine = false;
       } else line = mergedCandidate;
     }
-    rawLines.push({ parts: line, paragraphIndex, firstLine, plan });
+    paragraphRawLines.push({ parts: line, paragraphIndex, firstLine, plan });
+    const wrapStyle = plan.textWrapStyle || baseStyle.textWrapStyle || 'auto';
+    const styledLines = richWrapStyleLines(
+      words, wrapStyle, paragraphRawLines.length,
+      lineIndex => Number.isFinite(limit)
+        ? Math.max(1, limit - (lineIndex === 0 ? firstIndent : continuationIndent)) : Infinity,
+      measure, graphemes
+    );
+    if (styledLines) {
+      rawLines.push(...styledLines.map((parts, lineIndex) => ({ parts, paragraphIndex, firstLine: lineIndex === 0, plan })));
+    } else rawLines.push(...paragraphRawLines);
   }
 
   let y = 0;
@@ -1141,6 +1279,7 @@ export function calculateTextBox(ctx, node, {
       firstLineIndent: nonNegativeTextMetric(firstLineIndent),
       listSpacing: nonNegativeTextMetric(listSpacing),
       paragraphStyles,
+      textWrapStyle: node.textWrapStyle || 'auto',
       align: node.align || 'left',
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
       textCase: node.textCase || 'none'
@@ -1175,6 +1314,7 @@ export function calculateTextBox(ctx, node, {
     const layout = layoutPlainText(textValue, Infinity,
       line => measure(line, { ...resolvedNode }),
       { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
+        textWrapStyle: node.textWrapStyle || 'auto',
         textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
         fontFamily: family, fontSize: size, fontWeight: weight,
         fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
@@ -1190,6 +1330,7 @@ export function calculateTextBox(ctx, node, {
   const layout = layoutPlainText(textValue, Math.max(1, width),
     line => measure(line, { ...resolvedNode }),
     { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
+      textWrapStyle: node.textWrapStyle || 'auto',
       textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
       fontFamily: family, fontSize: size, fontWeight: weight,
       fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
