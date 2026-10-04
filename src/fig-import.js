@@ -2277,13 +2277,14 @@ function convertSiblingMaskStacks(entries, parentSource, context) {
     while (end < entries.length && entries[end].source?.isMask !== true) end += 1;
     const stack = entries.slice(index, end);
     const mode = maskModeOf(entry.source);
-    const localMode = mode === 'ALPHA' ? 'alpha' : mode === 'VECTOR' ? 'vector' : null;
+    const localMode = mode === 'ALPHA' ? 'alpha' : mode === 'VECTOR' ? 'vector' : mode === 'LUMINANCE' ? 'luminance' : null;
     const name = safeName(entry.source?.name, 'Mask');
     let reason = null;
     if (!localMode) reason = `The ${mode || 'unknown'} mask mode is not supported by the local renderer; these layers were kept editable and unmasked.`;
     else if (!entry.node) reason = 'The mask source could not be converted, so the remaining layers were kept editable and unmasked.';
     else if (localMode === 'alpha' && !localAlphaMaskSource(entry.node)) reason = 'This mask source type is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.';
     else if (localMode === 'vector' && !isMaskSource(entry.node, 'vector')) reason = 'This mask source type is not supported by the local vector-mask renderer; these layers were kept editable and unmasked.';
+    else if (localMode === 'luminance' && !isMaskSource(entry.node, 'luminance')) reason = 'This mask source type is not supported by the local luminance-mask renderer; these layers were kept editable and unmasked.';
     else if (!stack.slice(1).some(item => item.node)) reason = 'This mask has no converted following siblings to mask, so it was kept as an ordinary editable layer.';
     else if (supportsStackAutoLayout(parentSource)) reason = 'Grouping this mask stack would change its parent auto-layout flow; the layers were kept editable and unmasked.';
 

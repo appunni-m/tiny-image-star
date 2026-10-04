@@ -608,6 +608,7 @@ function isNodeVisible(document, node) {
 
 const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'image', 'group', 'frame', 'section']);
 const svgVectorMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
+const svgLuminanceMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path']);
 
 function validateMaskGroup(node, document, assets, imagePreviews) {
   if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string') {
@@ -618,10 +619,24 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
   if (!source) throw new SvgExportError('mask groups with a missing source', node);
   if (!isNodeVisible(document, source)) return source;
   const maskMode = node.maskMode || 'alpha';
-  if (!['alpha', 'vector'].includes(maskMode)) throw new SvgExportError('unknown mask modes', node);
+  if (!['alpha', 'vector', 'luminance'].includes(maskMode)) throw new SvgExportError('unknown mask modes', node);
   if (maskMode === 'vector') {
     if (!svgVectorMaskSourceTypes.has(source.type) || !isMaskSource(source, 'vector')) {
       throw new SvgExportError(`${source.type || 'unknown'} vector mask contents`, source);
+    }
+    dimensions({ ...source, ...getNodeGeometry(document, source) });
+    return source;
+  }
+  if (maskMode === 'luminance') {
+    if (!svgLuminanceMaskSourceTypes.has(source.type)) throw new SvgExportError(`${source.type || 'unknown'} luminance mask contents`, source);
+    if (Array.isArray(source.fills) || Array.isArray(source.strokes)) throw new SvgExportError('ordered paint stacks in luminance masks', source);
+    if ((source.effects || []).some(effect => effect.visible !== false)
+      || hasNonNormalPaintBlend(source) || (source.blendMode || 'normal') !== 'normal') {
+      throw new SvgExportError('effects or blend modes in luminance masks', source);
+    }
+    if (source.type === 'path' && !hasFillablePathContour(source)
+      && !(source.stroke && Number(source.strokeWidth) > 0)) {
+      throw new SvgExportError('open, unpainted path luminance mask contents', source);
     }
     dimensions({ ...source, ...getNodeGeometry(document, source) });
     return source;
@@ -1445,6 +1460,12 @@ function vectorMaskSourceMarkup(node, document, measureText, context, layerIndex
 function maskSourceMarkup(source, document, measureText, context, maskMode = 'alpha', layerIndex = 0) {
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
+  if (maskMode === 'luminance') {
+    const gradient = gradientDefinition(node, layerIndex);
+    if (gradient) context.defs.push(gradient.markup);
+    const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
+    return `<g${matrixAttribute(nodeMatrix(node, { includePosition: true }))} opacity="${number(opacity)}">${shapeMarkup(node, document, measureText, gradient?.id || null)}</g>`;
+  }
   const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
   const fillOpacity = Number(node.fillOpacity ?? 1);
   const alpha = opacity * fillOpacity;
@@ -1484,10 +1505,13 @@ function maskDefinition(group, source, index, document, measureText, context) {
   const { width, height } = group;
   const maskMode = group.maskMode || 'alpha';
   const content = maskSourceMarkup(source, document, measureText, context, maskMode, index);
-  const metadata = maskMode === 'vector' ? ' data-tiny-image-star-mask-mode="vector"' : '';
+  const metadata = maskMode === 'vector' || maskMode === 'luminance'
+    ? ` data-tiny-image-star-mask-mode="${maskMode}"` : '';
+  const maskType = maskMode === 'luminance' ? 'luminance' : 'alpha';
+  const colorInterpolation = maskMode === 'luminance' ? ' color-interpolation="sRGB"' : '';
   return {
     id,
-    markup: `<mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(width)}" height="${number(height)}"${metadata}>${content}</mask>`
+    markup: `<mask id="${id}" mask-type="${maskType}"${colorInterpolation} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(width)}" height="${number(height)}"${metadata}>${content}</mask>`
   };
 }
 

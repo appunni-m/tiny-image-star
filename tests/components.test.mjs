@@ -561,7 +561,7 @@ test('long-named image card instances persist frame overflow and image recipe ov
   assert.deepEqual([findNode(reopened, imageInstance.id).node.fit, findNode(reopened, imageInstance.id).node.outputFormat], ['tile', 'webp']);
 });
 
-test('masked group mode can be overridden on a component instance and rejects invalid mode targets', () => {
+test('luminance mask mode can be overridden on a component instance and rejects invalid mode targets', () => {
   const document = createDocument();
   const content = createNode('rectangle', { name: 'Content' });
   const mask = createNode('rectangle', { name: 'Mask' });
@@ -569,12 +569,12 @@ test('masked group mode can be overridden on a component instance and rejects in
   const group = createMaskGroup(document, [content.id, mask.id]);
   const component = createComponent(document, group.id, 'Masked artwork');
   const instance = createComponentInstance(document, component.id);
-  instance.maskMode = 'vector';
-  instance.componentOverrides[group.id] = { maskMode: 'vector' };
+  instance.maskMode = 'luminance';
+  instance.componentOverrides[group.id] = { maskMode: 'luminance' };
 
   assert.equal(validateDocument(document), true);
   const reopened = parseDocument(serializeDocument(document));
-  assert.equal(findNode(reopened, instance.id).node.maskMode, 'vector');
+  assert.equal(findNode(reopened, instance.id).node.maskMode, 'luminance');
   const invalid = structuredClone(reopened);
   findNode(invalid, instance.id).node.componentOverrides[group.id].maskMode = 'unsupported';
   assert.throws(() => validateDocument(invalid), /Invalid component mask mode override/);

@@ -1494,13 +1494,15 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   return group;
 }
 
-const maskModes = new Set(['alpha', 'vector']);
+const maskModes = new Set(['alpha', 'vector', 'luminance']);
 const alphaMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text', 'image', 'group', 'frame', 'section']);
 const vectorMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
+const luminanceMaskSourceTypes = new Set([...alphaMaskSourceTypes, 'line']);
 export function isMaskSource(node, maskMode = 'alpha') {
   if (!node) return false;
-  if (maskMode === 'alpha') {
-    return Boolean(alphaMaskSourceTypes.has(node.type)
+  if (maskMode === 'alpha' || maskMode === 'luminance') {
+    const sourceTypes = maskMode === 'luminance' ? luminanceMaskSourceTypes : alphaMaskSourceTypes;
+    return Boolean(sourceTypes.has(node.type)
       && (node.type !== 'path' || hasFillablePathContour(node))
       && (node.type !== 'network' || (node.faces || []).length > 0));
   }
@@ -1513,7 +1515,7 @@ export function isMaskSource(node, maskMode = 'alpha') {
   return true;
 }
 
-/** Return whether selected sibling layers can become a live alpha-mask group. */
+/** Return whether selected sibling layers can become a live mask group. */
 export function canCreateMaskGroup(document, nodeIds, pageId = document.activePageId, maskMode = 'alpha') {
   if (!maskModes.has(maskMode)) return false;
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;

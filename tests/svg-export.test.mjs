@@ -588,6 +588,45 @@ test('exports vector masks as opaque white fill and stroke geometry and preserve
   assert.equal(restoredSource?.strokeWidth, 8);
 });
 
+test('exports colored luminance masks with sRGB interpolation and preserves the source paint on SVG round-trip', () => {
+  const source = createNode('ellipse', {
+    id: 'luminance-source', name: 'Color ramp mask', x: 8, y: 6, width: 48, height: 36,
+    fill: '#8080ff', fillOpacity: .65, opacity: .8, stroke: '#ff4000', strokeWidth: 3, strokeOpacity: .5
+  });
+  const content = createNode('rectangle', { id: 'luminance-content', width: 64, height: 48 });
+  const group = createNode('group', {
+    id: 'luminance-group', width: 64, height: 48, mask: true, maskMode: 'luminance', maskSourceId: source.id,
+    children: [content, source]
+  });
+  const svg = exportNodeToSvg(group);
+
+  assert.match(svg, /<mask id="tis-mask-0" mask-type="luminance" color-interpolation="sRGB"[^>]*data-tiny-image-star-mask-mode="luminance">/);
+  const maskMarkup = svg.match(/<mask[^>]*>([\s\S]*?)<\/mask>/)?.[1] || '';
+  assert.match(maskMarkup, /fill="#8080ff" fill-opacity="0\.65"/,
+    'luminance export retains source RGB instead of converting it to white');
+  assert.match(maskMarkup, /stroke="#ff4000" stroke-opacity="0\.5" stroke-width="3"/,
+    'colored stroke and its alpha contribute to the luminance mask');
+  const imported = importSvgToLayers(svg);
+  const restored = findNestedLayer(imported.nodes, node => node.type === 'group' && node.mask);
+  assert.equal(restored?.maskMode, 'luminance');
+  const restoredSource = restored?.children.find(node => node.id === restored.maskSourceId);
+  assert.equal(restoredSource?.fill, '#8080ff');
+  assert.equal(restoredSource?.stroke, '#ff4000');
+});
+
+test('rejects luminance masks that cannot preserve their source paints', () => {
+  const source = createNode('ellipse', {
+    id: 'unsupported-luminance-source', fill: '#ffffff',
+    effects: [{ id: 'blurred-mask', type: 'layer-blur', radius: 4, visible: true }]
+  });
+  const group = createNode('group', {
+    width: 64, height: 48, mask: true, maskMode: 'luminance', maskSourceId: source.id,
+    children: [createNode('rectangle', { width: 64, height: 48 }), source]
+  });
+  assert.throws(() => exportNodeToSvg(group), error => error instanceof SvgExportError
+    && error.feature === 'effects or blend modes in luminance masks');
+});
+
 test('exports editable text glyphs as white alpha-mask content with layer opacity', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Mask typography');

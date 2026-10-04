@@ -4418,7 +4418,14 @@ function renderInspector() {
   if (node.type === 'group' && node.mask) {
     const maskSource = node.children.find(child => child.id === node.maskSourceId);
     const vectorAvailable = isMaskSource(maskSource, 'vector');
-    body += section('Mask', `<label class="property-label">Mask mode<select class="prop-input select-field" data-prop="maskMode" aria-label="Mask mode"${node.locked ? ' disabled' : ''}><option value="alpha"${(node.maskMode || 'alpha') === 'alpha' ? ' selected' : ''}>Alpha</option><option value="vector"${node.maskMode === 'vector' ? ' selected' : ''}${!vectorAvailable ? ' disabled' : ''}>Vector${vectorAvailable ? '' : ' · unsupported source'}</option></select></label><div class="image-properties-note">${escapeHtml(maskSource?.name || 'Vector shape')} masks the editable layers inside this group. Vector mode uses visible fill and stroke geometry at full opacity.</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
+    const luminanceAvailable = isMaskSource(maskSource, 'luminance');
+    const maskMode = node.maskMode || 'alpha';
+    const maskDescription = maskMode === 'luminance'
+      ? 'Brightness and opacity control reveal: white shows the layers below, black hides them, and gray or translucent areas show them partly.'
+      : maskMode === 'vector'
+        ? 'Vector mode uses visible fill and stroke geometry at full opacity.'
+        : 'Alpha mode uses the source’s transparency; its color does not change the mask.';
+    body += section('Mask', `<label class="property-label">Mask mode<select class="prop-input select-field" data-prop="maskMode" aria-label="Mask mode"${node.locked ? ' disabled' : ''}><option value="alpha"${maskMode === 'alpha' ? ' selected' : ''}>Alpha</option><option value="vector"${maskMode === 'vector' ? ' selected' : ''}${!vectorAvailable ? ' disabled' : ''}>Vector${vectorAvailable ? '' : ' · unsupported source'}</option><option value="luminance"${maskMode === 'luminance' ? ' selected' : ''}${!luminanceAvailable ? ' disabled' : ''}>Luminance${luminanceAvailable ? '' : ' · unsupported source'}</option></select></label><div class="image-properties-note">${escapeHtml(maskSource?.name || 'Mask source')} masks the editable layers inside this group. ${maskDescription}</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
   }
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node) + singleImageRecipesSection(node);
@@ -14191,6 +14198,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   const selectedGroup = selectedNodes().length === 1 && selectedNodes()[0].type === 'group' ? selectedNodes()[0] : null;
   if (canGroupLayers(state.document, rootSelectedIds())) items.unshift({ label: `Group ${rootSelectedIds().length} layers`, shortcut: '⌘G', action: groupSelectedLayers }, { separator: true });
   if (selectedGroup && canUngroupLayers(state.document, selectedGroup.id)) items.unshift({ label: 'Ungroup', shortcut: '⌘⇧G', action: () => ungroupSelectedLayers(selectedGroup.id) }, { separator: true });
+  if (canCreateMaskGroup(state.document, rootSelectedIds(), state.document.activePageId, 'luminance')) items.unshift({ label: 'Use as luminance mask · bright reveals, black hides', action: () => maskSelectedLayers('luminance') }, { separator: true });
   if (canCreateMaskGroup(state.document, rootSelectedIds())) items.unshift({ label: 'Use as alpha mask', action: () => maskSelectedLayers('alpha') }, { separator: true });
   if (canCreateMaskGroup(state.document, rootSelectedIds(), state.document.activePageId, 'vector')) items.unshift({ label: 'Use as vector mask', action: () => maskSelectedLayers('vector') }, { separator: true });
   if (node?.type === 'group' && node.mask) items.unshift({ label: 'Release mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
@@ -14312,11 +14320,13 @@ function ungroupSelectedLayers(groupId = selectedNodes()[0]?.id) {
 
 function maskSelectedLayers(maskMode = 'alpha') {
   const ids = rootSelectedIds();
+  const modeName = maskMode === 'vector' ? 'Vector' : maskMode === 'luminance' ? 'Luminance' : 'Alpha';
   try {
-    checkpoint(maskMode === 'vector' ? 'Create vector mask group' : 'Create alpha mask group');
+    checkpoint(`Create ${modeName.toLowerCase()} mask group`);
     const group = createMaskGroup(state.document, ids, state.document.activePageId, maskMode);
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
-    showToast(`${maskMode === 'vector' ? 'Vector' : 'Alpha'} mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Mask source'}”. Its source layers remain editable.`);
+    const luminanceHelp = maskMode === 'luminance' ? ' Bright, opaque areas reveal; black or transparent areas hide.' : '';
+    showToast(`${modeName} mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Mask source'}”.${luminanceHelp} Its source layers remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot form a mask.'); }
 }
 
@@ -22189,6 +22199,7 @@ function initEvents() {
     ];
     const ids = rootSelectedIds();
     const node = selectedNodes()[0];
+    if (canCreateMaskGroup(state.document, ids, state.document.activePageId, 'luminance')) items.unshift({ label: 'Use selected layers as luminance mask · bright reveals, black hides', action: () => maskSelectedLayers('luminance') }, { separator: true });
     if (canCreateMaskGroup(state.document, ids)) items.unshift({ label: 'Use selected layers as alpha mask', action: () => maskSelectedLayers('alpha') }, { separator: true });
     if (canCreateMaskGroup(state.document, ids, state.document.activePageId, 'vector')) items.unshift({ label: 'Use selected layers as vector mask', action: () => maskSelectedLayers('vector') }, { separator: true });
     if (selectedNodes().length === 1 && node?.type === 'group' && node.mask) items.unshift({ label: 'Release selected mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
@@ -23000,7 +23011,9 @@ async function boot() {
   }
   try { await refreshLocalFontAssets({ showFailureToast: true }); }
   catch (error) { console.warn('Could not restore local fonts', error); }
-  renderer = new SceneRenderer(canvas, () => state, drawRulerScales);
+  renderer = new SceneRenderer(canvas, () => state, drawRulerScales, {
+    onMaskError: node => showToast(`“${node.name || 'Luminance mask'}” could not be rendered. Its masked content is hidden.`)
+  });
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   previousCanvasViewportSize = { width: canvas.clientWidth, height: canvas.clientHeight };
   initEvents(); renderUI(); state.ready = true;

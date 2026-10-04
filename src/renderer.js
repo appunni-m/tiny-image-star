@@ -11,6 +11,7 @@ import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLAS
 import { createGradientPaint, fillStackForNode, gradientTypes, resolveGradientGeometry } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
+import { applyLuminanceMaskAlpha } from './luminance-mask.js';
 import { isUniformStrokeSideWidths, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
@@ -1346,17 +1347,19 @@ function richTextStyleForMarker(baseStyle) {
 }
 
 export class SceneRenderer {
-  constructor(canvas, getState, onDraw = null, { transparent = false } = {}) {
+  constructor(canvas, getState, onDraw = null, { transparent = false, onMaskError = null } = {}) {
     this.canvas = canvas;
     this.transparent = Boolean(transparent);
     this.context = canvas.getContext('2d', { alpha: this.transparent, desynchronized: true });
     this.getState = getState;
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
+    this.onMaskError = typeof onMaskError === 'function' ? onMaskError : null;
     this.visiblePreviewKeys = new Set();
     this.frame = 0;
     this.workspacePattern = null;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
+    this.luminanceMaskErrors = new Set();
     this.textPaintSurfaces = { glyph: null, paint: null };
     this.noiseCache = new Map();
     this.noiseCachePixels = 0;
@@ -2772,6 +2775,7 @@ export class SceneRenderer {
       ? new OffscreenCanvas(pixelWidth, pixelHeight)
       : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
     const maskContext = surface.getContext('2d');
+    if (!maskContext) return;
     maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
     for (const child of contentNodes) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
     if (node.maskMode === 'vector') {
@@ -2782,15 +2786,57 @@ export class SceneRenderer {
       if (vectorContext) {
         vectorContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
         this.drawNode(vectorContext, maskNode, 0, 0, assets, false, 'vector', renderOptions);
+        maskContext.setTransform(1, 0, 0, 1, 0, 0);
         maskContext.globalCompositeOperation = 'destination-in';
         maskContext.drawImage(vectorSurface, 0, 0);
       }
+    } else if (node.maskMode === 'luminance') {
+      const luminanceSurface = typeof OffscreenCanvas === 'function'
+        ? new OffscreenCanvas(pixelWidth, pixelHeight)
+        : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+      const luminanceContext = luminanceSurface.getContext('2d', { willReadFrequently: true });
+      if (!luminanceContext) {
+        this.reportLuminanceMaskError(node, new Error('The luminance-mask canvas is unavailable.'), renderOptions);
+        return;
+      }
+      luminanceContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
+      this.drawNode(luminanceContext, maskNode, 0, 0, assets, false, false, renderOptions);
+      try {
+        const pixels = luminanceContext.getImageData(0, 0, pixelWidth, pixelHeight);
+        applyLuminanceMaskAlpha(pixels);
+        luminanceContext.putImageData(pixels, 0, 0);
+      } catch (error) {
+        // A tainted or unsupported readback must never turn a luminance mask
+        // into an unmasked export. Skip this group and report the failure once.
+        this.reportLuminanceMaskError(node, error, renderOptions);
+        return;
+      }
+      maskContext.setTransform(1, 0, 0, 1, 0, 0);
+      maskContext.globalCompositeOperation = 'destination-in';
+      maskContext.drawImage(luminanceSurface, 0, 0);
     } else {
       maskContext.globalCompositeOperation = 'destination-in';
       this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
     }
     maskContext.globalCompositeOperation = 'source-over';
     ctx.drawImage(surface, x, y, node.width, node.height);
+  }
+
+  reportLuminanceMaskError(node, error, renderOptions = {}) {
+    if (!this.luminanceMaskErrors.has(node.id)) {
+      // Keep diagnostics bounded when a renderer is reused across many files.
+      if (this.luminanceMaskErrors.size >= 256) {
+        this.luminanceMaskErrors.delete(this.luminanceMaskErrors.values().next().value);
+      }
+      this.luminanceMaskErrors.add(node.id);
+      console.warn(`Luminance mask “${node.name || node.id}” could not be rendered safely; its masked content was omitted.`, error);
+      const callbacks = new Set([renderOptions.onMaskError, this.onMaskError]);
+      for (const callback of callbacks) {
+        if (typeof callback !== 'function') continue;
+        try { callback(node, error); }
+        catch (callbackError) { console.warn('The luminance-mask warning handler failed.', callbackError); }
+      }
+    }
   }
 
   drawBooleanGroup(ctx, node, x, y, assets, maskMode = false, renderOptions = {}) {

@@ -698,6 +698,76 @@ test('vector mask groups build an opaque source surface before applying destinat
   }
 });
 
+test('luminance mask groups read real source colors and fail closed when pixels cannot be read', () => {
+  const group = { id: 'luminance-group', name: 'Color mask', width: 2, height: 1, mask: true, maskMode: 'luminance',
+    maskSourceId: 'luminance-source', children: [{ id: 'masked-content' }, { id: 'luminance-source' }] };
+  const canvases = [];
+  const draws = [];
+  class PixelCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height;
+      this.context = {
+        globalCompositeOperation: 'source-over', operations: [],
+        setTransform(...args) { this.operations.push({ method: 'setTransform', args }); },
+        drawImage(image, ...args) { this.operations.push({ method: 'drawImage', image, args, composite: this.globalCompositeOperation }); },
+        getImageData(x, y, readWidth, readHeight) {
+          assert.deepEqual([x, y, readWidth, readHeight], [0, 0, 2, 1]);
+          return { data: new Uint8ClampedArray([255, 0, 0, 255, 255, 255, 255, 128]) };
+        },
+        putImageData(imageData) { this.imageData = imageData; }
+      };
+      canvases.push(this);
+    }
+    getContext(_type, options) { this.contextOptions = options; return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PixelCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ zoom: 1 });
+    renderer.luminanceMaskErrors = new Set();
+    renderer.drawNode = (_ctx, node, _x, _y, _assets, _draft, maskMode) => draws.push([node.id, maskMode]);
+    const destination = { drawImage: (...args) => draws.push(['destination', ...args]), getTransform: () => ({ a: 1, b: 0 }) };
+
+    renderer.drawMaskGroup(destination, group, 4, 5, new Map());
+    assert.deepEqual(draws.slice(0, 2), [['masked-content', false], ['luminance-source', false]],
+      'the luminance source renders with its original colors rather than opaque-white vector semantics');
+    assert.equal(canvases.length, 2, 'one bounded surface stores content and one stores the colored source');
+    assert.deepEqual([...canvases[1].context.imageData.data], [255, 255, 255, 54, 255, 255, 255, 128],
+      'source luminance and source alpha become white destination-in coverage');
+    assert.equal(canvases[0].context.operations.find(call => call.method === 'drawImage')?.composite, 'destination-in');
+    assert.ok(canvases[0].context.operations.some(call => call.method === 'setTransform'
+      && call.args.join(',') === '1,0,0,1,0,0'), 'physical-pixel mask composition resets the content surface transform');
+    assert.equal(draws[2][0], 'destination');
+
+    const failedGroup = { ...group, id: 'blocked-luminance-group' };
+    class TaintedCanvas extends PixelCanvas {
+      getContext(_type, options) {
+        const context = super.getContext(_type, options);
+        if (canvases.indexOf(this) % 2 === 1) context.getImageData = () => { throw new DOMException('tainted', 'SecurityError'); };
+        return context;
+      }
+    }
+    globalThis.OffscreenCanvas = TaintedCanvas;
+    const failures = [];
+    const surfacedFailures = [];
+    renderer.onMaskError = (_node, error) => surfacedFailures.push(error.name);
+    const blockedDestination = { draws: [], getTransform: () => ({ a: 1, b: 0 }), drawImage(...args) { this.draws.push(args); } };
+    const oldWarn = console.warn;
+    console.warn = () => {};
+    try {
+      renderer.drawMaskGroup(blockedDestination, failedGroup, 0, 0, new Map(), { onMaskError: (_node, error) => failures.push(error.name) });
+      renderer.drawMaskGroup(blockedDestination, failedGroup, 0, 0, new Map(), { onMaskError: (_node, error) => failures.push(error.name) });
+    } finally { console.warn = oldWarn; }
+    assert.deepEqual(failures, ['SecurityError']);
+    assert.deepEqual(surfacedFailures, ['SecurityError'], 'the renderer surfaces the first failure once to the editor UI');
+    assert.equal(blockedDestination.draws.length, 0, 'a failed readback never renders masked content without its mask');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {
   const created = [];
   class RecordingCanvas {

@@ -34,7 +34,7 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(validateDocument(document), true);
 });
 
-test('vector mask modes validate and survive save/reload while legacy mask groups default to alpha', () => {
+test('alpha, vector, and luminance mask modes validate and survive save/reload', () => {
   const document = createDocument();
   const content = createNode('rectangle', { name: 'Content' });
   const lineMask = createNode('line', { name: 'Stroke mask', stroke: '#123456', strokeWidth: 4 });
@@ -47,6 +47,17 @@ test('vector mask modes validate and survive save/reload while legacy mask group
   assert.equal(findNode(reopened, group.id).node.maskMode, 'vector');
   assert.equal(validateDocument(reopened), true);
 
+  const luminanceDocument = createDocument();
+  const luminanceContent = createNode('rectangle', { name: 'Luminance content' });
+  const luminanceSource = createNode('line', { name: 'Colored luminance stroke', stroke: '#808080', strokeWidth: 4 });
+  addNode(luminanceDocument, luminanceContent);
+  addNode(luminanceDocument, luminanceSource);
+  assert.equal(canCreateMaskGroup(luminanceDocument, [luminanceContent.id, luminanceSource.id], luminanceDocument.activePageId, 'luminance'), true);
+  const luminanceGroup = createMaskGroup(luminanceDocument, [luminanceContent.id, luminanceSource.id], luminanceDocument.activePageId, 'luminance');
+  const reopenedLuminance = parseDocument(serializeDocument(luminanceDocument));
+  assert.equal(findNode(reopenedLuminance, luminanceGroup.id).node.maskMode, 'luminance');
+  assert.equal(validateDocument(reopenedLuminance), true);
+
   const legacyDocument = createDocument();
   const legacyContent = createNode('rectangle');
   const alphaSource = createNode('ellipse');
@@ -57,7 +68,7 @@ test('vector mask modes validate and survive save/reload while legacy mask group
   assert.equal(parseDocument(serializeDocument(legacyDocument)).pages[0].children[0].maskMode, undefined);
 
   const unsupportedMode = structuredClone(reopened);
-  findNode(unsupportedMode, group.id).node.maskMode = 'luminance';
+  findNode(unsupportedMode, group.id).node.maskMode = 'unsupported';
   assert.throws(() => validateDocument(unsupportedMode), /Invalid mask mode/);
 
   const unsupportedSource = createDocument();

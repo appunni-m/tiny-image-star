@@ -741,7 +741,37 @@ test('mask-stack wrapping preserves rotated and affine child placement', () => {
   }
 });
 
-test('only active local alpha masks are grouped; unsupported modes and auto-layout stacks stay editable with warnings', () => {
+test('imports supported Figma LUMINANCE masks as editable local luminance groups', () => {
+  const pageGuid = { sessionID: 131, localID: 1 };
+  const frameGuid = { sessionID: 131, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, name: 'Board' }),
+      node('RECTANGLE', 3, frameGuid, 'a', { name: 'Colored mask', isMask: true, maskType: 'LUMINANCE', opacity: .7,
+        fillPaints: [{ type: 'SOLID', opacity: .8, color: { r: .25, g: .5, b: .75, a: 1 }, visible: true }] }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'Colored-mask content' }),
+      node('LINE', 5, frameGuid, 'c', { name: 'Luminance stroke', isMask: true, maskType: 'LUMINANCE',
+        strokeWeight: 6, strokePaints: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: .5 }, visible: true }] }),
+      node('RECTANGLE', 6, frameGuid, 'd', { name: 'Stroke-mask content' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'luminance-masks.fig' });
+  const [paintedMask, strokeMask] = imported.document.pages[0].children[0].children;
+  assert.equal(paintedMask.maskMode, 'luminance');
+  assert.equal(paintedMask.children.find(child => child.id === paintedMask.maskSourceId).fills[0].color, '#4080bf',
+    'luminance source RGB remains editable instead of being whitened like alpha/vector masks');
+  assert.equal(paintedMask.children.find(child => child.id === paintedMask.maskSourceId).opacity, .7);
+  assert.equal(strokeMask.maskMode, 'luminance');
+  assert.equal(strokeMask.children.find(child => child.id === strokeMask.maskSourceId).type, 'line');
+  assert.equal(imported.report.unsupportedTypes.MASK, undefined);
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].children.map(group => group.maskMode), ['luminance', 'luminance']);
+});
+
+test('only active supported local masks are grouped; unknown modes and auto-layout stacks stay editable with warnings', () => {
   const pageGuid = { sessionID: 13, localID: 1 };
   const frameGuid = { sessionID: 13, localID: 2 };
   const parsedForMask = (maskProperties, frameProperties = {}) => ({
@@ -755,7 +785,7 @@ test('only active local alpha masks are grouped; unsupported modes and auto-layo
     message: { blobs: [] }, images: new Map()
   });
 
-  for (const maskType of ['LUMINANCE']) {
+  for (const maskType of ['UNKNOWN']) {
     const imported = convertFigDocument(parsedForMask({ isMask: true, maskType }));
     const children = imported.document.pages[0].children[0].children;
     assert.deepEqual(children.map(child => child.name), ['Mask', 'Content']);

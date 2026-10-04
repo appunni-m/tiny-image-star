@@ -850,7 +850,7 @@ function parseMaskDefinition(node, ids, gradients) {
   if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
     fail('invalid-mask', 'Every SVG mask must have a unique, simple id.', node.tag);
   }
-  const allowed = new Set(['id', 'maskUnits', 'maskContentUnits', 'mask-type', 'data-tiny-image-star-mask-mode', 'x', 'y', 'width', 'height']);
+  const allowed = new Set(['id', 'maskUnits', 'maskContentUnits', 'mask-type', 'color-interpolation', 'data-tiny-image-star-mask-mode', 'x', 'y', 'width', 'height']);
   for (const key of Object.keys(node.attrs)) {
     if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, node.tag);
     if (!allowed.has(key)) fail('unsupported-mask', `SVG mask attribute “${key}” is unsupported.`, node.tag);
@@ -860,9 +860,16 @@ function parseMaskDefinition(node, ids, gradients) {
   }
   const maskType = node.attrs['mask-type'] ?? 'luminance';
   if (!['alpha', 'luminance'].includes(maskType)) fail('unsupported-mask', 'SVG mask-type must be alpha or luminance.', node.tag);
-  const localMaskMode = node.attrs['data-tiny-image-star-mask-mode'] ?? 'alpha';
-  if (!['alpha', 'vector'].includes(localMaskMode) || (localMaskMode === 'vector' && maskType !== 'alpha')) {
-    fail('unsupported-mask', 'Tiny Image Star vector masks must be encoded as alpha masks with the local mode marker.', node.tag);
+  const colorInterpolation = node.attrs['color-interpolation'] ?? 'sRGB';
+  if (maskType === 'luminance' && !['sRGB', 'srgb'].includes(colorInterpolation)) {
+    fail('unsupported-mask-color-interpolation', 'Editable luminance masks currently require color-interpolation="sRGB".', node.tag);
+  }
+  const localMaskMode = node.attrs['data-tiny-image-star-mask-mode']
+    ?? (maskType === 'luminance' ? 'luminance' : 'alpha');
+  if (!['alpha', 'vector', 'luminance'].includes(localMaskMode)
+    || (localMaskMode === 'vector' && maskType !== 'alpha')
+    || (localMaskMode === 'luminance' && maskType !== 'luminance')) {
+    fail('unsupported-mask', 'Tiny Image Star vector and luminance masks must use their matching SVG mask-type and local mode marker.', node.tag);
   }
   const region = {
     x: coordinateLength(node.attrs.x, 'mask x', node.tag),
@@ -882,7 +889,7 @@ function parseMaskDefinition(node, ids, gradients) {
       const code = ['script', 'foreignObject'].includes(child.tag) ? 'active-content' : ['image', 'use'].includes(child.tag) ? 'external-reference' : 'unsupported-element';
       fail(code, `SVG element <${child.tag}> is not accepted inside a mask.`, child.tag);
     }
-    if (child.tag === 'g' || clipPathGeometryTags.has(child.tag)) {
+    if (child.tag === 'g' || clipPathGeometryTags.has(child.tag) || child.tag === 'line') {
       checkElementAttributes(child);
       const style = parseStyle(child, inherited, gradients);
       if (style.clipPathRef) fail('unsupported-mask-graph', 'Clipping is unsupported inside an editable mask.', child.tag);
@@ -2017,7 +2024,7 @@ function assertBoundsContained(inner, outer, element) {
   }
 }
 
-function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask source') {
+function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask source', gradients = new Map()) {
   if (!mask.children || mask.children.length !== 1 || mask.children[0].tag !== 'g') {
     fail('unsupported-mask-graph', 'Editable SVG masks require one transformed <g> containing one closed vector shape.', 'mask');
   }
@@ -2026,38 +2033,65 @@ function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask sourc
   if (sourceGroup.children.length !== 1) {
     fail('unsupported-mask-graph', 'Editable SVG masks require one transformed <g> containing one closed vector shape.', 'mask');
   }
-  const groupStyle = parseStyle(sourceGroup, initialStyle);
+  const vectorMask = mask.localMaskMode === 'vector';
+  const luminanceMask = mask.localMaskMode === 'luminance';
+  const groupStyle = parseStyle(sourceGroup, initialStyle, gradients);
   if (groupStyle.filterRef || groupStyle.clipPathRef || groupStyle.maskRef || !groupStyle.visible || !groupStyle.display) {
     fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', sourceGroup.tag);
   }
   const shape = sourceGroup.children[0];
-  if (!clipPathGeometryTags.has(shape.tag) || shape.children.length) {
-    fail('unsupported-mask-graph', 'Editable SVG masks support one rect, circle, ellipse, polygon, or path source.', shape.tag);
+  const lineMaskTag = luminanceMask && shape.tag === 'line';
+  if ((!clipPathGeometryTags.has(shape.tag) && !lineMaskTag) || shape.children.length) {
+    fail('unsupported-mask-graph', 'Editable SVG masks support one rect, circle, ellipse, polygon, or path source; luminance masks may also use a line.', shape.tag);
   }
   checkElementAttributes(shape);
-  const style = parseStyle(shape, groupStyle);
+  const style = parseStyle(shape, groupStyle, gradients);
   if (style.filterRef || style.clipPathRef || style.maskRef || !style.visible || !style.display) {
     fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', shape.tag);
   }
-  const vectorMask = mask.localMaskMode === 'vector';
-  if ((style.fill !== '#ffffff' || style.fillColorAlpha !== 1) && !(vectorMask && style.fill == null)
+  if (!luminanceMask && ((style.fill !== '#ffffff' || style.fillColorAlpha !== 1) && !(vectorMask && style.fill == null)
     || style.fillGradient || (vectorMask
       ? (style.stroke != null && (style.stroke !== '#ffffff' || style.strokeAlpha !== 1))
-      : style.stroke != null)) {
+      : style.stroke != null))) {
     fail('unsupported-mask-paint', 'Editable SVG masks must use opaque white vector geometry without gradients.', shape.tag);
   }
   const paths = elementPaths(shape, budget);
-  if (paths.length !== 1 || (paths[0].noFill && (!vectorMask || !style.stroke || !(style.strokeWidth > 0)))) {
+  const strokedVectorPath = vectorMask && style.stroke && style.strokeWidth > 0;
+  const pathLine = luminanceMask && shape.tag === 'path' && paths.length === 1
+    && paths[0].closed === false && !(paths[0].subpaths || []).length
+    && paths[0].points.length === 2 && paths[0].points.every(point => !point.in && !point.out);
+  const lineMaskSource = lineMaskTag || pathLine;
+  const strokedLuminanceLine = lineMaskSource && style.stroke && style.strokeWidth > 0;
+  if (paths.length !== 1 || (paths[0].noFill && !strokedVectorPath && !strokedLuminanceLine)) {
     fail('unsupported-mask-graph', 'Editable SVG masks require one closed fillable source, or a stroked path for a local vector mask.', shape.tag);
+  }
+  // A local luminance mask can preserve the editor's solid fill, editable
+  // gradient, and stroke fields on one closed geometry layer. Open stroke-only
+  // paths need a distinct line source type, which this importer does not use
+  // for mask sources, so keep rejecting those instead of silently closing them.
+  const hasOpenContour = !paths[0].closed || (paths[0].subpaths || []).some(contour => !contour.closed);
+  if (luminanceMask && !lineMaskSource && hasOpenContour && style.stroke && style.strokeAlpha > 0 && style.strokeWidth > 0) {
+    fail('unsupported-mask-graph', 'Luminance mask paths with visible strokes must have closed contours to preserve their paint.', shape.tag);
   }
   const sourceMatrix = matrixMultiply(matrix, matrixMultiply(
     parseTransform(sourceGroup.attrs.transform, sourceGroup.tag), parseTransform(shape.attrs.transform, shape.tag)
   ));
-  const { base, strokeWidth } = makePathNode(paths[0], style, sourceMatrix, prefix, name);
+  const { base, strokeWidth, fillGradient } = makePathNode(paths[0], style, sourceMatrix, prefix, name);
   base.name = cleanLayerName(name);
-  base.fill = style.fill || 'transparent';
-  base.fillOpacity = vectorMask ? 1 : style.fillAlpha;
+  base.fill = vectorMask ? '#ffffff' : (style.fill || 'transparent');
+  base.fillOpacity = vectorMask ? 1 : style.fillGradient
+    ? style.fillAlpha * style.fillGradient.alpha : style.fillAlpha;
   base.fillRule = style.fillRule;
+  if (luminanceMask && fillGradient) {
+    base.fillGradient = {
+      type: fillGradient.type,
+      angle: fillGradient.angle,
+      stops: fillGradient.stops.map((stop, index) => ({
+        id: `${prefix}-${serial}-mask-gradient-stop-${index}`, color: stop.color, position: stop.position
+      })),
+      ...(fillGradient.geometry ? { geometry: structuredClone(fillGradient.geometry) } : {})
+    };
+  }
   base.opacity = groupStyle.opacity * style.opacity;
   if (vectorMask && style.stroke && strokeWidth > 0) {
     // Keep fill and stroke on the same editable path. The ordinary SVG paint
@@ -2073,23 +2107,61 @@ function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask sourc
     }
     base.strokeMiterLimit = style.strokeMiterLimit;
   }
-  if (!vectorMask) {
+  if (luminanceMask && style.stroke && strokeWidth > 0) {
+    base.stroke = style.stroke;
+    base.strokeOpacity = style.strokeAlpha;
+    base.strokeWidth = strokeWidth;
+    base.strokeCap = style.strokeCap;
+    base.strokeJoin = style.strokeJoin;
+    base.strokePattern = style.strokePattern;
+    if (style.strokePattern === 'custom' && style.strokeDashArray) {
+      base.strokeDashArray = style.strokeDashArray.map(value => value * (style.strokeWidth > 0 ? strokeWidth / style.strokeWidth : 1));
+    }
+    base.strokeMiterLimit = style.strokeMiterLimit;
+  }
+  if (!vectorMask && !luminanceMask) {
     base.stroke = null;
     base.strokeWidth = 0;
     base.closed = true;
     if (Array.isArray(base.subpaths)) base.subpaths = base.subpaths.map(contour => ({ ...contour, closed: true }));
   }
+  if (luminanceMask && !style.stroke && (style.fill || style.fillGradient)) {
+    // SVG fills implicitly close open subpaths; retaining them as closed keeps
+    // the editable path's filled coverage aligned with the source document.
+    base.closed = true;
+    if (Array.isArray(base.subpaths)) base.subpaths = base.subpaths.map(contour => ({ ...contour, closed: true }));
+  }
+  let sourceNode = base;
+  if (lineMaskSource) {
+    const [startPoint, endPoint] = base.points.map(point => ({
+      x: base.x + point.x * base.width,
+      y: base.y + point.y * base.height
+    }));
+    const leftPoint = startPoint.x <= endPoint.x ? startPoint : endPoint;
+    const rightPoint = startPoint.x <= endPoint.x ? endPoint : startPoint;
+    sourceNode = createNode('line', {
+      id: base.id, name: base.name,
+      x: Math.min(startPoint.x, endPoint.x), y: Math.min(startPoint.y, endPoint.y),
+      width: Math.abs(endPoint.x - startPoint.x), height: Math.abs(endPoint.y - startPoint.y),
+      lineReverseY: leftPoint.y > rightPoint.y,
+      fill: 'transparent', fillOpacity: 0, opacity: base.opacity,
+      stroke: base.stroke, strokeOpacity: base.strokeOpacity,
+      strokeWidth: base.strokeWidth, strokeCap: base.strokeCap, strokeJoin: base.strokeJoin,
+      strokePattern: base.strokePattern, strokeDashArray: base.strokeDashArray,
+      strokeMiterLimit: base.strokeMiterLimit
+    });
+  }
   const regionBounds = transformedRectBounds(matrix, mask.region.x, mask.region.y, mask.region.width, mask.region.height);
-  assertBoundsContained(boundsOf([base]), regionBounds, 'mask');
-  return base;
+  assertBoundsContained(boundsOf([sourceNode]), regionBounds, 'mask');
+  return sourceNode;
 }
 
-function attachMask(nodes, maskRef, masks, matrix, prefix, serial, name, budget) {
+function attachMask(nodes, maskRef, masks, matrix, prefix, serial, name, budget, gradients = new Map()) {
   if (!maskRef) return nodes;
   const mask = masks.get(maskRef);
   if (!mask) fail('missing-mask', `SVG layer references missing mask “${maskRef}”.`, 'mask');
   if (!nodes.length) return nodes;
-  const source = maskSourcePath(mask, matrix, prefix, serial, budget, `${name} mask source`);
+  const source = maskSourcePath(mask, matrix, prefix, serial, budget, `${name} mask source`, gradients);
   source.id = `${prefix}-mask-source-${serial}`;
   const children = [...nodes, source];
   const bounds = boundsOf(children);
@@ -2569,7 +2641,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     const effects = resolveNodeFilter(style, filters, matrix, [network], prefix, node);
     const filtered = attachFilterEffects([network], effects, prefix, node.serial, localName(node));
     return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
-      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget, gradients);
   }
   if (node.tag === 'text') {
     const serial = counter.next++;
@@ -2578,7 +2650,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     const effects = resolveNodeFilter(style, filters, matrix, layers, prefix, node);
     const filtered = attachFilterEffects(layers, effects, prefix, node.serial, localName(node));
     return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
-      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget, gradients);
   }
   if (node.tag !== 'g' && node.tag !== 'svg') {
     const paths = elementPaths(node, budget);
@@ -2592,7 +2664,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     const effects = resolveNodeFilter(style, filters, matrix, output, prefix, node);
     const filtered = attachFilterEffects(output, effects, prefix, node.serial, localName(node));
     return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
-      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget, gradients);
   }
   const childLayers = [];
   for (const child of node.children) childLayers.push(...buildTree(child, matrix, style, prefix, counter, budget, gradients, filters, clipPaths, masks));
@@ -2604,7 +2676,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
       opacity: style.opacity, effects, children: []
     });
     return attachMask(attachClipPath([group], style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
-      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget, gradients);
   }
   const bounds = boundsOf(childLayers);
   for (const child of childLayers) translateLayer(child, bounds.x, bounds.y);
@@ -2614,7 +2686,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
   });
   const filtered = attachFilterEffects([group], effects, prefix, node.serial, localName(node));
   return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
-    style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
+    style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget, gradients);
 }
 
 /**
@@ -2659,7 +2731,7 @@ export function importSvgToLayers(source, { viewportWidth = null, viewportHeight
   const effects = resolveNodeFilter(style, filters, transformedRootMatrix, children, prefix, root, root.attrs.id || 'Imported SVG');
   const rootChildren = attachMask(
     attachClipPath(children, style.clipPathRef, clipPaths, transformedRootMatrix, prefix, root.serial, root.attrs.id || 'Imported SVG', budget),
-    style.maskRef, masks, transformedRootMatrix, prefix, root.serial, root.attrs.id || 'Imported SVG', budget
+    style.maskRef, masks, transformedRootMatrix, prefix, root.serial, root.attrs.id || 'Imported SVG', budget, gradients
   );
   const layers = [];
   for (const child of rootChildren) layers.push(translateLayer(child, 0, 0));

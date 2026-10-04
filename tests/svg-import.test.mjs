@@ -198,6 +198,111 @@ test('round-trips the editor SVG alpha-mask group as editable vector content and
   assert.ok(allNodes(reopened.nodes).some(node => node.type === 'group' && node.mask), 'imported editable mask groups can be exported and reopened');
 });
 
+test('imports SVG luminance masks with editable source colors and separate fill/stroke opacity', () => {
+  const imported = importSvgToLayers(`<svg width="40" height="30" viewBox="0 0 40 30">
+    <defs><mask id="soft-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="40" height="30" mask-type="luminance" color-interpolation="sRGB">
+      <g opacity=".5"><path d="M 2 2 L 30 2 L 30 20 Z" fill="#808080" fill-opacity=".4" stroke="#00ff00" stroke-opacity=".25" stroke-width="2"/></g>
+    </mask></defs>
+    <rect id="art" width="40" height="30" fill="#ff0000" mask="url(#soft-mask)"/>
+  </svg>`);
+  const group = allNodes(imported.nodes).find(node => node.type === 'group' && node.mask);
+  assert.ok(group);
+  assert.equal(group.maskMode, 'luminance');
+  const source = group.children.find(node => node.id === group.maskSourceId);
+  assert.equal(source.type, 'path');
+  assert.equal(source.fill, '#808080', 'luminance color is retained instead of normalized to white');
+  assert.equal(source.fillOpacity, 0.4);
+  assert.equal(source.stroke, '#00ff00');
+  assert.equal(source.strokeOpacity, 0.25);
+  assert.equal(source.strokeWidth, 2);
+  assert.equal(source.opacity, 0.5, 'mask group opacity remains a separate paint alpha');
+});
+
+test('imports and round-trips supported editable gradients inside SVG luminance masks', () => {
+  const imported = importSvgToLayers(`<svg width="30" height="20">
+    <defs>
+      <linearGradient id="gray-ramp" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="30" y2="0">
+        <stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/>
+      </linearGradient>
+      <mask id="gradient-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="30" height="20" mask-type="luminance">
+        <g><rect width="30" height="20" fill="url(#gray-ramp)"/></g>
+      </mask>
+    </defs>
+    <rect width="30" height="20" fill="#ff0000" mask="url(#gradient-mask)"/>
+  </svg>`);
+  const group = allNodes(imported.nodes).find(node => node.type === 'group' && node.mask);
+  const source = group.children.find(node => node.id === group.maskSourceId);
+  assert.equal(group.maskMode, 'luminance');
+  assert.equal(source.fill, 'transparent');
+  assert.equal(source.fillGradient.type, 'linear');
+  assert.equal(source.fillGradient.stops.length, 2);
+
+  const reopened = importSvgToLayers(exportNodeToSvg(group));
+  const reopenedGroup = allNodes(reopened.nodes).find(node => node.type === 'group' && node.mask);
+  const reopenedSource = reopenedGroup.children.find(node => node.id === reopenedGroup.maskSourceId);
+  assert.equal(reopenedGroup.maskMode, 'luminance');
+  assert.equal(reopenedSource.fillGradient.type, 'linear');
+  assert.deepEqual(reopenedSource.fillGradient.stops.map(stop => stop.color), ['#000000', '#ffffff']);
+});
+
+test('imports a colored SVG luminance line as an editable line mask source', () => {
+  const imported = importSvgToLayers(`<svg width="30" height="20">
+    <defs><mask id="line-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="30" height="20" mask-type="luminance">
+      <g><line x1="2" y1="18" x2="28" y2="4" stroke="#808080" stroke-opacity=".5" stroke-width="4" stroke-linecap="round"/></g>
+    </mask></defs>
+    <rect width="30" height="20" fill="#ff0000" mask="url(#line-mask)"/>
+  </svg>`);
+  const group = allNodes(imported.nodes).find(node => node.type === 'group' && node.mask);
+  const source = group.children.find(node => node.id === group.maskSourceId);
+  assert.equal(group.maskMode, 'luminance');
+  assert.equal(source.type, 'line');
+  assert.equal(source.lineReverseY, true);
+  assert.equal(source.stroke, '#808080');
+  assert.equal(source.strokeOpacity, 0.5);
+  assert.equal(source.strokeWidth, 4);
+  const reopened = importSvgToLayers(exportNodeToSvg(group));
+  const reopenedGroup = allNodes(reopened.nodes).find(node => node.type === 'group' && node.mask);
+  assert.equal(reopenedGroup.maskMode, 'luminance');
+  assert.equal(reopenedGroup.children.find(node => node.id === reopenedGroup.maskSourceId).type, 'line');
+});
+
+test('round-trips the editor SVG luminance mask paint through editable source geometry', () => {
+  const source = createNode('ellipse', {
+    id: 'gray-source', name: 'Gray source', x: 8, y: 6, width: 48, height: 32,
+    fill: '#808080', fillOpacity: 0.6, stroke: '#204080', strokeOpacity: 0.35,
+    strokeWidth: 3, opacity: 0.75
+  });
+  const original = createNode('group', {
+    id: 'lum-group', name: 'Luminance artwork', width: 80, height: 60,
+    mask: true, maskMode: 'luminance', maskSourceId: source.id,
+    children: [createNode('rectangle', { id: 'artwork', width: 80, height: 60, fill: '#e34b2f' }), source]
+  });
+  const first = importSvgToLayers(exportNodeToSvg(original));
+  const firstGroup = allNodes(first.nodes).find(node => node.type === 'group' && node.mask);
+  assert.ok(firstGroup);
+  assert.equal(firstGroup.maskMode, 'luminance');
+  const firstSource = firstGroup.children.find(node => node.id === firstGroup.maskSourceId);
+  assert.equal(firstSource.fill, '#808080');
+  assert.equal(firstSource.fillOpacity, 0.6);
+  assert.equal(firstSource.stroke, '#204080');
+  assert.equal(firstSource.strokeOpacity, 0.35);
+  assert.equal(firstSource.strokeWidth, 3);
+  assert.equal(firstSource.opacity, 0.75);
+
+  const reopened = importSvgToLayers(exportNodeToSvg(firstGroup));
+  const reopenedGroup = allNodes(reopened.nodes).find(node => node.type === 'group' && node.mask);
+  assert.ok(reopenedGroup);
+  assert.equal(reopenedGroup.maskMode, 'luminance');
+  const reopenedSource = reopenedGroup.children.find(node => node.id === reopenedGroup.maskSourceId);
+  assert.equal(reopenedSource.fill, '#808080');
+  assert.equal(reopenedSource.stroke, '#204080');
+  assert.equal(reopenedSource.fillOpacity, 0.6);
+});
+
+test('rejects SVG luminance masks with unsupported linearRGB color interpolation', () => {
+  importFailure(`<svg><defs><mask id="mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10" mask-type="luminance" color-interpolation="linearRGB"><g><rect width="10" height="10" fill="#808080"/></g></mask></defs><rect width="10" height="10" mask="url(#mask)"/></svg>`, 'unsupported-mask-color-interpolation');
+});
+
 test('round-trips an editor Boolean subtract mask into editable operands', () => {
   const original = createNode('boolean', {
     id: 'cutout', name: 'Cutout', operation: 'subtract', width: 100, height: 80, fill: '#4b74c2',
