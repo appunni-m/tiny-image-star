@@ -175,3 +175,28 @@ test('PDF accepts only bounded local clipping inside opaque black/white glyph ma
       || /unique IDs/.test(error.message));
   }
 });
+
+test('cold retained font workers provide real glyph text semantics without replacing editable rich text', { timeout: 30_000 }, async t => {
+  const owner = await makeFontOwner(); t.after(async () => {
+    await Promise.all(owner.lifecycle.map(record => record.exit));
+    assert.ok(owner.lifecycle.every(record => record.terminated === 1));
+  });
+  const text = createNode('text', { x: 14, y: 18, width: 320, height: 90, text: 'To q\u0301 O', fontFamily: 'Inter',
+    fontSize: 48, fontWeight: 720, fontAxes: { wght: 720, opsz: 22 }, fontFeatures: { kern: 1 }, letterSpacing: 2,
+    color: '#183b62', textRuns: [{ text: 'To ', color: '#bb3150' }, { text: 'q\u0301 O', fontSize: 36, baselineShift: 4 }] });
+  const { document, frame } = frameWithText(text); const before = structuredClone(document);
+  const result = await withPreparedVectorPdfText(shapeText => {
+    const svg = exportNodeToSvg(frame, { document, measureText: measurement(shapeText), pdfTextSemantics: true });
+    return { svg, pdf: createMultipageVectorPdf([svg]) };
+  }, owner.options);
+  assert.equal([...result.svg.matchAll(/data-tiny-image-star-pdf-text="1"/gu)].length, 1,
+    'rich paints share one logical text block');
+  assert.doesNotMatch(result.svg, /<text\b/u, 'visible glyph paths still need no recipient font');
+  const body = pdfStreams(result.pdf); const file = Buffer.from(result.pdf).toString('latin1');
+  assert.match(file, /\/Subtype \/Type3/u, 'text resources contain actual retained glyph programs');
+  assert.match(file, /\/ToUnicode\b/u, 'the glyph codes retain their Unicode meaning');
+  assert.match(body, /3 Tr/u, 'real glyph text records add no extra paint to the existing artwork');
+  assert.match(body, /00710301/iu, 'the combining cluster retains both authored codepoints');
+  assert.match(body, /\s+m\n/u, 'actual font contours stay vector geometry');
+  assert.deepEqual(document, before, 'the source remains editable and its typography stays unchanged');
+});

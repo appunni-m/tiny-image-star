@@ -197,6 +197,9 @@ function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0,
     return true;
   }
   const collectGlyph = typeof ctx.drawLocalGlyphPath === 'function';
+  const collectSemantics = collectGlyph && paintMode === 'fill' && ctx.captureTextSemantics === true
+    && typeof ctx.beginLocalTextRun === 'function' && typeof ctx.drawLocalTextGlyph === 'function'
+    && typeof ctx.endLocalTextRun === 'function';
   const strokeTransform = collectGlyph ? ctx.captureTextStrokeTransform?.() : undefined;
   if ((!collectGlyph && typeof globalThis.Path2D !== 'function') || !shaped || !Array.isArray(shaped.glyphs)
     || shaped.missingGlyph || !shaped.extents || !(shaped.upem > 0)
@@ -219,13 +222,22 @@ function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0,
   }
   const clusterStarts = collectGlyph ? [...new Set(shaped.glyphs.map(glyph => glyph.cluster))].sort((left, right) => left - right) : null;
   const clusterEnds = collectGlyph ? new Map(clusterStarts.map((start, index) => [start, clusterStarts[index + 1] ?? text.length])) : null;
+  // Path text draws one cluster at a time while retaining the original shaped
+  // cluster indices. Semantic records use offsets into that displayed segment;
+  // the existing editable glyph metadata keeps the original indices.
+  const semanticText = clusterText ?? text;
+  const semanticClusterBase = collectSemantics && clusterText != null ? clusterStarts[0] ?? 0 : 0;
+  const semanticClusterEnds = collectSemantics ? new Map(clusterStarts.map((start, index) =>
+    [start, index + 1 < clusterStarts.length ? clusterStarts[index + 1] - semanticClusterBase : semanticText.length])) : null;
+  if (collectSemantics) ctx.beginLocalTextRun({ text: semanticText, upem: shaped.upem,
+    ascender: shaped.extents.ascender, descender: shaped.extents.descender });
   let penX = 0;
   let tracking = 0;
   let previousCluster = null;
   for (const [index, glyph] of shaped.glyphs.entries()) {
     if (previousCluster !== null && glyph.cluster !== previousCluster) tracking += Number(letterSpacing) / (scale * scaleX) || 0;
     const path = collectGlyph ? glyph.path : paths[index];
-    if (path) {
+    if (path || collectSemantics) {
       const offsetX = penX + (Number(glyph.xOffset) || 0) + tracking;
       const offsetY = Number(glyph.yOffset) || 0;
       if (pixelStroke) {
@@ -235,16 +247,23 @@ function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0,
         ctx.stroke(pixelPath);
       } else {
         ctx.save(); ctx.translate(offsetX, offsetY);
-        if (collectGlyph) ctx.drawLocalGlyphPath(glyph.path, { paintMode, glyphId: glyph.id, cluster: glyph.cluster,
+        const geometry = collectGlyph && path ? ctx.drawLocalGlyphPath(glyph.path, { paintMode, glyphId: glyph.id, cluster: glyph.cluster,
           text: clusterText ?? text.slice(glyph.cluster, clusterEnds.get(glyph.cluster)),
-          ...(strokeTransform ? { strokeTransform } : {}) });
-        else ctx.fill(path);
+          ...(strokeTransform ? { strokeTransform } : {}) }) : null;
+        if (collectSemantics) {
+          const cluster = glyph.cluster - semanticClusterBase;
+          const end = semanticClusterEnds.get(glyph.cluster);
+          ctx.drawLocalTextGlyph(glyph.path, { xAdvance: glyph.xAdvance, yAdvance: glyph.yAdvance,
+            cluster, text: semanticText.slice(cluster, end) }, geometry?.strokeContours || []);
+        }
+        if (!collectGlyph && path) ctx.fill(path);
         ctx.restore();
       }
     }
     penX += Number(glyph.xAdvance) || 0;
     previousCluster = glyph.cluster;
   }
+  if (collectSemantics) ctx.endLocalTextRun();
   if (!pixelStroke) ctx.restore();
   return true;
 }

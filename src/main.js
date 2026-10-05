@@ -21289,6 +21289,7 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
           assets: state.assets,
           imagePreviews,
           measureText,
+          pdfTextSemantics: true,
         });
       });
       assertCurrent();

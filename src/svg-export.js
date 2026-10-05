@@ -23,7 +23,7 @@ import { flattenTextPath, textPathSpans, textPathSvgData } from './text-on-path.
 import { fontVariationSettings } from './font-variation.js';
 import { fontFeatureSettings } from './font-features.js';
 import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
-import { hasVisibleRenderedPaint, renderNodeInkBounds, transformInkBounds } from './render-ink-bounds.js';
+import { hasVisibleRenderedPaint, paintHasVisibleAlpha, renderNodeInkBounds, transformInkBounds } from './render-ink-bounds.js';
 import { decorationStyleForRun } from './text-decoration.js';
 import { collectTextDecorationGeometry, collectTextOutlineGeometry } from './text-outline-geometry.js';
 import { TEXT_DECORATION_PROPERTIES } from './text-decoration-style.js';
@@ -50,6 +50,7 @@ const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
 const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const MAX_NETWORK_METADATA_LENGTH = 1024 * 1024;
+const PDF_TEXT_SEMANTIC_LIMITS = Object.freeze({ bytes: 8 * 1024 * 1024, glyphs: 65_536, runs: 32_768 });
 const ALIGNMENT_METADATA_ATTRIBUTE = 'data-tiny-image-star-aligned-strokes-v1';
 const alignmentMetadataFields = [
   'id', 'name', 'type', 'width', 'height', 'opacity', 'blendMode', 'clip',
@@ -1705,15 +1706,173 @@ function positionedTextView(node, document, measureText) {
   return resolveTextPositionView(resolved, { shapeText: measureText?.shapeText, strict: true });
 }
 
-function positionedGlyphGeometry(node, document, measureText, { whitePaint = false } = {}) {
+function positionedGlyphGeometry(node, document, measureText, { whitePaint = false, captureTextSemantics = false } = {}) {
   const { node: view } = positionedTextView(node, document, measureText);
   const source = whitePaint ? { ...view, color: '#ffffff', textVariableId: null, textStyleId: null,
     textRuns: view.textRuns?.map(run => ({ ...run, color: '#ffffff' })) } : view;
-  try { return collectTextOutlineGeometry(document, source, { shapeText: measureText.shapeText, leadingTrimMetrics: measureText.leadingTrimMetrics, textLineMetrics: measureText.textLineMetrics, exportMode: 'svg' }); }
+  try { return collectTextOutlineGeometry(document, source, { shapeText: measureText.shapeText, leadingTrimMetrics: measureText.leadingTrimMetrics, textLineMetrics: measureText.textLineMetrics, exportMode: 'svg', captureTextSemantics }); }
   catch (error) {
     if (String(error?.code || '').endsWith('_PENDING')) throw error;
     throw new SvgExportError(`local text glyph geometry (${error.message})`, node);
   }
+}
+
+// PDF alone consumes this nonpainting geometry. Keep it outside every paint
+// replay: a layer can have several fills/strokes and duplicated shadow inputs.
+function pdfCurvePolynomial(points, axis, edge = 0) {
+  const p = points.map(point => point[axis]);
+  if (p.length === 2) return [p[0] - edge, p[1] - p[0]];
+  if (p.length === 3) return [p[0] - edge, 2 * (p[1] - p[0]), p[0] - 2 * p[1] + p[2]];
+  return [p[0] - edge, 3 * (p[1] - p[0]), 3 * (p[0] - 2 * p[1] + p[2]), -p[0] + 3 * p[1] - 3 * p[2] + p[3]];
+}
+const pdfPolynomialAt = (coefficients, t) => coefficients.reduceRight((value, coefficient) => value * t + coefficient, 0);
+function pdfPolynomialRoots(coefficients) {
+  const values = [...coefficients]; const tolerance = Math.max(1, ...values.map(Math.abs)) * Number.EPSILON * 32;
+  while (values.length > 1 && Math.abs(values.at(-1)) <= tolerance) values.pop();
+  if (values.length <= 1) return [];
+  if (values.length === 2) {
+    const root = -values[0] / values[1];
+    return root >= 0 && root <= 1 ? [root] : [];
+  }
+  const derivative = values.slice(1).map((value, index) => value * (index + 1));
+  const cuts = [0, ...pdfPolynomialRoots(derivative).filter(t => t > 0 && t < 1), 1]; const roots = [];
+  const append = t => { if (!roots.some(value => Math.abs(value - t) < 1e-12)) roots.push(t); };
+  for (const t of cuts) if (Math.abs(pdfPolynomialAt(values, t)) <= tolerance) append(t);
+  for (let index = 1; index < cuts.length; index++) {
+    let low = cuts[index - 1]; let high = cuts[index]; const sign = Math.sign(pdfPolynomialAt(values, low));
+    if (!sign || sign === Math.sign(pdfPolynomialAt(values, high)) || !pdfPolynomialAt(values, high)) continue;
+    for (let step = 0; step < 48; step++) {
+      const middle = (low + high) / 2;
+      if (Math.sign(pdfPolynomialAt(values, middle)) === sign) low = middle; else high = middle;
+    }
+    append((low + high) / 2);
+  }
+  return roots.sort((a, b) => a - b);
+}
+
+// Native curve/rectangle intersection plus nonzero winding detects both ink
+// crossing the paint box and boxes wholly inside a glyph (or one of its holes).
+// No font-size proxy, flattening, raster allocation or font replay is involved.
+function pdfGlyphInkIntersectsBox(contours, width, height, budget, node) {
+  if (!Array.isArray(contours)) throw new SvgExportError('missing local PDF glyph ink contours', node);
+  if (!(width > 0 && height > 0)) return false;
+  const center = { x: width / 2, y: height / 2 }; let winding = 0;
+  for (const contour of contours) {
+    if (!contour.closed || !Array.isArray(contour.commands)) throw new SvgExportError('invalid local PDF glyph ink contours', node);
+    const commands = [...contour.commands]; const end = commands.at(-1)?.end || contour.start;
+    if (end.x !== contour.start.x || end.y !== contour.start.y) commands.push({ type: 'line', start: end, end: contour.start });
+    for (const command of commands) {
+      if (++budget.curves > 1_000_000) throw new SvgExportError('PDF text paint-domain checks exceeding one million native curves', node);
+      const points = command.type === 'line' ? [command.start, command.end]
+        : command.type === 'quadratic' ? [command.start, command.control, command.end]
+          : command.type === 'cubic' ? [command.start, command.control1, command.control2, command.end] : null;
+      if (!points || points.some(point => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new SvgExportError('invalid local PDF glyph ink contours', node);
+      const x = pdfCurvePolynomial(points, 'x'); const y = pdfCurvePolynomial(points, 'y');
+      const hull = { left: Math.min(...points.map(p => p.x)), right: Math.max(...points.map(p => p.x)),
+        top: Math.min(...points.map(p => p.y)), bottom: Math.max(...points.map(p => p.y)) };
+      if (hull.right > 0 && hull.left < width && hull.bottom > 0 && hull.top < height) {
+        const cuts = [0, 1, ...[0, width].flatMap(edge => pdfPolynomialRoots(pdfCurvePolynomial(points, 'x', edge))),
+          ...[0, height].flatMap(edge => pdfPolynomialRoots(pdfCurvePolynomial(points, 'y', edge)))].sort((a, b) => a - b);
+        for (let index = 1; index < cuts.length; index++) {
+          const t = (cuts[index - 1] + cuts[index]) / 2; const px = pdfPolynomialAt(x, t); const py = pdfPolynomialAt(y, t);
+          if (px > 0 && px < width && py > 0 && py < height) return true;
+        }
+      }
+      if (hull.right <= center.x || hull.bottom < center.y || hull.top > center.y) continue;
+      const cuts = [0, ...pdfPolynomialRoots(y.slice(1).map((value, index) => value * (index + 1))).filter(t => t > 0 && t < 1), 1];
+      for (let index = 1; index < cuts.length; index++) {
+        let low = cuts[index - 1]; let high = cuts[index]; const before = pdfPolynomialAt(y, low); const after = pdfPolynomialAt(y, high);
+        const direction = before <= center.y && after > center.y ? 1 : after <= center.y && before > center.y ? -1 : 0;
+        if (!direction) continue;
+        if (y.length === 2) low = high = (center.y - y[0]) / y[1];
+        else {
+          for (let step = 0; step < 48; step++) {
+            const middle = (low + high) / 2;
+            if ((pdfPolynomialAt(y, middle) < center.y) === (direction > 0)) low = middle; else high = middle;
+          }
+        }
+        if (pdfPolynomialAt(x, (low + high) / 2) > center.x) winding += direction;
+      }
+    }
+  }
+  return winding !== 0;
+}
+
+function pdfTextRunsInsidePaintBox(runs, node, budget) {
+  let hasInk = false;
+  const fragments = runs.map(run => {
+    const clusters = new Map();
+    for (const glyph of run.glyphs) {
+      if (++budget.glyphs > PDF_TEXT_SEMANTIC_LIMITS.glyphs) throw new SvgExportError('PDF text paint-domain checks exceeding 65536 glyphs', node);
+      if (!clusters.has(glyph.cluster)) clusters.set(glyph.cluster, { start: glyph.cluster, glyphs: [], keep: false });
+      const cluster = clusters.get(glyph.cluster); cluster.glyphs.push(glyph);
+      if (!cluster.keep && pdfGlyphInkIntersectsBox(glyph.inkContours, node.width, node.height, budget, node)) cluster.keep = hasInk = true;
+    }
+    const ordered = [...clusters.values()].sort((a, b) => a.start - b.start);
+    ordered.forEach((cluster, index) => { cluster.end = ordered[index + 1]?.start ?? run.text.length; cluster.space = /^\s+$/u.test(run.text.slice(cluster.start, cluster.end)); });
+    // Keep actual whitespace adjacent to visible clusters, without joining
+    // across clipped letters or changing the native glyph matrices/advances.
+    for (let index = 0; index < ordered.length;) {
+      if (!ordered[index].space) { index++; continue; }
+      const start = index; while (index < ordered.length && ordered[index].space) index++;
+      if (ordered[start - 1]?.keep || ordered[index]?.keep) for (let item = start; item < index; item++) ordered[item].keep = true;
+    }
+    const result = [];
+    for (let index = 0; index < ordered.length;) {
+      if (!ordered[index].keep) { index++; continue; }
+      const start = ordered[index].start; let end = ordered[index].end; const offsets = new Set();
+      while (index < ordered.length && ordered[index].keep) { offsets.add(ordered[index].start); end = ordered[index++].end; }
+      result.push({ ...run, text: run.text.slice(start, end), glyphs: run.glyphs.filter(glyph => offsets.has(glyph.cluster)).map(glyph => ({ ...glyph, cluster: glyph.cluster - start })) });
+    }
+    return result;
+  });
+  if (!hasInk) return [];
+  return fragments.flatMap((values, index) => values.length ? values : /^\s+$/u.test(runs[index].text) ? [runs[index]] : []);
+}
+
+function pdfTextSemanticMarkup(node, document, measureText, context, index) {
+  if (!context.pdfTextSemantics || node.type !== 'text') return '';
+  const visibleStroke = strokeStackForNode(node).some((stroke, strokeIndex) => Number(stroke.width) > 0
+    && paintHasVisibleAlpha(strokeIndex === 0 && node.strokeVariableId
+      ? { ...stroke, color: color(document, node, 'stroke') } : stroke));
+  const explicitFill = Array.isArray(node.fills) && node.width > 0 && node.height > 0 && node.fills.some((fill, fillIndex) =>
+    paintHasVisibleAlpha(fill.type === 'solid' ? { ...fill, color: stackSolidValue(document, node, fill, fillIndex) } : fill));
+  const intrinsicFill = !Array.isArray(node.fills) && Number(node.fillOpacity ?? 1) > 0;
+  if ((!visibleStroke && !explicitFill && !intrinsicFill) || !localTextUsesGlyphGeometry(node, document, measureText)) return '';
+  const result = positionedGlyphGeometry(node, document, measureText, { captureTextSemantics: true });
+  if (!Array.isArray(result.pdfTextRuns)) throw new SvgExportError('incomplete local PDF text semantics', node);
+  let runs = result.pdfTextRuns.filter(run => visibleStroke || explicitFill || paintHasVisibleAlpha(run.paint));
+  const paintBoxClipped = explicitFill && !visibleStroke || node.textTruncation === 'ending';
+  if (paintBoxClipped) runs = pdfTextRunsInsidePaintBox(runs, node, context.pdfTextSemanticClipBudget ||= { curves: 0, glyphs: 0 });
+  if (!runs.some(run => run.glyphs?.some(glyph => glyph.path))) return '';
+  const budget = context.pdfTextSemanticBudget ||= { bytes: 0, glyphs: 0, runs: 0 };
+  const invalid = () => { throw new SvgExportError('invalid or incomplete local PDF text semantics', node); };
+  const validText = value => typeof value === 'string' && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
+  const finite = value => Number.isFinite(value) && Math.abs(value) <= 1_000_000_000_000;
+  const pieces = [];
+  const append = value => {
+    budget.bytes += new TextEncoder().encode(value).byteLength;
+    if (budget.bytes > PDF_TEXT_SEMANTIC_LIMITS.bytes) throw new SvgExportError('PDF text semantics larger than 8 MiB (export fewer text layers)', node);
+    pieces.push(value);
+  };
+  append('<g data-tiny-image-star-pdf-text="1" opacity="0">');
+  for (const run of runs) {
+    if (++budget.runs > PDF_TEXT_SEMANTIC_LIMITS.runs) throw new SvgExportError('PDF text semantics exceeding 32768 shaped runs', node);
+    if (!validText(run.text) || run.text.length > 32768 || !finite(run.upem) || !(run.upem > 0)
+      || !finite(run.ascender) || !finite(run.descender) || !(run.ascender > run.descender) || !Array.isArray(run.glyphs)) invalid();
+    append(`<g data-tiny-image-star-pdf-run="${escapeXml(JSON.stringify({ text: run.text, upem: run.upem, ascender: run.ascender, descender: run.descender }))}">`);
+    for (const glyph of run.glyphs) {
+      if (++budget.glyphs > PDF_TEXT_SEMANTIC_LIMITS.glyphs) throw new SvgExportError('PDF text semantics exceeding 65536 glyphs', node);
+      if (typeof glyph.path !== 'string' || glyph.path.length > 1024 * 1024 || !/^[MLHVQCZmlhvqcz\d+eE.,\s-]*$/u.test(glyph.path)
+        || !Array.isArray(glyph.matrix) || glyph.matrix.length !== 6 || !glyph.matrix.every(finite)
+        || !finite(glyph.xAdvance) || !finite(glyph.yAdvance) || !Number.isSafeInteger(glyph.cluster)
+        || glyph.cluster < 0 || glyph.cluster >= run.text.length || /[\uDC00-\uDFFF]/u.test(run.text[glyph.cluster]) || !validText(glyph.text)) invalid();
+      append(`<path d="${escapeXml(glyph.path)}" data-tiny-image-star-pdf-glyph="${escapeXml(JSON.stringify({ matrix: glyph.matrix, xAdvance: glyph.xAdvance, yAdvance: glyph.yAdvance, cluster: glyph.cluster, text: glyph.text }))}"/>`);
+    }
+    append('</g>');
+  }
+  append('</g>');
+  return clipTruncatedTextMarkup(paintBoxClipped ? { ...node, textTruncation: 'ending' } : node, pieces.join(''), `pdf-semantics-${index}`);
 }
 
 // Positioned and vertically trimmed local text use actual font contours.
@@ -2149,10 +2308,10 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
   if (maskMode === 'alpha' && (node.booleanGeometry === 'vector'
     || node.type === 'text' && (hasPositionedText(node) || [node, ...(node.textRuns || [])].some(customTextDecoration)))) {
-    return renderTree([node], document, context, true, measureText);
+    return renderTree([node], document, context, true, measureText, false);
   }
   if (maskMode === 'luminance') {
-    if (['group', 'frame', 'section'].includes(node.type)) return renderTree([node], document, context, true, measureText);
+    if (['group', 'frame', 'section'].includes(node.type)) return renderTree([node], document, context, true, measureText, false);
     const gradient = gradientDefinition(node, layerIndex);
     if (gradient) context.defs.push(gradient.markup);
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
@@ -2163,7 +2322,7 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
   const alpha = opacity * fillOpacity;
   const transform = matrixAttribute(nodeMatrix(node, { includePosition: true }));
   if (['image', 'group', 'frame', 'section'].includes(node.type)) {
-    return renderTree([node], document, context, true, measureText);
+    return renderTree([node], document, context, true, measureText, false);
   }
   if (node.type === 'network') {
     const edgesByPair = networkEdgesByPair(node);
@@ -2288,7 +2447,7 @@ function stagedInnerShadowDefinition(effect, id, bounds) {
   return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB" x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
 }
 
-function renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata) {
+function renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata, emitSemantics, separateSemantics) {
   if (node.mask) throw new SvgExportError('staged text paint combined with a root mask (use raster export)', node);
   const transform = nodeMatrix(node, { includePosition });
   const bounds = compositedSubtreeBounds(node, document, includePosition);
@@ -2310,31 +2469,37 @@ function renderStagedGroup(node, document, context, index, includePosition, meas
     context.defs.push(clipDefinition(document, id, node));
     clipAttribute = ` clip-path="url(#${id})"`;
   }
-  const stage = items => `<g${matrixAttribute(transform)}><g${clipAttribute}>${renderTree(items, document, context, true, measureText)}</g></g>`;
+  const stage = items => {
+    const rendered = renderTree(items, document, context, true, measureText, emitSemantics, true);
+    const wrap = content => content ? `<g${matrixAttribute(transform)}><g${clipAttribute}>${content}</g></g>` : '';
+    return { paint: wrap(rendered.paint), semantics: wrap(rendered.semantics) };
+  };
   const fill = stage(fillChildren); const stroke = stage(strokeChildren);
   const effects = (node.effects || []).filter(effect => effect.visible !== false);
   const inner = effects.filter(effect => effect.type === 'inner-shadow');
   const top = effects.filter(effect => effect.type !== 'inner-shadow');
   const hasStrokeSnapshot = strokeChildren.some(child => hasVisibleRenderedPaint(document, child));
-  let paint = fill;
+  let paint = fill.paint;
   if (inner.length && hasStrokeSnapshot) {
     for (const [effectIndex, effect] of inner.entries()) {
       const filter = stagedInnerShadowDefinition(effect, `tis-effect-${index}-inner-${effectIndex}`, bounds);
       context.defs.push(filter.markup);
-      paint += `<g filter="url(#${filter.id})">${fill}${stroke}</g>`;
+      paint += `<g filter="url(#${filter.id})">${fill.paint}${stroke.paint}</g>`;
     }
   } else if (inner.length) {
     const filter = effectDefinition(node, index, document, measureText, { effects: inner, id: `tis-effect-${index}-inner`, bounds, srgb: true });
     context.defs.push(filter.markup);
-    paint = `<g filter="url(#${filter.id})">${fill}</g>`;
+    paint = `<g filter="url(#${filter.id})">${fill.paint}</g>`;
   }
-  paint += stroke;
+  paint += stroke.paint;
   const filter = effectDefinition(node, index, document, measureText, { effects: top, bounds, srgb: true });
   if (filter) context.defs.push(filter.markup);
   const blend = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
   // The node transform belongs inside the effect surface: Canvas effects act
   // in parent coordinates after the geometry's affine/rotation transform.
-  return `<g opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blend}${metadata} data-tiny-image-star-paint-phases="group-v1">${title}${paint}</g>`;
+  const semantics = fill.semantics + stroke.semantics;
+  const artwork = `<g opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blend}${metadata} data-tiny-image-star-paint-phases="group-v1">${title}${paint}${separateSemantics ? '' : semantics}</g>`;
+  return separateSemantics ? { paint: artwork, semantics: semantics ? `<g opacity="${number(opacity)}">${semantics}</g>` : '' } : artwork;
 }
 
 function canExportPhasedLayerPaint(node, document = emptyDocument) {
@@ -2560,8 +2725,8 @@ function booleanMaskDefinition(node, id, document, measureText) {
   return { id, markups };
 }
 
-function renderTree(nodes, document, context, includePosition = true, measureText) {
-  let markup = '';
+function renderTree(nodes, document, context, includePosition = true, measureText, emitSemantics = context.pdfTextSemantics === true, separateSemantics = false) {
+  let markup = ''; let semanticMarkup = '';
   for (const sourceNode of nodes || []) {
     if (sourceNode?.type === 'slice') continue;
     if (!isNodeVisible(document, sourceNode)) continue;
@@ -2590,7 +2755,9 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const emptyBooleanResult = booleanStrokePath && !booleanStrokePath.points?.length;
     const metadata = ` data-tiny-image-star-type="${escapeXml(booleanStrokePath ? 'group' : node.type)}"${booleanStrokePath ? ' data-tiny-image-star-source-type="boolean"' : ''}${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}${alignedStrokeRoundTripMetadata(node, document, context)}`;
     if (node.type === 'group' && node.effectPaintMode === 'staged') {
-      markup += renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata);
+      const rendered = renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata, emitSemantics && opacity > 0, separateSemantics);
+      if (separateSemantics) { markup += rendered.paint; semanticMarkup += rendered.semantics; }
+      else markup += rendered;
       continue;
     }
     const hasFillStack = Array.isArray(node.fills);
@@ -2722,9 +2889,12 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
       ownShape = fill + stroke;
     }
     const visibleChildren = node.type === 'boolean' ? [] : maskSource ? node.children.filter(child => child !== maskSource) : node.children;
-    const childNodes = visibleChildren?.length
-      ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(visibleChildren, document, context, true, measureText)}</g>`
-      : '';
+    const semanticScope = emitSemantics && opacity > 0;
+    const renderedChildren = visibleChildren?.length
+      ? renderTree(visibleChildren, document, context, true, measureText, semanticScope, separateSemantics) : null;
+    const childWrap = content => content ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${content}</g>` : '';
+    const childNodes = childWrap(separateSemantics ? renderedChildren?.paint : renderedChildren);
+    const ownSemantics = semanticScope ? pdfTextSemanticMarkup(node, document, measureText, context, index) : '';
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
     const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask && !booleanStrokePath ? ` mask="url(#${booleanMask.id})"` : '';
     const dropShadows = visibleEffects.filter(effect => effect.type === 'drop-shadow');
@@ -2734,9 +2904,13 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const paintPhaseMetadata = phasedPaintMarkup
       ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}"`
       : '';
-    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}${dropShadowMetadata}>${title}${ownShape}${childNodes}</g>`;
+    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}${dropShadowMetadata}>${title}${ownShape}${separateSemantics ? '' : ownSemantics}${childNodes}</g>`;
+    if (separateSemantics) {
+      const content = ownSemantics + childWrap(renderedChildren?.semantics);
+      if (content) semanticMarkup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${maskAttribute}>${content}</g>`;
+    }
   }
-  return markup;
+  return separateSemantics ? { paint: markup, semantics: semanticMarkup } : markup;
 }
 
 function transformPoint(matrix, x, y) {
@@ -2989,13 +3163,14 @@ export function getPageContentBounds(page, { document = null, measureText } = {}
  * Export one editor layer as a self-contained, editable SVG, with its origin at the layer's bounds.
  * Text layers require a canvas-based `measureText` callback so SVG line breaks match the editor.
  */
-export function exportNodeToSvg(node, { document = null, assets = null, imagePreviews = null, width, height, measureText } = {}) {
+export function exportNodeToSvg(node, { document = null, assets = null, imagePreviews = null, width, height, measureText, pdfTextSemantics = false } = {}) {
   if (!node || typeof node !== 'object') throw new TypeError('SVG export requires a layer.');
   if (node.type === 'slice') throw new SvgExportError('raster slice exports', node);
   document ||= emptyDocument;
   validateTree([node], document, assets, imagePreviews);
   const bounds = getBounds([node], { document, includePosition: false, measureText });
-  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set() };
+  if (typeof pdfTextSemantics !== 'boolean') throw new TypeError('SVG PDF text semantics must be a boolean.');
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set(), pdfTextSemantics };
   const markup = renderTree([node], document, context, false, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }
@@ -3004,12 +3179,13 @@ export function exportNodeToSvg(node, { document = null, assets = null, imagePre
  * Export a page's layers as a self-contained, editable SVG, fitting the viewBox to visible content.
  * Pages with text layers require a canvas-based `measureText` callback.
  */
-export function exportPageToSvg(page, { document = null, assets = null, imagePreviews = null, width, height, measureText } = {}) {
+export function exportPageToSvg(page, { document = null, assets = null, imagePreviews = null, width, height, measureText, pdfTextSemantics = false } = {}) {
   if (!page || !Array.isArray(page.children)) throw new TypeError('SVG export requires a page with child layers.');
   document ||= emptyDocument;
   validateTree(page.children, document, assets, imagePreviews);
   const bounds = getBounds(page.children, { document, measureText });
-  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set() };
+  if (typeof pdfTextSemantics !== 'boolean') throw new TypeError('SVG PDF text semantics must be a boolean.');
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set(), pdfTextSemantics };
   const markup = renderTree(page.children, document, context, true, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }

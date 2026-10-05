@@ -101,6 +101,8 @@ test('editor vector PDF export owns cold retained glyphs, reads captured folder 
   assert.equal(h.previews, 1, 'glyph-query retries cannot repeat Pillow image work');
   assert.ok(h.shapes.length > 0); assert.equal(h.liveShapes.length, 0);
   assert.ok(h.svgs.every(svg => !svg.includes('<text')), 'local glyphs remain vector contours');
+  assert.ok(h.svgs.at(-1).includes('data-tiny-image-star-pdf-text="1"'), 'the production export requests real local glyph text semantics');
+  assert.match(await h.downloads[0].blob.text(), /\/Subtype \/Type3/u, 'the recipient gets self-contained native glyph text resources');
   assert.deepEqual(h.state.document, before); assert.equal(h.state.imageExportAbortController, null);
 });
 
@@ -108,6 +110,7 @@ test('editor vector PDF preserves standard text fallback without allocating loca
   const h = harness({ local: false }); await h.run();
   assert.equal(h.downloads.length, 1); assert.equal(h.sessions, 0); assert.equal(h.closed, 0);
   assert.equal(h.reads.length, 0); assert.ok(h.svgs.some(svg => svg.includes('<text')));
+  assert.ok(h.svgs.every(svg => !svg.includes('data-tiny-image-star-pdf-text="1"')), 'standard PDF text does not receive a duplicate semantic overlay');
   assert.match(await h.downloads[0].blob.text(), /\/BaseFont \/Helvetica/);
   assert.ok(h.metricFonts.some(font => font.endsWith('Helvetica')));
 });

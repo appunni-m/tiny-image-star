@@ -119,19 +119,23 @@ const rectangleContours = (x, y, width, height, matrix) => {
   return transformedContours([{ start: points[0], closed: true,
     commands: points.slice(1).map((end, index) => ({ type: 'line', start: points[index], end })) }], matrix);
 };
+const splitsUtf16Pair = (text, index) => index > 0 && index < text.length
+  && text.charCodeAt(index - 1) >= 0xD800 && text.charCodeAt(index - 1) <= 0xDBFF
+  && text.charCodeAt(index) >= 0xDC00 && text.charCodeAt(index) <= 0xDFFF;
 
-function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs: 0 }, limits = TEXT_OUTLINE_LIMITS) {
+function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs: 0 }, limits = TEXT_OUTLINE_LIMITS, captureTextSemantics = false) {
   if (state.depth > 16) fail('The local font fallback structure is too deep.');
   if (Array.isArray(shaped?.mixedRuns)) {
     if (shaped.mixedRuns.map(run => run.text).join('') !== text) fail('The local fallback runs do not match the requested text.');
     if (shaped.mixedRuns.length > limits.maxShapeQueries) fail('The local font fallback structure exceeds the supported run limit.');
     state.depth++;
-    for (const run of shaped.mixedRuns) checkShaped(run.shaped, run.text, state, limits);
+    for (const run of shaped.mixedRuns) checkShaped(run.shaped, run.text, state, limits, captureTextSemantics);
     state.depth--;
     return shaped;
   }
   if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !Number.isFinite(shaped.upem) || shaped.upem <= 0
     || !Number.isFinite(shaped.extents?.ascender)) fail('Every displayed character needs a retained local font with an actual glyph outline. Import a font covering this text before outlining.');
+  if (captureTextSemantics && !Number.isFinite(shaped.extents.descender)) fail('The local font returned incomplete text semantics.');
   state.glyphs += shaped.glyphs.length;
   if (state.glyphs > 65_536) fail('The local shaped run exceeds the bounded glyph limit.');
   for (const glyph of shaped.glyphs) {
@@ -139,6 +143,7 @@ function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs
       || ['xAdvance', 'yAdvance', 'xOffset', 'yOffset'].some(key => !Number.isFinite(glyph[key])) || typeof glyph.path !== 'string') {
       fail('The local font shaper returned incomplete glyph geometry.');
     }
+    if (captureTextSemantics && splitsUtf16Pair(text, glyph.cluster)) fail('The local font returned invalid glyph text semantics.');
     state.pathCharacters += glyph.path.length;
     if (state.pathCharacters * 2 > limits.maxShapeCacheBytes) fail('The local shaped run exceeds the outline memory budget.');
   }
@@ -146,12 +151,14 @@ function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs
 }
 
 class TextGeometryContext {
-  constructor(signal, limits = TEXT_OUTLINE_LIMITS) {
+  constructor(signal, limits = TEXT_OUTLINE_LIMITS, captureTextSemantics = false) {
     this.signal = signal; this.limits = limits; this.isTextGeometryContext = true; this.matrix = identity(); this.stack = []; this.path = null;
     this.fillStyle = '#000000'; this.strokeStyle = '#000000'; this.globalAlpha = 1; this.lineWidth = 1;
     this.font = ''; this.textAlign = 'left'; this.textBaseline = 'top';
     this.glyphs = []; this.decorations = []; this.clipGeometry = null; this.commands = 0; this.contours = 0;
     this.paths = new Map();
+    this.captureTextSemantics = captureTextSemantics;
+    this.pdfTextRuns = []; this.semanticRun = null; this.semanticGlyphs = 0; this.semanticBytes = 0;
   }
   save() { this.stack.push({ matrix: [...this.matrix], fillStyle: this.fillStyle, strokeStyle: this.strokeStyle,
     globalAlpha: this.globalAlpha, lineWidth: this.lineWidth, font: this.font, textAlign: this.textAlign, textBaseline: this.textBaseline }); }
@@ -159,6 +166,41 @@ class TextGeometryContext {
   translate(x, y) { this.matrix = multiply(this.matrix, [1, 0, 0, 1, coordinate(x), coordinate(y)]); }
   scale(x, y) { this.matrix = multiply(this.matrix, [coordinate(x), 0, 0, coordinate(y), 0, 0]); }
   captureTextStrokeTransform() { return [...this.matrix]; }
+  beginLocalTextRun({ text, upem, ascender, descender }) {
+    abort(this.signal);
+    if (this.semanticRun || typeof text !== 'string' || text.length > this.limits.maxTextCodeUnits
+      || !(upem > 0) || ![upem, ascender, descender].every(Number.isFinite)) fail('The local font returned incomplete text semantics.');
+    if (this.pdfTextRuns.length >= this.limits.maxGlyphs) fail('This text exceeds the bounded semantic run limit.');
+    this.semanticBytes += text.length * 2 + 64;
+    this.checkSemanticBudget();
+    this.semanticRun = { text, upem: coordinate(upem), ascender: coordinate(ascender), descender: coordinate(descender),
+      paint: colorPaint(this.fillStyle, this.globalAlpha), glyphs: [] };
+  }
+  drawLocalTextGlyph(path, { xAdvance, yAdvance, cluster, text }, inkContours) {
+    abort(this.signal);
+    const run = this.semanticRun;
+    if (!run || typeof path !== 'string' || path.length > this.limits.maxGlyphPathCharacters
+      || !Number.isSafeInteger(cluster) || cluster < 0 || cluster >= run.text.length || splitsUtf16Pair(run.text, cluster)
+      || typeof text !== 'string' || !text.length || run.text.slice(cluster, cluster + text.length) !== text
+      || splitsUtf16Pair(run.text, cluster + text.length) || ![xAdvance, yAdvance].every(Number.isFinite)) {
+      fail('The local font returned invalid glyph text semantics.');
+    }
+    if (++this.semanticGlyphs > this.limits.maxGlyphs) fail(`This text exceeds the ${this.limits.maxGlyphs.toLocaleString('en-US')}-glyph semantic limit. Export fewer characters at a time.`);
+    this.semanticBytes += (path.length + text.length) * 2 + 96;
+    this.checkSemanticBudget();
+    // These contours share the existing collected geometry, without another
+    // font parser or allocation. They are export eligibility data only; PDF
+    // serialization retains the raw path and matrix contract above.
+    run.glyphs.push({ path, matrix: this.matrix.map(coordinate), xAdvance: coordinate(xAdvance), yAdvance: coordinate(yAdvance), cluster, text, inkContours });
+  }
+  endLocalTextRun() {
+    if (!this.semanticRun || (this.semanticRun.text.length && !this.semanticRun.glyphs.length)) fail('The displayed local text has no glyph semantics.');
+    if (this.semanticRun.glyphs.length) this.pdfTextRuns.push(this.semanticRun);
+    this.semanticRun = null;
+  }
+  checkSemanticBudget() {
+    if (this.semanticBytes > this.limits.maxShapeCacheBytes) fail('This text exceeds the bounded semantic memory budget. Export fewer characters at a time.');
+  }
   rotate(value) { if (!Number.isFinite(value)) fail('The text path has an invalid angle.'); this.matrix = multiply(this.matrix, [Math.cos(value), Math.sin(value), -Math.sin(value), Math.cos(value), 0, 0]); }
   beginPath() { this.path = { points: [], matrix: [...this.matrix], rectangle: null }; }
   moveTo(x, y) { if (!this.path) this.beginPath(); this.path.points = [point(x, y)]; this.path.matrix = [...this.matrix]; }
@@ -183,6 +225,7 @@ class TextGeometryContext {
     this.glyphs.push({ geometry, paint: colorPaint(this.fillStyle, this.globalAlpha), glyphId: metadata.glyphId,
       cluster: metadata.cluster, text: metadata.text, font: this.font,
       ...(metadata.strokeTransform ? { strokeTransform: [...metadata.strokeTransform] } : {}) });
+    return geometry;
   }
   drawLocalDecorationGeometry(contours, metadata) {
     const transformed = transformedContours(contours, this.matrix); this.addContours(transformed);
@@ -247,9 +290,11 @@ export function collectTextDecorationGeometry(document, source, {
  * clipGeometry clips completed fills AND outlined strokes for truncation;
  * fillClipGeometry only bounds explicit fill-paint planes. Neither should be
  * used to clip a glyph before stroking, which would invent box-edge strokes.
+ * Optional pdfTextRuns retain raw native font paths (including spaces) and
+ * their font-unit-to-text-box transforms without changing editable geometry.
  */
 export function collectTextOutlineGeometry(document, source, {
-  shapeText, signal, includeDecorations = true, measureContext: _measureContext, leadingTrimMetrics, textLineMetrics, exportMode
+  shapeText, signal, includeDecorations = true, measureContext: _measureContext, leadingTrimMetrics, textLineMetrics, exportMode, captureTextSemantics = false
 } = {}) {
   abort(signal);
   if (source?.type !== 'text' || typeof shapeText !== 'function') fail('A text layer and a local font shaping resolver are required.');
@@ -257,13 +302,13 @@ export function collectTextOutlineGeometry(document, source, {
   if (!node.__textPositionResolved) node = resolveTextPositionView(node, { shapeText, strict: true }).node;
   if (![node.width, node.height].every(value => Number.isFinite(value) && value >= 0 && value <= TEXT_OUTLINE_LIMITS.maxCoordinate)) fail('The text box dimensions exceed the supported outline range.');
   const limits = exportMode === 'svg' ? TEXT_OUTLINE_SVG_LIMITS : TEXT_OUTLINE_LIMITS;
-  const context = new TextGeometryContext(signal, limits); const shapeCache = new Map(); let shapeBytes = 0;
+  const context = new TextGeometryContext(signal, limits, captureTextSemantics === true); const shapeCache = new Map(); let shapeBytes = 0;
   const checkedShape = (text, style) => {
     abort(signal); if (typeof text !== 'string' || text.length > TEXT_OUTLINE_LIMITS.maxTextCodeUnits) fail('This text exceeds the local font shaping limit.');
     const key = JSON.stringify([text, style]);
     if (shapeCache.has(key)) return shapeCache.get(key);
     if (shapeCache.size >= limits.maxShapeQueries) fail('This text exceeds the bounded shaping-query limit.');
-    const shaped = checkShaped(positionShapeValue(node, shapeText, text, style), text, undefined, limits);
+    const shaped = checkShaped(positionShapeValue(node, shapeText, text, style), text, undefined, limits, captureTextSemantics === true);
     shapeBytes += (key.length + JSON.stringify(shaped).length) * 2;
     if (shapeBytes > limits.maxShapeCacheBytes) fail('This text exceeds the bounded shaping memory limit.');
     shapeCache.set(key, shaped); return shaped;
@@ -284,6 +329,7 @@ export function collectTextOutlineGeometry(document, source, {
     geometry: { fillRule: 'nonzero', fillGroups, strokeContours: glyphContours, alignedStrokeContours: glyphContours },
     glyphGeometry: { fillRule: 'nonzero', fillGroups: glyphFillGroups, strokeContours: glyphContours, alignedStrokeContours: glyphContours },
     glyphs: context.glyphs, decorations: context.decorations,
+    ...(captureTextSemantics === true ? { pdfTextRuns: context.pdfTextRuns } : {}),
     ...(context.clipGeometry ? { clipGeometry: context.clipGeometry } : {}),
     ...(Array.isArray(node.fills) && node.width > 0 && node.height > 0
       ? { fillClipGeometry: context.clipGeometry || shapeFor(rectangleContours(0, 0, node.width, node.height, identity())) } : {}), layout };
@@ -317,7 +363,7 @@ async function awaitShape(value, signal, deadline) {
 
 /** Resolve only real shaping queries, then retry the same layout with immutable results. */
 export async function prepareTextOutlineGeometry(document, node, {
-  shapeText, signal, includeDecorations = true, measureContext, leadingTrimMetrics, textLineMetrics, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
+  shapeText, signal, includeDecorations = true, measureContext, leadingTrimMetrics, textLineMetrics, captureTextSemantics = false, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
 } = {}) {
   if (typeof shapeText !== 'function' || typeof assertCurrent !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > TEXT_OUTLINE_LIMITS.timeoutMs) fail('The text outline preparation options are invalid.');
   abort(signal); assertCurrent(); const signature = sourceSignature(document, node);
@@ -336,11 +382,11 @@ export async function prepareTextOutlineGeometry(document, node, {
   };
   while (true) {
     current();
-    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext, leadingTrimMetrics, textLineMetrics }); }
+    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext, leadingTrimMetrics, textLineMetrics, captureTextSemantics }); }
     catch (pending) {
       if (!(pending instanceof PendingShape)) throw pending;
       const value = await awaitShape(shapeText(pending.text, pending.style, { signal }), signal, deadline);
-      current(); checkShaped(value, pending.text);
+      current(); checkShaped(value, pending.text, undefined, TEXT_OUTLINE_LIMITS, captureTextSemantics === true);
       const retained = structuredClone(value); const size = (pending.key.length + JSON.stringify(retained).length) * 2;
       if (bytes + size > TEXT_OUTLINE_LIMITS.maxShapeCacheBytes) fail('The local glyph outlines exceed the preparation memory budget. Outline fewer paragraphs at a time.');
       cache.set(pending.key, retained); bytes += size;

@@ -11,6 +11,11 @@ const LIMITS = Object.freeze({
   maxPageSvgCharacters: 64 * 1024 * 1024,
   maxAggregateSvgCharacters: 128 * 1024 * 1024,
   maxTransparencyGroups: 10_000,
+  maxPdfTextGlyphs: 65_536,
+  maxPdfTextPathCharacters: 64 * 1024 * 1024,
+  maxPdfTextGlyphPathCharacters: 1_000_000,
+  maxPdfTextRuns: 32_768,
+  maxPdfTextMetadataCharacters: 8 * 1024 * 1024,
   maxOutputBytes: 512 * 1024 * 1024,
 });
 
@@ -25,8 +30,10 @@ const LIMITS = Object.freeze({
  * variants when the SVG contains the editor's PDF placement metadata. Custom
  * underline styles, thicknesses, offsets, colors and verified Skip ink gaps
  * arrive as ordinary self-contained filled paths and retain vector geometry.
- * Retained local glyph contours arrive as self-contained paths from the
- * bounded SVG export; they do not create searchable or copyable PDF text. Raw
+ * Retained local glyph contours and bounded Type3/ToUnicode semantics arrive
+ * separately from the SVG export. The semantics use those same real contours
+ * in nonpainting text mode, so they add searchable/copyable text without
+ * changing page pixels. Raw
  * custom-font SVG text and textPath nodes,
  * gradient strokes, unsupported filter graphs, colored/translucent luminance
  * masks, and blend modes are rejected with feature-specific errors. A single user-space feDropShadow on a simple vector fill keeps its
@@ -697,6 +704,269 @@ function shapePath(node, { closeOpen = false } = {}) {
   if (node.name === 'polygon') return polygonPath(node.attributes.points || '');
   if (node.name === 'text' || node.name === 'tspan') fail('text layers', 'only simple single-line ASCII text with a standard Helvetica font is supported');
   fail(`SVG element <${node.name}>`);
+}
+
+function transformPdfPoint(matrix, point) {
+  return { x: matrix[0] * point.x + matrix[2] * point.y + matrix[4],
+    y: matrix[1] * point.x + matrix[3] * point.y + matrix[5] };
+}
+
+function multiplyPdfMatrices(left, right) {
+  const [a, b, c, d, e, f] = left; const [g, h, i, j, k, l] = right;
+  return [a * g + c * h, b * g + d * h, a * i + c * j, b * i + d * j,
+    a * k + c * l + e, b * k + d * l + f].map(value => finite(value, 'glyph transform'));
+}
+
+function inversePdfMatrix(matrix) {
+  const [a, b, c, d, e, f] = matrix; const determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) fail('positioned glyph transforms', 'singular glyph matrices are unsupported');
+  return [d / determinant, -b / determinant, -c / determinant, a / determinant,
+    (c * f - d * e) / determinant, (b * e - a * f) / determinant].map(value => finite(value, 'glyph inverse transform'));
+}
+
+function cubicAxisAt(points, t) {
+  const inverse = 1 - t;
+  return inverse ** 3 * points[0] + 3 * inverse ** 2 * t * points[1]
+    + 3 * inverse * t ** 2 * points[2] + t ** 3 * points[3];
+}
+
+function cubicAxisExtrema(points) {
+  const [p0, p1, p2, p3] = points;
+  const a = -p0 + 3 * p1 - 3 * p2 + p3; const b = 3 * p0 - 6 * p1 + 3 * p2; const c = -3 * p0 + 3 * p1;
+  const qa = 3 * a; const qb = 2 * b; const roots = [];
+  if (Math.abs(qa) < 1e-14) {
+    if (Math.abs(qb) > 1e-14) roots.push(-c / qb);
+  } else {
+    const discriminant = qb * qb - 4 * qa * c;
+    if (discriminant >= 0) {
+      const root = Math.sqrt(discriminant);
+      roots.push((-qb + root) / (2 * qa), (-qb - root) / (2 * qa));
+    }
+  }
+  return [p0, p3, ...roots.filter(value => value > 0 && value < 1).map(value => cubicAxisAt(points, value))];
+}
+
+function fontPathBounds(data, matrix = [1, 0, 0, 1, 0, 0]) {
+  if (!data.trim()) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  const tokens = tokenizePath(data); let index = 0; let command = null;
+  let x = 0; let y = 0; let startX = 0; let startY = 0;
+  const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  const take = () => tokens[index++];
+  const add = points => {
+    const transformed = points.map(point => transformPdfPoint(matrix, point));
+    const xs = cubicAxisExtrema(transformed.map(point => point.x));
+    const ys = cubicAxisExtrema(transformed.map(point => point.y));
+    bounds.minX = Math.min(bounds.minX, ...xs); bounds.minY = Math.min(bounds.minY, ...ys);
+    bounds.maxX = Math.max(bounds.maxX, ...xs); bounds.maxY = Math.max(bounds.maxY, ...ys);
+  };
+  while (index < tokens.length) {
+    if (typeof tokens[index] === 'string') command = take();
+    if (command === 'M') {
+      x = take(); y = take(); startX = x; startY = y;
+      const q = transformPdfPoint(matrix, { x, y });
+      bounds.minX = Math.min(bounds.minX, q.x); bounds.minY = Math.min(bounds.minY, q.y);
+      bounds.maxX = Math.max(bounds.maxX, q.x); bounds.maxY = Math.max(bounds.maxY, q.y);
+      command = 'L';
+    } else if (command === 'L') {
+      const end = { x: take(), y: take() }; const start = { x, y };
+      add([start, { x: x + (end.x - x) / 3, y: y + (end.y - y) / 3 },
+        { x: x + 2 * (end.x - x) / 3, y: y + 2 * (end.y - y) / 3 }, end]);
+      x = end.x; y = end.y;
+    } else if (command === 'C') {
+      const points = [{ x, y }, { x: take(), y: take() }, { x: take(), y: take() }, { x: take(), y: take() }];
+      add(points); x = points[3].x; y = points[3].y;
+    } else if (command === 'Q') {
+      const control = { x: take(), y: take() }; const end = { x: take(), y: take() };
+      const start = { x, y };
+      add([start, { x: x + (2 / 3) * (control.x - x), y: y + (2 / 3) * (control.y - y) },
+        { x: end.x + (2 / 3) * (control.x - end.x), y: end.y + (2 / 3) * (control.y - end.y) }, end]);
+      x = end.x; y = end.y;
+    } else if (command === 'Z' || command === 'z') {
+      const start = { x: startX, y: startY }; const current = { x, y };
+      add([current, { x: x + (startX - x) / 3, y: y + (startY - y) / 3 },
+        { x: x + 2 * (startX - x) / 3, y: y + 2 * (startY - y) / 3 }, start]);
+      x = startX; y = startY; command = null;
+    } else fail(`SVG path command ${command}`, 'only absolute M, L, Q, C, and Z commands are supported');
+  }
+  if (!Number.isFinite(bounds.minX)) fail('empty positioned glyphs', 'glyph outlines need at least one contour point');
+  return bounds;
+}
+
+function utf16Hex(value, { bom = false } = {}) {
+  let hex = bom ? 'FEFF' : '';
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code >= 0xd800 && code <= 0xdfff) fail('positioned glyph Unicode', 'isolated surrogate values are not supported');
+    if (code <= 0xffff) hex += code.toString(16).padStart(4, '0');
+    else {
+      const shifted = code - 0x10000;
+      hex += (0xd800 + (shifted >> 10)).toString(16).padStart(4, '0');
+      hex += (0xdc00 + (shifted & 0x3ff)).toString(16).padStart(4, '0');
+    }
+  }
+  return hex.toUpperCase();
+}
+
+function buildType3ToUnicode(glyphs) {
+  const chunks = [];
+  for (let start = 0; start < glyphs.length; start += 100) {
+    const entries = glyphs.slice(start, start + 100).map((glyph, index) => {
+      const code = (start + index + 1).toString(16).padStart(2, '0').toUpperCase();
+      return `<${code}> <${utf16Hex(glyph.text)}>`;
+    });
+    chunks.push(`${entries.length} beginbfchar\n${entries.join('\n')}\nendbfchar`);
+  }
+  return '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n'
+    + '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
+    + '/CMapName /TISGlyphUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<01> <FF>\nendcodespacerange\n'
+    + `${chunks.join('\n')}\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n`;
+}
+
+function parseCanonicalMetadataJson(source, label, reject) {
+  let parsed;
+  try { parsed = JSON.parse(source); }
+  catch { reject(`${label} contains malformed JSON`); }
+  // The SVG exporter writes compact JSON.stringify output. Requiring that
+  // exact representation rejects duplicate JSON keys instead of allowing
+  // parser-dependent first/last-key wins for font placement or Unicode.
+  if (JSON.stringify(parsed) !== source) reject(`${label} metadata is not canonical JSON`);
+  return parsed;
+}
+
+function addType3Subset(context, sourceGlyphs, run) {
+  const name = `F${context.fontNames.size + 1}`;
+  const unitScale = 1000 / run.upem;
+  const normalizedNumber = (value, label) => {
+    if (!Number.isFinite(value) || Math.abs(value) > LIMITS.maxCoordinate) {
+      fail('positioned glyph metrics', `${label} exceeds the bounded Type3 font coordinate range`);
+    }
+    return value;
+  };
+  const glyphs = sourceGlyphs.map((source, index) => {
+    const anchor = source.glyphs[0]; const anchorInverse = inversePdfMatrix(anchor.matrix);
+    const drawing = []; let bounds = null; let advance = 0;
+    for (const glyph of source.glyphs) {
+      advance += glyph.xAdvance;
+      const relative = multiplyPdfMatrices(anchorInverse, glyph.matrix);
+      const d = pathOperators(glyph.path, { closeOpen: true });
+      const pathBounds = fontPathBounds(glyph.path, relative);
+      bounds = bounds ? { minX: Math.min(bounds.minX, pathBounds.minX), minY: Math.min(bounds.minY, pathBounds.minY),
+        maxX: Math.max(bounds.maxX, pathBounds.maxX), maxY: Math.max(bounds.maxY, pathBounds.maxY) } : pathBounds;
+      const normalized = relative.map(value => normalizedNumber(value * unitScale, 'glyph matrix'));
+      const isIdentity = normalized.every((value, index) => Math.abs(value - [1, 0, 0, 1, 0, 0][index]) < 1e-12);
+      drawing.push('q', ...(isIdentity ? [] : [`${normalized.map(pdfNumber).join(' ')} cm`]), d, 'f', 'Q');
+    }
+    if (!bounds || !Number.isFinite(advance)) fail('positioned glyph metrics', 'glyph paths and advances must be finite');
+    const metadata = source;
+    const normalizedBounds = [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY]
+      .map(value => normalizedNumber(value * unitScale, 'glyph bounds'));
+    const normalizedAdvance = normalizedNumber(advance * unitScale, 'glyph advance');
+    const charProc = `${pdfNumber(normalizedAdvance)} 0 ${normalizedBounds.map(pdfNumber).join(' ')} d1\n${drawing.join('\n')}\n`;
+    return { code: index + 1, name: `g${String(index + 1).padStart(3, '0')}`, text: metadata.text,
+      advance: normalizedAdvance, bounds: normalizedBounds, charProc,
+      matrix: [anchor.matrix[0] * run.upem, anchor.matrix[1] * run.upem,
+        anchor.matrix[2] * run.upem, anchor.matrix[3] * run.upem,
+        anchor.matrix[4], anchor.matrix[5]] };
+  });
+  const scaleMetric = value => normalizedNumber(value * unitScale, 'font metric');
+  const metricBox = [
+    Math.min(0, ...glyphs.map(glyph => glyph.bounds[0])),
+    Math.min(scaleMetric(run.descender), ...glyphs.map(glyph => glyph.bounds[1])),
+    Math.max(0, ...glyphs.map(glyph => glyph.bounds[2])),
+    Math.max(scaleMetric(run.ascender), ...glyphs.map(glyph => glyph.bounds[3])),
+  ];
+  const descriptor = {
+    type: 'Type3', glyphs, toUnicode: buildType3ToUnicode(glyphs), bbox: metricBox,
+    fontMatrix: [0.001, 0, 0, 0.001, 0, 0],
+    ascent: scaleMetric(run.ascender), descent: scaleMetric(run.descender),
+  };
+  context.fontNames.set(name, name); context.fonts.set(name, descriptor);
+  return { name, glyphs };
+}
+
+function parsePositionedPdfText(node, context) {
+  const reject = detail => fail('positioned glyph metadata', detail);
+  if (Object.keys(node.attributes).sort().join('|') !== 'data-tiny-image-star-pdf-text|opacity') reject('the semantic group has unexpected attributes');
+  if (node.attributes['data-tiny-image-star-pdf-text'] !== '1' || parseOpacity(node.attributes.opacity, 'PDF text semantics opacity') !== 0) {
+    reject('the nonpainting semantic group marker is invalid');
+  }
+  if (node.children.some(child => child.name === '#text' && child.text.trim())) reject('the semantic group cannot contain free text');
+  const ops = [];
+  let groupTextBudget = 0;
+  for (const runNode of node.children.filter(child => child.name !== '#text')) {
+    if (runNode.name !== 'g') reject('semantic runs must be groups');
+    if (Object.keys(runNode.attributes).join('|') !== 'data-tiny-image-star-pdf-run') reject('semantic runs have unexpected attributes');
+    if (runNode.children.some(child => child.name === '#text' && child.text.trim())) reject('semantic runs cannot contain free text');
+    const run = parseCanonicalMetadataJson(runNode.attributes['data-tiny-image-star-pdf-run'], 'semantic run', reject);
+    if (!run || typeof run !== 'object' || Array.isArray(run)
+      || Object.keys(run).some(key => !['text', 'upem', 'ascender', 'descender'].includes(key))
+      || Object.keys(run).length !== 4 || typeof run.text !== 'string' || run.text.length > 32768
+      || !Number.isFinite(run.upem) || run.upem < 1 || run.upem > 1_000_000
+      || !Number.isFinite(run.ascender) || !Number.isFinite(run.descender) || run.ascender <= run.descender
+      || Math.abs(run.ascender) > 1_000_000 || Math.abs(run.descender) > 1_000_000) {
+      reject('semantic run text and font metrics are incomplete or outside limits');
+    }
+    groupTextBudget += run.text.length * 2;
+    if (groupTextBudget > 1024 * 1024) reject('semantic text exceeds the bounded Unicode budget');
+    context.pdfTextBudget.runs += 1;
+    context.pdfTextBudget.metadataCharacters += runNode.attributes['data-tiny-image-star-pdf-run'].length;
+    if (context.pdfTextBudget.runs > LIMITS.maxPdfTextRuns || context.pdfTextBudget.metadataCharacters > LIMITS.maxPdfTextMetadataCharacters) {
+      reject('semantic run metadata exceeds the document budget');
+    }
+    const clusterMap = new Map(); let pathCharacters = 0;
+    for (const glyphNode of runNode.children.filter(child => child.name !== '#text')) {
+      if (glyphNode.name !== 'path') reject('semantic glyphs must use actual vector path outlines');
+      if (Object.keys(glyphNode.attributes).sort().join('|') !== 'd|data-tiny-image-star-pdf-glyph') reject('semantic glyphs have unexpected attributes');
+      const glyph = parseCanonicalMetadataJson(glyphNode.attributes['data-tiny-image-star-pdf-glyph'], 'semantic glyph', reject);
+      if (!glyph || typeof glyph !== 'object' || Array.isArray(glyph)
+        || Object.keys(glyph).some(key => !['matrix', 'xAdvance', 'yAdvance', 'cluster', 'text'].includes(key))
+        || Object.keys(glyph).length !== 5 || !Array.isArray(glyph.matrix) || glyph.matrix.length !== 6
+        || !glyph.matrix.every(Number.isFinite) || glyph.matrix.some(value => Math.abs(value) > LIMITS.maxCoordinate)
+        || !Number.isFinite(glyph.xAdvance) || Math.abs(glyph.xAdvance) > LIMITS.maxCoordinate
+        || !Number.isFinite(glyph.yAdvance) || Math.abs(glyph.yAdvance) > LIMITS.maxCoordinate
+        || Math.abs(glyph.yAdvance) > 1e-9 || !Number.isSafeInteger(glyph.cluster) || glyph.cluster < 0
+        || glyph.cluster >= run.text.length || typeof glyph.text !== 'string' || !glyph.text
+        || run.text.slice(glyph.cluster, glyph.cluster + glyph.text.length) !== glyph.text) {
+        reject('a glyph matrix, advance, cluster, or Unicode mapping is invalid');
+      }
+      const [a, b, c, d] = glyph.matrix;
+      if (Math.abs(a * d - b * c) < 1e-12) reject('singular glyph transforms are unsupported');
+      const path = glyphNode.attributes.d || '';
+      if (path.length > LIMITS.maxPdfTextGlyphPathCharacters) reject('a glyph outline exceeds the bounded per-glyph path data limit');
+      pathCharacters += path.length;
+      context.pdfTextBudget.pathCharacters += path.length;
+      if (pathCharacters > LIMITS.maxPdfTextPathCharacters || context.pdfTextBudget.pathCharacters > LIMITS.maxPdfTextPathCharacters) {
+        reject('glyph outlines exceed the bounded path data budget');
+      }
+      pathOperators(path, { closeOpen: true });
+      context.pdfTextBudget.metadataCharacters += glyphNode.attributes['data-tiny-image-star-pdf-glyph'].length;
+      if (context.pdfTextBudget.metadataCharacters > LIMITS.maxPdfTextMetadataCharacters) reject('semantic metadata exceeds the document budget');
+      context.pdfTextBudget.glyphs += 1;
+      if (context.pdfTextBudget.glyphs > LIMITS.maxPdfTextGlyphs) reject('glyph outlines exceed the per-document count limit');
+      let cluster = clusterMap.get(glyph.cluster);
+      if (!cluster) {
+        cluster = { text: glyph.text, glyphs: [] }; clusterMap.set(glyph.cluster, cluster);
+      } else if (cluster.text !== glyph.text) reject('glyphs sharing a cluster disagree about its text');
+      cluster.glyphs.push({ ...glyph, path });
+    }
+    if (!clusterMap.size) {
+      if (run.text) reject('nonempty semantic runs require actual glyph records');
+      continue;
+    }
+    const clusters = [...clusterMap.entries()].sort((left, right) => left[0] - right[0]).map(([, cluster]) => cluster);
+    let expectedClusterStart = 0;
+    for (const [clusterStart, cluster] of [...clusterMap.entries()].sort((left, right) => left[0] - right[0])) {
+      if (clusterStart !== expectedClusterStart) reject('glyph clusters do not cover the complete displayed run text');
+      expectedClusterStart += cluster.text.length;
+    }
+    if (expectedClusterStart !== run.text.length) reject('glyph clusters do not cover the complete displayed run text');
+    const subsets = [];
+    for (let start = 0; start < clusters.length; start += 255) subsets.push(addType3Subset(context, clusters.slice(start, start + 255), run));
+    for (const subset of subsets) for (const glyph of subset.glyphs) {
+      ops.push('BT', `/${subset.name} 1 Tf`, '3 Tr', `${glyph.matrix.map(pdfNumber).join(' ')} Tm`, `<${glyph.code.toString(16).padStart(2, '0').toUpperCase()}> Tj`, 'ET');
+    }
+  }
+  return ops.join('\n');
 }
 
 const WIN_ANSI_SPECIAL_BYTES = new Map([
@@ -1612,6 +1882,9 @@ function renderTree(node, context = {}) {
     return '';
   }
   if (node.name === 'defs') return '';
+  if (node.name === 'g' && node.attributes['data-tiny-image-star-pdf-text'] != null) {
+    return parsePositionedPdfText(node, context);
+  }
   if (node.name === 'svg') {
     assertAttributes(node, new Set(['xmlns', 'width', 'height', 'viewBox']));
     return node.children.map(child => renderTree(child, {
@@ -1714,7 +1987,7 @@ function renderTree(node, context = {}) {
   fail(`SVG element <${node.name}>`);
 }
 
-function compileSvg(svg) {
+function compileSvg(svg, pdfTextBudget) {
   const root = parseSvg(svg);
   const { viewBox, width, height, preserveAspectRatio } = parseRoot(root);
   const definitions = scanDefinitions(root);
@@ -1731,6 +2004,7 @@ function compileSvg(svg) {
   const renderContext = {
     definitions, stateNames, shadingNames, shadings, imageNames, images, forms, fontNames, fonts,
     maskFormNames, buildingMaskIds, shadowPixelCount: 0,
+    pdfTextBudget,
   };
   const [vx, vy, vbWidth, vbHeight] = viewBox;
   let sx = finite(width / vbWidth, 'viewport scale');
@@ -1807,7 +2081,8 @@ function createPdf(pages) {
       throw new RangeError(`SVG pages exceed ${LIMITS.maxAggregateSvgCharacters} aggregate characters.`);
     }
   }
-  const compiled = pages.map(compileSvg);
+  const pdfTextBudget = { glyphs: 0, pathCharacters: 0, runs: 0, metadataCharacters: 0 };
+  const compiled = pages.map(svg => compileSvg(svg, pdfTextBudget));
   let nextId = 3;
   const pageObjects = compiled.map(page => {
     const pageId = nextId++;
@@ -1834,7 +2109,16 @@ function createPdf(pages) {
       const alphaId = descriptor.alpha ? nextId++ : null;
       return { name, descriptor, imageId, alphaId };
     });
-    const fonts = [...page.fonts.entries()].map(([name, baseFont]) => ({ name, baseFont, objectId: nextId++ }));
+    const fonts = [...page.fonts.entries()].map(([name, descriptor]) => {
+      const item = { name, descriptor, objectId: nextId++ };
+      if (descriptor?.type === 'Type3') {
+        item.charProcIds = descriptor.glyphs.map(() => nextId++);
+        item.notdefId = nextId++;
+        item.toUnicodeId = nextId++;
+        item.descriptorId = nextId++;
+      } else item.baseFont = descriptor;
+      return item;
+    });
     const forms = [...page.forms.entries()].map(([name, descriptor]) => ({ name, descriptor, objectId: nextId++ }));
     return { ...page, pageId, contentId, states, shadingObjects: shadings, imageObjects: images, fontObjects: fonts, formObjects: forms };
   });
@@ -1885,7 +2169,29 @@ function createPdf(pages) {
       }
     }
     for (const item of page.fontObjects) {
-      objects[item.objectId] = `<< /Type /Font /Subtype /Type1 /BaseFont /${item.baseFont} /Encoding /WinAnsiEncoding >>`;
+      if (item.descriptor?.type !== 'Type3') {
+        objects[item.objectId] = `<< /Type /Font /Subtype /Type1 /BaseFont /${item.baseFont} /Encoding /WinAnsiEncoding >>`;
+        continue;
+      }
+      const { descriptor } = item;
+      const charEntries = descriptor.glyphs.map((glyph, index) => {
+        objects[item.charProcIds[index]] = pdfStreamObject('', safePdfContent(glyph.charProc));
+        return `/${glyph.name} ${item.charProcIds[index]} 0 R`;
+      });
+      objects[item.notdefId] = pdfStreamObject('', safePdfContent('0 0 0 0 0 0 d1\n'));
+      const differences = descriptor.glyphs.map(glyph => `/${glyph.name}`).join(' ');
+      const widths = descriptor.glyphs.map(glyph => pdfNumber(glyph.advance)).join(' ');
+      objects[item.toUnicodeId] = pdfStreamObject('/Type /CMap', safePdfContent(descriptor.toUnicode));
+      const boxText = descriptor.bbox.map(pdfNumber).join(' ');
+      objects[item.descriptorId] = `<< /Type /FontDescriptor /FontName /TISSubset${item.objectId} /Flags 4`
+        + ` /FontBBox [${boxText}] /ItalicAngle 0 /Ascent ${pdfNumber(descriptor.ascent)}`
+        + ` /Descent ${pdfNumber(descriptor.descent)} /CapHeight ${pdfNumber(descriptor.ascent)} /StemV 80 >>`;
+      objects[item.objectId] = `<< /Type /Font /Subtype /Type3 /Name /TISSubset${item.objectId}`
+        + ` /FontBBox [${boxText}] /FontMatrix [0.001 0 0 0.001 0 0]`
+        + ` /CharProcs << /.notdef ${item.notdefId} 0 R ${charEntries.join(' ')} >>`
+        + ` /Encoding << /Type /Encoding /Differences [1 ${differences}] >>`
+        + ` /FirstChar 1 /LastChar ${descriptor.glyphs.length} /Widths [${widths}]`
+        + ` /Resources << >> /ToUnicode ${item.toUnicodeId} 0 R /FontDescriptor ${item.descriptorId} 0 R >>`;
     }
     for (const item of page.formObjects) {
       const bytes = safePdfContent(item.descriptor.content);
