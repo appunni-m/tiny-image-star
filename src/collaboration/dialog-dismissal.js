@@ -118,6 +118,42 @@ export function bindDialogDismissal(dialog, closeControls, { onDismiss = null } 
       control.removeEventListener('pointercancel', onPointerCancel);
     };
   });
+  // Some embedded mobile browsers expose touch events but neither deliver a
+  // PointerEvent release nor synthesize the follow-up click. Keep a touch-only
+  // fallback for those views, while requiring a short same-finger tap so a
+  // scroll gesture that starts on a close control cannot dismiss the panel.
+  const touchDismissHandlers = controls.map(control => {
+    let pressedTouch = null;
+    const onTouchStart = event => {
+      const changedTouches = Array.from(event.changedTouches || []);
+      if (changedTouches.length !== 1 || (event.touches?.length > 1)) return;
+      const touch = changedTouches[0];
+      if (!Number.isSafeInteger(touch.identifier)) return;
+      pressedTouch = { identifier: touch.identifier, x: touch.clientX, y: touch.clientY };
+    };
+    const findPressedTouch = event => Array.from(event.changedTouches || [])
+      .find(touch => touch.identifier === pressedTouch?.identifier);
+    const onTouchEnd = event => {
+      if (!pressedTouch) return;
+      const touch = findPressedTouch(event);
+      if (!touch) return;
+      const start = pressedTouch;
+      pressedTouch = null;
+      if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 12) return;
+      close(event);
+    };
+    const onTouchCancel = event => {
+      if (pressedTouch && findPressedTouch(event)) pressedTouch = null;
+    };
+    control.addEventListener('touchstart', onTouchStart, { passive: true });
+    control.addEventListener('touchend', onTouchEnd, { passive: true });
+    control.addEventListener('touchcancel', onTouchCancel, { passive: true });
+    return () => {
+      control.removeEventListener('touchstart', onTouchStart);
+      control.removeEventListener('touchend', onTouchEnd);
+      control.removeEventListener('touchcancel', onTouchCancel);
+    };
+  });
   const dismissOnControlClick = event => {
     const control = event.target?.closest?.('[data-dialog-dismiss]');
     if (!control || (typeof dialog.contains === 'function' && !dialog.contains(control))) return;
@@ -155,6 +191,7 @@ export function bindDialogDismissal(dialog, closeControls, { onDismiss = null } 
   return () => {
     for (const control of controls) control.removeEventListener('click', close);
     for (const removePointerHandlers of pointerDismissHandlers) removePointerHandlers();
+    for (const removeTouchHandlers of touchDismissHandlers) removeTouchHandlers();
     dialog.removeEventListener('click', dismissOnBackdrop);
     dialog.removeEventListener('click', dismissOnControlClick, true);
     dialog.removeEventListener('submit', dismissOnDialogSubmit, true);

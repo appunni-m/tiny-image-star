@@ -119,6 +119,50 @@ test('sharing close control dismisses after pointer release if an embedded brows
   assert.equal(liveSession.status, 'connected');
 });
 
+test('sharing close control dismisses after a short touch tap if an embedded browser omits pointer and click events', () => {
+  const dialog = new FakeElement();
+  const closeButton = new FakeElement();
+  bindDialogDismissal(dialog, closeButton);
+
+  closeButton.dispatch('touchstart', {
+    changedTouches: [{ identifier: 12, clientX: 20, clientY: 30 }],
+    touches: [{ identifier: 12 }]
+  });
+  closeButton.dispatch('touchend', {
+    changedTouches: [{ identifier: 12, clientX: 22, clientY: 32 }],
+    touches: []
+  });
+
+  assert.equal(dialog.open, false);
+  assert.equal(dialog.closeCount, 1);
+});
+
+test('a touch scroll or cancelled touch does not dismiss a sharing dialog', () => {
+  for (const release of [
+    button => button.dispatch('touchend', {
+      changedTouches: [{ identifier: 13, clientX: 20, clientY: 50 }],
+      touches: []
+    }),
+    button => button.dispatch('touchcancel', {
+      changedTouches: [{ identifier: 13, clientX: 20, clientY: 30 }],
+      touches: []
+    })
+  ]) {
+    const dialog = new FakeElement();
+    const closeButton = new FakeElement();
+    bindDialogDismissal(dialog, closeButton);
+    closeButton.dispatch('touchstart', {
+      changedTouches: [{ identifier: 13, clientX: 20, clientY: 30 }],
+      touches: [{ identifier: 13 }]
+    });
+
+    release(closeButton);
+
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.closeCount, 0);
+  }
+});
+
 test('pressing a sharing close control without releasing does not dismiss it', () => {
   const dialog = new FakeElement();
   const closeButton = new FakeElement();
