@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNode } from '../src/model.js';
+import { addNode, createDocument, createNode, parseDocument, serializeDocument } from '../src/model.js';
 import {
   MAX_STROKES_PER_NODE, addStroke, createStroke, detachPrimaryStrokeBinding,
   ensureStrokeStack, isValidStrokeStack, moveStroke, removeStroke,
@@ -21,6 +21,37 @@ test('legacy scalar strokes expose a stable read-only item and materialize witho
   assert.equal(Object.hasOwn(node, 'strokes'), false, 'reading a legacy design must not rewrite it');
   assert.deepEqual(ensureStrokeStack(node), first);
   assert.equal(Object.hasOwn(node, 'strokes'), true);
+});
+
+test('stroke alignment survives legacy materialization, stack reordering, and a design reload', () => {
+  const document = createDocument();
+  const node = createNode('rectangle', { stroke: '#123456', strokeWidth: 4, strokeAlignment: 'outside' });
+  addNode(document, node);
+  const original = ensureStrokeStack(node)[0];
+  const inside = createStroke({ id: 'inside-stroke', width: 2, alignment: 'inside' });
+  assert.equal(addStroke(node, inside), true);
+  assert.equal(node.strokeAlignment, 'outside');
+  assert.equal(moveStroke(node, inside.id, 'up'), true);
+  assert.equal(node.strokeAlignment, 'inside');
+  assert.equal(updateStroke(node, original.id, { alignment: 'center' }).alignment, 'center');
+  const copy = parseDocument(serializeDocument(document)).pages[0].children[0];
+  assert.deepEqual(copy.strokes.map(stroke => stroke.alignment), ['inside', 'center']);
+  removeStroke(node, inside.id);
+  assert.equal(node.strokeAlignment, 'center');
+  removeStroke(node, original.id);
+  assert.equal(Object.hasOwn(node, 'strokeAlignment'), false, 'an empty stack clears its scalar compatibility position');
+});
+
+test('malformed stroke alignment cannot enter a saved design through stack or scalar fields', () => {
+  for (const alignment of ['sideways', null, undefined]) {
+    assert.throws(() => createStroke({ alignment }), /alignment/u);
+  }
+  assert.equal(isValidStrokeStack([{ ...createStroke(), alignment: 'sideways' }]), false);
+  for (const properties of [{ strokeAlignment: 'sideways' }, { strokes: [{ ...createStroke(), alignment: 'sideways' }] }]) {
+    const document = createDocument();
+    addNode(document, createNode('rectangle', properties));
+    assert.throws(() => parseDocument(JSON.stringify(document)), /stroke/u);
+  }
 });
 
 test('stroke stack operations preserve order, enforce a cap, and mirror the primary to legacy fields', () => {

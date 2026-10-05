@@ -2,14 +2,15 @@ import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, rounded
 import { regularShapeVertices, roundedPolygonPathPoints } from './polygon-corners.js';
 import { fillStackForNode } from './fills.js';
 import { getNodeColor, getNodePropertyValue } from './model.js';
-import { strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
-import { rectangleStrokeSidePaths } from './stroke-side-geometry.js';
+import { strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import {
   vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkEdgeForPair,
   vectorNetworkVertexPoint, vectorPathContours, vectorSegmentPoints
 } from './vector-path.js';
 import { vectorNetworkFacePathPoints } from './vector-network-corners.js';
 import { ellipseArcBoundaryPolylines, ellipseArcContainsPoint } from './ellipse-arc.js';
+import { effectiveStrokeAlignment, strokeGeometryBounds, strokePaintPadding } from './stroke-alignment.js';
 
 const MAX_FLATTENED_PATH_POINTS = 12_000;
 const MAX_CUBIC_DEPTH = 8;
@@ -33,19 +34,6 @@ function visibleFill(node, document) {
   )));
   return fills.some(fill => fill.visible !== false && Number(fill.opacity ?? 1) > 0
     && (fill.type !== 'solid' || fill.color !== 'transparent'));
-}
-
-function visibleStrokeWidth(node, document) {
-  return strokeStackForNode(node).reduce((maximum, stroke, index) => {
-    const color = index === 0 && node.strokeVariableId && document
-      ? getNodeColor(document, node, 'stroke')
-      : stroke.color;
-    const sideWidths = ['rectangle', 'frame'].includes(node.type) ? strokeSideWidths(stroke) : null;
-    const width = sideWidths ? Math.max(...strokeSideNames.map(side => sideWidths[side])) : Number(stroke.width) || 0;
-    return stroke.visible !== false && Number(stroke.opacity ?? 1) > 0 && color && color !== 'transparent'
-      ? Math.max(maximum, width)
-      : maximum;
-  }, 0);
 }
 
 function pointSegmentDistance(point, start, end) {
@@ -259,39 +247,79 @@ function inVisibleFill(node, point, document) {
   return true;
 }
 
+function containsGeometricFill(node, point, document) {
+  if (['rectangle', 'frame', 'image'].includes(node.type)) return containsRoundedRectangle(node, point, document);
+  if (node.type === 'ellipse') return ellipseArcContainsPoint(node, point);
+  if (node.type === 'star' || node.type === 'polygon') return pointInPolygon(point, polygonForNode(node, document));
+  if (node.type === 'path') return pathContainsPoint(node, point);
+  if (node.type === 'network') return networkPolygons(node).some(vertices => pointInPolygon(point, vertices));
+  return point.x >= 0 && point.y >= 0 && point.x <= node.width && point.y <= node.height;
+}
+
+function strokeDistance(node, point, document) {
+  if (node.type === 'line') return pointSegmentDistance(point, ...lineSegmentForNode(node));
+  if (['frame', 'section', 'group', 'rectangle', 'image'].includes(node.type)) return distanceToPolyline(point, roundedRectanglePolygon(node, document), true);
+  if (node.type === 'ellipse') return Math.min(...ellipseArcBoundaryPolylines(node).map(path => distanceToPolyline(point, path.points, path.closed)));
+  if (node.type === 'star' || node.type === 'polygon') return distanceToPolyline(point, polygonForNode(node, document), true);
+  if (node.type === 'path') return Math.min(...vectorPathContours(node).map((contour, index) => distanceToPolyline(point, flattenPathContour(node, index, contour), contour.closed)));
+  if (node.type === 'network') return Math.min(...networkStrokePolylines(node).map(vertices => distanceToPolyline(point, vertices)));
+  return Math.min(Math.abs(point.x), Math.abs(point.y), Math.abs(node.width - point.x), Math.abs(node.height - point.y));
+}
+
+function closedStrokeBoundaries(node, document) {
+  if (['rectangle', 'frame', 'image'].includes(node.type)) return [roundedRectanglePolygon(node, document)];
+  if (node.type === 'star' || node.type === 'polygon') return [polygonForNode(node, document)];
+  if (node.type === 'path') return vectorPathContours(node).flatMap((contour, index) => contour.closed ? [flattenPathContour(node, index, contour)] : []);
+  if (node.type === 'network') return networkPolygons(node);
+  return [];
+}
+
+function strokeCornerPatches(boundaries, width, stroke) {
+  return boundaries.flatMap(vertices => {
+    if (vertices.length < 3) return [];
+    const points = Math.hypot(vertices[0].x - vertices.at(-1).x, vertices[0].y - vertices.at(-1).y) < 1e-7
+      ? vertices.slice(0, -1) : vertices;
+    const paths = points.map((point, index) => ({ side: String(index), points: [point, points[(index + 1) % points.length]] }));
+    const widths = Object.fromEntries(paths.map(path => [path.side, width]));
+    return rectangleStrokeSideJoins(paths, widths, stroke.join, stroke.miterLimit);
+  });
+}
+
 function inVisibleStroke(node, point, tolerance, document) {
-  const width = visibleStrokeWidth(node, document);
-  if (width <= 0) return false;
-  const threshold = tolerance + width / 2;
-  if (node.type === 'line') return pointSegmentDistance(point, ...lineSegmentForNode(node)) <= threshold;
-  if (['frame', 'section', 'group', 'rectangle'].includes(node.type)) {
-    if (['rectangle', 'frame'].includes(node.type)) {
-      const fallbackRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
-      const radii = node.cornerRadii || Object.fromEntries(cornerRadiusKeys.map(key => [key, Number(fallbackRadius) || 0]));
-      const sidePaths = rectangleStrokeSidePaths(node.width, node.height, radii, node.cornerSmoothing || 0);
-      for (const [strokeIndex, stroke] of strokeStackForNode(node).entries()) {
-        const color = strokeIndex === 0 && node.strokeVariableId && document
-          ? getNodeColor(document, node, 'stroke') : stroke.color;
-        if (stroke.visible === false || Number(stroke.opacity ?? 1) <= 0 || !color || color === 'transparent') continue;
-        const sideWidths = strokeSideWidths(stroke);
-        for (const run of sidePaths) {
-          const sideWidth = sideWidths[run.side];
-          if (sideWidth > 0 && distanceToPolyline(point, run.points, false) <= tolerance + sideWidth / 2) return true;
-        }
+  const geometricallyInside = containsGeometricFill(node, point, document);
+  const fallbackRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
+  const sidePaths = ['rectangle', 'frame'].includes(node.type)
+    ? rectangleStrokeSidePaths(node.width, node.height, node.cornerRadii || fallbackRadius || 0, node.cornerSmoothing || 0) : null;
+  const distance = sidePaths ? null : strokeDistance(node, point, document);
+  let closedBoundaries;
+  for (const [index, stroke] of strokeStackForNode(node).entries()) {
+    const color = index === 0 && node.strokeVariableId && document ? getNodeColor(document, node, 'stroke') : stroke.color;
+    if (stroke.visible === false || Number(stroke.opacity ?? 1) <= 0 || (!stroke.gradient && (!color || color === 'transparent'))) continue;
+    const alignment = effectiveStrokeAlignment(node, stroke);
+    const threshold = width => tolerance + (alignment === 'center' ? width / 2
+      : (alignment === 'inside') === geometricallyInside ? width : 0);
+    const alignmentAllowsCorner = alignment === 'center' || (alignment === 'inside') === geometricallyInside;
+    let cornerPatches = [];
+    if (sidePaths) {
+      const sideWidths = strokeSideWidths(stroke);
+      for (const run of sidePaths) {
+        const width = sideWidths[run.side];
+        if (width > 0 && distanceToPolyline(point, run.points, false) <= threshold(width)) return true;
       }
-      return false;
+      if (alignmentAllowsCorner && stroke.pattern === 'solid') {
+        const multiplier = alignment === 'center' ? 1 : 2;
+        cornerPatches = rectangleStrokeSideJoins(sidePaths,
+          Object.fromEntries(Object.entries(sideWidths).map(([side, width]) => [side, width * multiplier])), stroke.join, stroke.miterLimit);
+      }
+    } else if (Number(stroke.width) > 0 && distance <= threshold(stroke.width)) return true;
+    if (!sidePaths && alignmentAllowsCorner && stroke.pattern === 'solid' && (node.type !== 'network' || alignment !== 'center')) {
+      closedBoundaries ||= closedStrokeBoundaries(node, document);
+      cornerPatches = strokeCornerPatches(closedBoundaries, stroke.width * (alignment === 'center' ? 1 : 2), stroke);
     }
-    return distanceToPolyline(point, roundedRectanglePolygon(node, document), true) <= threshold;
+    if (cornerPatches.some(patch => pointInPolygon(point, patch.points)
+      || distanceToPolyline(point, patch.points, true) <= tolerance)) return true;
   }
-  if (node.type === 'ellipse') {
-    return ellipseArcBoundaryPolylines(node).some(path => distanceToPolyline(point, path.points, path.closed) <= threshold);
-  }
-  if (node.type === 'star' || node.type === 'polygon') return distanceToPolyline(point, polygonForNode(node, document), true) <= threshold;
-  if (node.type === 'path') return vectorPathContours(node).some((contour, index) => (
-    distanceToPolyline(point, flattenPathContour(node, index, contour), contour.closed) <= threshold
-  ));
-  if (node.type === 'network') return networkStrokePolylines(node).some(vertices => distanceToPolyline(point, vertices) <= threshold);
-  return point.x >= -threshold && point.y >= -threshold && point.x <= node.width + threshold && point.y <= node.height + threshold;
+  return false;
 }
 
 /** Hit-test a layer's painted geometry in its own local coordinate system. */
@@ -305,12 +333,16 @@ export function hitTestVisibleGeometry(node, localPoint, { tolerance = 4, docume
     if (!inside) return false;
     return Math.min(localPoint.x, localPoint.y, node.width - localPoint.x, node.height - localPoint.y) <= Math.max(0, tolerance);
   }
-  if (node.type === 'image') return containsRoundedRectangle(node, localPoint, document);
+  if (node.type === 'image') return containsRoundedRectangle(node, localPoint, document)
+    || inVisibleStroke(node, localPoint, Math.max(0, tolerance), document);
   if (node.type === 'text') {
     return localPoint.x >= 0 && localPoint.y >= 0 && localPoint.x <= node.width && localPoint.y <= node.height;
   }
-  const maximumStroke = visibleStrokeWidth(node, document) / 2 + Math.max(0, tolerance);
-  if (localPoint.x < -maximumStroke || localPoint.y < -maximumStroke
-    || localPoint.x > node.width + maximumStroke || localPoint.y > node.height + maximumStroke) return false;
+  const strokes = strokeStackForNode(node).map((stroke, index) => index === 0 && node.strokeVariableId && document
+    ? { ...stroke, color: getNodeColor(document, node, 'stroke') } : stroke);
+  const maximumStroke = strokePaintPadding(node, strokes) + Math.max(0, tolerance);
+  const bounds = strokeGeometryBounds(node);
+  if (localPoint.x < bounds.left - maximumStroke || localPoint.y < bounds.top - maximumStroke
+    || localPoint.x > bounds.right + maximumStroke || localPoint.y > bounds.bottom + maximumStroke) return false;
   return inVisibleFill(node, localPoint, document) || inVisibleStroke(node, localPoint, Math.max(0, tolerance), document);
 }

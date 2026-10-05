@@ -12,6 +12,8 @@ export const strokeSideModes = Object.freeze(['all', ...strokeSideNames, 'custom
 const caps = new Set(['butt', 'round', 'square']);
 const joins = new Set(['miter', 'round', 'bevel']);
 const patterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
+export const strokeAlignments = Object.freeze(['inside', 'center', 'outside']);
+const alignments = new Set(strokeAlignments);
 const endpointDecorations = new Set(['none', 'arrow', 'triangle', 'triangle-inward', 'diamond', 'circle']);
 const clone = value => structuredClone(value);
 const id = () => `stroke-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
@@ -27,6 +29,7 @@ function legacyStrokeForNode(node) {
     cap: node.strokeCap ?? (node.strokePattern === 'dotted' ? 'round' : 'butt'),
     join: node.strokeJoin ?? 'miter',
     pattern: node.strokePattern ?? 'solid',
+    ...(node.strokeAlignment != null ? { alignment: node.strokeAlignment } : {}),
     ...(node.strokePattern === 'custom' && Array.isArray(node.strokeDashArray) ? { dashArray: clone(node.strokeDashArray) } : {}),
     miterLimit: node.strokeMiterLimit ?? 10,
     startDecoration: 'none', endDecoration: 'none'
@@ -60,6 +63,9 @@ export function createStroke(overrides = {}) {
     startDecoration: 'none', endDecoration: 'none', blendMode: 'normal',
     ...overrides
   };
+  if (Object.hasOwn(stroke, 'alignment') && !alignments.has(stroke.alignment)) {
+    throw new TypeError('Stroke alignment must be inside, center, or outside.');
+  }
   const sideMode = overrides.sideMode ?? (overrides.sideWidths ? 'custom' : 'all');
   if (!strokeSideModes.includes(sideMode)) throw new TypeError('A stroke side mode must be all, one side, or custom.');
   if (sideMode === 'custom') {
@@ -141,6 +147,7 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (Object.hasOwn(changes, 'blendMode') && isValidLayerBlendMode(changes.blendMode)) stroke.blendMode = changes.blendMode;
   if (Object.hasOwn(changes, 'color') && validColor(changes.color)) stroke.color = changes.color;
   if (Object.hasOwn(changes, 'width') && Number.isFinite(changes.width) && changes.width >= 0 && changes.width <= 100_000) stroke.width = changes.width;
+  if (Object.hasOwn(changes, 'alignment') && alignments.has(changes.alignment)) stroke.alignment = changes.alignment;
   if (sideModeSpecified) {
     const previousMode = strokeSideMode(stroke);
     if (requestedSideMode === 'custom') {
@@ -198,7 +205,7 @@ export function syncLegacyStrokeFields(node) {
     node.stroke = null;
     node.strokeWidth = 0;
     node.strokeOpacity = 1;
-    for (const property of ['strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId']) delete node[property];
+    for (const property of ['strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokeVariableId']) delete node[property];
     if (node.variableBindings) {
       delete node.variableBindings.stroke;
       if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
@@ -217,6 +224,8 @@ export function syncLegacyStrokeFields(node) {
   if (primary.pattern === 'custom' && isValidStrokeDashArray(primary.dashArray)) node.strokeDashArray = [...primary.dashArray];
   else delete node.strokeDashArray;
   node.strokeMiterLimit = primary.miterLimit;
+  if (primary.alignment != null) node.strokeAlignment = primary.alignment;
+  else delete node.strokeAlignment;
   return node;
 }
 
@@ -279,6 +288,7 @@ export function isValidStroke(stroke) {
     && (!Object.hasOwn(stroke, 'blendMode') || isValidLayerBlendMode(stroke.blendMode))
     && typeof stroke.visible === 'boolean'
     && caps.has(stroke.cap) && joins.has(stroke.join) && patterns.has(stroke.pattern)
+    && (!Object.hasOwn(stroke, 'alignment') || alignments.has(stroke.alignment))
     && (stroke.pattern !== 'custom' || isValidStrokeDashArray(stroke.dashArray))
     && (!Object.hasOwn(stroke, 'dashArray') || isValidStrokeDashArray(stroke.dashArray))
     && Number.isFinite(stroke.miterLimit) && stroke.miterLimit >= 1 && stroke.miterLimit <= 1000

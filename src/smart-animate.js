@@ -17,7 +17,7 @@ const midpointProperties = [
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'affineTransform', 'points', 'innerRadius', 'vertexRadii', 'arcData',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
-  'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'mask', 'maskMode', 'maskSourceId',
+  'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'strokeAlignment', 'fillRule', 'clip', 'mask', 'maskMode', 'maskSourceId',
   'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
 ];
 
@@ -1258,7 +1258,7 @@ function clearFramePaint(frame) {
   for (const property of [
     'fill', 'fillOpacity', 'fillStyleId', 'fillGradient', 'fillVariableId', 'fills', 'imageFill', 'fit', 'transforms',
     'stroke', 'strokeOpacity', 'strokeStyleId', 'strokeVariableId', 'strokeWidth', 'strokeMiterLimit',
-    'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'strokes', 'effects'
+    'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'strokeAlignment', 'strokes', 'effects'
   ]) delete frame[property];
 
   if (frame.variableBindings && typeof frame.variableBindings === 'object' && !Array.isArray(frame.variableBindings)) {

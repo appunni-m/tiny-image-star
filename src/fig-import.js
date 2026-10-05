@@ -14,6 +14,8 @@ import {
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { normalizeStrokeDashArray } from './stroke-style.js';
+import { supportsStrokeAlignment } from './stroke-alignment.js';
+import { strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
 import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
 import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 
@@ -407,7 +409,6 @@ function mapStrokes(paints, node, report) {
   else if (rawDash.length) warn(report, 'unsupported', 'STROKE_PATTERN', node.name, 'The custom dash pattern was invalid; the imported stroke uses a solid pattern.');
   if (pattern === 'dotted') cap = 'round';
   if (paints.length && joinValue && !['ROUND', 'BEVEL', 'MITER'].includes(joinValue)) warn(report, 'flattened', 'STROKE_JOIN', node.name, 'This stroke join was reduced to a miter join.');
-  if (node.strokeAlign && node.strokeAlign !== 'CENTER') warn(report, 'flattened', 'STROKE_ALIGNMENT', node.name, 'Inside and outside stroke alignment were centered.');
   if (paints.length > 32) warn(report, 'unsupported', 'STROKE_STACK', node.name, 'Only the first 32 stroke paint layers were considered.');
   for (const paint of paints.slice(0, 32)) {
     if (!paint || paint.visible === false || paintOpacity(paint) <= 0) continue;
@@ -443,6 +444,27 @@ function mapStrokes(paints, node, report) {
     });
   }
   return strokes;
+}
+
+function applyImportedStrokeAlignment(source, target, context) {
+  const strokes = strokeStackForNode(target);
+  if (!strokes.length || source.strokeAlign == null) return target;
+  const raw = typeof source.strokeAlign === 'string' ? source.strokeAlign
+    : figEnumValueFromEmbeddedSchema(context.parsed?.schema, 'strokeAlign', source.strokeAlign);
+  let alignment = ({ INSIDE: 'inside', CENTER: 'center', OUTSIDE: 'outside' })[String(raw || '').toUpperCase()];
+  if (!alignment) {
+    warn(context.report, 'flattened', 'STROKE_ALIGNMENT', source.name,
+      'The stroke position is unknown to the embedded schema; the stroke remains centered.');
+    return target;
+  }
+  if (alignment !== 'center' && !supportsStrokeAlignment(target)) {
+    warn(context.report, 'flattened', 'STROKE_ALIGNMENT', source.name,
+      'This open or unsupported geometry cannot retain an inside/outside stroke position; the stroke remains centered.');
+    alignment = 'center';
+  }
+  for (const stroke of strokes) stroke.alignment = alignment;
+  syncLegacyStrokeFields(target);
+  return target;
 }
 
 function boundedEffectMetric(value, fallback, minimum, maximum, report, name, property) {
@@ -635,6 +657,14 @@ function vectorContours(svgPath) {
 
 function vectorChildren(source, resolved, context) {
   const children = [];
+  if (resolved.stroke.length && source.strokeAlign != null) {
+    const raw = typeof source.strokeAlign === 'string' ? source.strokeAlign
+      : figEnumValueFromEmbeddedSchema(context.parsed?.schema, 'strokeAlign', source.strokeAlign);
+    if (['INSIDE', 'OUTSIDE'].includes(String(raw || '').toUpperCase())) {
+      warn(context.report, 'flattened', 'STROKE_ALIGNMENT', source.name,
+        'Resolved stroke-path geometry needs visual review: its inside/outside position cannot be recovered as an editable native stroke.');
+    }
+  }
   const vectorEntries = [
     ...resolved.fill.map(path => ({ path, type: 'fill' })),
     ...resolved.stroke.map(path => ({ path, type: 'stroke' }))
@@ -672,7 +702,7 @@ function vectorChildren(source, resolved, context) {
       fills: type === 'fill'
         ? mapPaints(paintSource, source, context, { allowFill: contours.some(contour => contour.closed && contour.points.length >= 2) })
         : [],
-      strokes: type === 'stroke' ? mapStrokes(paintSource, source, context) : []
+      strokes: type === 'stroke' ? mapStrokes(paintSource, source, context.report) : []
     });
     children.push(node);
     context.report.importedNodes += 1;
@@ -1886,8 +1916,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     }
     const visibleStrokePaint = (source.strokePaints || []).some(paint => paint?.visible !== false && paintOpacity(paint) > 0);
     const editableStrokeStyles = !visibleStrokePaint
-      || (['CENTER', undefined, null].includes(source.strokeAlign)
-        && !(Array.isArray(source.dashPattern) && source.dashPattern.length)
+      || (!(Array.isArray(source.dashPattern) && source.dashPattern.length)
         && (!source.strokeCap || ['NONE', 'ROUND', 'SQUARE', 'BUTT', 'ARROW_LINES', 'LINE_ARROW', 'ARROW_EQUILATERAL', 'TRIANGLE_ARROW', 'TRIANGLE_FILLED', 'DIAMOND_FILLED', 'CIRCLE_FILLED'].includes(String(source.strokeCap).toUpperCase()))
         && (!source.strokeJoin || ['ROUND', 'BEVEL', 'MITER'].includes(String(source.strokeJoin).toUpperCase())));
     const directNetworkPathChars = paths.fill.reduce((total, path) => total + (path?.svgPath?.length ?? 0), 0);
@@ -1909,7 +1938,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
       mapFixedPositionWhenScrolling(source, parentSource, overrides);
       context.report.importedNodes += 1;
-      return createImportedNode(source, 'network', overrides);
+      return applyImportedStrokeAlignment(source, createImportedNode(source, 'network', overrides), context);
     }
     const overrides = {
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
@@ -2037,6 +2066,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     return node;
   }
   const node = createImportedNode(source, type, overrides);
+  applyImportedStrokeAlignment(source, node, context);
   const sourceId = idOf(source);
   if (sourceId) {
     context.convertedNodesBySourceId.set(sourceId, node);
@@ -2048,7 +2078,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
 
 const componentOverrideProperties = [
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius',
   'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId',
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',

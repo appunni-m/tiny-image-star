@@ -36,7 +36,7 @@ test('scale plan propagates frame children and appearance including text, stroke
   const shape = {
     id: 'shape', type: 'rectangle', x: 30, y: 15, width: 40, height: 30, rotation: 0,
     strokeWidth: 3, strokeDashArray: [2, 4],
-    strokes: [{ id: 'stroke', width: 3, sideWidths: { top: 2, right: 3, bottom: 4, left: 5 } }],
+    strokes: [{ id: 'stroke', width: 3, alignment: 'outside', sideWidths: { top: 2, right: 3, bottom: 4, left: 5 } }],
     effects: [{ id: 'shadow', type: 'drop-shadow', offsetX: 2, offsetY: 4, blur: 6, spread: -3 }, { id: 'blur', type: 'layer-blur', radius: 3 }],
     radius: 8, cornerRadii: { topLeft: 2, topRight: 4, bottomRight: 6, bottomLeft: 8 }, children: []
   };
@@ -54,6 +54,7 @@ test('scale plan propagates frame children and appearance including text, stroke
   assert.equal(patches.get('text').textRuns[0].baselineShift, 4);
   assert.equal(patches.get('text').paragraphStyles[0].paragraphSpacing, 8);
   assert.equal(patches.get('shape').strokes[0].sideWidths.left, 10);
+  assert.equal(patches.get('shape').strokes[0].alignment, 'outside', 'scaling changes weights without changing stroke position');
   assert.deepEqual(patches.get('shape').strokeDashArray, [4, 8]);
   assert.deepEqual(patches.get('shape').effects.map(effect => [effect.offsetX, effect.offsetY, effect.blur, effect.spread, effect.radius]), [
     [4, 8, 12, -6, undefined], [undefined, undefined, undefined, undefined, 6]

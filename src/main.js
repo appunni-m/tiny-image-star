@@ -22,6 +22,8 @@ import { createEditorToolActions } from './editor-tool-tasks.js';
 import { createEditorLayerActions } from './editor-layer-tasks.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, setGradientStopOpacity, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
+import { effectiveStrokeAlignment, supportsStrokeAlignment } from './stroke-alignment.js';
+import { rasterExportBounds } from './raster-export-bounds.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
@@ -2722,6 +2724,7 @@ function strokeStackControls(node) {
   const strokes = strokeStackForNode(node);
   if (!strokes.length) return '';
   const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
+  const supportsAlignment = supportsStrokeAlignment(node);
   const supportsEndpointDecorations = node.type === 'line' || node.type === 'network'
     || (node.type === 'path' && vectorPathContours(node).some(contour => !contour.closed && contour.points?.length >= 2));
   const rows = strokes.map((stroke, index) => {
@@ -2755,6 +2758,7 @@ function strokeStackControls(node) {
       <div class="stroke-field-grid">
         ${paintControls}
         ${gradient ? '' : `<label class="stroke-field"><span>Color</span><input type="color" data-stroke-field="color" data-stroke-id="${id}" value="${escapeHtml(safeColor)}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`}
+        ${select('alignment', 'Position', effectiveStrokeAlignment(node, stroke), [['inside', 'Inside'], ['center', 'Center'], ['outside', 'Outside']], !supportsAlignment)}
         ${supportsIndividualSides ? select('sideMode', 'Sides', sideMode, [['all', 'All'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right'], ['custom', 'Custom']]) : ''}
         ${supportsIndividualSides && sideMode === 'custom'
           ? `<div class="stroke-side-widths" role="group" aria-label="${name} individual side widths">${[['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom'], ['left', 'Left']].map(([side, label]) => `<label class="stroke-field"><span>${label}</span><input type="number" inputmode="decimal" data-stroke-field="sideWidth" data-stroke-side="${side}" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.sideWidths?.[side] ?? stroke.width)}" aria-label="${name} ${label.toLowerCase()} width"${node.locked ? ' disabled' : ''}/></label>`).join('')}</div>`
@@ -2770,7 +2774,7 @@ function strokeStackControls(node) {
       ${primaryControls}
     </div>`;
   }).join('');
-  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, opacity, cap, join, and pattern.${supportsIndividualSides ? ' Rectangle and frame strokes can use independent top, right, bottom, and left weights; set a side to zero to remove it.' : ''}${supportsEndpointDecorations ? ' Open line ends can use an arrow, triangle, diamond, or circle marker.' : ''}</div></div>`;
+  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, position, opacity, cap, join, and pattern.${supportsAlignment ? ' Position places the stroke inside, centered on, or outside the layer boundary without resizing the layer.' : ' Open lines and paths keep centered strokes; close the geometry to change position.'}${supportsIndividualSides ? ' Rectangle and frame strokes can use independent top, right, bottom, and left weights; set a side to zero to remove it.' : ''}${supportsEndpointDecorations ? ' Open line ends can use an arrow, triangle, diamond, or circle marker.' : ''}</div></div>`;
 }
 function cornerRadiusControls(node) {
   if (!['rectangle', 'frame', 'section', 'image', 'star', 'polygon'].includes(node.type)) return '';
@@ -8980,7 +8984,7 @@ function recordGradientTrackChange(context) {
   const { node, fill, stroke } = context;
   if (stroke) {
     syncLegacyStrokeFields(node);
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokeVariableId', 'variableBindings']);
   } else if (fill) {
     syncLegacyFillFields(node);
     recordNodeComponentOverrides(node, ['fills', 'fillGradient']);
@@ -9218,6 +9222,9 @@ function updateStrokeInput(input) {
     } else return;
     renderInspector();
   } else if (field === 'blendMode') updateStroke(node, stroke.id, { blendMode: input.value });
+  else if (field === 'alignment' && supportsStrokeAlignment(node) && ['inside', 'center', 'outside'].includes(input.value)) {
+    updateStroke(node, stroke.id, { alignment: input.value });
+  }
   else if (field === 'gradientAngle' && stroke.gradient && Number.isFinite(Number(input.value))) {
     stroke.gradient.angle = Math.max(0, Math.min(359, Number(input.value)));
   } else if (field === 'gradientStopColor' && stroke.gradient && /^#[0-9a-f]{6}$/i.test(input.value)) {
@@ -9267,7 +9274,7 @@ function updateStrokeInput(input) {
   else if (field === 'endDecoration' && strokeDecorationTypes.includes(input.value)) updateStroke(node, stroke.id, { endDecoration: input.value });
   else return;
   syncLegacyStrokeFields(node);
-  recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+  recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokeVariableId', 'variableBindings']);
   const track = input.closest('.stroke-gradient-controls')?.querySelector('[data-gradient-stop-track]');
   if (track && stroke.gradient) syncGradientStopTrack(track, stroke.gradient);
   renderer.invalidate();
@@ -16825,7 +16832,7 @@ function pasteAppearanceToSelection() {
         for (const property of ['fill', 'fills', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId']) componentProperties.add(property);
       }
       if (changed.has('strokes')) {
-        for (const property of ['stroke', 'strokes', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId']) componentProperties.add(property);
+        for (const property of ['stroke', 'strokes', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokeVariableId']) componentProperties.add(property);
       }
       if (changed.has('effects')) componentProperties.add('effects');
       if (changed.has('radii')) {
@@ -19467,22 +19474,7 @@ async function ensureImageLibraryCompatibility(documentData) {
 function exportBoundsForNode(nodeId) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
-  const node = entry.node;
-  const stroke = node.stroke && node.strokeWidth ? node.strokeWidth / 2 : 0;
-  const corners = [[-stroke, -stroke], [node.width + stroke, -stroke], [node.width + stroke, node.height + stroke], [-stroke, node.height + stroke]];
-  const points = corners.map(([x, y]) => {
-    const rotated = rotatePoint({ x, y }, { x: node.width / 2, y: node.height / 2 }, node.rotation || 0);
-    let point = { x: rotated.x + node.x, y: rotated.y + node.y };
-    for (let index = entry.parents.length - 1; index >= 0; index -= 1) {
-      const parent = entry.parents[index];
-      point = rotatePoint(point, { x: parent.width / 2, y: parent.height / 2 }, parent.rotation || 0);
-      point.x += parent.x; point.y += parent.y;
-    }
-    return point;
-  });
-  const xs = points.map(point => point.x); const ys = points.map(point => point.y);
-  const left = Math.min(...xs); const top = Math.min(...ys); const right = Math.max(...xs); const bottom = Math.max(...ys);
-  return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+  return rasterExportBounds(state.document, entry.node, entry.parents);
 }
 
 function exportDimensions(nodeId, scale = 1) {
@@ -21432,7 +21424,7 @@ function applyInspectorAction(action, details = {}) {
       checkpoint('Remove stroke gradient stop');
       updateStroke(node, stroke.id, { gradient });
     }
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment']);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
   }
@@ -21500,7 +21492,7 @@ function applyInspectorAction(action, details = {}) {
     if (action === 'add-stroke') {
       if (strokes.length >= MAX_STROKES_PER_NODE) { showToast(`A layer can have up to ${MAX_STROKES_PER_NODE} strokes.`); return; }
       checkpoint('Add stroke');
-      addStroke(node, createStroke());
+      addStroke(node, createStroke({ alignment: supportsStrokeAlignment(node) ? 'inside' : 'center' }));
     } else {
       const index = strokes.findIndex(stroke => stroke.id === details.strokeId);
       if (index < 0) return;
@@ -21514,7 +21506,7 @@ function applyInspectorAction(action, details = {}) {
     }
     if (hadPrimaryBinding && strokes[0] !== previousPrimary) detachPrimaryStrokeBinding(node, previousPrimary, previousPrimaryColor);
     syncLegacyStrokeFields(node);
-    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokeVariableId', 'variableBindings']);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
   }

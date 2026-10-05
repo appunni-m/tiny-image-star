@@ -526,6 +526,7 @@ const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
 const strokeCaps = new Set(['butt', 'round', 'square']);
 const strokeJoins = new Set(['miter', 'round', 'bevel']);
 const strokePatterns = new Set(['solid', 'dashed', 'dotted', 'custom']);
+const strokeAlignments = new Set(['inside', 'center', 'outside']);
 const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
@@ -533,7 +534,7 @@ const frameScrollPositions = new Set(['scroll', 'fixed', 'sticky']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -4168,6 +4169,7 @@ export function validateDocument(document) {
         || (node.strokeCap != null && !strokeCaps.has(node.strokeCap))
         || (node.strokeJoin != null && !strokeJoins.has(node.strokeJoin))
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
+        || (node.strokeAlignment != null && !strokeAlignments.has(node.strokeAlignment))
         || (node.strokeDashArray != null && !isValidStrokeDashArray(node.strokeDashArray))
         || (node.strokePattern === 'custom' && !isValidStrokeDashArray(node.strokeDashArray))
         || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
@@ -4535,6 +4537,7 @@ export function validateDocument(document) {
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
           if (overrides.fills != null && !isValidFillStack(overrides.fills, sourceNode || node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid component fill stack override on ${node.name || node.id}.`);
           if (overrides.strokes != null && !isValidStrokeStack(overrides.strokes, sourceNode || node)) throw new TypeError(`Invalid component stroke stack override on ${node.name || node.id}.`);
+          if (overrides.strokeAlignment != null && !strokeAlignments.has(overrides.strokeAlignment)) throw new TypeError(`Invalid component stroke alignment override on ${node.name || node.id}.`);
           if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
           if (overrides.fontFamily != null && (node.type !== 'text' || typeof overrides.fontFamily !== 'string' || !overrides.fontFamily.trim() || overrides.fontFamily.length > 160 || /[\x00-\x1f]/.test(overrides.fontFamily))) throw new TypeError(`Invalid component font family override on ${node.name || node.id}.`);
           if (overrides.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(overrides.fontWeight))) throw new TypeError(`Invalid component font weight override on ${node.name || node.id}.`);

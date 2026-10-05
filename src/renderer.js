@@ -16,6 +16,7 @@ import { applyLuminanceMaskAlpha, initializeLuminanceMaskWasm, isLuminanceMaskWa
 import { isUniformStrokeSideWidths, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
+import { effectiveStrokeAlignment, strokeGeometryBounds, strokePaintPadding } from './stroke-alignment.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 import { selectionBounds } from './group-transform.js';
@@ -514,7 +515,9 @@ function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixel
   }
   context.fillStyle = '#ffffff';
   const tracePath = pathContext => {
-    if (node.type === 'star' || node.type === 'polygon') {
+    if (node.type === 'ellipse') traceEllipseArc(pathContext, node);
+    else if (['rectangle', 'frame', 'image'].includes(node.type)) roundedRect(pathContext, 0, 0, node.width, node.height, node.cornerRadii || node.radius || 0, node.cornerSmoothing || 0);
+    else if (node.type === 'star' || node.type === 'polygon') {
       traceRoundedPolygonPath(pathContext, 0, 0,
         regularShapeVertices(node.type, node.width, node.height, node.points, node.innerRadius ?? 0.48),
         node.vertexRadii || node.radius || 0, node.cornerSmoothing || 0);
@@ -553,7 +556,7 @@ function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixel
     context.fill();
   } else if (typeof context.fillRect === 'function') context.fillRect(0, 0, node.width, node.height);
   else { context.restore(); return null; }
-  if (['star', 'polygon', 'path', 'network', 'line', 'text'].includes(node.type)) {
+  if (['rectangle', 'frame', 'image', 'ellipse', 'star', 'polygon', 'path', 'network', 'line', 'text'].includes(node.type)) {
     // Include the authored stroke silhouette too; stroke opacity is ignored
     // for geometry, just as fill opacity is for this Figma effect option.
     const textOutline = node.type === 'text'
@@ -562,7 +565,12 @@ function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixel
         overrideRunColors: true, shapeText
       })
       : null;
-    drawStrokeStack(context, node, document, 0, 0, node.width, node.height, tracePath, 'vector', textOutline);
+    const textGeometry = node.type === 'text'
+      ? glyphContext => drawTextLayerContent(glyphContext, node, document, 0, 0, node.width, node.height, {
+        colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText
+      })
+      : null;
+    drawStrokeStack(context, node, document, 0, 0, node.width, node.height, tracePath, 'vector', textOutline, textGeometry);
   }
   context.restore();
   return mask;
@@ -944,7 +952,64 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
   }
 }
 
-function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null) {
+function drawStrokeGeometry(context, node, document, x, y, width, height, paintGlyphGeometry = null, traceOnly = false) {
+  context.fillStyle = '#ffffff';
+  if (paintGlyphGeometry) { paintGlyphGeometry(context); return; }
+  context.beginPath();
+  const radius = node.cornerRadii || getNodePropertyValue(document, node, 'radius') || 0;
+  if (['rectangle', 'frame', 'image'].includes(node.type)) roundedRect(context, x, y, width, height, radius, node.cornerSmoothing || 0);
+  else if (node.type === 'ellipse') traceEllipseArc(context, node, x, y, width, height);
+  else if (node.type === 'star' || node.type === 'polygon') {
+    traceRoundedPolygonPath(context, x, y, regularShapeVertices(node.type, width, height, node.points, node.innerRadius ?? .48),
+      node.vertexRadii || Number(radius) || 0, node.cornerSmoothing || 0);
+  } else if (node.type === 'path') traceVectorPath(context, node, x, y);
+  else if (node.type === 'network') {
+    // Fill faces separately: network faces may have opposite winding and
+    // overlapping faces form a union rather than cancelling each other.
+    for (const face of node.faces || []) {
+      if (!traceOnly) context.beginPath();
+      if (traceVectorNetworkFace(context, node, face, x, y) && !traceOnly) context.fill();
+    }
+    return;
+  }
+  if (!traceOnly) context.fill(node.type === 'path' && node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+}
+
+function drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry) {
+  const alignment = effectiveStrokeAlignment(node, stroke);
+  const padding = strokePaintPadding(node, [{ ...stroke, opacity: 1, color: maskMode === 'vector' ? '#ffffff' : color }]) + 1;
+  const geometryBounds = strokeGeometryBounds({ ...node, width, height });
+  const logicalWidth = geometryBounds.right - geometryBounds.left + 2 * padding;
+  const logicalHeight = geometryBounds.bottom - geometryBounds.top + 2 * padding;
+  const transform = ctx.getTransform?.();
+  const requestedScale = transform
+    ? Math.max(Math.hypot(transform.a, transform.b), Math.hypot(transform.c || 0, transform.d ?? transform.a))
+    : 1;
+  const dimensions = booleanSurfaceDimensions(logicalWidth, logicalHeight, requestedScale);
+  const surface = createTextSurface(dimensions.width, dimensions.height);
+  const geometry = createTextSurface(dimensions.width, dimensions.height);
+  const paintContext = surface?.getContext?.('2d'); const geometryContext = geometry?.getContext?.('2d');
+  if (!paintContext || !geometryContext) return false;
+  const left = x + geometryBounds.left - padding; const top = y + geometryBounds.top - padding;
+  setTextSurfaceTransform(paintContext, left, top, logicalWidth, logicalHeight, dimensions.width, dimensions.height);
+  setTextSurfaceTransform(geometryContext, left, top, logicalWidth, logicalHeight, dimensions.width, dimensions.height);
+  const centeredStroke = { ...stroke, color, alignment: 'center', opacity: 1, blendMode: 'normal' };
+  const closedTrace = pathContext => drawStrokeGeometry(pathContext, node, document, x, y, width, height, null, true);
+  const strokeTrace = node.type === 'network' ? closedTrace : tracePath || closedTrace;
+  drawStrokeStack(paintContext, { ...node, strokes: [centeredStroke], strokeVariableId: undefined }, document,
+    x, y, width, height, strokeTrace, maskMode, paintOutline, paintGlyphGeometry, 2);
+  drawStrokeGeometry(geometryContext, node, document, x, y, width, height, paintGlyphGeometry);
+  paintContext.setTransform(1, 0, 0, 1, 0, 0);
+  paintContext.globalAlpha = 1;
+  paintContext.globalCompositeOperation = alignment === 'inside' ? 'destination-in' : 'destination-out';
+  paintContext.drawImage(geometry, 0, 0);
+  // Each stroke is masked in isolation. Its opacity and blend are applied once
+  // against the preceding paint stack, never to the geometric clip itself.
+  ctx.drawImage(surface, left, top, logicalWidth, logicalHeight);
+  return true;
+}
+
+function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null, paintGlyphGeometry = null, widthMultiplier = 1) {
   const strokes = strokeStackForNode(node);
   const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
   const hasIndividualSideStroke = supportsIndividualSides && strokes.some(stroke => !isUniformStrokeSideWidths(strokeSideWidths(stroke)));
@@ -964,11 +1029,16 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
     if (!maskMode && stroke.blendMode && stroke.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(stroke.blendMode);
     if (!vectorMask) ctx.globalAlpha *= stroke.opacity;
     const strokeHasIndividualSides = rectangleSides && sideWidths && !isUniformStrokeSideWidths(sideWidths);
-    ctx.lineWidth = sideWidths && !strokeHasIndividualSides ? sideWidths.top : stroke.width;
+    ctx.lineWidth = (sideWidths && !strokeHasIndividualSides ? sideWidths.top : stroke.width) * widthMultiplier;
     const color = index === 0 && node.strokeVariableId
       ? getNodeColor(document, node, 'stroke')
       : stroke.color;
     if ((!stroke.gradient && (!color || (!vectorMask && color === 'transparent')))) { ctx.restore(); continue; }
+    if (effectiveStrokeAlignment(node, stroke) !== 'center') {
+      drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry);
+      ctx.restore();
+      continue;
+    }
     const paint = vectorMask ? '#ffffff' : stroke.gradient ? createGradientPaint(ctx, stroke.gradient, x, y, width, height) : color;
     if (!paint) { ctx.restore(); continue; }
     ctx.strokeStyle = paint;
@@ -982,7 +1052,7 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
         const sideWidth = sideWidths[run.side];
         if (!(sideWidth > 0)) continue;
         applyStrokeStyle(ctx, { ...stroke, width: sideWidth });
-        ctx.lineWidth = sideWidth;
+        ctx.lineWidth = sideWidth * widthMultiplier;
         // Side-run endpoints are artificial corner bisectors. Keep solid
         // contours butt-ended and close them with explicit joins; dotted
         // contours require round caps to render their zero-length dashes.
@@ -998,7 +1068,7 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
       // independently weighted side paths. They use the same stroke paint,
       // opacity, blend mode and exact geometry as SVG export.
       const joins = stroke.pattern === 'solid'
-        ? rectangleStrokeSideJoins(rectangleSides, sideWidths, stroke.join, stroke.miterLimit)
+        ? rectangleStrokeSideJoins(rectangleSides, Object.fromEntries(strokeSideNames.map(side => [side, sideWidths[side] * widthMultiplier])), stroke.join, stroke.miterLimit)
         : [];
       if (joins.length) {
         ctx.fillStyle = paint;
@@ -1894,6 +1964,8 @@ export class SceneRenderer {
         outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
           colorOverride: '#ffffff', fillOpacity: 1, paintMode: 'stroke', includeDecorations: false,
           overrideRunColors: true, shapeText: state.shapeLocalTextRun
+        }), glyphContext => drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
+          colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText: state.shapeLocalTextRun
         }));
       ctx.restore();
       return;
@@ -2043,6 +2115,8 @@ export class SceneRenderer {
         drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
           outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
             fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
+          }), glyphContext => drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
+            colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText: state.shapeLocalTextRun
           }));
       }
     } else if (node.type === 'network') {
@@ -2944,9 +3018,14 @@ export class SceneRenderer {
     const radians = (Number(node.rotation) || 0) * Math.PI / 180;
     const effectPadding = layerEffectPadding(effects);
     const affine = node.affineTransform || { a: 1, b: 0, c: 0, d: 1 };
+    const strokePadding = strokePaintPadding(node, strokeStackForNode(node));
+    const geometryBounds = strokeGeometryBounds(node);
     const centerX = node.width / 2;
     const centerY = node.height / 2;
-    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([x, y]) => {
+    const corners = [[geometryBounds.left - strokePadding, geometryBounds.top - strokePadding],
+      [geometryBounds.right + strokePadding, geometryBounds.top - strokePadding],
+      [geometryBounds.right + strokePadding, geometryBounds.bottom + strokePadding],
+      [geometryBounds.left - strokePadding, geometryBounds.bottom + strokePadding]].map(([x, y]) => {
       const dx = x - centerX;
       const dy = y - centerY;
       const rotatedX = centerX + dx * Math.cos(radians) - dy * Math.sin(radians);
@@ -2963,8 +3042,8 @@ export class SceneRenderer {
     // Include the transformed geometry and its effect apron. `drawNode` applies
     // affineTransform inside this surface, so padding from only the untransformed
     // width/height clips scaled and sheared content before its effects run.
-    const padX = Math.max(effectPadding.x - minX, effectPadding.x + maxX - node.width, 0);
-    const padY = Math.max(effectPadding.y - minY, effectPadding.y + maxY - node.height, 0);
+    const padX = Math.ceil(Math.max(effectPadding.x - minX, effectPadding.x + maxX - node.width, 0));
+    const padY = Math.ceil(Math.max(effectPadding.y - minY, effectPadding.y + maxY - node.height, 0));
     const logicalWidth = Math.max(1, node.width + padX * 2);
     const logicalHeight = Math.max(1, node.height + padY * 2);
     const pixelBudget = 4_000_000;

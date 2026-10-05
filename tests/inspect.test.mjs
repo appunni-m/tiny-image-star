@@ -433,6 +433,37 @@ test('Inspect reports individual edge weights in structured output and generated
   assert.match(output.css, /border-width: 1\.5px 0px 3\.25px 2px;/);
 });
 
+test('Inspect exposes authored/effective stroke positions and keeps CSS placement honest', () => {
+  for (const alignment of ['inside', 'center', 'outside']) {
+    const document = createDocument();
+    const node = createNode('rectangle', { stroke: '#123456', strokeWidth: 6, strokeAlignment: alignment });
+    addNode(document, node);
+    const output = buildInspectOutput(document, [findNode(document, node.id)]);
+    assert.equal(output.layers[0].stroke.alignment, alignment);
+    assert.equal(output.layers[0].stroke.effectiveAlignment, alignment);
+    if (alignment === 'inside') assert.match(output.css, /border: 6px solid/);
+    else {
+      assert.match(output.css, /outline: 6px solid/);
+      assert.match(output.css, new RegExp(`outline-offset: ${alignment === 'outside' ? 0 : -3}px`));
+    }
+  }
+  const document = createDocument();
+  const node = createNode('rectangle', { strokes: [
+    { id: 'unequal', color: '#123456', width: 6, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      alignment: 'outside', sideMode: 'custom', sideWidths: { top: 2, right: 4, bottom: 6, left: 0 } }
+  ] });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.match(output.css, /outside stroke placement.*CSS border placement is an approximation/);
+  assert.match(output.css, /border-width: 2px 4px 6px 0px/);
+  assert.doesNotMatch(output.css, /outline:/);
+  const line = createNode('line', { stroke: '#123456', strokeWidth: 6, strokeAlignment: 'inside' });
+  addNode(document, line);
+  const lineOutput = buildInspectOutput(document, [findNode(document, line.id)]);
+  assert.equal(lineOutput.layers[0].stroke.alignment, 'inside');
+  assert.equal(lineOutput.layers[0].stroke.effectiveAlignment, 'center');
+});
+
 test('Inspect preserves stroke gradient stops and identifies the CSS color approximation', () => {
   const document = createDocument();
   const gradient = createGradientFill('radial', '#ff8800');

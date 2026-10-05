@@ -301,6 +301,59 @@ test('keeps editor alpha and vector masks as bounded PDF soft-mask forms', () =>
   assertValidXref(nestedPdf);
 });
 
+test('keeps mixed inside/outside stroke geometry and independent edge weights as vector PDF', () => {
+  const node = createNode('rectangle', { width: 80, height: 60, fill: 'transparent', strokes: [
+    { id: 'inside', color: '#ff0000', width: 8, opacity: .5, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, alignment: 'inside' },
+    { id: 'outside', color: '#0000ff', width: 4, opacity: .5, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, alignment: 'outside',
+      sideMode: 'custom', sideWidths: { top: 4, right: 6, bottom: 2, left: 0 } },
+  ] });
+  const svg = exportNodeToSvg(node);
+  const pdf = createVectorPdf(svg);
+  const text = pdfText(pdf);
+  assert.match(text, /\/SMask << \/S \/Alpha \/G \d+ 0 R >>/);
+  assert.match(text, /\/SMask << \/S \/Luminosity \/G \d+ 0 R >>/);
+  assert.match(text, /16 w/, 'inside authored weight is doubled before masking');
+  assert.match(text, /12 w/, 'outside individual right weight is doubled before masking');
+  assert.doesNotMatch(text, /\/Subtype \/Image/, 'stroke subtraction and joins remain vector geometry');
+  assertValidXref(pdf);
+});
+
+test('outside stroke subtraction preserves evenodd holes in vector PDF masks', () => {
+  const node = createNode('path', { width: 60, height: 60, fillRule: 'evenodd', closed: true,
+    points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    subpaths: [{ closed: true, points: [{ x: .25, y: .25 }, { x: .75, y: .25 }, { x: .75, y: .75 }, { x: .25, y: .75 }] }],
+    fill: 'transparent', stroke: '#0000ff', strokeWidth: 4, strokeAlignment: 'outside' });
+  const pdf = createVectorPdf(exportNodeToSvg(node));
+  const text = pdfText(pdf);
+  assert.match(text, /\/S \/Luminosity/);
+  assert.match(text, /f\*/, 'geometric fill polarity retains the hole');
+  assert.match(text, /8 w/);
+  assert.doesNotMatch(text, /\/Subtype \/Image/);
+  assertValidXref(pdf);
+});
+
+test('luminance-mask extension rejects colored, translucent and nonvector graphs', () => {
+  const maskSvg = content => '<svg width="20px" height="20px" viewBox="0 0 20 20"><defs>'
+    + '<mask id="m" mask-type="luminance" color-interpolation="sRGB" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">'
+    + content + '</mask></defs><rect width="20" height="20" fill="#f00" mask="url(#m)"/></svg>';
+  for (const content of [
+    '<rect width="20" height="20" fill="#ff0000"/>',
+    '<rect width="20" height="20" fill="#ffffff" fill-opacity=".5"/>',
+    '<g opacity=".5"><rect width="20" height="20" fill="#fff"/></g>',
+    '<g style="opacity:.5"><rect width="20" height="20" fill="#fff"/></g>',
+    '<text x="0" y="10" fill="#fff">Mask</text>',
+    '<image width="20" height="20" href="data:image/png;base64,AA=="/>',
+    '<rect width="20" height="20" fill="#fff" filter="url(#f)"/>',
+    '<g mask="url(#m)"><rect width="20" height="20" fill="#fff"/></g>',
+  ]) {
+    assert.throws(() => createVectorPdf(maskSvg(content)), error => error instanceof PdfVectorExportError && error.feature === 'luminance masks');
+  }
+  const valid = maskSvg('<rect width="20" height="20" fill="#fff"/><circle cx="10" cy="10" r="4" fill="#000"/>');
+  assert.match(pdfText(createVectorPdf(valid)), /\/S \/Luminosity/);
+  assert.throws(() => createVectorPdf(valid.replace('maskUnits="userSpaceOnUse"', 'maskUnits="objectBoundingBox"')), /object-bounding-box masks/);
+  assert.throws(() => createVectorPdf(valid.replace(' x="0" y="0" width="20" height="20"', '')), /mask region units/);
+});
+
 test('preserves editor PNG image layers as PDF image XObjects with a soft alpha mask and vector neighbors', () => {
   const png = rgbaPng();
   const decoded = decodePdfImageDataUri(`data:image/png;base64,${png.toString('base64')}`);

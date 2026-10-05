@@ -204,7 +204,7 @@ test('legacy scalar fills and strokes are captured, applied, and mirrored to the
     type: 'rectangle', opacity: 0.8, blendMode: 'normal',
     fill: '#123456', fillOpacity: 0.35,
     stroke: '#abcdef', strokeWidth: 5, strokeOpacity: 0.6,
-    strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'solid', strokeMiterLimit: 4
+    strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'solid', strokeMiterLimit: 4, strokeAlignment: 'outside'
   };
   const snapshot = snapshotAppearance(source);
   assert.equal(snapshot.fills[0].type, 'solid');
@@ -226,6 +226,10 @@ test('legacy scalar fills and strokes are captured, applied, and mirrored to the
   assert.equal(pasted.strokeOpacity, 0.6);
   assert.equal(pasted.strokeCap, 'round');
   assert.equal(pasted.strokeJoin, 'bevel');
+  assert.equal(pasted.strokeAlignment, 'outside');
+  assert.equal(pasted.strokes[0].alignment, 'outside');
+  pasted.strokes[0].alignment = 'inside';
+  assert.equal(snapshot.strokes[0].alignment, 'outside', 'pasted positioning owns independent state');
 });
 
 test('text appearance copies typography but preserves target rich text, paragraphs, and content', () => {

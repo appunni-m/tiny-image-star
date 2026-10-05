@@ -23,7 +23,7 @@ const LIMITS = Object.freeze({
  * fonts. Measured, flat inline rich-text runs also use standard Helvetica
  * variants when the SVG contains the editor's PDF placement metadata. Custom
  * fonts, shaped rich text, text paths, gradient strokes, unsupported filter
- * graphs, luminance masks, and blend modes are rejected with feature-specific
+ * graphs, colored/translucent luminance masks, and blend modes are rejected with feature-specific
  * errors. A single user-space feDropShadow on a simple vector fill keeps its
  * geometry as vector paths and its bounded blur as a transparent image XObject.
  */
@@ -339,6 +339,35 @@ function maskRegion(node) {
   return { x, y, width, height };
 }
 
+// Black/white vector masks encode geometric subtraction without depending on
+// SVG luminance coefficients or color-space conversion. Reject other graphs
+// rather than silently treating their colors or transparency as alpha.
+function assertBinaryLuminanceMask(node) {
+  let shapes = 0;
+  const reject = () => fail('luminance masks', 'only opaque black/white vector geometry in an explicit user-space region is supported');
+  const visit = child => {
+    if (child.name === '#text' || child.name === 'title') return;
+    if (child.name === 'g') {
+      if (Object.keys(child.attributes).some(key => !['transform', 'opacity'].includes(key) && !key.startsWith('data-'))) reject();
+    } else if (shapeAttributes[child.name]) {
+      const allowed = new Set([...shapeAttributes[child.name], 'transform', 'opacity']);
+      if (Object.keys(child.attributes).some(key => !allowed.has(key) && !key.startsWith('data-'))) reject();
+      if (child.children.some(item => item.name !== '#text' && item.name !== 'title')) reject();
+      for (const paint of [child.attributes.fill ?? '#000000', child.attributes.stroke ?? 'none']) {
+        if (paint === 'none') continue;
+        if (!/^#(?:000|fff|000000|ffffff)$/i.test(paint)) reject();
+      }
+      shapes += 1;
+    } else reject();
+    for (const key of ['opacity', 'fill-opacity', 'stroke-opacity']) {
+      if (parseOpacity(child.attributes[key], `mask ${key}`) !== 1) reject();
+    }
+    child.children.forEach(visit);
+  };
+  node.children.forEach(visit);
+  if (!shapes) reject();
+}
+
 function parseSimpleDropShadowFilter(definition) {
   assertAttributes(definition, new Set(['id', 'filterUnits', 'x', 'y', 'width', 'height']));
   if (definition.attributes.filterUnits !== 'userSpaceOnUse') {
@@ -407,15 +436,18 @@ function scanDefinitions(svgRoot) {
           filters.set(id, parseSimpleDropShadowFilter(definition));
         } else if (definition.name === 'mask') {
           assertAttributes(definition, new Set([
-            'id', 'maskUnits', 'maskContentUnits', 'mask-type', 'x', 'y', 'width', 'height'
+            'id', 'maskUnits', 'maskContentUnits', 'mask-type', 'color-interpolation', 'x', 'y', 'width', 'height'
           ]));
           const id = definition.attributes.id;
           if (!id || ids.has(id)) throw new TypeError('SVG definitions require unique IDs.');
           ids.add(id);
-          if ((definition.attributes['mask-type'] || 'luminance') !== 'alpha') {
-            fail('luminance masks', 'PDF export supports alpha masks only');
+          const kind = definition.attributes['mask-type'] || 'luminance';
+          if (!['alpha', 'luminance'].includes(kind)) fail('mask type', 'expected alpha or luminance');
+          if (definition.attributes['color-interpolation'] && definition.attributes['color-interpolation'] !== 'sRGB') {
+            fail('mask color interpolation', 'only sRGB mask interpolation is supported');
           }
-          masks.set(id, { node: definition, region: maskRegion(definition) });
+          if (kind === 'luminance') assertBinaryLuminanceMask(definition);
+          masks.set(id, { node: definition, kind, region: maskRegion(definition) });
         } else {
           fail(`SVG definition <${definition.name}>`);
         }
@@ -988,6 +1020,7 @@ function maskFormFor(maskId, context) {
     context.forms.set(formName, {
       content: `${formContent}${formContent ? '\n' : ''}`,
       bbox: definition.region,
+      maskType: definition.kind === 'luminance' ? 'Luminosity' : 'Alpha',
     });
   } catch (error) {
     context.forms.delete(formName);
@@ -1001,7 +1034,7 @@ function maskFormFor(maskId, context) {
 
 function maskReference(value) {
   const match = /^url\(#([^)]+)\)$/.exec(String(value || ''));
-  if (!match) fail('external masks', 'only local alpha-mask references are supported');
+  if (!match) fail('external masks', 'only local mask references are supported');
   return match[1];
 }
 
@@ -1660,7 +1693,8 @@ function createPdf(pages) {
     const states = [...page.stateNames.entries()].map(([key, name]) => {
       if (key.startsWith('smask:')) {
         const [, maskFormName, opacity] = key.split(':');
-        return { name, fillAlpha: opacity, strokeAlpha: opacity, maskFormName, objectId: nextId++ };
+        return { name, fillAlpha: opacity, strokeAlpha: opacity, maskFormName,
+          maskType: page.forms.get(maskFormName)?.maskType || 'Alpha', objectId: nextId++ };
       }
       const [fillAlpha, strokeAlpha] = key.split(':');
       return { name, fillAlpha, strokeAlpha, objectId: nextId++ };
@@ -1692,7 +1726,7 @@ function createPdf(pages) {
     objects[page.contentId] = `<< /Length ${bytes.byteLength} >>\nstream\n${page.content}endstream`;
     for (const state of page.states) {
       const softMask = state.maskFormName
-        ? `/SMask << /S /Alpha /G ${page.formObjects.find(form => form.name === state.maskFormName)?.objectId || 'null'} 0 R >>`
+        ? `/SMask << /S /${state.maskType} /G ${page.formObjects.find(form => form.name === state.maskFormName)?.objectId || 'null'} 0 R >>`
         : '';
       if (softMask.includes('/G null')) throw new TypeError(`PDF alpha mask form ${state.maskFormName} was not compiled.`);
       objects[state.objectId] = `<< /Type /ExtGState /ca ${state.fillAlpha} /CA ${state.strokeAlpha} ${softMask} >>`;

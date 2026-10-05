@@ -8,7 +8,8 @@ import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDim
 import { isValidLayerEffects, layerEffectPadding, supportsShadowSpread } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
-import { isUniformStrokeSideWidths, isValidStrokeStack, strokeSideNames, strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { effectiveStrokeAlignment, strokeOuterExtent, strokePaintPadding } from './stroke-alignment.js';
+import { isUniformStrokeSideWidths, isValidStrokeStack, strokeSideNames, strokeSideWidths, strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorPathContours } from './vector-path.js';
@@ -40,6 +41,42 @@ const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
 const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const MAX_NETWORK_METADATA_LENGTH = 1024 * 1024;
+const ALIGNMENT_METADATA_ATTRIBUTE = 'data-tiny-image-star-aligned-strokes-v1';
+const alignmentMetadataFields = [
+  'id', 'name', 'type', 'width', 'height', 'opacity', 'blendMode', 'clip',
+  'radius', 'cornerRadii', 'cornerSmoothing', 'points', 'innerRadius', 'vertexRadii', 'arcData',
+  'closed', 'subpaths', 'vertices', 'edges', 'faces',
+  'fill', 'fillOpacity', 'fillRule', 'fillGradient', 'fills',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeAlignment', 'strokeCap', 'strokeJoin',
+  'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'effects'
+];
+
+function alignedStrokeRoundTripMetadata(node, document, context) {
+  if (context?.alignmentMetadata === false || node.children?.length || node.mask
+    || !['rectangle', 'frame', 'ellipse', 'star', 'polygon', 'path', 'network'].includes(node.type)
+    || node.imageFill || node.fills?.some(fill => fill.type === 'image')
+    || !strokeStackForNode(node).some(stroke => effectiveStrokeAlignment(node, stroke) !== 'center')) return '';
+  const source = Object.fromEntries(alignmentMetadataFields.filter(key => node[key] !== undefined)
+    .map(key => [key, structuredClone(node[key])]));
+  source.opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
+  source.fill = color(document, node, 'fill');
+  source.radius = Number(getNodePropertyValue(document, node, 'radius') ?? node.radius ?? 0);
+  source.strokes = strokeStackForNode(node).map((stroke, index) => ({ ...stroke,
+    ...(index === 0 && node.strokeVariableId ? { color: color(document, node, 'stroke') } : {}) }));
+  if (Array.isArray(node.fills)) source.fills = node.fills.map((fill, index) => fill.type === 'solid'
+    ? { ...fill, color: stackSolidValue(document, node, fill, index) } : fill);
+  const text = JSON.stringify({ version: 1, node: source });
+  if (text.length > MAX_NETWORK_METADATA_LENGTH) throw new SvgExportError('aligned-stroke recovery metadata larger than 1 MiB', node);
+  return ` ${ALIGNMENT_METADATA_ATTRIBUTE}="${escapeXml(text)}"`;
+}
+
+/** Exact local graph used to validate native aligned-stroke recovery on import. */
+export function exportAlignedStrokeValidationSvg(node) {
+  validateTree([node], emptyDocument, null, null);
+  const context = { defs: [], nextIndex: 0, strokeGradientIds: new Set(), alignmentMetadata: false };
+  const markup = renderTree([{ ...node, x: 0, y: 0, rotation: 0, affineTransform: undefined }], emptyDocument, context, false);
+  return svgDocument(markup, context.defs, { x: 0, y: 0, width: Math.max(1, node.width), height: Math.max(1, node.height) });
+}
 
 function networkRoundTripMetadata(node) {
   const payload = {
@@ -448,7 +485,7 @@ function fillAttributes(document, node, { text = false, gradientId = null, fillV
   return ` fill="${escapeXml(fill)}" fill-opacity="${number(fillOpacity)}"`;
 }
 
-function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 0, gradientId = null) {
+function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 0, gradientId = null, widthScale = 1) {
   const hasSavedStack = Array.isArray(node.strokes);
   const entry = strokeItem === undefined ? (hasSavedStack ? null : strokeStackForNode(node)[0] || null) : strokeItem;
   const strokeWidth = Number(entry ? entry.width : hasSavedStack ? 0 : node.strokeWidth || 0);
@@ -473,7 +510,7 @@ function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 
   const miter = resolved !== 'none' && join === 'miter' && miterLimit !== 4 ? ` stroke-miterlimit="${number(miterLimit)}"` : '';
   const opacity = Number(entry ? entry.opacity : node.strokeOpacity ?? 1);
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid stroke opacity on layer ${node.name || node.id || '(unnamed)'}.`);
-  return ` stroke="${escapeXml(stroke)}"${opacity === 1 ? '' : ` stroke-opacity="${number(opacity)}"`} stroke-width="${number(strokeWidth)}"${cap === 'butt' ? '' : ` stroke-linecap="${cap}"`}${join === 'miter' ? '' : ` stroke-linejoin="${join}"`}${miter}${dash.length ? ` stroke-dasharray="${dash.map(number).join(' ')}"` : ''}`;
+  return ` stroke="${escapeXml(stroke)}"${opacity === 1 ? '' : ` stroke-opacity="${number(opacity)}"`} stroke-width="${number(strokeWidth * widthScale)}"${cap === 'butt' ? '' : ` stroke-linecap="${cap}"`}${join === 'miter' ? '' : ` stroke-linejoin="${join}"`}${miter}${dash.length ? ` stroke-dasharray="${dash.map(number).join(' ')}"` : ''}`;
 }
 
 function addStrokeGradientDefinition(node, stroke, strokeIndex, layerIndex, context) {
@@ -487,10 +524,58 @@ function addStrokeGradientDefinition(node, stroke, strokeIndex, layerIndex, cont
   return definition.id;
 }
 
+function alignedStrokeGeometry(node, document, measureText, fill, maskSuffix) {
+  const plain = {
+    ...node, fill, fillOpacity: 1, fillGradient: null, fills: [], imageFill: null,
+    fillVariableId: null, fillStyleId: null,
+    stroke: null, strokeWidth: 0, strokes: [], effects: [],
+    variableBindings: { ...node.variableBindings, fill: null, textColor: null }
+  };
+  if (node.type === 'image') return roundedRectMarkup(plain, document, ` fill="${fill}" stroke="none"`);
+  if (node.type === 'network') {
+    const pairs = networkEdgesByPair(node);
+    return (node.faces || []).map(face => `<path d="${networkFacePath(node, face, pairs)}" fill="${fill}" stroke="none"/>`).join('');
+  }
+  // A glyph mask contains glyph contours, rather than text decorations.
+  if (node.type === 'text') {
+    plain.textDecoration = 'none';
+    plain.id = `${node.id || 'text'}-stroke-mask-${maskSuffix}`;
+  }
+  return shapeMarkup(plain, document, measureText, null, { fillValue: fill, fillOpacity: 1, includeStroke: false });
+}
+
+function wrapAlignedStrokeMarkup(markup, node, stroke, strokeIndex, document, measureText, context, layerIndex) {
+  const alignment = effectiveStrokeAlignment(node, stroke);
+  if (!markup || alignment === 'center') return markup;
+  if (!context?.defs) throw new SvgExportError('aligned strokes without an SVG definition context', node);
+  const id = `tis-stroke-alignment-${layerIndex}-${strokeIndex}`;
+  const local = { ...node, x: 0, y: 0, rotation: 0, affineTransform: undefined,
+    effects: [], stroke: null, strokeWidth: 0, strokes: [], children: [] };
+  const baseBounds = getBounds([local], { document, includePosition: false, measureText });
+  const sideWidths = ['rectangle', 'frame'].includes(node.type) ? strokeSideWidths(stroke) : null;
+  const width = sideWidths ? Math.max(...Object.values(sideWidths)) : Number(stroke.width);
+  // Include both halves of the doubled stroke and every permitted miter before
+  // masking. The mask must never trim a distant acute join or Bezier control.
+  const margin = Math.max(1, width * Math.max(1, Number(stroke.miterLimit) || 10)) + 2;
+  const region = { x: baseBounds.x - margin, y: baseBounds.y - margin,
+    width: baseBounds.width + margin * 2, height: baseBounds.height + margin * 2 };
+  const attrs = `x="${number(region.x)}" y="${number(region.y)}" width="${number(region.width)}" height="${number(region.height)}"`;
+  const outside = alignment === 'outside';
+  const surface = outside ? `<rect ${attrs} fill="#ffffff" stroke="none"/>` : '';
+  const geometry = alignedStrokeGeometry(node, document, measureText, outside ? '#000000' : '#ffffff', `${layerIndex}-${strokeIndex}`);
+  context.defs.push(`<mask id="${id}" mask-type="${outside ? 'luminance' : 'alpha'}"${outside ? ' color-interpolation="sRGB"' : ''} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" ${attrs}><g>${surface}${geometry}</g></mask>`);
+  const blend = paintBlendStyle(stroke.blendMode);
+  // A mask isolates its descendants. Composite the completed stroke against
+  // prior fills/scene paint with the authored blend on the masked group itself.
+  return `<g data-tiny-image-star-stroke-alignment="${alignment}" mask="url(#${id})"${blend}>${blend ? markup.replace(blend, '') : markup}</g>`;
+}
+
 function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, context = null, layerIndex = 0) {
   if (!Array.isArray(node.strokes)) return '';
   const strokes = strokeStackForNode(node);
   return strokes.map((stroke, index) => {
+    const aligned = effectiveStrokeAlignment(node, stroke) !== 'center';
+    const strokeWidthScale = aligned ? 2 : 1;
     const sideWidths = ['rectangle', 'frame'].includes(node.type) ? strokeSideWidths(stroke) : null;
     const maximumSideWidth = sideWidths ? Math.max(...strokeSideNames.map(side => sideWidths[side])) : stroke.width;
     if (!stroke.visible || stroke.opacity <= 0 || maximumSideWidth <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return '';
@@ -510,11 +595,11 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
         // below handles the actual corner transition.
         const attributes = strokeAttributes(document, node, {
           ...stroke, width, opacity: 1, cap: stroke.pattern === 'dotted' ? 'round' : 'butt'
-        }, index, strokeGradientId);
+        }, index, strokeGradientId, strokeWidthScale);
         return `<path d="${d}" fill="none"${attributes} data-tiny-image-star-stroke-side="${run.side}"/>`;
       }).join('');
       const joins = (stroke.pattern === 'solid'
-        ? rectangleStrokeSideJoins(runs, sideWidths, stroke.join, stroke.miterLimit)
+        ? rectangleStrokeSideJoins(runs, Object.fromEntries(strokeSideNames.map(side => [side, sideWidths[side] * strokeWidthScale])), stroke.join, stroke.miterLimit)
         : []).map(patch => {
         const d = `M ${number(patch.points[0].x)} ${number(patch.points[0].y)}${patch.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')} Z`;
         const fill = stroke.gradient ? `url(#${strokeGradientId})`
@@ -525,17 +610,18 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
     }
     else if (sideWidths) {
       const uniformStroke = { ...stroke, width: sideWidths.top };
-      if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, uniformStroke, index, strokeGradientId)}`);
-      else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: uniformStroke, strokeIndex: index, strokeGradientId });
+      if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, uniformStroke, index, strokeGradientId, strokeWidthScale)}`);
+      else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: uniformStroke, strokeIndex: index, strokeGradientId, strokeWidthScale });
     }
-    else if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
+    else if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId, strokeWidthScale)}`);
     else if (node.type === 'text') markup = textMarkup(node, document, measureText, {
       fillValue: 'transparent', fillOpacity: 0, includeStroke: true,
-      strokeItem: stroke, strokeIndex: index, strokeGradientId, clipSuffix: `stroke-${index}`
+      strokeItem: stroke, strokeIndex: index, strokeGradientId, strokeWidthScale, clipSuffix: `stroke-${index}`
     });
-    else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId });
+    else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId, strokeWidthScale });
     if (markup) markup = markup.replace(/^<([a-z][\w:-]*)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"${paintBlendStyle(stroke.blendMode)}`);
-    return markup + strokeDecorationMarkup(node, document, stroke, index, strokeGradientId);
+    return wrapAlignedStrokeMarkup(markup, node, stroke, index, document, measureText, context, layerIndex)
+      + strokeDecorationMarkup(node, document, stroke, index, strokeGradientId);
   }).join('');
 }
 
@@ -729,7 +815,7 @@ export function svgDropShadowClipIsRedundant(node, document = emptyDocument) {
 
 const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'image', 'group', 'frame', 'section']);
 const svgVectorMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
-const svgLuminanceMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path']);
+const svgLuminanceMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'group', 'frame', 'section']);
 
 function validateMaskGroup(node, document, assets, imagePreviews) {
   if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string') {
@@ -749,16 +835,20 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
     return source;
   }
   if (maskMode === 'luminance') {
-    if (!svgLuminanceMaskSourceTypes.has(source.type)) throw new SvgExportError(`${source.type || 'unknown'} luminance mask contents`, source);
-    if (Array.isArray(source.fills) || Array.isArray(source.strokes)) throw new SvgExportError('ordered paint stacks in luminance masks', source);
-    if ((source.effects || []).some(effect => effect.visible !== false)
-      || hasNonNormalPaintBlend(source) || (source.blendMode || 'normal') !== 'normal') {
-      throw new SvgExportError('effects or blend modes in luminance masks', source);
-    }
-    if (source.type === 'path' && !hasFillablePathContour(source)
-      && !(source.stroke && Number(source.strokeWidth) > 0)) {
-      throw new SvgExportError('open, unpainted path luminance mask contents', source);
-    }
+    const validateLuminance = current => {
+      if (!svgLuminanceMaskSourceTypes.has(current.type)) throw new SvgExportError(`${current.type || 'unknown'} luminance mask contents`, current);
+      if (Array.isArray(current.fills) || Array.isArray(current.strokes)) throw new SvgExportError('ordered paint stacks in luminance masks', current);
+      if (current.mask || current.clip || (current.effects || []).some(effect => effect.visible !== false)
+        || hasNonNormalPaintBlend(current) || (current.blendMode || 'normal') !== 'normal') {
+        throw new SvgExportError('effects or blend modes in luminance masks', current);
+      }
+      if (current.type === 'path' && !hasFillablePathContour(current)
+        && !(current.stroke && Number(current.strokeWidth) > 0)) {
+        throw new SvgExportError('open, unpainted path luminance mask contents', current);
+      }
+      for (const child of current.children || []) validateLuminance(child);
+    };
+    validateLuminance(source);
     dimensions({ ...source, ...getNodeGeometry(document, source) });
     return source;
   }
@@ -806,9 +896,9 @@ function validateTree(nodes, document, assets, imagePreviews = null, ignoredNode
   }
 }
 
-function shapeMarkup(node, document, measureText, gradientId = null, { fillValue, fillOpacity, includeStroke = true, strokeItem, strokeIndex = 0, strokeGradientId = null } = {}) {
+function shapeMarkup(node, document, measureText, gradientId = null, { fillValue, fillOpacity, includeStroke = true, strokeItem, strokeIndex = 0, strokeGradientId = null, strokeWidthScale = 1 } = {}) {
   const fill = fillAttributes(document, node, { text: node.type === 'text', gradientId, fillValue, fillOpacity });
-  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
+  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale) : '';
   switch (node.type) {
     case 'frame':
     case 'section':
@@ -887,7 +977,7 @@ function shapeMarkup(node, document, measureText, gradientId = null, { fillValue
       // Network faces and edges are emitted individually below so SVG retains their graph topology.
       return '';
     case 'text':
-      return textMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke });
+      return textMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale });
     default:
       return '';
   }
@@ -979,18 +1069,28 @@ function networkMarkup(node, document, gradientId = null, { includeFills = true,
     const strokeItem = strokeEntries[strokeIndex];
     if (strokeItem && (!strokeItem.visible || strokeItem.opacity <= 0 || strokeItem.width <= 0 || (!strokeItem.gradient && (!strokeItem.color || strokeItem.color === 'transparent')))) continue;
     const strokeGradientId = addStrokeGradientDefinition(node, strokeItem, strokeIndex, layerIndex, context);
-    const stroke = strokeItem ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : strokeAttributes(document, node);
+    const sourceStroke = strokeItem || strokeStackForNode(node)[0];
+    const strokeWidthScale = effectiveStrokeAlignment(node, sourceStroke) === 'center' ? 1 : 2;
+    const stroke = strokeItem ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale) : strokeAttributes(document, node);
     const strokeMetadata = strokeItem ? ` data-tiny-image-star-stroke-id="${escapeXml(strokeItem.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"${paintBlendStyle(strokeItem.blendMode)}` : '';
-    for (const { face, index } of roundedFaces) {
+    let strokeMarkup = '';
+    // Separate open edges leave missing outside miters where two half-strokes
+    // meet. Trace each aligned face as a closed contour so SVG constructs the
+    // same joins and uninterrupted dash rhythm as the live renderer.
+    const strokeFaces = strokeWidthScale === 2 ? faces.map((face, index) => ({ face, index })) : roundedFaces;
+    const handledEdges = strokeWidthScale === 2 ? new Set(strokeFaces.flatMap(({ face }) =>
+      face.vertexIds.map((from, index) => edgesByPair.get(`${from}\0${face.vertexIds[(index + 1) % face.vertexIds.length]}`)?.id).filter(Boolean))) : roundedEdgeIds;
+    for (const { face, index } of strokeFaces) {
       const edgeIds = (face.vertexIds || []).map((from, faceIndex) => (
         edgesByPair.get(`${from}\0${face.vertexIds[(faceIndex + 1) % face.vertexIds.length]}`)?.id
       )).filter(Boolean).join(' ');
-      markup += `<path data-tiny-image-star-face-id="${escapeXml(face.id || index)}" data-tiny-image-star-edge-ids="${escapeXml(edgeIds)}"${strokeMetadata} d="${networkFacePath(node, face, edgesByPair)}" fill="none"${stroke}/>`;
+      strokeMarkup += `<path data-tiny-image-star-face-id="${escapeXml(face.id || index)}" data-tiny-image-star-edge-ids="${escapeXml(edgeIds)}"${strokeMetadata} d="${networkFacePath(node, face, edgesByPair)}" fill="none"${stroke}/>`;
     }
     for (const edge of node.edges || []) {
-      if (roundedEdgeIds.has(edge.id)) continue;
-      markup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}"${strokeMetadata} d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
+      if (handledEdges.has(edge.id)) continue;
+      strokeMarkup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}"${strokeMetadata} d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
     }
+    markup += wrapAlignedStrokeMarkup(strokeMarkup, node, sourceStroke, strokeIndex, document, null, context, layerIndex);
     if (strokeItem) markup += strokeDecorationMarkup(node, document, strokeItem, strokeIndex, strokeGradientId);
   }
   return markup;
@@ -1337,7 +1437,7 @@ function richLineJustificationOffsets(line) {
 
 function textMarkup(node, document, measureText, {
   fillValue, fillOpacity, includeStroke = true, clipSuffix = 'base',
-  strokeItem, strokeIndex = 0, strokeGradientId = null
+  strokeItem, strokeIndex = 0, strokeGradientId = null, strokeWidthScale = 1
 } = {}) {
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -1358,7 +1458,7 @@ function textMarkup(node, document, measureText, {
     const paint = color === 'transparent' ? 'none' : color;
     if (paint !== 'none' && !isSvgPaintValue(paint)) throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
     const strokeMarkup = includeStroke ? (strokeItem
-      ? ` stroke="${escapeXml(strokeItem.color)}" stroke-opacity="${number(strokeItem.opacity)}" stroke-width="${number(strokeItem.width)}"`
+      ? ` stroke="${escapeXml(strokeItem.color)}" stroke-opacity="${number(strokeItem.opacity)}" stroke-width="${number(strokeItem.width * strokeWidthScale)}"`
       : '') : ' stroke="none"';
     const transform = ['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? ` text-transform="${node.textCase}"` : '';
     const side = node.textPath.flipped ? ' side="right"' : '';
@@ -1465,7 +1565,7 @@ function textMarkup(node, document, measureText, {
       return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
         + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
-    const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
+    const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale) : '';
     const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap"${pdfAscentAttribute}>${richTspans}</text>`;
     return clipTruncatedTextMarkup(node, element + decorations.join(''), clipSuffix);
   }
@@ -1484,7 +1584,7 @@ function textMarkup(node, document, measureText, {
     return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
       + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${pdfWidthAttribute}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
-  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
+  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale) : '';
   const pdfAscent = typeof measureText?.pdfBaselineOffset === 'function'
     ? Number(measureText.pdfBaselineOffset(resolvedNode)) : NaN;
   const pdfAscentAttribute = Number.isFinite(pdfAscent) && pdfAscent > 0
@@ -1612,6 +1712,7 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
   if (maskMode === 'luminance') {
+    if (['group', 'frame', 'section'].includes(node.type)) return renderTree([node], document, context, true, measureText);
     const gradient = gradientDefinition(node, layerIndex);
     if (gradient) context.defs.push(gradient.markup);
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
@@ -1622,7 +1723,7 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
   const alpha = opacity * fillOpacity;
   const transform = matrixAttribute(nodeMatrix(node, { includePosition: true }));
   if (['image', 'group', 'frame', 'section'].includes(node.type)) {
-    return renderTree([node], document, context, false, measureText);
+    return renderTree([node], document, context, true, measureText);
   }
   if (node.type === 'network') {
     const edgesByPair = networkEdgesByPair(node);
@@ -1789,7 +1890,9 @@ function regularShapeStrokePadding(node) {
     if (stroke?.visible === false || !(Number(stroke.opacity ?? 1) > 0) || !(Number(stroke.width) > 0)
       || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
     const width = Number(stroke.width);
-    const halfWidth = width / 2;
+    const halfWidth = effectiveStrokeAlignment(node, stroke) === 'center' ? width / 2
+      : effectiveStrokeAlignment(node, stroke) === 'outside' ? width : 0;
+    if (!(halfWidth > 0)) continue;
     padding = Math.max(padding, halfWidth);
     const join = stroke.join || node.strokeJoin || 'miter';
     if (join !== 'miter') continue;
@@ -1946,17 +2049,28 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
   for (const sourceNode of nodes || []) {
     if (sourceNode?.type === 'slice') continue;
     if (!isNodeVisible(document, sourceNode)) continue;
-    const node = {
+    let node = {
       ...sourceNode,
       ...getNodeGeometry(document, sourceNode),
       ...(sourceNode.textPath ? { textPath: getNodeTextPath(document, sourceNode) } : {})
     };
+    if (strokeStackForNode(node).some(stroke => effectiveStrokeAlignment(node, stroke) !== 'center')) {
+      const strokes = strokeStackForNode(node).map((stroke, strokeIndex) => ({ ...stroke,
+        ...(strokeIndex === 0 && node.strokeVariableId ? { color: color(document, node, 'stroke') } : {}) }));
+      const resolvedFills = node.fills?.map((fill, fillIndex) => fill.type === 'solid'
+        ? { ...fill, color: stackSolidValue(document, node, fill, fillIndex) } : fill);
+      node = { ...node, strokes, strokeVariableId: null,
+        ...(node.type !== 'text' ? { fill: color(document, node, 'fill'), fillVariableId: null, fillStyleId: null,
+          variableBindings: { ...node.variableBindings, fill: null } } : {}),
+        ...(resolvedFills ? { fills: resolvedFills } : {}) };
+      syncLegacyStrokeFields(node);
+    }
     const index = context.nextIndex++;
     const transform = nodeMatrix(node, { includePosition });
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
-    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}`;
+    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}${alignedStrokeRoundTripMetadata(node, document, context)}`;
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
@@ -2131,7 +2245,9 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         for (const stroke of strokeStackForNode(node)) {
           if (stroke.visible === false || Number(stroke.opacity ?? 1) <= 0) continue;
           const sideWidths = strokeSideWidths(stroke);
-          for (const side of strokeSideNames) sideExtents[side] = Math.max(sideExtents[side], sideWidths[side] / 2);
+          for (const side of strokeSideNames) sideExtents[side] = Math.max(sideExtents[side],
+            strokeOuterExtent({ ...stroke, width: sideWidths[side], sideMode: 'all', sideWidths: undefined,
+              alignment: effectiveStrokeAlignment(node, stroke) }));
         }
         if (Object.values(sideExtents).some(value => value > 0)) {
           for (const [x, y] of [
@@ -2233,7 +2349,10 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         }
       }
       if (!['rectangle', 'frame'].includes(node.type)) {
-        const strokeWidth = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
+        const strokes = strokeStackForNode(node);
+        const hasAlignment = strokes.some(stroke => effectiveStrokeAlignment(node, stroke) !== 'center');
+        const strokeWidth = hasAlignment ? strokePaintPadding(node, strokes)
+          : node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
         if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
       }
       const regularStrokePadding = ['star', 'polygon'].includes(node.type) ? regularShapeStrokePadding(node) : 0;

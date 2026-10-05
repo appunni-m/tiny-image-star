@@ -92,6 +92,21 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
 });
 
+test('preserves explicit inside and outside FIG strokes and the raw embedded alignment enum', async () => {
+  const parsed = parseFig(new Uint8Array(await readFile(circlePath)));
+  const imported = convertFigDocument(parsed);
+  const ellipse = imported.document.pages[0].children[0].children.find(layer => layer.type === 'ellipse');
+  assert.equal(ellipse.strokes[0].alignment, 'inside', 'the real v101 ellipse retains its authored inside stroke');
+  assert.equal(imported.report.warnings.some(warning => warning.type === 'STROKE_ALIGNMENT'), false);
+  const sourceEllipse = parsed.nodes.find(layer => layer.type === 'ELLIPSE');
+  const definition = parsed.schema.definitions.find(definition => definition.name === 'StrokeAlign');
+  sourceEllipse.strokeAlign = definition.fields.find(field => field.name === 'OUTSIDE').value;
+  const raw = convertFigDocument(parsed);
+  assert.equal(raw.document.pages[0].children[0].children.find(layer => layer.type === 'ellipse').strokes[0].alignment, 'outside');
+  const copy = parseDocument(serializeDocument(raw.document));
+  assert.equal(copy.pages[0].children[0].children.find(layer => layer.type === 'ellipse').strokeAlignment, 'outside');
+});
+
 test('preserves valid Figma ellipse arc data and safely omits malformed arc settings', () => {
   const page = { sessionID: 106, localID: 1 };
   const full = { startingAngle: 0, endingAngle: Math.PI * 2, innerRadius: 0 };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createNode, parseDocument, serializeDocument } from '../src/model.js';
+import { addNode, bindColorVariable, createDocument, createGradientFill, createNode, createVariable, createVariableCollection, parseDocument, serializeDocument } from '../src/model.js';
 import { createStroke } from '../src/strokes.js';
 import { importSvgToLayers, SvgImportError } from '../src/svg-import.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
@@ -1630,4 +1630,254 @@ test('applies a cumulative point budget across paths, not only a per-path cap', 
   const markup = `<svg><path d="${path}" fill="#000"/><path d="${path}" fill="#000"/></svg>`;
   assert.throws(() => importSvgToLayers(markup), error => error instanceof SvgImportError
     && error.code === 'resource-limit' && /20000 points/.test(error.message));
+});
+
+function alterAlignmentMetadata(svg, change) {
+  return svg.replace(/data-tiny-image-star-aligned-strokes-v1="([^"]+)"/, (_match, value) => {
+    const decoded = value.replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+    const payload = JSON.parse(decoded);
+    change(payload);
+    return `data-tiny-image-star-aligned-strokes-v1="${JSON.stringify(payload).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}"`;
+  });
+}
+
+test('aligned native SVG round-trip retains rounded primitive and compound path controls and every stroke paint', () => {
+  const shapes = [
+    ['rectangle', { cornerRadii: { topLeft: 12, topRight: 5, bottomRight: 18, bottomLeft: 0 }, cornerSmoothing: .5 }],
+    ['ellipse', { arcData: { startingAngle: 0, endingAngle: Math.PI * 1.75, innerRadius: .35 } }],
+    ['star', { points: 6, innerRadius: .4, vertexRadii: [2, 0, 4, 0, 3, 0, 5, 0, 6, 0, 7, 0], cornerSmoothing: .3 }],
+    ['polygon', { points: 5, radius: 6, cornerSmoothing: .4 }],
+    ['path', { closed: true, fillRule: 'evenodd', points: [{ x: 0, y: 0 }, { x: 1, y: 0, out: { x: 0, y: .3 } }, { x: 1, y: 1 }, { x: 0, y: 1 }], subpaths: [{ closed: true, points: [{ x: .3, y: .3 }, { x: .7, y: .3 }, { x: .7, y: .7 }, { x: .3, y: .7 }] }] }]
+  ];
+  for (const [type, geometry] of shapes) {
+    const original = createNode(type, { name: `Aligned native ${type}`, width: 120, height: 90, rotation: 17,
+      fill: '#abcdef', fillOpacity: .45, ...geometry, strokes: [
+        createStroke({ id: 'inside-paint', alignment: 'inside', color: '#123456', width: 7, opacity: .4,
+          pattern: 'custom', dashArray: [8, 2, 3, 2], cap: 'round', join: 'bevel' }),
+        createStroke({ id: 'outside-paint', alignment: 'outside', color: '#654321', width: 3, opacity: .7,
+          gradient: createGradientFill('radial') })
+      ] });
+    const copy = allNodes(importSvgToLayers(exportNodeToSvg(original)).nodes).find(node => node.name === original.name);
+    assert.equal(copy?.type, type);
+    for (const [key, value] of Object.entries(geometry)) assert.deepEqual(copy[key], value, `${type} preserves ${key}`);
+    assert.ok(Math.abs(copy.rotation - 17) < 1e-8);
+    assert.equal(copy.fillOpacity, .45);
+    assert.deepEqual(copy.strokes.map(stroke => [stroke.alignment, stroke.width, stroke.opacity]), [['inside', 7, .4], ['outside', 3, .7]]);
+    assert.deepEqual(copy.strokes[0].dashArray, [8, 2, 3, 2]);
+    assert.deepEqual(copy.strokes[1].gradient, original.strokes[1].gradient);
+    const saved = createDocument(); saved.pages[0].children = [copy];
+    assert.deepEqual(parseDocument(serializeDocument(saved)).pages[0].children[0].strokes, copy.strokes,
+      'native alignment survives saved design validation');
+  }
+});
+
+test('aligned SVG native recovery preserves per-side widths and fill/inner-shadow/stroke effect phases', () => {
+  const original = createNode('rectangle', { name: 'Independent aligned sides', width: 100, height: 80,
+    radius: 8, fill: '#abcdef', strokes: [createStroke({ alignment: 'outside', width: 3, color: '#123456',
+      opacity: .6, sideMode: 'custom', sideWidths: { top: 2, right: 3, bottom: 0, left: 5 } })] });
+  const copy = allNodes(importSvgToLayers(exportNodeToSvg(original)).nodes).find(node => node.name === original.name);
+  assert.equal(copy?.type, 'rectangle');
+  assert.deepEqual(copy.strokes[0].sideWidths, original.strokes[0].sideWidths);
+  assert.equal(copy.strokes[0].alignment, 'outside');
+  assert.equal(copy.strokes[0].width, 3);
+  const star = createNode('star', { name: 'Aligned phased star', width: 90, height: 80, points: 6, radius: 3,
+    fill: '#aabbcc', strokes: [createStroke({ alignment: 'inside', width: 5, color: '#123456' })], effects: [
+      { id: 'inner', type: 'inner-shadow', visible: true, color: '#123456', opacity: .5, offsetX: 1, offsetY: 2, blur: 3 },
+      { id: 'drop', type: 'drop-shadow', visible: true, color: '#000000', opacity: .4, offsetX: -2, offsetY: 4, blur: 5, showShadowBehindNode: true }
+    ] });
+  const svg = exportNodeToSvg(star);
+  assert.match(svg, /data-tiny-image-star-paint-phases="layer-v1"/);
+  const phasedCopy = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === star.name);
+  assert.equal(phasedCopy?.type, 'star');
+  assert.equal(phasedCopy.strokes[0].alignment, 'inside');
+  assert.equal(phasedCopy.strokes[0].width, 5);
+  star.effects.forEach((effect, index) => {
+    for (const key of Object.keys(effect).filter(key => key !== 'id')) assert.equal(phasedCopy.effects[index][key], effect[key]);
+  });
+});
+
+test('closed aligned SVG networks preserve native graph identities and never trust stale recovery metadata', () => {
+  const geometry = vectorNetworkGeometryFromAnchors([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 80 }, { x: 0, y: 80 }], { closed: true });
+  const original = createNode('network', { name: 'Aligned graph', width: 100, height: 80, ...geometry,
+    fill: '#abcdef', strokes: [createStroke({ alignment: 'outside', width: 5, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  const copy = allNodes(importSvgToLayers(source).nodes).find(node => node.type === 'network');
+  assert.ok(copy);
+  assert.deepEqual(copy.vertices, original.vertices);
+  assert.deepEqual(copy.edges, original.edges);
+  assert.deepEqual(copy.faces, original.faces);
+  assert.equal(copy.strokes[0].alignment, 'outside');
+  for (const changed of [source.replace(/ data-tiny-image-star-aligned-strokes-v1="[^"]+"/, ''),
+    source.replace('stroke-width="10"', 'stroke-width="14"')]) {
+    const nodes = allNodes(importSvgToLayers(changed).nodes);
+    assert.equal(nodes.some(node => node.type === 'network'), false,
+      'old graph metadata cannot override the actual masked SVG after an alignment graph edit');
+    assert.ok(nodes.some(node => node.maskMode === 'luminance'));
+    assert.ok(nodes.some(node => node.type === 'path'));
+  }
+});
+
+test('aligned SVG recovery rejects altered metadata, geometry, paint, masks and unrepresented children without overwriting live SVG', () => {
+  const original = createNode('rectangle', { name: 'Untrusted alignment metadata', width: 100, height: 80,
+    fill: '#abcdef', strokes: [createStroke({ alignment: 'outside', width: 6, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  const changes = [
+    alterAlignmentMetadata(source, payload => { payload.node.strokes[0].alignment = 'inside'; }),
+    alterAlignmentMetadata(source, payload => { payload.node.strokes[0].width = 3; }),
+    alterAlignmentMetadata(source, payload => { payload.node.componentId = 'untrusted-source'; }),
+    alterAlignmentMetadata(source, payload => { payload.node.strokes[0].assetId = 'untrusted-image'; }),
+    alterAlignmentMetadata(source, payload => { payload.node.strokes[0].variableBindings = { color: 'untrusted-variable' }; }),
+    alterAlignmentMetadata(source, payload => { (payload.node.effects ||= []).push({ id: 'ignored', type: 'layer-blur', visible: false, radius: 3, imageFill: { assetId: 'untrusted-image' } }); }),
+    source.replace('stroke-width="12"', 'stroke-width="18"'),
+    source.replace('stroke="#123456"', 'stroke="#fedcba"'),
+    source.replace('fill="#000000" fill-opacity="1"', 'fill="#ffffff" fill-opacity="1"'),
+    source.replace('fill="#abcdef"', 'fill="#fedcba"'),
+    source.replace('</title>', '</title><rect width="10" height="10" fill="#ff0000"/>')
+  ];
+  for (const changed of changes) {
+    const nodes = allNodes(importSvgToLayers(changed).nodes);
+    assert.equal(nodes.some(node => node.type === 'rectangle' && node.name === original.name), false,
+      'source and referenced definitions must exactly match the regenerated aligned graph');
+    assert.ok(nodes.some(node => node.maskMode === 'luminance'));
+    assert.ok(nodes.some(node => node.type === 'path'));
+  }
+  const editedPaintNodes = allNodes(importSvgToLayers(changes[7]).nodes);
+  assert.ok(editedPaintNodes.some(node => node.stroke === '#fedcba' && node.strokeWidth === 12),
+    'generic fallback retains the edited doubled SVG stroke rather than stale native paint');
+  const whiteMaskNodes = allNodes(importSvgToLayers(changes[8]).nodes);
+  assert.equal(whiteMaskNodes.some(node => node.fill === '#000000'), false,
+    'the generic fallback honors the actual edited mask paint');
+});
+
+test('ordinary compound luminance mask import retains white/black source groups across SVG and design save', () => {
+  const markup = '<svg width="120" height="90"><defs><mask id="cutout" mask-type="luminance" color-interpolation="sRGB" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="120" height="90"><g><rect width="120" height="90" fill="#ffffff"/><g transform="translate(15 10)"><rect width="30" height="25" fill="#000000"/><ellipse cx="55" cy="35" rx="18" ry="15" fill="#000000"/></g></g></mask></defs><rect width="120" height="90" fill="#123456" mask="url(#cutout)"/></svg>';
+  const imported = importSvgToLayers(markup);
+  const wrapper = allNodes(imported.nodes).find(node => node.maskMode === 'luminance');
+  const source = wrapper.children.find(node => node.id === wrapper.maskSourceId);
+  assert.equal(source.type, 'group');
+  assert.equal(allNodes([source]).filter(node => node.fill === '#000000').length, 2);
+  const saved = createDocument(); saved.pages[0].children = imported.nodes;
+  assert.equal(allNodes(parseDocument(serializeDocument(saved)).pages[0].children).filter(node => node.maskMode === 'luminance').length, 1);
+  const roundTrip = importSvgToLayers(exportNodeToSvg(imported.nodes[0]));
+  assert.equal(allNodes(roundTrip.nodes).filter(node => node.fill === '#000000').length, 2);
+  assert.ok(allNodes(roundTrip.nodes).some(node => node.maskMode === 'luminance'));
+});
+
+test('aligned native SVG recovery resolves bound transparent primary stroke and fill colors without retaining variable authority', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Export colors');
+  const color = createVariable(document, collection.id, 'Resolved paint', 'color', '#fedcba');
+  for (const type of ['rectangle', 'network']) {
+    const original = createNode(type, { name: `Bound aligned ${type}`, width: 100, height: 80,
+      ...(type === 'network' ? vectorNetworkGeometryFromAnchors([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 80 }], { closed: true }) : {}),
+      fill: 'transparent', strokes: [createStroke({ alignment: 'outside', width: 4, color: 'transparent' })] });
+    addNode(document, original);
+    assert.equal(bindColorVariable(document, original.id, color.id, 'fill'), true);
+    assert.equal(bindColorVariable(document, original.id, color.id, 'stroke'), true);
+    const svg = exportNodeToSvg(original, { document });
+    assert.match(svg, /stroke="#fedcba"[^>]*stroke-width="8"/);
+    const copy = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === original.name);
+    assert.equal(copy?.type, type);
+    assert.equal(copy.fill, '#fedcba');
+    assert.equal(copy.strokes[0].color, '#fedcba');
+    assert.equal(copy.strokes[0].alignment, 'outside');
+    assert.equal(copy.fillVariableId, undefined);
+    assert.equal(copy.strokeVariableId, undefined);
+    assert.equal(copy.variableBindings, undefined);
+    assert.equal(original.strokes[0].color, 'transparent', 'SVG snapshot resolution never mutates the live design');
+  }
+});
+
+test('aligned native SVG recovery scales authored local widths, dashes, rounded controls and effects exactly once', () => {
+  const original = createNode('rectangle', { name: 'Scaled aligned controls', width: 100, height: 80,
+    radius: 6, fill: '#abcdef', strokes: [createStroke({ alignment: 'inside', width: 4, color: '#123456', pattern: 'custom', dashArray: [8, 3] })],
+    effects: [{ id: 'drop', type: 'drop-shadow', visible: true, color: '#000000', opacity: .4,
+      offsetX: 2, offsetY: -3, blur: 5, showShadowBehindNode: true }] });
+  const svg = exportNodeToSvg(original).replace('<g opacity="1"', '<g transform="matrix(0 2 -2 0 200 0)" opacity="1"');
+  const copy = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === original.name);
+  assert.equal(copy?.type, 'rectangle');
+  assert.equal(copy.width, 200); assert.equal(copy.height, 160);
+  assert.equal(copy.rotation, 90); assert.equal(copy.radius, 12);
+  assert.equal(copy.strokes[0].width, 8);
+  assert.deepEqual(copy.strokes[0].dashArray, [16, 6]);
+  assert.equal(copy.effects[0].offsetX, 4); assert.equal(copy.effects[0].offsetY, -6); assert.equal(copy.effects[0].blur, 10);
+});
+
+test('aligned native SVG recovery honors edited root and ancestor inherited stroke defaults', () => {
+  const original = createNode('rectangle', { name: 'Inherited aligned paint', width: 100, height: 80,
+    fill: '#abcdef', strokes: [createStroke({ alignment: 'outside', width: 6, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  const cases = [
+    ['stroke-opacity=".5"', stroke => assert.equal(stroke.opacity, .5)],
+    ['stroke-linecap="round"', stroke => assert.equal(stroke.strokeCap, 'round')],
+    ['stroke-linejoin="bevel"', stroke => assert.equal(stroke.strokeJoin, 'bevel')],
+    ['stroke-dasharray="3 1"', stroke => assert.deepEqual(stroke.strokeDashArray, [3, 1])]
+  ];
+  for (const [attributes, verify] of cases) {
+    for (const changed of [source.replace('<svg ', `<svg ${attributes} `),
+      source.replace('<g opacity="1"', `<g ${attributes}><g opacity="1"`).replace('</svg>', '</g></svg>')]) {
+      const nodes = allNodes(importSvgToLayers(changed).nodes);
+      assert.equal(nodes.some(node => node.type === 'rectangle' && node.name === original.name), false,
+        `${attributes} prevents stale native paint from replacing computed SVG style`);
+      const stroke = nodes.find(node => node.stroke === '#123456' && node.strokeWidth === 12);
+      assert.ok(stroke);
+      verify(stroke);
+      assert.ok(nodes.some(node => node.maskMode === 'luminance'));
+    }
+  }
+});
+
+test('aligned masks retain fill-rule inherited from root and defs independently of referring ancestors', () => {
+  const original = createNode('path', { name: 'Inherited compound coverage', width: 100, height: 80,
+    closed: true, fill: '#abcdef', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    subpaths: [{ closed: true, points: [{ x: .3, y: .3 }, { x: .7, y: .3 }, { x: .7, y: .7 }, { x: .3, y: .7 }] }],
+    strokes: [createStroke({ alignment: 'outside', width: 6, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  for (const changed of [source.replace('<svg ', '<svg fill-rule="evenodd" '), source.replace('<defs>', '<defs fill-rule="evenodd">')]) {
+    const nodes = allNodes(importSvgToLayers(changed).nodes);
+    assert.equal(nodes.some(node => node.id.includes('-aligned-')), false,
+      'both body and referenced-definition inherited defaults must match before native promotion');
+    const blackCutout = nodes.find(node => node.fill === '#000000' && node.subpaths?.length);
+    assert.ok(blackCutout);
+    assert.equal(blackCutout.fillRule, 'evenodd', 'actual definition inheritance controls the compound hole');
+  }
+  const ancestorOnly = source.replace('<g opacity="1"', '<g fill-rule="evenodd"><g opacity="1"').replace('</svg>', '</g></svg>');
+  const nodes = allNodes(importSvgToLayers(ancestorOnly).nodes);
+  const paintedFill = nodes.find(node => node.fill === '#abcdef' && node.subpaths?.length);
+  const blackCutout = nodes.find(node => node.fill === '#000000' && node.subpaths?.length);
+  assert.equal(paintedFill.fillRule, 'evenodd');
+  assert.equal(blackCutout.fillRule, 'nonzero', 'mask definitions inherit their own SVG ancestor context, not the referring layer');
+});
+
+test('aligned native SVG recovery never resurrects inherited hidden geometry and preserves translation/opacity-only wrappers', () => {
+  const original = createNode('rectangle', { name: 'Visibility guarded alignment', width: 100, height: 80,
+    fill: '#abcdef', strokes: [createStroke({ alignment: 'inside', width: 6, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  for (const hidden of [source.replace('<svg ', '<svg visibility="hidden" '),
+    source.replace('<g opacity="1"', '<g visibility="hidden"><g opacity="1"').replace('</svg>', '</g></svg>')]) {
+    const nodes = allNodes(importSvgToLayers(hidden).nodes);
+    assert.equal(nodes.some(node => node.name === original.name), false);
+    assert.equal(nodes.some(node => node.stroke === '#123456'), false);
+  }
+  const wrapped = source.replace('<g opacity="1"', '<g opacity=".6" transform="translate(20 10)"><g opacity="1"').replace('</svg>', '</g></svg>');
+  const nodes = allNodes(importSvgToLayers(wrapped).nodes);
+  const copy = nodes.find(node => node.name === original.name);
+  assert.equal(copy?.type, 'rectangle');
+  assert.equal(copy.strokes[0].alignment, 'inside');
+  assert.equal(copy.strokes[0].width, 6);
+  const parent = nodes.find(node => node.type === 'group' && node.children.some(child => child.id === copy.id));
+  assert.equal(parent.opacity, .6);
+  const positioned = findWithAccumulatedPosition(importSvgToLayers(wrapped).nodes, original.name);
+  assert.equal(positioned.x, 20); assert.equal(positioned.y, 10);
+});
+
+test('aligned generic masks explicitly reject inherited visible mask strokes instead of silently dropping their coverage', () => {
+  const original = createNode('rectangle', { width: 100, height: 80, fill: '#abcdef',
+    strokes: [createStroke({ alignment: 'outside', width: 6, color: '#123456' })] });
+  const source = exportNodeToSvg(original);
+  for (const changed of [source.replace('<svg ', '<svg stroke="#ff0000" '),
+    source.replace('<defs>', '<defs stroke="#ff0000">')]) {
+    assert.throws(() => importSvgToLayers(changed), error => error instanceof SvgImportError
+      && error.code === 'unsupported-mask-graph' && /strokes/.test(error.message));
+  }
 });

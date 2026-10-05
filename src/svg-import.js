@@ -1,5 +1,6 @@
 import { createDocument, createNode, validateDocument } from './model.js';
-import { svgDropShadowClipIsRedundant } from './svg-export.js';
+import { exportAlignedStrokeValidationSvg, svgDropShadowClipIsRedundant } from './svg-export.js';
+import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
 import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
@@ -44,6 +45,15 @@ const MAX_ROUNDED_SHAPE_METADATA_LENGTH = 4096;
 const ROUNDED_RECTANGLE_METADATA_ATTRIBUTE = 'data-tiny-image-star-rounded-rectangle-v1';
 const MAX_ROUNDED_RECTANGLE_METADATA_LENGTH = 1024;
 const MAX_CORNER_RADIUS = 100_000;
+const ALIGNMENT_METADATA_ATTRIBUTE = 'data-tiny-image-star-aligned-strokes-v1';
+const alignmentMetadataFields = new Set([
+  'id', 'name', 'type', 'width', 'height', 'opacity', 'blendMode', 'clip',
+  'radius', 'cornerRadii', 'cornerSmoothing', 'points', 'innerRadius', 'vertexRadii', 'arcData',
+  'closed', 'subpaths', 'vertices', 'edges', 'faces',
+  'fill', 'fillOpacity', 'fillRule', 'fillGradient', 'fills',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeAlignment', 'strokeCap', 'strokeJoin',
+  'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'effects'
+]);
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
 const MAX_GRADIENT_HANDLE_COORDINATE = 1_000_000;
@@ -866,7 +876,7 @@ function parseFilter(node, ids) {
   return { id, region, effects };
 }
 
-function parseMaskDefinition(node, ids, gradients) {
+function parseMaskDefinition(node, ids, gradients, inheritedStyle = initialStyle) {
   const id = node.attrs.id;
   if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
     fail('invalid-mask', 'Every SVG mask must have a unique, simple id.', node.tag);
@@ -899,13 +909,14 @@ function parseMaskDefinition(node, ids, gradients) {
     height: length(node.attrs.height, 'mask height', node.tag)
   };
   if (region.width <= 0 || region.height <= 0) fail('invalid-mask', 'SVG mask width and height must be positive.', node.tag);
-  const mask = { id, maskType, localMaskMode, region, children: node.children };
+  const mask = { id, maskType, localMaskMode, region, children: node.children, inheritedStyle };
   ids.add(id);
 
   // Validate every embedded element, including content in an unused mask, so
   // active content, linked assets and unsupported declarations cannot hide in
   // defs and become executable if a later edit adds a reference.
   const visit = (child, inherited) => {
+    if (child.tag === 'title' && !child.children.length) { checkElementAttributes(child); return; }
     if (unsafeSvgElements.has(child.tag)) {
       const code = ['script', 'foreignObject'].includes(child.tag) ? 'active-content' : ['image', 'use'].includes(child.tag) ? 'external-reference' : 'unsupported-element';
       fail(code, `SVG element <${child.tag}> is not accepted inside a mask.`, child.tag);
@@ -919,7 +930,7 @@ function parseMaskDefinition(node, ids, gradients) {
     }
     fail('unsupported-mask-graph', `SVG mask child <${child.tag}> cannot be represented as one editable local vector source.`, child.tag);
   };
-  for (const child of node.children) visit(child, initialStyle);
+  for (const child of node.children) visit(child, inheritedStyle);
   return mask;
 }
 
@@ -963,7 +974,9 @@ function collectDefinitions(root) {
   for (const defs of root.children.filter(child => child.tag === 'defs')) {
     for (const child of defs.children.filter(entry => entry.tag === 'mask')) {
       if (masks.size >= MAX_MASKS) fail('resource-limit', `SVG contains more than ${MAX_MASKS} mask definitions.`, 'defs');
-      const mask = parseMaskDefinition(child, ids, gradients);
+      const rootStyle = parseStyle(root, initialStyle, gradients);
+      const definitionStyle = parseStyle(defs, rootStyle, gradients);
+      const mask = parseMaskDefinition(child, ids, gradients, definitionStyle);
       masks.set(mask.id, mask);
     }
   }
@@ -2092,12 +2105,40 @@ function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask sourc
   }
   const sourceGroup = mask.children[0];
   checkElementAttributes(sourceGroup);
+  if (sourceGroup.children.length > 1 && ['alpha', 'luminance'].includes(mask.localMaskMode)) {
+    // An inverse geometry mask is ordinary SVG: white composition surface,
+    // then black cutouts. Keep its vector group and actual paint, irrespective
+    // of editor metadata, so an edited or foreign graph retains its pixels.
+    const inspect = (current, parentStyle) => {
+      if (current.tag === 'title' && !current.children.length) { checkElementAttributes(current); return; }
+      if (current.tag !== 'g' && !clipPathGeometryTags.has(current.tag)) {
+        fail('unsupported-mask-graph', 'Compound masks support plain closed vector geometry and groups.', current.tag);
+      }
+      checkElementAttributes(current);
+      const style = parseStyle(current, parentStyle, gradients);
+      if (style.filterRef || style.clipPathRef || style.maskRef || !style.visible || !style.display
+        || style.fillGradient || style.stroke && style.strokeAlpha > 0 && style.strokeWidth > 0
+        || mask.localMaskMode === 'alpha' && current.tag !== 'g' && style.fill && style.fill !== '#ffffff') {
+        fail('unsupported-mask-graph', 'Compound masks require visible solid vector fills without nested effects, clips, masks, or strokes.', current.tag);
+      }
+      for (const child of current.children) inspect(child, style);
+    };
+    inspect(sourceGroup, mask.inheritedStyle || initialStyle);
+    const counter = { next: 0, root: sourceGroup, definitionNodes: new Map() };
+    const [source] = buildTree(sourceGroup, matrix, mask.inheritedStyle || initialStyle, `${prefix}-mask-${serial}`, counter,
+      budget, gradients, new Map(), new Map(), new Map());
+    if (!source) fail('unsupported-mask-graph', 'Compound SVG mask has no visible vector source.', 'mask');
+    source.name = cleanLayerName(name);
+    const regionBounds = transformedRectBounds(matrix, mask.region.x, mask.region.y, mask.region.width, mask.region.height);
+    assertBoundsContained(boundsOf([source]), regionBounds, 'mask');
+    return source;
+  }
   if (sourceGroup.children.length !== 1) {
     fail('unsupported-mask-graph', 'Editable SVG masks require one transformed <g> containing one closed vector shape.', 'mask');
   }
   const vectorMask = mask.localMaskMode === 'vector';
   const luminanceMask = mask.localMaskMode === 'luminance';
-  const groupStyle = parseStyle(sourceGroup, initialStyle, gradients);
+  const groupStyle = parseStyle(sourceGroup, mask.inheritedStyle || initialStyle, gradients);
   if (groupStyle.filterRef || groupStyle.clipPathRef || groupStyle.maskRef || !groupStyle.visible || !groupStyle.display) {
     fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', sourceGroup.tag);
   }
@@ -3045,6 +3086,167 @@ function restoreEditorDropShadowFlags(node, layer, effects) {
   return restored;
 }
 
+function svgDefinitionNodes(root) {
+  const result = new Map();
+  const visit = node => {
+    if (node.attrs.id) result.set(node.attrs.id, result.has(node.attrs.id) ? null : node);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return result;
+}
+
+// Native controls are restored only after regenerating the complete paint
+// graph. Resolve references by content, rather than by exporter-generated ids,
+// so a page's other layers cannot make otherwise identical definitions differ.
+function canonicalAlignmentGraph(node, definitions, { outer = true, definitionContexts = null, state = { nodes: 0, references: new Set() } } = {}) {
+  if (++state.nodes > 100_000) throw new RangeError('Aligned stroke validation graph is too large.');
+  const reference = id => {
+    const definition = definitions.get(id);
+    if (!definition || state.references.has(id) || state.references.size > 128) throw new TypeError('Invalid aligned stroke definition reference.');
+    if (definitionContexts?.has(id) && !hasDefaultAlignedPaintContext(definitionContexts.get(id))) {
+      throw new TypeError('Aligned stroke definition has edited inherited paint defaults.');
+    }
+    state.references.add(id);
+    const content = canonicalAlignmentGraph(definition, definitions, { outer: false, definitionContexts, state });
+    state.references.delete(id);
+    return content;
+  };
+  const attrs = Object.keys(node.attrs).sort().filter(key => key !== 'id'
+    && (!outer || key !== 'transform' && key !== ALIGNMENT_METADATA_ATTRIBUTE)).map(key => {
+    const value = node.attrs[key];
+    const parts = []; let offset = 0;
+    for (const match of value.matchAll(/url\(#([A-Za-z_][\w.-]*)\)/g)) {
+      parts.push(value.slice(offset, match.index), reference(match[1]));
+      offset = match.index + match[0].length;
+    }
+    return [key, parts.length ? [...parts, value.slice(offset)] : value];
+  });
+  return [node.tag, attrs, node.text || '', node.children.map(child => canonicalAlignmentGraph(child, definitions, { outer: false, definitionContexts, state }))];
+}
+
+function safeAlignmentMetadataFields(value) {
+  const record = (object, fields) => object && typeof object === 'object' && !Array.isArray(object)
+    && Object.keys(object).every(key => fields.includes(key));
+  const optional = (object, check) => object == null || check(object);
+  const array = (items, check) => items == null || Array.isArray(items) && items.every(check);
+  const xy = point => record(point, ['x', 'y']);
+  const point = anchor => record(anchor, ['x', 'y', 'in', 'out', 'mode'])
+    && optional(anchor.in, xy) && optional(anchor.out, xy);
+  const edge = item => record(item, ['id', 'from', 'to', 'control1', 'control2'])
+    && optional(item.control1, xy) && optional(item.control2, xy);
+  const gradient = paint => record(paint, ['type', 'angle', 'stops', 'geometry'])
+    && array(paint.stops, stop => record(stop, ['id', 'color', 'position', 'opacity']))
+    && optional(paint.geometry, geometry => record(geometry, ['handles']) && array(geometry.handles, xy));
+  const stroke = item => record(item, ['id', 'color', 'width', 'opacity', 'visible', 'cap', 'join', 'pattern',
+    'miterLimit', 'startDecoration', 'endDecoration', 'blendMode', 'alignment', 'sideMode', 'sideWidths', 'dashArray', 'gradient'])
+    && optional(item.sideWidths, sides => record(sides, strokeSideNames)) && optional(item.gradient, gradient);
+  const fill = item => record(item, ['id', 'type', 'color', 'opacity', 'visible', 'blendMode', 'gradient'])
+    && optional(item.gradient, gradient);
+  const effect = item => record(item, ['id', 'type', 'visible', 'blendMode', 'color', 'opacity', 'offsetX', 'offsetY',
+    'blur', 'radius', 'spread', 'showShadowBehindNode', 'blurType', 'startRadius', 'startOffset', 'endOffset'])
+    && ['drop-shadow', 'inner-shadow', 'layer-blur'].includes(item.type)
+    && optional(item.startOffset, xy) && optional(item.endOffset, xy);
+  return optional(value.cornerRadii, radii => record(radii, cornerRadiusKeys))
+    && optional(value.arcData, arc => record(arc, ['startingAngle', 'endingAngle', 'innerRadius']))
+    && optional(value.fillGradient, gradient)
+    && array(value.fills, fill) && array(value.strokes, stroke) && array(value.effects, effect)
+    && (!Array.isArray(value.points) || value.points.every(point))
+    && array(value.subpaths, contour => record(contour, ['closed', 'points']) && array(contour.points, point))
+    && array(value.vertices, vertex => record(vertex, ['id', 'x', 'y', 'mode', 'cornerRadius', 'split'])
+      && optional(vertex.split, split => record(split, ['firstEdgeId', 'secondEdgeId', 'originalEdge']) && edge(split.originalEdge)))
+    && array(value.edges, edge)
+    && array(value.faces, face => record(face, ['id', 'vertexIds', 'fill', 'fillOpacity']));
+}
+
+function hasDefaultAlignedPaintContext(style) {
+  // Export omits ordinary SVG defaults on its layer group and descendant
+  // stroke shapes. A matching raw graph is insufficient when an ancestor has
+  // changed those inherited values. Generic vector import reads this computed
+  // context; native promotion is restricted to the known emitted defaults.
+  return ['fill', 'fillColorAlpha', 'fillOpacityValue', 'fillGradient',
+    'stroke', 'strokeColorAlpha', 'strokeOpacityValue', 'strokeWidth',
+    'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit',
+    'fillRule', 'clipRule', 'currentColor', 'visibility', 'visible', 'display']
+    .every(key => JSON.stringify(style[key]) === JSON.stringify(initialStyle[key]));
+}
+
+function importEditorAlignedStrokeLayer(node, style, matrix, prefix, counter, budget) {
+  const text = node.attrs[ALIGNMENT_METADATA_ATTRIBUTE];
+  if (typeof text !== 'string' || text.length > MAX_NETWORK_METADATA_LENGTH) return null;
+  if (!hasDefaultAlignedPaintContext(style)) return null;
+  let payload;
+  try { payload = JSON.parse(text); } catch { return null; }
+  const value = payload?.node;
+  if (!payload || Object.keys(payload).sort().join(',') !== 'node,version' || payload.version !== 1
+    || !value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !alignmentMetadataFields.has(key))
+    || !safeAlignmentMetadataFields(value)
+    || !['rectangle', 'frame', 'ellipse', 'star', 'polygon', 'path', 'network'].includes(value.type)
+    || value.type !== node.attrs['data-tiny-image-star-type']
+    || value.fills != null && !Array.isArray(value.fills)
+    || value.fills?.some(fill => fill.type === 'image')) return null;
+  let source;
+  const document = createDocument();
+  try {
+    source = createNode(value.type, { ...value, x: 0, y: 0, rotation: 0, children: [] });
+    document.pages[0].children = [source];
+    validateDocument(document);
+  } catch { return null; }
+  if (!source.strokes?.some(stroke => effectiveStrokeAlignment(source, stroke) !== 'center')) return null;
+  let expectedRoot;
+  try { expectedRoot = parseXml(exportAlignedStrokeValidationSvg(source)); } catch { return null; }
+  const expected = expectedRoot.children.find(child => child.tag === 'g');
+  if (!expected) return null;
+  try {
+    const expectedGraph = canonicalAlignmentGraph(expected, svgDefinitionNodes(expectedRoot));
+    const actualGraph = canonicalAlignmentGraph(node, counter.definitionNodes, { definitionContexts: counter.definitionContexts });
+    if (JSON.stringify(expectedGraph) !== JSON.stringify(actualGraph)) return null;
+  } catch { return null; }
+  const rawScale = matrixScale(matrix);
+  if (!(rawScale > 0) || matrix[0] * matrix[3] - matrix[1] * matrix[2] <= 0) return null;
+  const scale = Number(rawScale.toPrecision(12));
+  const center = mapPoint(matrix, { x: source.width / 2, y: source.height / 2 });
+  const scaled = number => Number((number * scale).toPrecision(12));
+  const imported = {
+    ...source, id: `${prefix}-aligned-${counter.next++}`, name: localName(node),
+    x: center.x - source.width * scale / 2, y: center.y - source.height * scale / 2,
+    width: scaled(source.width), height: scaled(source.height),
+    rotation: Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI,
+    opacity: style.opacity,
+    radius: scaled(source.radius || 0),
+    ...(source.cornerRadii ? { cornerRadii: Object.fromEntries(Object.entries(source.cornerRadii).map(([key, number]) => [key, scaled(number)])) } : {}),
+    ...(source.vertexRadii ? { vertexRadii: source.vertexRadii.map(scaled) } : {}),
+    ...(source.type === 'network' ? { vertices: source.vertices.map(vertex => ({ ...vertex,
+      ...(vertex.cornerRadius ? { cornerRadius: scaled(vertex.cornerRadius) } : {}) })) } : {}),
+    strokes: source.strokes.map((stroke, index) => ({ ...stroke, id: `${prefix}-aligned-${counter.next}-stroke-${index}`,
+      width: scaled(stroke.width),
+      ...(stroke.sideWidths ? { sideWidths: Object.fromEntries(strokeSideNames.map(side => [side, scaled(stroke.sideWidths[side])])) } : {}),
+      ...(stroke.dashArray ? { dashArray: stroke.dashArray.map(scaled) } : {}) })),
+    effects: (source.effects || []).map((effect, index) => ({ ...effect, id: `${prefix}-aligned-${counter.next}-effect-${index}`,
+      ...Object.fromEntries(['radius', 'blur', 'offsetX', 'offsetY', 'spread'].filter(key => effect[key] != null).map(key => [key, scaled(effect[key])])) }))
+  };
+  syncLegacyStrokeFields(imported);
+  document.pages[0].children = [imported];
+  try { validateDocument(document); } catch { return null; }
+  if (source.type === 'path') {
+    const contours = [{ points: source.points, closed: source.closed }, ...(source.subpaths || [])];
+    const points = contours.reduce((count, contour) => count + contour.points.length, 0);
+    const tokens = contours.reduce((count, contour) => {
+      if (contour.points.length < 2) return count;
+      const segments = contour.closed ? contour.points.length : contour.points.length - 1;
+      let total = 3 + (contour.closed ? 1 : 0);
+      for (let index = 0; index < segments; index += 1) total += contour.points[index].out
+        || contour.points[(index + 1) % contour.points.length].in ? 7 : 3;
+      return count + total;
+    }, 0);
+    reserveVectorBudget(budget, points, tokens, node.tag);
+  }
+  if (source.type === 'network') reserveVectorBudget(budget, source.vertices.length,
+    source.edges.length * 8 + source.faces.reduce((sum, face) => sum + face.vertexIds.length * 8, 0), node.tag);
+  return imported;
+}
+
 // Preserve native shape controls only when Tiny Image Star metadata and one
 // simple SVG primitive make the original rectangle, frame, ellipse, line, star, or polygon unambiguous.
 function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget) {
@@ -3328,10 +3530,17 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     return [booleanLayer];
   }
   const nativePrimitive = node.tag === 'g'
-    ? importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget)
+    ? importEditorAlignedStrokeLayer(node, style, matrix, prefix, counter, budget)
+      || importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget)
     : null;
   if (nativePrimitive) return [nativePrimitive];
-  if (Object.hasOwn(node.attrs, NETWORK_METADATA_ATTRIBUTE)) {
+  const networkMetadata = node.attrs[NETWORK_METADATA_ATTRIBUTE];
+  let networkHasAlignedStroke = Object.hasOwn(node.attrs, ALIGNMENT_METADATA_ATTRIBUTE);
+  if (typeof networkMetadata === 'string') {
+    try { networkHasAlignedStroke ||= JSON.parse(networkMetadata).paint?.strokes?.some(stroke => stroke.alignment && stroke.alignment !== 'center') === true; }
+    catch { /* Existing legacy network validation reports malformed metadata. */ }
+  }
+  if (Object.hasOwn(node.attrs, NETWORK_METADATA_ATTRIBUTE) && !networkHasAlignedStroke) {
     const network = importedNetwork(node, matrix, style, prefix, counter, node.attrs[NETWORK_METADATA_ATTRIBUTE]);
     const effects = resolveNodeFilter(style, filters, matrix, [network], prefix, node);
     const filtered = attachFilterEffects([network], effects, prefix, node.serial, localName(node));
@@ -3418,7 +3627,13 @@ export function importSvgToLayers(source, { viewportWidth = null, viewportHeight
   const transformedRootMatrix = matrixMultiply(parseTransform(root.attrs.transform, 'svg'), rootMatrix);
   const hash = stableHash(source);
   const prefix = `svg-${hash}`;
-  const counter = { next: 0, root };
+  const definitionContexts = new Map();
+  const rootStyle = parseStyle(root, initialStyle, gradients);
+  for (const defs of root.children.filter(child => child.tag === 'defs')) {
+    const inherited = parseStyle(defs, rootStyle, gradients);
+    for (const definition of defs.children) if (definition.attrs.id) definitionContexts.set(definition.attrs.id, inherited);
+  }
+  const counter = { next: 0, root, definitionNodes: svgDefinitionNodes(root), definitionContexts };
   const budget = { points: 0, tokens: 0 };
   const style = parseStyle(root, initialStyle, gradients);
   const children = [];

@@ -709,6 +709,33 @@ test('ordered stroke stacks and component overrides persist while legacy scalar 
   }
 });
 
+test('instance stroke positions survive master synchronization and local reload', () => {
+  const document = createDocument();
+  const child = createNode('rectangle', { strokes: [
+    { id: 'master-stroke', color: '#123456', width: 6, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, alignment: 'inside' }
+  ] });
+  const master = createNode('frame', { children: [child] });
+  addNode(document, master);
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  const sourceId = instanceNode.children[0].componentSourceId;
+  const overridden = structuredClone(instanceNode.children[0].strokes);
+  overridden[0].alignment = 'outside';
+  instanceNode.componentOverrides[sourceId] = { strokeAlignment: 'outside', strokes: overridden };
+  syncComponentInstances(document, component.id);
+  assert.equal(findNode(document, instance.id).node.children[0].strokeAlignment, 'outside');
+  findNode(document, master.id).node.children[0].strokeAlignment = 'center';
+  findNode(document, master.id).node.children[0].strokes[0].alignment = 'center';
+  syncComponentInstances(document, component.id);
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(findNode(restored, instance.id).node.children[0].strokeAlignment, 'outside');
+  assert.equal(findNode(restored, instance.id).node.children[0].strokes[0].alignment, 'outside');
+  assert.equal(findNode(restored, master.id).node.children[0].strokeAlignment, 'center');
+  findNode(restored, instance.id).node.componentOverrides[sourceId].strokeAlignment = 'left';
+  assert.throws(() => validateDocument(restored), /Invalid component stroke alignment override/);
+});
+
 test('frames own nested layers and bounds resolve into page coordinates', () => {
   const document = createDocument();
   const frame = createNode('frame', { x: 120, y: 80, width: 400, height: 500 });

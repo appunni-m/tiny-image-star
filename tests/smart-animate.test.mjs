@@ -577,8 +577,8 @@ test('smart animation uses the resolved variable radius when blending into indep
 });
 
 test('smart animation interpolates stroke miter limits and switches stroke presentation at the midpoint', () => {
-  const fromStroke = { strokeMiterLimit: 4, strokePattern: 'dashed', strokeCap: 'square', strokeJoin: 'bevel' };
-  const toStroke = { strokeMiterLimit: 10, strokePattern: 'dotted', strokeCap: 'round', strokeJoin: 'round' };
+  const fromStroke = { strokeMiterLimit: 4, strokePattern: 'dashed', strokeCap: 'square', strokeJoin: 'bevel', strokeAlignment: 'inside' };
+  const toStroke = { strokeMiterLimit: 10, strokePattern: 'dotted', strokeCap: 'round', strokeJoin: 'round', strokeAlignment: 'outside' };
   const from = createNode('frame', { children: [createNode('line', { name: 'Stroke', ...fromStroke })] });
   const to = createNode('frame', { children: [createNode('line', { name: 'Stroke', ...toStroke })] });
   const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
@@ -586,7 +586,8 @@ test('smart animation interpolates stroke miter limits and switches stroke prese
     strokeMiterLimit: layer.strokeMiterLimit,
     strokePattern: layer.strokePattern,
     strokeCap: layer.strokeCap,
-    strokeJoin: layer.strokeJoin
+    strokeJoin: layer.strokeJoin,
+    strokeAlignment: layer.strokeAlignment
   });
 
   assert.deepEqual(styleOf(layerAt(0)), fromStroke, 'the source endpoint preserves the exact authored stroke style');
@@ -609,16 +610,16 @@ test('smart animation interpolates compatible ordered stroke items and midpoint-
   const makeStroke = (id, color, width, opacity, pattern, cap, join, miterLimit, blendMode = 'normal') => ({
     id, color, width, opacity, visible: true, pattern, cap, join, miterLimit, blendMode
   });
-  const fromStack = [makeStroke('inner', '#000000', 2, .2, 'solid', 'butt', 'miter', 10, 'screen')];
-  const toStack = [makeStroke('inner', '#ffffff', 6, .8, 'dashed', 'round', 'bevel', 4, 'multiply')];
+  const fromStack = [{ ...makeStroke('inner', '#000000', 2, .2, 'solid', 'butt', 'miter', 10, 'screen'), alignment: 'inside' }];
+  const toStack = [{ ...makeStroke('inner', '#ffffff', 6, .8, 'dashed', 'round', 'bevel', 4, 'multiply'), alignment: 'outside' }];
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: fromStack })] });
   const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: toStack })] });
   const at = progress => interpolateSmartFrame(from, to, progress).children[0].strokes;
   assert.deepEqual(at(0), fromStack);
   assert.deepEqual(at(1), toStack);
   const quarter = at(.25)[0];
-  assert.deepEqual({ ...quarter, opacity: Number(quarter.opacity.toFixed(2)) }, makeStroke('inner', '#404040', 3, .35, 'solid', 'butt', 'miter', 8.5, 'screen'));
-  assert.deepEqual(at(.5), [makeStroke('inner', '#808080', 4, .5, 'dashed', 'round', 'bevel', 7, 'multiply')]);
+  assert.deepEqual({ ...quarter, opacity: Number(quarter.opacity.toFixed(2)) }, { ...makeStroke('inner', '#404040', 3, .35, 'solid', 'butt', 'miter', 8.5, 'screen'), alignment: 'inside' });
+  assert.deepEqual(at(.5), [{ ...makeStroke('inner', '#808080', 4, .5, 'dashed', 'round', 'bevel', 7, 'multiply'), alignment: 'outside' }]);
 
   const incompatibleTarget = createNode('frame', { children: [createNode('rectangle', {
     name: 'Card', strokes: [makeStroke('replacement', '#ffffff', 6, .8, 'solid', 'butt', 'miter', 10)]

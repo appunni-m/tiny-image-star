@@ -4,7 +4,7 @@
 const roots = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked',
   'blendMode', 'fill', 'fills', 'fillOpacity', 'fillStyleId', 'stroke', 'strokeWidth',
-  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit',
+  'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment',
   'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'maskSourceId', 'effects',
   'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
   'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',

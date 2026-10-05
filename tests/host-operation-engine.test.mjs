@@ -113,6 +113,40 @@ test('applies all typed node operations on a validated candidate', async () => {
   assert.equal(engine.getRevision(), 9);
 });
 
+test('stroke positions are persisted before ACK and invalid remote positions leave the master unchanged', async () => {
+  const { document } = fixture();
+  const node = document.pages[0].children.find(child => child.id === 'rectangle-a');
+  node.stroke = '#123456'; node.strokeWidth = 6;
+  let durable = null;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const engine = setup({ snapshot: document, commit: async input => { await gate; durable = structuredClone(input.snapshot); } });
+  let acknowledged = false;
+  const pending = request(engine, { type: 'SetProperty', opId: 'outside-stroke', targetId: node.id, property: 'strokeAlignment', value: 'outside' })
+    .then(result => { acknowledged = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(acknowledged, false);
+  assert.equal(durable, null);
+  assert.equal(engine.getSnapshot().pages[0].children.find(child => child.id === node.id).strokeAlignment, undefined);
+  release();
+  assert.equal((await pending).kind, 'ACK');
+  assert.equal(durable.pages[0].children.find(child => child.id === node.id).strokeAlignment, 'outside');
+  const before = engine.getSnapshot();
+  const invalid = await request(engine, { type: 'SetProperty', opId: 'invalid-stroke', targetId: node.id, property: 'strokeAlignment', value: 'left' });
+  assert.equal(invalid.kind, 'REJECT');
+  assert.equal(engine.getRevision(), 1);
+  assert.deepEqual(engine.getSnapshot(), before);
+  const strokes = createNode('rectangle', { strokes: [
+    { id: 'positioned', color: '#123456', width: 6, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, alignment: 'inside' }
+  ] }).strokes;
+  assert.equal((await request(engine, { type: 'SetProperty', opId: 'stroke-stack', targetId: node.id, property: 'strokes', value: strokes })).kind, 'ACK');
+  assert.equal((await request(engine, { type: 'SetProperty', opId: 'stack-outside', targetId: node.id, property: 'strokes.0.alignment', value: 'outside' })).kind, 'ACK');
+  const snapshot = engine.getSnapshot();
+  assert.equal(snapshot.pages[0].children.find(child => child.id === node.id).strokes[0].alignment, 'outside');
+  assert.equal((await request(engine, { type: 'SetProperty', opId: 'stack-invalid', targetId: node.id, property: 'strokes.0.alignment', value: 'left' })).kind, 'REJECT');
+  assert.deepEqual(engine.getSnapshot(), snapshot);
+});
+
 test('ReplaceSnapshot carries any schema-valid editor mutation while preserving design identity', async () => {
   const { document } = fixture();
   let persisted = null;

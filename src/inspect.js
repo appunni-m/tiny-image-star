@@ -4,6 +4,7 @@ import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
 import { vectorPathContours } from './vector-path.js';
 import { strokeSideMode, strokeSideWidths, strokeStackForNode } from './strokes.js';
+import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { resolvedLineHeight } from './text-layout.js';
 import { fontFeatureSettings } from './font-features.js';
 
@@ -221,6 +222,7 @@ function resolvedStroke(document, node, stroke, index) {
     join: stroke.join,
     miterLimit: stroke.miterLimit,
     pattern: strokePatternStyle(stroke),
+    ...(stroke.alignment ? { alignment: stroke.alignment, effectiveAlignment: effectiveStrokeAlignment(node, stroke) } : {}),
     ...(strokeSideMode(stroke) !== 'all' || stroke.sideWidths
       ? { sideMode: strokeSideMode(stroke), sideWidths: strokeSideWidths(stroke) }
       : {}),
@@ -365,8 +367,19 @@ function cssForEntry(document, entry) {
       const stroke = cssColorWithVariable(document, node, 'stroke', primaryStroke.opacity);
       if (stroke) {
         const maxWidth = Math.max(...Object.values(primaryStroke.sideWidths || { top: primaryStroke.width }));
-        declarations.push(`border: ${number(maxWidth)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
         const widths = primaryStroke.sideWidths;
+        const uniform = !widths || Object.values(widths).every(value => value === widths.top);
+        const useOutline = primaryStroke.alignment && primaryStroke.effectiveAlignment !== 'inside'
+          && ['rectangle', 'frame'].includes(node.type) && uniform;
+        if (useOutline) {
+          declarations.push(`outline: ${number(maxWidth)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
+          declarations.push(`outline-offset: ${number(primaryStroke.effectiveAlignment === 'outside' ? 0 : -maxWidth / 2)}px;`);
+        } else {
+          declarations.push(`border: ${number(maxWidth)}px ${primaryStroke.pattern === 'custom' ? 'dashed' : primaryStroke.pattern} ${stroke};`);
+          if (primaryStroke.alignment && primaryStroke.effectiveAlignment !== 'inside') {
+            declarations.push(`/* ${primaryStroke.effectiveAlignment} stroke placement is retained in layer JSON; CSS border placement is an approximation. Use SVG for exact vector geometry. */`);
+          }
+        }
         if (widths && !Object.values(widths).every(value => value === widths.top)) {
           declarations.push(`border-width: ${number(widths.top)}px ${number(widths.right)}px ${number(widths.bottom)}px ${number(widths.left)}px;`);
         }
@@ -385,6 +398,10 @@ function cssForEntry(document, entry) {
       declarations.push(`/* Rounded vertices (${number(getNodePropertyValue(document, node, 'radius'))}px) are retained in Tiny Image Star layer JSON. */`);
     }
     if (node.cornerSmoothing > 0) declarations.push(`/* Corner smoothing ${number(node.cornerSmoothing * 100)}% is retained in Tiny Image Star layer JSON; CSS border-radius cannot represent the same curve. */`);
+  }
+
+  if (['image', 'text'].includes(node.type) && strokeStackForNode(node).some(stroke => stroke.alignment && stroke.visible && stroke.width > 0)) {
+    declarations.push('/* Stroke position is retained in layer JSON; this image/text CSS does not reproduce its painted outline. Use SVG for exact vector geometry. */');
   }
 
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');

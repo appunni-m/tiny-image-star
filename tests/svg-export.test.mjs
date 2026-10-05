@@ -2305,3 +2305,80 @@ test('rejects XML 1.0 forbidden control characters in exported text and names', 
   assert.throws(() => exportNodeToSvg(createNode('text', { text: 'Bad\u0001 copy' }), { measureText: value => value.length * 10 }), /characters forbidden by XML 1\.0/);
   assert.throws(() => exportNodeToSvg(createNode('rectangle', { name: 'Bad\u0001 name' })), /characters forbidden by XML 1\.0/);
 });
+
+test('aligned SVG strokes double widths inside geometry masks while retaining authored dash spacing', () => {
+  for (const alignment of ['inside', 'outside']) {
+    const rectangle = createNode('rectangle', {
+      id: `aligned-${alignment}`, name: `Aligned ${alignment}`, width: 100, height: 70,
+      fill: 'transparent', stroke: '#123456', strokeWidth: 6, strokeAlignment: alignment,
+      strokePattern: 'custom', strokeDashArray: [11, 4, 2, 4]
+    });
+    const svg = exportNodeToSvg(rectangle);
+    assert.match(svg, /stroke-width="12"[^>]*stroke-dasharray="11 4 2 4"/);
+    assert.match(svg, new RegExp(`data-tiny-image-star-stroke-alignment="${alignment}" mask="url\\(#tis-stroke-alignment-0-0\\)"`));
+    assert.match(svg, new RegExp(`mask-type="${alignment === 'inside' ? 'alpha' : 'luminance'}"`));
+    assert.match(svg, /maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse"/);
+    assert.match(svg, alignment === 'inside' ? /fill="#ffffff" fill-opacity="1"/ : /fill="#000000" fill-opacity="1"/);
+    assert.match(svg, /data-tiny-image-star-aligned-strokes-v1=/);
+    assert.match(svg, alignment === 'inside' ? /viewBox="0 0 100 70"/ : /viewBox="-6 -6 112 82"/);
+  }
+});
+
+test('aligned individual-side SVG strokes double side runs and shared joins before one geometry mask', () => {
+  const node = createNode('rectangle', { width: 100, height: 80, fill: '#123456',
+    strokes: [{ id: 'sides', color: '#abcdef', width: 4, opacity: .6, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, alignment: 'outside',
+      sideMode: 'custom', sideWidths: { top: 2, right: 4, bottom: 0, left: 8 } }] });
+  const svg = exportNodeToSvg(node);
+  assert.match(svg, /stroke-width="4"[^>]*data-tiny-image-star-stroke-side="top"/);
+  assert.match(svg, /stroke-width="8"[^>]*data-tiny-image-star-stroke-side="right"/);
+  assert.match(svg, /stroke-width="16"[^>]*data-tiny-image-star-stroke-side="left"/);
+  assert.doesNotMatch(svg, /data-tiny-image-star-stroke-side="bottom"/);
+  assert.match(svg, /viewBox="-8 -2 112 82"/);
+  assert.equal((svg.match(/data-tiny-image-star-stroke-alignment="outside"/g) || []).length, 1);
+  assert.match(svg, /data-tiny-image-star-stroke-join="miter"/);
+});
+
+test('aligned SVG paint stacks retain independent masks, gradients, and blend composition order', () => {
+  const node = createNode('ellipse', { width: 80, height: 70, fill: '#abcdef', strokes: [
+    { id: 'inner', color: '#123456', width: 8, opacity: .4, visible: true, cap: 'butt', join: 'miter', pattern: 'dashed', miterLimit: 10, alignment: 'inside', blendMode: 'multiply' },
+    { id: 'outer', color: '#334455', width: 3, opacity: .7, visible: true, cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10, alignment: 'outside', gradient: createGradientFill('linear') }
+  ] });
+  const svg = exportNodeToSvg(node);
+  assert.match(svg, /<g data-tiny-image-star-stroke-alignment="inside" mask="url\(#tis-stroke-alignment-0-0\)" style="mix-blend-mode:multiply"><ellipse/);
+  assert.match(svg, /stroke-width="16"[^>]*stroke-dasharray="32 16"/);
+  assert.match(svg, /stroke="url\(#tis-gradient-0-stroke-1\)"[^>]*stroke-width="6"/);
+  assert.ok(svg.indexOf('data-tiny-image-star-stroke-alignment="inside"') < svg.indexOf('data-tiny-image-star-stroke-alignment="outside"'));
+});
+
+test('aligned text SVG exports glyph coverage rather than substituting its bounding rectangle', () => {
+  const node = createNode('text', { width: 160, height: 60, text: 'Glyph mask', fontSize: 20,
+    textDecoration: 'underline', fill: '#abcdef', stroke: '#123456', strokeWidth: 2,
+    strokeAlignment: 'outside' });
+  const svg = exportNodeToSvg(node, { measureText: text => text.length * 11 });
+  const mask = svg.match(/<mask[^>]*id="tis-stroke-alignment-0-0"[\s\S]*?<\/mask>/)?.[0];
+  assert.ok(mask);
+  assert.match(mask, /<text[^>]*fill="#000000"/);
+  assert.doesNotMatch(mask, /data-tiny-image-star-decoration|<path[^>]*stroke="#000000"/);
+  assert.match(svg, /stroke-width="4"/);
+  assert.throws(() => importSvgToLayers(svg), error => error.code === 'unsupported-mask-graph',
+    'glyph-mask import remains an explicit limitation instead of a centered native stroke');
+});
+
+test('aligned closed-network SVG strokes use joined face contours rather than open corner edges', () => {
+  const geometry = vectorNetworkGeometryFromAnchors([{ x: 0, y: 80 }, { x: 50, y: 0 }, { x: 100, y: 80 }], { closed: true });
+  const node = createNode('network', { ...geometry, width: 100, height: 80, fill: '#abcdef',
+    strokes: [{ id: 'triangle-outline', color: '#123456', width: 7, opacity: .6, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'custom', dashArray: [10, 3], miterLimit: 10, alignment: 'outside' }] });
+  const svg = exportNodeToSvg(node);
+  const stroke = svg.match(/<g data-tiny-image-star-stroke-alignment="outside"[^>]*>([\s\S]*?)<\/g>/)?.[1];
+  assert.ok(stroke);
+  assert.match(stroke, /<path[^>]*data-tiny-image-star-edge-ids="[^"]+"[^>]*d="[^"]+ Z"/);
+  assert.match(stroke, /stroke-width="14"[^>]*stroke-dasharray="10 3"/);
+  assert.doesNotMatch(stroke, /data-tiny-image-star-edge-id=/,
+    'one closed stroke produces complete joins, without duplicated open-edge caps');
+  const copy = findNestedLayer(importSvgToLayers(svg).nodes, layer => layer.type === 'network');
+  assert.ok(copy);
+  assert.equal(copy.strokes[0].alignment, 'outside');
+  assert.equal(copy.strokes[0].join, 'miter');
+});
