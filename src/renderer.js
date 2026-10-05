@@ -19,7 +19,9 @@ import { isUniformStrokeSideWidths, strokeSideNames, strokeSideWidths, strokeSta
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { effectiveStrokeAlignment, strokeGeometryBounds, strokePaintPadding } from './stroke-alignment.js';
-import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
+import { hasVisibleRenderedPaint, paintHasVisibleAlpha, renderNodeInkBounds, transformInkBounds, RENDER_INK_BOUNDS_LIMITS } from './render-ink-bounds.js';
+import { collectTextOutlineGeometry } from './text-outline-geometry.js';
+import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, nodeToParentTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 import { selectionBounds } from './group-transform.js';
 import { planScaleTransform } from './scale-transform.js';
@@ -594,7 +596,8 @@ function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixel
         colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText
       })
       : null;
-    drawStrokeStack(context, node, document, 0, 0, node.width, node.height, tracePath, 'vector', textOutline, textGeometry);
+    drawStrokeStack(context, node, document, 0, 0, node.width, node.height, tracePath, 'vector', textOutline, textGeometry, 1,
+      node.type === 'text' ? localTextInkBounds(document, node, shapeText, { forStroke: true }) : null);
   }
   context.restore();
   return mask;
@@ -999,10 +1002,10 @@ function drawStrokeGeometry(context, node, document, x, y, width, height, paintG
   if (!traceOnly) context.fill(node.type === 'path' && node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
 }
 
-function drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry) {
+function drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry, textBounds) {
   const alignment = effectiveStrokeAlignment(node, stroke);
   const padding = strokePaintPadding(node, [{ ...stroke, opacity: 1, color: maskMode === 'vector' ? '#ffffff' : color }]) + 1;
-  const geometryBounds = strokeGeometryBounds({ ...node, width, height });
+  const geometryBounds = textBounds || strokeGeometryBounds({ ...node, width, height });
   const logicalWidth = geometryBounds.right - geometryBounds.left + 2 * padding;
   const logicalHeight = geometryBounds.bottom - geometryBounds.top + 2 * padding;
   const transform = ctx.getTransform?.();
@@ -1033,7 +1036,7 @@ function drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, heig
   return true;
 }
 
-function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null, paintGlyphGeometry = null, widthMultiplier = 1) {
+function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null, paintGlyphGeometry = null, widthMultiplier = 1, textBounds = null) {
   const strokes = strokeStackForNode(node);
   const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
   const hasIndividualSideStroke = supportsIndividualSides && strokes.some(stroke => !isUniformStrokeSideWidths(strokeSideWidths(stroke)));
@@ -1059,7 +1062,7 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
       : stroke.color;
     if ((!stroke.gradient && (!color || (!vectorMask && color === 'transparent')))) { ctx.restore(); continue; }
     if (effectiveStrokeAlignment(node, stroke) !== 'center') {
-      drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry);
+      drawAlignedStroke(ctx, node, stroke, color, document, x, y, width, height, tracePath, maskMode, paintOutline, paintGlyphGeometry, textBounds);
       ctx.restore();
       continue;
     }
@@ -1276,9 +1279,82 @@ function scrollContextForChildren(node, ancestors, offset, inherited) {
 function renderOptionsForChildren(options, node, stickyScrollContext) {
   return {
     ...options,
+    ...(options.effectPaintStageNodeId === node.id ? { effectPaintStage: undefined, effectPaintStageNodeId: undefined } : {}),
     presentationAncestors: [...(options.presentationAncestors || []), node],
     stickyScrollContext
   };
+}
+
+function paintsChildInEffectStage(node, child, options) {
+  if (node.effectPaintMode !== 'staged' || options.effectPaintStageNodeId !== node.id || !options.effectPaintStage) return true;
+  return (child.effectPaintPhase === 'stroke') === (options.effectPaintStage === 'stroke');
+}
+
+function stagedChildFillOpacity(node, child, document) {
+  return node.effectPaintMode === 'staged' && node.effectFillMode === 'legacy' && child.effectPaintPhase !== 'stroke'
+    ? getNodePropertyValue(document, node, 'fillOpacity') ?? 1 : 1;
+}
+
+function stagedFillPaints(node, document) {
+  const paints = []; let visited = 0;
+  const visit = (current, depth) => {
+    if (++visited > RENDER_INK_BOUNDS_LIMITS.maxNodes || depth > RENDER_INK_BOUNDS_LIMITS.maxDepth) {
+      throw new RangeError('Outlined fill geometry exceeds the bounded layer-tree budget.');
+    }
+    if (getNodePropertyValue(document, current, 'visible') === false) return;
+    if (current.mask) {
+      const source = current.children?.find(child => child.id === current.maskSourceId) || current.children?.[0];
+      for (const child of current.children || []) if (child !== source) visit(child, depth + 1);
+    } else if (['group', 'frame', 'section'].includes(current.type)) {
+      for (const child of current.children || []) visit(child, depth + 1);
+    } else paints.push(...fillStackForNode(current));
+  };
+  for (const child of node.children || []) if (child.effectPaintPhase !== 'stroke') visit(child, 1);
+  return paints;
+}
+
+function glassVisibleForRenderedNode(node, document) {
+  if (node.effectPaintMode !== 'staged') return glassVisibleForNode(node);
+  if ((node.effectFillMode || 'legacy') === 'legacy') return glassVisibleForNode({ ...node, fills: undefined,
+    fill: getNodeColor(document, node, 'fill'), fillOpacity: getNodePropertyValue(document, node, 'fillOpacity') ?? 1 });
+  return glassVisibleForNode({ ...node, fills: stagedFillPaints(node, document) });
+}
+
+function opaqueStagedFillTree(node, depth = 0, budget = { nodes: 0 }, legacy = node.effectFillMode === 'legacy') {
+  if (++budget.nodes > RENDER_INK_BOUNDS_LIMITS.maxNodes || depth > RENDER_INK_BOUNDS_LIMITS.maxDepth) {
+    throw new RangeError('Outlined backdrop geometry exceeds the bounded layer-tree budget.');
+  }
+  const bindings = { ...(node.variableBindings || {}) }; delete bindings.opacity; delete bindings.fillOpacity;
+  return { ...node, opacity: 1, fillOpacity: 1, variableBindings: bindings, effects: [], blendMode: 'normal',
+    ...(Array.isArray(node.fills) ? { fills: node.fills.map(fill => ({ ...fill, opacity: legacy && depth > 0 ? fill.opacity : 1 })) } : {}),
+    children: (node.children || []).map(child => opaqueStagedFillTree(child, depth + 1, budget, legacy)) };
+}
+
+/** Actual retained local glyph control hull; fallback fonts retain their existing box bounds. */
+export function localTextInkBounds(document, node, shapeText, { forStroke = false } = {}) {
+  if (typeof shapeText !== 'function') return null;
+  let collected;
+  try { collected = collectTextOutlineGeometry(document, node, { shapeText }); }
+  catch { return null; }
+  const bounds = { left: 0, top: 0, right: node.width, bottom: node.height };
+  const contours = forStroke ? collected.geometry.strokeContours
+    : collected.geometry.fillGroups.flatMap(group => group.contours);
+  for (const contour of contours) {
+    const include = point => {
+      if (!point) return;
+      bounds.left = Math.min(bounds.left, point.x); bounds.top = Math.min(bounds.top, point.y);
+      bounds.right = Math.max(bounds.right, point.x); bounds.bottom = Math.max(bounds.bottom, point.y);
+    };
+    include(contour.start);
+    for (const command of contour.commands) {
+      include(command.end); include(command.control); include(command.control1); include(command.control2);
+    }
+  }
+  // Explicit paint planes and truncation clip the completed glyph coverage.
+  // Strokes remain unbounded by the fill plane unless truncation is enabled.
+  if (collected.clipGeometry || (!forStroke && collected.fillClipGeometry && !strokeStackForNode(node).some(stroke =>
+    stroke.visible !== false && stroke.opacity > 0 && stroke.width > 0))) return { left: 0, top: 0, right: node.width, bottom: node.height };
+  return bounds;
 }
 
 function clipsNodeContents(node) {
@@ -1957,7 +2033,7 @@ export class SceneRenderer {
         this.drawNodeWithBackgroundBlur(ctx, node, parentX, parentY, assets, [backdropEffect], renderOptions);
         return;
       }
-      if (glassVisibleForNode(node)) {
+      if (glassVisibleForRenderedNode(node, document)) {
         this.drawNodeWithGlass(ctx, node, parentX, parentY, assets, backdropEffect, renderOptions);
         return;
       }
@@ -1977,8 +2053,9 @@ export class SceneRenderer {
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
-    const effectPaintStage = renderOptions.effectPaintStage;
-    const drawFillPaint = effectPaintStage !== 'stroke';
+    const effectPaintStage = !renderOptions.effectPaintStageNodeId || renderOptions.effectPaintStageNodeId === node.id
+      ? renderOptions.effectPaintStage : undefined;
+    const drawFillPaint = effectPaintStage !== 'stroke' && !(node.type === 'group' && node.effectPaintMode === 'staged');
     const drawStrokePaint = effectPaintStage !== 'fill';
     ctx.save();
     if (!vectorMask && blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
@@ -2015,7 +2092,7 @@ export class SceneRenderer {
           overrideRunColors: true, shapeText: state.shapeLocalTextRun
         }), glyphContext => drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
           colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText: state.shapeLocalTextRun
-        }));
+        }), 1, localTextInkBounds(document, node, state.shapeLocalTextRun, { forStroke: true }));
       ctx.restore();
       return;
     }
@@ -2166,7 +2243,7 @@ export class SceneRenderer {
             fillOpacity: 1, paintMode: 'stroke', includeDecorations: false, shapeText: state.shapeLocalTextRun
           }), glyphContext => drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
             colorOverride: '#ffffff', fillOpacity: 1, includeDecorations: false, overrideRunColors: true, shapeText: state.shapeLocalTextRun
-          }));
+          }), 1, localTextInkBounds(document, node, state.shapeLocalTextRun, { forStroke: true }));
       }
     } else if (node.type === 'network') {
       if (vectorMask) {
@@ -2262,11 +2339,13 @@ export class SceneRenderer {
         const entryByNode = new Map(paintPlan.map(entry => [entry.node, entry]));
         const presentationAncestors = renderOptions.presentationAncestors || [];
         for (const child of presentationChildrenInPaintOrder(node)) {
+          if (!paintsChildInEffectStage(node, child, renderOptions)) continue;
           const entry = entryByNode.get(child);
           if (!entry) continue;
           const parentFrame = entry.clipFrame || node;
           const childGeometry = { ...child, ...getNodeGeometry(document, child) };
           ctx.save();
+          ctx.globalAlpha *= stagedChildFillOpacity(node, child, document);
           if (entry.frameTransform) {
             const transform = entry.frameTransform;
             ctx.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
@@ -2282,7 +2361,9 @@ export class SceneRenderer {
           clipNodeContents(ctx, parentFrame, x, y, clipRadius, parentFrame.cornerSmoothing || 0);
           const scrollOffset = applyPresentationScrollOffset(ctx, state, parentFrame);
           const stickyScrollContext = scrollContextForChildren(parentFrame, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
-          const childRenderOptions = renderOptionsForChildren(renderOptions, parentFrame, stickyScrollContext);
+          const childRenderOptions = renderOptionsForChildren({ ...renderOptions,
+            ...(renderOptions.effectPaintStageNodeId === node.id ? { effectPaintStage: undefined, effectPaintStageNodeId: undefined } : {})
+          }, parentFrame, stickyScrollContext);
           const effectiveOffset = scrollOffsetForPresentationChild(
             parentFrame, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
           );
@@ -2299,6 +2380,9 @@ export class SceneRenderer {
         const stickyScrollContext = scrollContextForChildren(node, presentationAncestors, scrollOffset, renderOptions.stickyScrollContext);
         const childRenderOptions = renderOptionsForChildren(renderOptions, node, stickyScrollContext);
         for (const child of presentationChildrenInPaintOrder(node)) {
+          if (!paintsChildInEffectStage(node, child, renderOptions)) continue;
+          const fillOpacity = stagedChildFillOpacity(node, child, document);
+          if (fillOpacity !== 1) { ctx.save(); ctx.globalAlpha *= fillOpacity; }
           const childGeometry = { ...child, ...getNodeGeometry(document, child) };
           const effectiveOffset = scrollOffsetForPresentationChild(
             node, childGeometry, scrollOffset, stickyScrollContext, presentationAncestors
@@ -2311,6 +2395,7 @@ export class SceneRenderer {
             this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
             ctx.restore();
           } else this.drawNode(ctx, child, x, y, assets, draft, false, childRenderOptions);
+          if (fillOpacity !== 1) ctx.restore();
         }
       }
     }
@@ -2769,20 +2854,16 @@ export class SceneRenderer {
         ...renderOptions, noiseEffectIndices, textureEffectIndices, backgroundBlurBypassNodeId: node.id
       });
     };
-    if (!source || !matrix || !glassVisibleForNode(node)) { drawOwnContent(); return; }
+    if (!source || !matrix || !glassVisibleForRenderedNode(node, this.getState().document)) { drawOwnContent(); return; }
     const scaleX = Math.hypot(matrix.a, matrix.b);
     const scaleY = Math.hypot(matrix.c, matrix.d);
     const displayScale = Math.max(.01, Math.sqrt(scaleX * scaleY));
-    const angle = (Number(node.rotation) || 0) * Math.PI / 180;
-    const centerX = parentX + node.x + node.width / 2;
-    const centerY = parentY + node.y + node.height / 2;
-    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([dx, dy]) => {
-      const px = parentX + node.x + dx - centerX;
-      const py = parentY + node.y + dy - centerY;
-      const localX = centerX + px * Math.cos(angle) - py * Math.sin(angle);
-      const localY = centerY + px * Math.sin(angle) + py * Math.cos(angle);
-      return { x: matrix.a * localX + matrix.c * localY + matrix.e, y: matrix.b * localX + matrix.d * localY + matrix.f };
-    });
+    const nodeMatrix = nodeToParentTransform({ ...node, x: parentX + node.x, y: parentY + node.y });
+    let ink;
+    try { ink = this.renderInkBounds(node, renderOptions); }
+    catch (error) { this.reportInkBoundsError(node, error, renderOptions); return; }
+    const corners = [[ink.left, ink.top], [ink.right, ink.top], [ink.right, ink.bottom], [ink.left, ink.bottom]]
+      .map(([x, y]) => transformPoint(matrix, transformPoint(nodeMatrix, { x, y })));
     const pad = glassEffectOverscan(effect) * displayScale;
     const left = Math.floor(Math.min(...corners.map(point => point.x)) - pad);
     const top = Math.floor(Math.min(...corners.map(point => point.y)) - pad);
@@ -2843,9 +2924,11 @@ export class SceneRenderer {
     const setMaskTransform = context => context.setTransform(matrix.a * rasterScale, matrix.b * rasterScale,
       matrix.c * rasterScale, matrix.d * rasterScale, (matrix.e - left) * rasterScale, (matrix.f - top) * rasterScale);
     const opaqueFills = Array.isArray(node.fills) ? node.fills.map(fill => ({ ...fill, opacity: 1 })) : undefined;
+    const stagedFillNode = node.effectPaintMode === 'staged' ? opaqueStagedFillTree(node) : node;
     const maskNode = {
-      ...node, opacity: 1, fillOpacity: 1, ...(opaqueFills ? { fills: opaqueFills } : {}),
-      variableBindings: {}, blendMode: 'normal', effects: [], children: [],
+      ...stagedFillNode, opacity: 1, fillOpacity: 1, ...(opaqueFills ? { fills: opaqueFills } : {}),
+      variableBindings: {}, blendMode: 'normal', effects: [],
+      children: node.effectPaintMode === 'staged' ? stagedFillNode.children : [],
       strokes: [], stroke: null, strokeWidth: 0
     };
     shapeContext.save();
@@ -2854,6 +2937,7 @@ export class SceneRenderer {
     setMaskTransform(shapeContext);
     this.drawNode(shapeContext, maskNode, parentX, parentY, assets, false, false, {
       ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
+      ...(node.effectPaintMode === 'staged' ? { effectPaintStage: 'fill', effectPaintStageNodeId: node.id } : {}),
       backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
     });
     shapeContext.restore();
@@ -2862,12 +2946,10 @@ export class SceneRenderer {
     workContext.save();
     workContext.setTransform(1, 0, 0, 1, 0, 0);
     workContext.clearRect(0, 0, pixelWidth, pixelHeight);
-    setMaskTransform(workContext);
+    // Blur completed coverage once in pixel coordinates. Font-space glyph
+    // scaling must not shrink this radius or blur overlapping glyphs separately.
     workContext.filter = `blur(${edgeBlur}px)`;
-    this.drawNode(workContext, maskNode, parentX, parentY, assets, false, false, {
-      ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
-      backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
-    });
+    workContext.drawImage(shapeMask, 0, 0);
     workContext.restore();
     let edgeImageData;
     try { edgeImageData = workContext.getImageData(0, 0, pixelWidth, pixelHeight); }
@@ -2875,7 +2957,9 @@ export class SceneRenderer {
     let refracted;
     try { refracted = refractGlassBackdrop(sampledBackdrop, edgeImageData, pixelWidth, pixelHeight, effect, displayScale * rasterScale); }
     catch { drawOwnContent(); return; }
-    backdropContext.putImageData(refracted, 0, 0);
+    // The shader returns portable bytes; Canvas requires a real ImageData.
+    sampledBackdrop.data.set(refracted.data);
+    backdropContext.putImageData(sampledBackdrop, 0, 0);
     backdropContext.save();
     backdropContext.globalCompositeOperation = 'destination-in';
     backdropContext.drawImage(shapeMask, 0, 0);
@@ -2913,16 +2997,12 @@ export class SceneRenderer {
     const scaleX = Math.hypot(matrix.a, matrix.b);
     const scaleY = Math.hypot(matrix.c, matrix.d);
     const displayScale = Math.max(.01, Math.sqrt(scaleX * scaleY));
-    const angle = (Number(node.rotation) || 0) * Math.PI / 180;
-    const centerX = parentX + node.x + node.width / 2;
-    const centerY = parentY + node.y + node.height / 2;
-    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([dx, dy]) => {
-      const px = parentX + node.x + dx - centerX;
-      const py = parentY + node.y + dy - centerY;
-      const localX = centerX + px * Math.cos(angle) - py * Math.sin(angle);
-      const localY = centerY + px * Math.sin(angle) + py * Math.cos(angle);
-      return { x: matrix.a * localX + matrix.c * localY + matrix.e, y: matrix.b * localX + matrix.d * localY + matrix.f };
-    });
+    const nodeMatrix = nodeToParentTransform({ ...node, x: parentX + node.x, y: parentY + node.y });
+    let ink;
+    try { ink = this.renderInkBounds(node, renderOptions); }
+    catch (error) { this.reportInkBoundsError(node, error, renderOptions); return; }
+    const corners = [[ink.left, ink.top], [ink.right, ink.top], [ink.right, ink.bottom], [ink.left, ink.bottom]]
+      .map(([x, y]) => transformPoint(matrix, transformPoint(nodeMatrix, { x, y })));
     const pad = radius * displayScale * 3;
     const left = Math.floor(Math.min(...corners.map(point => point.x)) - pad);
     const top = Math.floor(Math.min(...corners.map(point => point.y)) - pad);
@@ -2981,10 +3061,7 @@ export class SceneRenderer {
     };
     if (progressive && typeof backdropContext.createLinearGradient === 'function' && typeof backdropContext.fillRect === 'function') {
       const pointOnCanvas = offset => {
-        const dx = node.width * offset.x - node.width / 2;
-        const dy = node.height * offset.y - node.height / 2;
-        const worldX = centerX + dx * Math.cos(angle) - dy * Math.sin(angle);
-        const worldY = centerY + dx * Math.sin(angle) + dy * Math.cos(angle);
+        const { x: worldX, y: worldY } = transformPoint(nodeMatrix, { x: node.width * offset.x, y: node.height * offset.y });
         const screenX = matrix.a * worldX + matrix.c * worldY + matrix.e;
         const screenY = matrix.b * worldX + matrix.d * worldY + matrix.f;
         return { x: (screenX - left) * rasterScale, y: (screenY - top) * rasterScale };
@@ -3036,11 +3113,13 @@ export class SceneRenderer {
     // reveal a backdrop effect by itself. Raster image layers still contribute
     // their source alpha through drawNode's normal image-fill path.
     const maskNode = {
-      ...node, opacity: 1, variableBindings: {}, blendMode: 'normal', effects: [], children: [],
+      ...node, opacity: 1, variableBindings: {}, blendMode: 'normal', effects: [],
+      children: node.effectPaintMode === 'staged' ? node.children : [],
       strokes: [], stroke: null, strokeWidth: 0
     };
     this.drawNode(backdropContext, maskNode, parentX, parentY, assets, false, false, {
       ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
+      ...(node.effectPaintMode === 'staged' ? { effectPaintStage: 'fill', effectPaintStageNodeId: node.id } : {}),
       backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
     });
     resultContext.save();
@@ -3064,30 +3143,11 @@ export class SceneRenderer {
   drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions = {}) {
     const transform = ctx.getTransform?.();
     const displayScale = transform ? Math.hypot(transform.a, transform.b) : Math.max(.1, (window.devicePixelRatio || 1) * (this.getState().zoom || 1));
-    const radians = (Number(node.rotation) || 0) * Math.PI / 180;
     const effectPadding = layerEffectPadding(effects);
-    const affine = node.affineTransform || { a: 1, b: 0, c: 0, d: 1 };
-    const strokePadding = strokePaintPadding(node, strokeStackForNode(node));
-    const geometryBounds = strokeGeometryBounds(node);
-    const centerX = node.width / 2;
-    const centerY = node.height / 2;
-    const corners = [[geometryBounds.left - strokePadding, geometryBounds.top - strokePadding],
-      [geometryBounds.right + strokePadding, geometryBounds.top - strokePadding],
-      [geometryBounds.right + strokePadding, geometryBounds.bottom + strokePadding],
-      [geometryBounds.left - strokePadding, geometryBounds.bottom + strokePadding]].map(([x, y]) => {
-      const dx = x - centerX;
-      const dy = y - centerY;
-      const rotatedX = centerX + dx * Math.cos(radians) - dy * Math.sin(radians);
-      const rotatedY = centerY + dx * Math.sin(radians) + dy * Math.cos(radians);
-      return {
-        x: affine.a * rotatedX + affine.c * rotatedY,
-        y: affine.b * rotatedX + affine.d * rotatedY
-      };
-    });
-    const minX = Math.min(...corners.map(point => point.x));
-    const maxX = Math.max(...corners.map(point => point.x));
-    const minY = Math.min(...corners.map(point => point.y));
-    const maxY = Math.max(...corners.map(point => point.y));
+    let geometryBounds;
+    try { geometryBounds = transformInkBounds(this.renderInkBounds(node, renderOptions), nodeToParentTransform({ ...node, x: 0, y: 0 })); }
+    catch (error) { this.reportInkBoundsError(node, error, renderOptions); return; }
+    const { left: minX, right: maxX, top: minY, bottom: maxY } = geometryBounds;
     // Include the transformed geometry and its effect apron. `drawNode` applies
     // affineTransform inside this surface, so padding from only the untransformed
     // width/height clips scaled and sheared content before its effects run.
@@ -3127,18 +3187,24 @@ export class SceneRenderer {
     // Plain paint layers use explicit fill, inner-shadow, and stroke phases.
     // Containers stay flattened, but their inner shadows sit below the top
     // effect stack (blur/noise/texture), matching the group effect order.
-    const stagePaints = !node.mask && (!(node.children?.length) || node.type === 'boolean')
-      && EFFECT_PAINT_STAGEABLE_TYPES.has(node.type);
-    const containerEffectOrder = node.type === 'group' || node.type === 'frame' || node.type === 'section'
-      || Boolean(node.mask) || (node.type !== 'boolean' && Boolean(node.children?.length));
+    const stagedGroup = node.type === 'group' && node.effectPaintMode === 'staged' && !node.mask;
+    const stagePaints = stagedGroup || (!node.mask && (!(node.children?.length) || node.type === 'boolean')
+      && EFFECT_PAINT_STAGEABLE_TYPES.has(node.type));
+    const containerEffectOrder = !stagedGroup && (node.type === 'group' || node.type === 'frame' || node.type === 'section'
+      || Boolean(node.mask) || (node.type !== 'boolean' && Boolean(node.children?.length)));
     const hasInnerShadow = effects.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
-    const hasVisibleStroke = stagePaints && strokeStackForNode(node).some(stroke => {
-      if (stroke.visible === false || stroke.opacity <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return false;
-      const sideWidths = strokeSideWidths(stroke);
-      return Math.max(Number(stroke.width) || 0, ...strokeSideNames.map(side => Number(sideWidths?.[side]) || 0)) > 0;
-    });
+    let hasVisibleStroke;
+    try {
+      hasVisibleStroke = stagedGroup ? node.children.some(child => child.effectPaintPhase === 'stroke'
+        && hasVisibleRenderedPaint(this.getState().document, child)) : stagePaints && strokeStackForNode(node).some((stroke, index) => {
+        const color = index === 0 && node.strokeVariableId ? getNodeColor(this.getState().document, node, 'stroke') : stroke.color;
+        if (!paintHasVisibleAlpha({ ...stroke, color })) return false;
+        const sideWidths = strokeSideWidths(stroke);
+        return Math.max(Number(stroke.width) || 0, ...strokeSideNames.map(side => Number(sideWidths?.[side]) || 0)) > 0;
+      });
+    } catch (error) { this.reportInkBoundsError(node, error, renderOptions); return; }
     const drawPaintStage = (context, stage) => this.drawNode(context, copy, 0, 0, assets, false, false, {
-      ...localRenderOptions, effectPaintStage: stage
+      ...localRenderOptions, effectPaintStage: stage, effectPaintStageNodeId: node.id
     });
     let stagedPaints = false;
     if (stagePaints) {
@@ -3200,8 +3266,9 @@ export class SceneRenderer {
     const needsShadowGeometryMask = effects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
       && effect.opacity > 0 && effect.showShadowBehindNode !== true);
     const shadowGeometryMask = needsShadowGeometryMask
-      ? createShadowGeometryMask(copy, this.getState().document || null, rasterScale, pixelWidth, pixelHeight, padX, padY,
-        this.getState().shapeLocalTextRun || null)
+      ? stagedGroup ? this.createStagedShadowGeometryMask(copy, assets, rasterScale, pixelWidth, pixelHeight, padX, padY, localRenderOptions)
+        : createShadowGeometryMask(copy, this.getState().document || null, rasterScale, pixelWidth, pixelHeight, padX, padY,
+          this.getState().shapeLocalTextRun || null)
       : null;
     // If a bounded geometry mask cannot be allocated, omit only the affected
     // shadows rather than silently showing through transparent layer areas.
@@ -3231,6 +3298,76 @@ export class SceneRenderer {
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(renderedSurface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
+  }
+
+  renderInkBounds(node, renderOptions = {}) {
+    const state = this.getState();
+    const resolveNode = original => original === node ? node : { ...original,
+      ...getNodeGeometry(state.document, original),
+      ...(!renderOptions.ignoreMotionPreview ? state.motionPreview?.get(original.id) || {} : {}),
+      visible: getNodePropertyValue(state.document, original, 'visible') };
+    return renderNodeInkBounds(state.document, node, { resolveNode,
+      textBounds: text => localTextInkBounds(state.document, text, state.shapeLocalTextRun) });
+  }
+
+  reportInkBoundsError(node, error, renderOptions = {}) {
+    renderOptions.onRenderError?.(node, error);
+    const errors = this.inkBoundsErrors ||= new Set();
+    if (errors.has(node.id)) return;
+    if (errors.size >= 256) errors.delete(errors.values().next().value);
+    errors.add(node.id);
+    console.warn(`Layer “${node.name || node.id}” exceeds the bounded ink-compositing budget.`, error);
+    this.onMaskError?.(node, error);
+  }
+
+  /** Geometry-only coverage of editable outlined children, never a paint plane. */
+  createStagedShadowGeometryMask(node, assets, rasterScale, pixelWidth, pixelHeight, padX, padY, renderOptions = {}) {
+    const mask = createTextSurface(pixelWidth, pixelHeight);
+    const context = mask?.getContext?.('2d');
+    if (!context) return null;
+    context.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
+    const state = this.getState(); let visited = 0; const active = new Set();
+    const options = { ...renderOptions, effectPaintStage: undefined, effectPaintStageNodeId: undefined,
+      outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false, includeSlices: false };
+    const paint = (source, depth) => {
+      if (++visited > RENDER_INK_BOUNDS_LIMITS.maxNodes || depth > RENDER_INK_BOUNDS_LIMITS.maxDepth || active.has(source)) {
+        throw new RangeError('Outlined shadow geometry exceeds the bounded layer-tree budget.');
+      }
+      if (getNodePropertyValue(state.document, source, 'visible') === false) return;
+      active.add(source);
+      try {
+        const resolved = source === node ? node : { ...source, ...getNodeGeometry(state.document, source),
+          ...(!renderOptions.ignoreMotionPreview ? state.motionPreview?.get(source.id) || {} : {}) };
+        if (['group', 'frame', 'section'].includes(resolved.type)) {
+          context.save();
+          try {
+            const matrix = nodeToParentTransform(resolved);
+            context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
+            if (resolved.clip || isScrollableFrame(resolved)) clipNodeContents(context, resolved, 0, 0);
+            // A generated alpha-mask's source holds the editable full glyph
+            // geometry. Its rectangle child is merely a bounded paint plane.
+            const maskSource = resolved.mask && (resolved.children?.find(child => child.id === resolved.maskSourceId) || resolved.children?.[0]);
+            const maskContent = (resolved.children || []).filter(child => child !== maskSource);
+            if (resolved.mask && maskContent.length && !maskContent.some(child =>
+              getNodePropertyValue(state.document, child, 'visible') !== false && fillStackForNode(child).some(fill => fill.visible !== false))) return;
+            const children = resolved.mask
+              ? [maskSource].filter(Boolean)
+              : resolved.children || [];
+            for (const child of children) paint(child, depth + 1);
+          } finally { context.restore(); }
+        } else {
+          if (!fillStackForNode(resolved).some(fill => fill.visible !== false)
+            && !strokeStackForNode(resolved).some(stroke => stroke.visible !== false && stroke.width > 0)
+            && resolved.type !== 'image') return;
+          this.drawNode(context, resolved, 0, 0, assets, false, 'vector', {
+            ...options, motionResolvedNodeId: resolved.id
+          });
+        }
+      } finally { active.delete(source); }
+    };
+    try { paint(node, 0); }
+    catch (error) { this.reportInkBoundsError(node, error, renderOptions); return null; }
+    return mask;
   }
 
   drawNodeOutline(ctx, node, x, y, assets, renderOptions = {}) {

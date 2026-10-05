@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, bindColorVariable, cloneDocument, createColorStyle, createColorVariable, createDocument, createFillLayer, createGradientFill, createNode, createVariableCollection, findNode, getNodeColor, updateColorStyle, validateDocument } from '../src/model.js';
+import { addNode, bindColorVariable, cloneDocument, createColorStyle, createColorVariable, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode, createVariableCollection, findNode, getNodeColor, updateColorStyle, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createStroke } from '../src/strokes.js';
 import { resolveGradientGeometry } from '../src/fills.js';
@@ -236,8 +236,9 @@ test('text aligned stroke geometry preserves its outside ink and an explicit emp
     outline:async()=>({commands:new Float32Array([0,-4.8,-6,1,16.8,-6,1,16.8,21,1,-4.8,21,5]),fillRule:'nonzero',bounds:{left:-4.8,top:-6,right:16.8,bottom:21}})
   });
   applyOutlineStroke(document,plan);
-  assert.equal(node.children.length,1,'there is no glyph fill paint for fills: []');
-  const path=node.children[0]; assert.equal(path.type,'path');
+  assert.equal(node.children.length,2,'fills: [] retains glyph geometry and the authored stroke, but paints no glyph fill');
+  const glyphPath=node.children[0]; const path=node.children[1]; assert.equal(path.type,'path');
+  assert.deepEqual(glyphPath.fills,[]); assert.equal(glyphPath.effectPaintPhase,undefined);
   assert.ok(Math.min(...path.points.map(point=>point.x))<0);
   assert.ok(Math.max(...path.points.map(point=>point.x))>1,'the editable stroke contour extends beyond the text frame');
   validateDocument(document);
@@ -265,14 +266,18 @@ test('aligned text strokes outline the aggregate glyph silhouette once; centered
   validateDocument(document); validateDocument(centeredDesign);
 });
 
-test('text conversion rejects effect-bearing and isolated-blend layers before starting geometry work', async () => {
-  for (const mutate of [node=>{node.effects=[{id:'shadow',type:'inner-shadow',visible:true,opacity:1}];},node=>{node.blendMode='multiply';}]) {
-    const node=createNode('text',{text:'H',width:20,height:24}); mutate(node);
-    const document=design(node); let calls=0;
-    assert.match(outlineStrokeUnavailableReason(document,[node.id]),/effects|Normal blending/);
-    await assert.rejects(prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>{calls++;return textOutlineFixture(node,[nativeRect(1,1,18,22)]);}}),/effects|Normal blending/);
-    assert.equal(calls,0); assert.equal(node.type,'text');
-  }
+test('staged text outlines preserve effects and layer blend on the root and mark authored strokes', async () => {
+  const node=createNode('text',{text:'H',width:20,height:24,color:'#2468ac',blendMode:'multiply',
+    effects:[createLayerEffect('inner-shadow',{offsetX:2}),createLayerEffect('layer-blur',{radius:2})],
+    strokes:[createStroke({width:4,color:'#cc2244',alignment:'center'})]});
+  const document=design(node); const sourceEffects=structuredClone(node.effects);
+  const plan=await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>textOutlineFixture(node,[nativeRect(1,1,18,22)]),outline:outlineFixture});
+  applyOutlineStroke(document,plan);
+  assert.equal(node.effectPaintMode,'staged'); assert.equal(node.effectFillMode,'legacy');
+  assert.equal(node.blendMode,'multiply'); assert.deepEqual(node.effects,sourceEffects);
+  assert.ok(node.children.some(child=>child.effectPaintPhase==='stroke'));
+  assert.ok(node.children.some(child=>child.effectPaintPhase===undefined),'unmarked direct children are fill phase');
+  validateDocument(JSON.parse(JSON.stringify(document)));
 });
 
 test('flow text keeps its logical layout frame and current linked-path placement when converted', async () => {
@@ -316,7 +321,8 @@ test('text color variables follow glyphs and decorations; text color styles mate
   applyOutlineStroke(variableDesign,variablePlan);
   assert.equal(variableNode.children[0].fillVariableId,colorVariable.id);
   assert.equal(variableNode.children[1].fillVariableId,colorVariable.id);
-  assert.equal(variableNode.children[0].fills[0].opacity,.4);
+  assert.equal(variableNode.fillOpacity,.4,'the scalar text opacity remains on the staged root');
+  assert.equal(variableNode.children[0].fills[0].opacity,1,'glyph/run alpha remains independent of root scalar opacity');
   validateDocument(variableDesign);
 
   const styled=createNode('text',{name:'Styled',text:'S',width:20,height:20,color:'#126789'});
@@ -327,6 +333,24 @@ test('text color variables follow glyphs and decorations; text color styles mate
   applyOutlineStroke(styledDesign,stylePlan);
   assert.equal(styled.textStyleId,undefined); assert.equal(styled.children[0].fills[0].color,style.value);
   validateDocument(styledDesign);
+});
+
+test('truncation that removes an earlier glyph does not shift later glyph paint assignments', async () => {
+  const node=createNode('text',{text:'AB',width:20,height:20,textTruncation:'ending'}); const document=design(node);
+  const first=nativeRect(1,1,8,18), second=nativeRect(9,1,19,18); let intersections=0;
+  const plan=await prepareOutlineStroke(document,[node.id],{
+    getTextOutline:async()=>textOutlineFixture(node,[first,second],{
+      glyphs:[{geometry:first,paint:{color:'#ff0000',opacity:1},glyphId:65,cluster:0,text:'A'},
+        {geometry:second,paint:{color:'#0000ff',opacity:1},glyphId:66,cluster:1,text:'B'}],
+      clipGeometry:nativeRect(0,0,20,20)
+    }),
+    booleanGeometry:async()=>++intersections===1
+      ? {commands:new Float32Array(),fillRule:'nonzero',bounds:{left:0,top:0,right:0,bottom:0}}
+      : outlineFixture()
+  });
+  applyOutlineStroke(document,plan);
+  const glyph=node.children.find(child=>child.name==='Text glyph 2');
+  assert.ok(glyph); assert.equal(glyph.fills[0].color,'#0000ff');
 });
 
 test('an explicit text fill retains its primary fill style on the paint plane and leaves glyph masks unstyled', async () => {

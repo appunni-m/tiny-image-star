@@ -37,7 +37,7 @@ import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCou
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_SHADOW_SPREAD, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect, supportsShadowSpread } from './layer-effects.js';
 import { History } from './history.js';
 import { updateEllipseArcData } from './ellipse-arc.js';
-import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, presentationNodePageOrigin, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, presentationNodePageOrigin, scrollableFramePathAtPagePoint, localTextInkBounds, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
@@ -19567,7 +19567,8 @@ async function ensureImageLibraryCompatibility(documentData) {
 function exportBoundsForNode(nodeId, booleanGeometryPlan = null) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
-  return rasterExportBounds(state.document, entry.node, entry.parents, { booleanGeometryPlan });
+  return rasterExportBounds(state.document, entry.node, entry.parents, { booleanGeometryPlan,
+    textBounds: node => localTextInkBounds(state.document, node, shapeLocalTextRun) });
 }
 
 function exportDimensions(nodeId, scale = 1) {

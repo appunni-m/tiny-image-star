@@ -408,7 +408,10 @@ function assertBinaryLuminanceMask(node) {
 }
 
 function parseSimpleDropShadowFilter(definition) {
-  assertAttributes(definition, new Set(['id', 'filterUnits', 'x', 'y', 'width', 'height']));
+  assertAttributes(definition, new Set(['id', 'filterUnits', 'color-interpolation-filters', 'x', 'y', 'width', 'height']));
+  if (definition.attributes['color-interpolation-filters'] != null && definition.attributes['color-interpolation-filters'] !== 'sRGB') {
+    fail('filter color interpolation', 'only explicit sRGB interpolation is supported');
+  }
   if (definition.attributes.filterUnits !== 'userSpaceOnUse') {
     fail('object-bounding-box layer effects', 'only explicit userSpaceOnUse drop-shadow filter regions are supported');
   }

@@ -554,6 +554,8 @@ const componentOverrideProperties = new Set([
   'imageFill',
   'assetId', 'sourceWidth', 'sourceHeight', 'scalingFactor', 'inpaintStrokes', 'imageExpansion',
   'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId', 'booleanGeometry', 'booleanSourceFrame',
+  'effectPaintMode', 'effectPaintPhase',
+  'effectFillMode',
   'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
   'blendMode',
   'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'booleanGeometry', 'booleanSourceFrame', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
@@ -4587,6 +4589,9 @@ export function validateDocument(document) {
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
       if (node.maskMode != null && (!maskModes.has(node.maskMode) || node.type !== 'group' || node.mask !== true)) throw new TypeError(`Invalid mask mode on layer ${node.name || node.id}.`);
+      if (node.effectPaintMode != null && (node.type !== 'group' || node.effectPaintMode !== 'staged')) throw new TypeError(`Invalid staged effect paint mode on layer ${node.name || node.id}.`);
+      if (node.effectPaintPhase != null && node.effectPaintPhase !== 'stroke') throw new TypeError(`Invalid staged effect paint phase on layer ${node.name || node.id}.`);
+      if (node.effectFillMode != null && (node.type !== 'group' || node.effectPaintMode !== 'staged' || !['none','legacy','stack'].includes(node.effectFillMode))) throw new TypeError(`Invalid staged effect fill mode on layer ${node.name || node.id}.`);
       if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId), node.maskMode || 'alpha'))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
       if (node.exportSettings != null) {
         const settingIds = new Set();

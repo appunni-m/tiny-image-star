@@ -659,10 +659,13 @@ function parseFilter(node, ids) {
   if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
     fail('invalid-filter', 'Every SVG filter must have a unique, simple id.', node.tag);
   }
-  const allowed = new Set(['id', 'filterUnits', 'primitiveUnits', 'x', 'y', 'width', 'height']);
+  const allowed = new Set(['id', 'filterUnits', 'primitiveUnits', 'color-interpolation-filters', 'x', 'y', 'width', 'height']);
   for (const key of Object.keys(node.attrs)) {
     if (/^(?:href|xlink:href)$/i.test(key)) fail('external-reference', 'SVG filters cannot reference another element.', node.tag);
     if (!allowed.has(key)) fail('unsupported-filter', `SVG filter attribute “${key}” is unsupported.`, node.tag);
+  }
+  if (node.attrs['color-interpolation-filters'] != null && node.attrs['color-interpolation-filters'] !== 'sRGB') {
+    fail('unsupported-filter', 'Only explicit sRGB SVG filter interpolation matches the editable Canvas effect surface.', node.tag);
   }
   const units = node.attrs.filterUnits ?? 'objectBoundingBox';
   const primitiveUnits = node.attrs.primitiveUnits ?? 'userSpaceOnUse';

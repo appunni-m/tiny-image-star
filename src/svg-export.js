@@ -23,6 +23,7 @@ import { flattenTextPath, textPathSpans, textPathSvgData } from './text-on-path.
 import { fontVariationSettings } from './font-variation.js';
 import { fontFeatureSettings } from './font-features.js';
 import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
+import { hasVisibleRenderedPaint, renderNodeInkBounds, transformInkBounds } from './render-ink-bounds.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -1796,10 +1797,10 @@ function maskDefinition(group, source, index, document, measureText, context) {
   };
 }
 
-function effectDefinition(node, index, document, measureText, { effects: sourceEffects = node.effects || [], id = `tis-effect-${index}` } = {}) {
+function effectDefinition(node, index, document, measureText, { effects: sourceEffects = node.effects || [], id = `tis-effect-${index}`, bounds: suppliedBounds, srgb = false } = {}) {
   const effects = (sourceEffects || []).filter(effect => effect.visible !== false);
   if (!effects.length) return null;
-  const bounds = getBounds([node], { document, includePosition: false, measureText });
+  const bounds = suppliedBounds || getBounds([node], { document, includePosition: false, measureText });
   let input = 'SourceGraphic';
   // The SVG source already combines a layer's fills and strokes. Apply inner
   // shadows to that paint, then run the top effect phase over the composite so
@@ -1847,7 +1848,80 @@ function effectDefinition(node, index, document, measureText, { effects: sourceE
     input = result;
     return primitive;
   }).join('');
-  return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse" x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
+  return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse"${srgb ? ' color-interpolation-filters="sRGB"' : ''} x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
+}
+
+function compositedSubtreeBounds(node, document, includePosition) {
+  const resolveNode = source => {
+    const resolved = { ...source, ...getNodeGeometry(document, source), visible: isNodeVisible(document, source) };
+    return visibleBooleanStrokePath(resolved, document) || resolved;
+  };
+  const ink = renderNodeInkBounds(document, node, { resolveNode });
+  const matrix = nodeMatrix(node, { includePosition });
+  const transformed = transformInkBounds(ink, { a: matrix[0], b: matrix[1], c: matrix[2], d: matrix[3], e: matrix[4], f: matrix[5] });
+  const padding = layerEffectPadding(node.effects);
+  return { x: transformed.left - padding.x, y: transformed.top - padding.y,
+    width: Math.max(1, transformed.right - transformed.left + padding.x * 2),
+    height: Math.max(1, transformed.bottom - transformed.top + padding.y * 2) };
+}
+
+// Text outlines retain independent editable fill/stroke subtrees. Their inner
+// shadows sample the combined paint alpha, but paint before the stroke. A
+// shadow-only filter on that silhouette keeps the stroke out of the fill phase
+// without relying on feImage or external references.
+function stagedInnerShadowDefinition(effect, id, bounds) {
+  const blur = `${id}-blur`; const offset = `${id}-offset`; const shape = `${id}-shape`; const paint = `${id}-paint`;
+  const primitives = `<feGaussianBlur in="SourceAlpha" stdDeviation="${number(effect.blur)}" result="${blur}"/><feOffset in="${blur}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" result="${offset}"/><feComposite in="SourceAlpha" in2="${offset}" operator="out" result="${shape}"/><feFlood flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${paint}"/><feComposite in="${paint}" in2="${shape}" operator="in"/>`;
+  return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB" x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
+}
+
+function renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata) {
+  if (node.mask) throw new SvgExportError('staged text paint combined with a root mask (use raster export)', node);
+  const transform = nodeMatrix(node, { includePosition });
+  const bounds = compositedSubtreeBounds(node, document, includePosition);
+  const children = node.children || [];
+  let fillChildren = children.filter(child => child.effectPaintPhase !== 'stroke');
+  const strokeChildren = children.filter(child => child.effectPaintPhase === 'stroke');
+  if (node.effectFillMode === 'legacy') {
+    const fillOpacity = Number(getNodePropertyValue(document, node, 'fillOpacity') ?? 1);
+    if (!Number.isFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1) throw new TypeError('SVG export requires valid staged fill opacity.');
+    // Match legacy per-glyph alpha, including overlapping glyphs. A single
+    // opacity wrapper would instead flatten those fills before scaling alpha.
+    if (fillOpacity !== 1) fillChildren = fillChildren.map(child => ({ ...child,
+      opacity: Number(getNodePropertyValue(document, child, 'opacity') ?? 1) * fillOpacity,
+      variableBindings: { ...(child.variableBindings || {}), opacity: null } }));
+  }
+  let clipAttribute = '';
+  if (node.clip) {
+    const id = `tis-clip-${index}`;
+    context.defs.push(clipDefinition(document, id, node));
+    clipAttribute = ` clip-path="url(#${id})"`;
+  }
+  const stage = items => `<g${matrixAttribute(transform)}><g${clipAttribute}>${renderTree(items, document, context, true, measureText)}</g></g>`;
+  const fill = stage(fillChildren); const stroke = stage(strokeChildren);
+  const effects = (node.effects || []).filter(effect => effect.visible !== false);
+  const inner = effects.filter(effect => effect.type === 'inner-shadow');
+  const top = effects.filter(effect => effect.type !== 'inner-shadow');
+  const hasStrokeSnapshot = strokeChildren.some(child => hasVisibleRenderedPaint(document, child));
+  let paint = fill;
+  if (inner.length && hasStrokeSnapshot) {
+    for (const [effectIndex, effect] of inner.entries()) {
+      const filter = stagedInnerShadowDefinition(effect, `tis-effect-${index}-inner-${effectIndex}`, bounds);
+      context.defs.push(filter.markup);
+      paint += `<g filter="url(#${filter.id})">${fill}${stroke}</g>`;
+    }
+  } else if (inner.length) {
+    const filter = effectDefinition(node, index, document, measureText, { effects: inner, id: `tis-effect-${index}-inner`, bounds, srgb: true });
+    context.defs.push(filter.markup);
+    paint = `<g filter="url(#${filter.id})">${fill}</g>`;
+  }
+  paint += stroke;
+  const filter = effectDefinition(node, index, document, measureText, { effects: top, bounds, srgb: true });
+  if (filter) context.defs.push(filter.markup);
+  const blend = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
+  // The node transform belongs inside the effect surface: Canvas effects act
+  // in parent coordinates after the geometry's affine/rotation transform.
+  return `<g opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blend}${metadata} data-tiny-image-star-paint-phases="group-v1">${title}${paint}</g>`;
 }
 
 function canExportPhasedLayerPaint(node, document = emptyDocument) {
@@ -2102,6 +2176,10 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const booleanStrokePath = visibleBooleanStrokePath(node, document);
     const emptyBooleanResult = booleanStrokePath && !booleanStrokePath.points?.length;
     const metadata = ` data-tiny-image-star-type="${escapeXml(booleanStrokePath ? 'group' : node.type)}"${booleanStrokePath ? ' data-tiny-image-star-source-type="boolean"' : ''}${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}${alignedStrokeRoundTripMetadata(node, document, context)}`;
+    if (node.type === 'group' && node.effectPaintMode === 'staged') {
+      markup += renderStagedGroup(node, document, context, index, includePosition, measureText, opacity, title, metadata);
+      continue;
+    }
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
@@ -2274,6 +2352,18 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       if (!isNodeVisible(document, sourceNode)) continue;
       const resolvedNode = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
       const node = visibleBooleanStrokePath(resolvedNode, document) || resolvedNode;
+      if (node.type === 'group' && node.effectPaintMode === 'staged') {
+        const ink = compositedSubtreeBounds(node, document, !isRoot || includePosition);
+        const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        for (const [x, y] of [[ink.x, ink.y], [ink.x + ink.width, ink.y],
+          [ink.x + ink.width, ink.y + ink.height], [ink.x, ink.y + ink.height]]) include(transformPoint(parentMatrix, x, y), bounds);
+        const visibleBounds = intersectBounds(bounds, clipBounds);
+        if (visibleBounds) {
+          minX = Math.min(minX, visibleBounds.minX); minY = Math.min(minY, visibleBounds.minY);
+          maxX = Math.max(maxX, visibleBounds.maxX); maxY = Math.max(maxY, visibleBounds.maxY);
+        }
+        continue;
+      }
       const matrix = multiply(parentMatrix, nodeMatrix(node, { includePosition: !isRoot || includePosition }));
       const { width, height } = dimensions(node);
       const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -2409,14 +2499,20 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       }
       const effectPadding = layerEffectPadding(node.effects);
       if (effectPadding.x || effectPadding.y) {
-        const geometry = node.type === 'path' ? strokeGeometryBounds(node) : { left: 0, top: 0, right: width, bottom: height };
-        const paintPadding = node.type === 'path' ? strokePaintPadding(node, strokeStackForNode(node)) : regularStrokePadding;
-        for (const [x, y] of [
-          [geometry.left - effectPadding.x - paintPadding, geometry.top - effectPadding.y - paintPadding],
-          [geometry.right + effectPadding.x + paintPadding, geometry.top - effectPadding.y - paintPadding],
-          [geometry.right + effectPadding.x + paintPadding, geometry.bottom + effectPadding.y + paintPadding],
-          [geometry.left - effectPadding.x - paintPadding, geometry.bottom + effectPadding.y + paintPadding]
-        ]) include(transformPoint(matrix, x, y), bounds);
+        if (node.children?.length && node.type !== 'boolean') {
+          const ink = compositedSubtreeBounds(node, document, !isRoot || includePosition);
+          for (const [x, y] of [[ink.x, ink.y], [ink.x + ink.width, ink.y],
+            [ink.x + ink.width, ink.y + ink.height], [ink.x, ink.y + ink.height]]) include(transformPoint(parentMatrix, x, y), bounds);
+        } else {
+          const geometry = node.type === 'path' ? strokeGeometryBounds(node) : { left: 0, top: 0, right: width, bottom: height };
+          const paintPadding = node.type === 'path' ? strokePaintPadding(node, strokeStackForNode(node)) : regularStrokePadding;
+          for (const [x, y] of [
+            [geometry.left - effectPadding.x - paintPadding, geometry.top - effectPadding.y - paintPadding],
+            [geometry.right + effectPadding.x + paintPadding, geometry.top - effectPadding.y - paintPadding],
+            [geometry.right + effectPadding.x + paintPadding, geometry.bottom + effectPadding.y + paintPadding],
+            [geometry.left - effectPadding.x - paintPadding, geometry.bottom + effectPadding.y + paintPadding]
+          ]) include(transformPoint(matrix, x, y), bounds);
+        }
       }
       const visibleBounds = intersectBounds(bounds, clipBounds);
       if (visibleBounds) {

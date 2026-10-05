@@ -42,14 +42,13 @@ function entriesForSelection(document, nodeIds, pageId) {
     if (document.motion?.tracks.some(track => track.nodeId === node.id)) throw new Error(`Remove motion tracks from ${label} before outlining its strokes.`);
     if (linkedTextSources.has(node.id)) throw new Error(`Detach linked text from ${label} before outlining its strokes.`);
     if (entry.parents.some(parent => parent.type === 'boolean' || parent.mask)) throw new Error('Separate the Boolean or release the mask before outlining its source strokes.');
-    if ((node.effects || []).some(effect => effect.visible !== false) || node.effectStyleId) throw new Error(`Remove effects from ${label} before outlining. Effect bounds and paint ordering on converted paths are not supported yet.`);
+    if (!isText && (node.effects?.length || node.effectStyleId)) throw new Error(`Remove effects from ${label} before outlining. Effect ordering on outlined paths is not supported yet.`);
     const blockedGeometryBindings = isText ? ['width', 'height'] : geometryBindings;
     if (blockedGeometryBindings.some(key => node.variableBindings?.[key])) throw new Error(`Detach position and size variables from ${label} before outlining.`);
     if (!isText && entry.parent?.autoLayout && node.layoutPositioning !== 'absolute') throw new Error(`Set ${label} to absolute positioning before outlining its strokes.`);
     if (fillStackForNode(node).some(paint => paint.blendMode && paint.blendMode !== 'normal')
       || strokeStackForNode(node).some(paint => paint.blendMode && paint.blendMode !== 'normal')) throw new Error(`Set fill and stroke paint blending on ${label} to Normal before outlining.`);
     const strokes = strokeStackForNode(node);
-    if (isText && node.blendMode && node.blendMode !== 'normal') throw new Error(`Set ${label} to Normal blending before outlining. Isolated group bounds do not preserve text ink outside the logical frame yet.`);
     if (!isText && !strokes.some(stroke => stroke.visible !== false && hasWidth(stroke))) throw new Error(`Add a visible stroke to ${label} before outlining.`);
     for (const stroke of strokes.filter(hasWidth)) {
       if (stroke.startDecoration && stroke.startDecoration !== 'none' || stroke.endDecoration && stroke.endDecoration !== 'none') throw new Error(`Remove endpoint decorations from ${label} before outlining.`);
@@ -277,8 +276,7 @@ async function outlinedTextReplacement(document, node, textOutline, outline, boo
   const resolvedFillOpacity = Number(getNodePropertyValue(document, node, 'fillOpacity') ?? 1);
   if (!(width > 0 && height > 0) || width !== expectedWidth || height !== expectedHeight) throw new Error(`The local text outline for “${node.name || 'text'}” does not match its logical frame.`);
   const explicitFills = Array.isArray(node.fills);
-  const fillClip = textOutline.clipGeometry || (explicitFills ? textOutline.fillClipGeometry : null);
-  const decorationClip = textOutline.clipGeometry || (explicitFills ? textOutline.fillClipGeometry : null);
+  const geometryClip = textOutline.clipGeometry || null;
   const glyphs = [];
   for (const [index, glyph] of textOutline.glyphs.entries()) {
     abort(signal); budget.glyphs += 1;
@@ -287,30 +285,30 @@ async function outlinedTextReplacement(document, node, textOutline, outline, boo
     const paths = [];
     for (const [groupIndex, geometry] of geometries.entries()) {
       if (!geometry.points.length) continue;
-      const clipped = await clippedPathGeometry(width, height, geometry, fillClip, booleanGeometry, signal);
+      const clipped = await clippedPathGeometry(width, height, geometry, geometryClip, booleanGeometry, signal);
       budget.points += clipped.points.length + (clipped.subpaths || []).reduce((sum, contour) => sum + contour.points.length, 0);
       if (budget.points > MAX_OUTLINE_STROKE_SELECTION_POINTS) throw new Error('This selection exceeds the 100,000-point outline budget. Outline fewer layers or simplify the text.');
       if (!clipped.points.length) continue;
-      const fill = explicitFills ? null : { id: createId('fill'), type: 'solid', color: glyph.paint.color,
-        opacity: Math.max(0, Math.min(1, (glyph.paint.opacity ?? 1) * resolvedFillOpacity)), visible: true, blendMode: 'normal' };
       const path = editablePathNode(`${node.name || 'Text'} glyph ${index + 1}${groupIndex ? ` part ${groupIndex + 1}` : ''}`, width, height, clipped,
-        fill || { id: createId('fill'), type: 'solid', color: '#ffffff', opacity: 1, visible: true, blendMode: 'normal' });
+        { id: createId('fill'), type: 'solid', color: '#ffffff', opacity: 1, visible: true, blendMode: 'normal' });
       chargeNodes(budget, 1);
       paths.push(path);
     }
-    if (paths.length) glyphs.push({ id: glyph.glyphId, cluster: glyph.cluster, paths });
+    // Keep source indices stable even when truncation removes every contour
+    // from a glyph; paint/style lookup later follows shaped glyph order.
+    glyphs.push({ id: glyph.glyphId, cluster: glyph.cluster, paint:glyph.paint, paths });
   }
 
-  const decorations = [];
+  const decorations = []; const decorationPaints = [];
   for (const [index, decoration] of (textOutline.decorations || []).entries()) {
     for (const [partIndex, geometry] of editableGeometryFromNativeShape(decoration.geometry, width, height).entries()) {
-      const clipped = await clippedPathGeometry(width, height, geometry, decorationClip, booleanGeometry, signal);
+      const clipped = await clippedPathGeometry(width, height, geometry, geometryClip, booleanGeometry, signal);
       budget.points += clipped.points.length + (clipped.subpaths || []).reduce((sum, contour) => sum + contour.points.length, 0);
       if (budget.points > MAX_OUTLINE_STROKE_SELECTION_POINTS) throw new Error('This selection exceeds the 100,000-point outline budget.');
       if (!clipped.points.length) continue;
-      const fill = explicitFills ? { id: createId('fill'), type: 'solid', color: '#ffffff', opacity: 1, visible: true, blendMode: 'normal' }
-        : { id: createId('fill'), type: 'solid', color: decoration.paint.color, opacity: (decoration.paint.opacity ?? 1) * resolvedFillOpacity, visible: true, blendMode: 'normal' };
-      decorations.push(editablePathNode(`${node.name || 'Text'} decoration ${index + 1}${partIndex ? ` part ${partIndex + 1}` : ''}`, width, height, clipped, fill));
+      decorations.push(editablePathNode(`${node.name || 'Text'} decoration ${index + 1}${partIndex ? ` part ${partIndex + 1}` : ''}`, width, height, clipped,
+        { id: createId('fill'), type: 'solid', color: '#ffffff', opacity: 1, visible: true, blendMode: 'normal' }));
+      decorationPaints.push(decoration.paint);
       chargeNodes(budget, 1);
     }
   }
@@ -349,12 +347,22 @@ async function outlinedTextReplacement(document, node, textOutline, outline, boo
   clearStrokes(replacement); clearFills(replacement); clearTextLayerFields(replacement);
   for (const key of ['points', 'subpaths', 'closed', 'fillRule', 'vertices', 'edges', 'faces', 'arcData', 'vertexRadii', 'innerRadius', 'cornerRadii', 'cornerSmoothing', 'lineReverseY']) delete replacement[key];
   Object.assign(replacement, { type: 'group', width: node.width, height: node.height, mask: false, clip: false, children: [] });
+  replacement.effectPaintMode = 'staged';
+  replacement.effectFillMode = explicitFills ? (node.fills.length ? 'stack' : 'none') : 'legacy';
+  if (!explicitFills) {
+    delete replacement.fills;
+    replacement.fill = getNodeColor(document, node, 'text');
+    replacement.fillOpacity = resolvedFillOpacity;
+    if (node.textVariableId) replacement.fillVariableId = node.textVariableId;
+  }
   const children = [];
+  const maskPaths = [...glyphs.flatMap(glyph => glyph.paths), ...decorations];
+  const resolvedText = getNodePropertyValue(document, node, 'text');
+  const currentRichText = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === resolvedText;
+  const textColorVariableApplies = Boolean(node.textVariableId && !(currentRichText && node.textRuns.some(run => run.color)));
   if (explicitFills) {
-    const maskPaths = glyphs.flatMap(glyph => glyph.paths);
-    for (const path of decorations) maskPaths.push(path);
     const maskPathPoints = maskPaths.reduce((sum, path) => sum + pathPointCount(path), 0);
-    if (node.fills.length > 1) budget.points += maskPathPoints * (node.fills.length - 1);
+    budget.points += maskPathPoints * node.fills.length;
     if (budget.points > MAX_OUTLINE_STROKE_SELECTION_POINTS) throw new Error('This selection exceeds the 100,000-point outline budget. Reduce the text paint stack or outline fewer glyphs.');
     if (node.fills.length) chargeNodes(budget, node.fills.length * (maskPaths.length + 3));
     for (const [index, fill] of node.fills.entries()) {
@@ -362,16 +370,35 @@ async function outlinedTextReplacement(document, node, textOutline, outline, boo
       if (index === 0 && node.fillStyleId) mask.children[1].fillStyleId = node.fillStyleId;
       children.push(mask);
     }
+    if (!node.fills.length && maskPaths.length) {
+      for (const path of maskPaths) {
+        clearFills(path);
+      }
+      children.push(...maskPaths);
+    }
   } else {
-    children.push(...glyphs.flatMap(glyph => glyph.paths), ...decorations);
+    for (const glyph of glyphs) {
+      const opacity = Math.max(0, Math.min(1, glyph.paint.opacity ?? 1));
+      const paths = glyph.paths;
+      for (const path of paths) {
+        path.fills = [{ id:createId('fill'), type:'solid', color:glyph.paint.color || '#000000', opacity, visible:true, blendMode:'normal' }];
+        syncLegacyFillFields(path);
+        if (textColorVariableApplies) path.fillVariableId = node.textVariableId;
+      }
+      children.push(...paths);
+    }
+    for (const [index, decoration] of decorations.entries()) {
+      const paint = decorationPaints[index] || {};
+      decoration.fills = [{ id:createId('fill'), type:'solid', color:paint.color || '#000000',
+        opacity:Math.max(0,Math.min(1,paint.opacity ?? 1)), visible:true, blendMode:'normal' }];
+      syncLegacyFillFields(decoration);
+      if (textColorVariableApplies) decoration.fillVariableId = node.textVariableId;
+      children.push(decoration);
+    }
   }
+  for (const path of strokeMasks) path.effectPaintPhase = 'stroke';
   children.push(...strokeMasks);
   replacement.children = children;
-  const resolvedText = getNodePropertyValue(document, node, 'text');
-  const currentRichText = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === resolvedText;
-  if (!explicitFills && node.textVariableId && !(currentRichText && node.textRuns.some(run => run.color))) {
-    for (const path of [...glyphs.flatMap(glyph => glyph.paths), ...decorations]) path.fillVariableId = node.textVariableId;
-  }
   if (node.textPath) {
     const placement = textOutline.placement;
     if (!placement || !['x', 'y', 'width', 'height', 'rotation'].every(key => Number.isFinite(placement[key]))) {
