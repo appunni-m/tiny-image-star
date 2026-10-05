@@ -6,9 +6,11 @@ import { bindDialogDismissal, closeDialog, openDialog } from '../src/collaborati
 class FakeElement {
   listeners = new Map();
   descendants = [];
+  dataAttributes = new Set();
   open = true;
   closeCount = 0;
   returnValue = '';
+  removed = false;
 
   addEventListener(type, listener) {
     const listeners = this.listeners.get(type) || new Set();
@@ -43,11 +45,15 @@ class FakeElement {
 
   setAttribute(name) {
     if (name === 'open') this.open = true;
+    else this.dataAttributes.add(name);
   }
 
   removeAttribute(name) {
     if (name === 'open') this.open = false;
+    else this.dataAttributes.delete(name);
   }
+
+  remove() { this.removed = true; }
 
   close(returnValue = '') {
     this.open = false;
@@ -161,6 +167,33 @@ test('sharing dialogs open in webviews without native showModal support', () => 
 
   assert.equal(openDialog(dialog), true);
   assert.equal(dialog.open, true);
+  assert.equal(dialog.dataAttributes.has('data-dialog-modeless-fallback'), true);
+});
+
+test('modeless sharing fallback places a backdrop above editor controls that closes the panel', () => {
+  const parent = {
+    children: [],
+    insertBefore(element, reference) {
+      const index = this.children.indexOf(reference);
+      this.children.splice(index < 0 ? this.children.length : index, 0, element);
+    }
+  };
+  let backdrop;
+  const dialog = new FakeElement();
+  dialog.open = false;
+  dialog.parentNode = parent;
+  dialog.ownerDocument = { createElement: () => (backdrop = new FakeElement()) };
+  parent.children.push(dialog);
+
+  assert.equal(openDialog(dialog), true);
+  assert.equal(backdrop.className, 'dialog-modeless-fallback-backdrop');
+  assert.deepEqual(parent.children, [backdrop, dialog]);
+
+  backdrop.dispatch('click');
+
+  assert.equal(dialog.open, false);
+  assert.equal(backdrop.removed, true);
+  assert.equal(dialog.dataAttributes.has('data-dialog-modeless-fallback'), false);
 });
 
 test('sharing dialogs close in embedded views that expose only the open attribute', () => {
@@ -170,9 +203,17 @@ test('sharing dialogs close in embedded views that expose only the open attribut
 
   assert.equal(openDialog(dialog), true);
   assert.equal(dialog.hasAttribute('open'), true);
+  assert.equal(dialog.hasAttribute('data-dialog-modeless-fallback'), true);
   assert.equal(closeDialog(dialog, 'close'), true);
   assert.equal(dialog.hasAttribute('open'), false);
+  assert.equal(dialog.hasAttribute('data-dialog-modeless-fallback'), false);
   assert.equal(closeEvents, 1);
+});
+
+test('modeless dialog fallback stays above editor layers and presents a dismissible backdrop', async () => {
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(styles, /dialog\[data-dialog-modeless-fallback\]\[open\]\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*20000;[^}]*inset:\s*0;/);
+  assert.match(styles, /\.dialog-modeless-fallback-backdrop\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*19999;[^}]*inset:\s*0;[^}]*background:/);
 });
 
 test('sharing dialog closure trusts the open attribute over a stale WebView property', () => {

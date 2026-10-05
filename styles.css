@@ -1088,6 +1088,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .modal .dialog-dismiss-form { display: flex; flex: 0 0 auto; align-items: flex-start; margin: 0; padding: 0 !important; }
 .modal::backdrop { background: rgba(20,20,20,.25); backdrop-filter: blur(2px); }
 .modal form { padding: 22px; }
+dialog[data-dialog-modeless-fallback][open] { position: fixed; z-index: 20000; inset: 0; margin: auto; }
+.dialog-modeless-fallback-backdrop { position: fixed; z-index: 19999; inset: 0; background: rgba(20,20,20,.25); backdrop-filter: blur(2px); }
 .quick-actions-dialog { width: min(600px, calc(100vw - 24px)); max-height: min(680px, calc(100dvh - 28px)); overflow: hidden; }
 .quick-actions-content { display: grid; gap: 10px; padding: 16px; }
 .quick-actions-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

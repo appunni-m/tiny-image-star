@@ -1,3 +1,5 @@
+const modelessBackdrops = new WeakMap();
+
 function dialogIsOpen(dialog) {
   if (!dialog) return false;
   // In native dialogs `open` reflects this attribute. Some embedded WebViews
@@ -8,20 +10,53 @@ function dialogIsOpen(dialog) {
   return typeof dialog.getAttribute === 'function' && dialog.getAttribute('open') !== null;
 }
 
+function createModelessBackdrop(dialog) {
+  if (modelessBackdrops.has(dialog)) return;
+  const parent = dialog.parentNode;
+  const document = dialog.ownerDocument;
+  if (!parent || typeof parent.insertBefore !== 'function' || typeof document?.createElement !== 'function') return;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'dialog-modeless-fallback-backdrop';
+  backdrop.setAttribute('aria-hidden', 'true');
+  backdrop.addEventListener('click', () => closeDialog(dialog, 'close'));
+  parent.insertBefore(backdrop, dialog);
+  modelessBackdrops.set(dialog, backdrop);
+}
+
+function removeModelessBackdrop(dialog) {
+  const backdrop = modelessBackdrops.get(dialog);
+  if (!backdrop) return;
+  backdrop.remove?.();
+  modelessBackdrops.delete(dialog);
+}
+
 export function openDialog(dialog) {
   if (!dialog || dialogIsOpen(dialog)) return Boolean(dialog);
   if (typeof dialog.showModal === 'function') {
     try {
       dialog.showModal();
-      if (dialogIsOpen(dialog)) return true;
+      if (dialogIsOpen(dialog)) {
+        dialog.removeAttribute?.('data-dialog-modeless-fallback');
+        removeModelessBackdrop(dialog);
+        return true;
+      }
     } catch { /* Fall back to the reflected open attribute in embedded browsers. */ }
   }
+  // A plain `open` attribute creates a modeless dialog. Give that fallback
+  // viewport positioning and a top stacking order so fixed editor controls
+  // cannot sit over the visible panel and steal taps from its close buttons.
+  dialog.setAttribute('data-dialog-modeless-fallback', '');
+  createModelessBackdrop(dialog);
   dialog.setAttribute('open', '');
   return dialogIsOpen(dialog);
 }
 
 export function closeDialog(dialog, returnValue = 'dismiss') {
-  if (!dialogIsOpen(dialog)) return false;
+  if (!dialogIsOpen(dialog)) {
+    dialog?.removeAttribute?.('data-dialog-modeless-fallback');
+    if (dialog) removeModelessBackdrop(dialog);
+    return false;
+  }
   let closedNatively = false;
   if (typeof dialog.close === 'function') {
     try { dialog.close(returnValue); }
@@ -34,6 +69,8 @@ export function closeDialog(dialog, returnValue = 'dismiss') {
     else if ('open' in dialog) dialog.open = false;
     else if ('hidden' in dialog) dialog.hidden = true;
   }
+  dialog.removeAttribute?.('data-dialog-modeless-fallback');
+  removeModelessBackdrop(dialog);
   if (closedNatively) return true;
   if (!dialogIsOpen(dialog)) {
     const EventConstructor = dialog.ownerDocument?.defaultView?.Event || globalThis.Event;
