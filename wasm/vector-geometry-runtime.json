@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "runtime": {
+    "package": "canvaskit-wasm",
+    "version": "0.42.0",
+    "packageIntegrity": "sha512-N3ikotmzYwDVAcpQKDMptBT2P5pIEWS9ywdmrQA2awwaMF9cxKEFuxZZHv9ay1Em9kDjxDsPtwUzDm1uNj136g==",
+    "license": "BSD-3-Clause",
+    "licenseFile": "canvaskit/LICENSE.txt",
+    "wasm": {
+      "file": "../src/workers/vector-geometry.wasm",
+      "sizeBytes": 7317345,
+      "sha256": "25ebed8e60158c5854f8dc807b936daca21354f8bfb6a2231266b0a93812f301"
+    },
+    "upstreamLoader": {
+      "sizeBytes": 120877,
+      "sha256": "443777592179808354031cf411d8d43cac9f6b98d1227123c5c22d401b0fbf7f"
+    },
+    "worker": {
+      "bundle": "../src/workers/vector-geometry-worker.bundle.js",
+      "sizeBytes": 142471,
+      "sha256": "e83528c9928c391c8171796adb88661f8527a5e66b377410b1b9c8d714dc4ab9"
+    },
+    "licenseArtifact": {
+      "sizeBytes": 1635,
+      "sha256": "d27678cba0d529e77201e2d2a053628143e986aad8f1e77f7039ad4366c8f978"
+    },
+    "execution": "lazy dedicated worker; one active job; bounded queue; timeout/cancel termination; idle heap release",
+    "initialHeapBytes": 134217728,
+    "limits": {
+      "maxInputCommands": 20000,
+      "maxContours": 4096,
+      "maxFillGroups": 1024,
+      "maxOutputValues": 400000,
+      "maxOutputPoints": 20000,
+      "maxCoordinate": 10000000,
+      "maxQueue": 8,
+      "requestTimeoutMs": 15000,
+      "idleTimeoutMs": 15000,
+      "conicTolerance": 0.01,
+      "maxConicDepth": 16,
+      "maxHeapBytes": 268435456
+    },
+    "patterns": [
+      "solid",
+      "dashed",
+      "dotted",
+      "custom one dash/one positive gap"
+    ],
+    "conversion": "Native rational conics preserved until bounded editable conversion at0.01 local pixels; native Skia float32/offset precision is separate."
+  }
+}

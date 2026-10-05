@@ -153,6 +153,8 @@ import { advanceCommentSelection, commentCanvasAction, commentPinCanvasAction, c
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
+import { outlineStrokeUnavailableReason, prepareOutlineStroke, validateOutlineStrokePlan, applyOutlineStroke } from './outline-stroke.js';
+import { LocalVectorGeometryClient } from './vector-geometry-runtime.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
@@ -210,7 +212,7 @@ const state = {
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, layoutGuideClipboard: null, selectedLayoutGuideId: null, selectedLayoutGuideFrameId: null, controlEdit: false, layerSelectionMode: false, selectionSource: 'programmatic', emptyCanvasGuideDismissedPageId: null,
   vectorOffsetAmount: '8', vectorOffsetJoin: 'square',
   componentSetSelectedVariants: new Map(),
-  bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, textFindPageId: null, textFindMatches: [], textFindIndex: -1, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
+  bulk: null, pendingRecipeRecovery: null, outlineStrokeController: null, textNodeId: null, textSelection: null, textFindPageId: null, textFindMatches: [], textFindIndex: -1, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
   scaleEditBase: null,
   workspace: null, workspaceHandle: null, workspaceHead: null, workspacePermissionNeeded: false, workspaceOnboardingRequired: false,
@@ -2892,13 +2894,25 @@ function appearanceSection(node) {
     : node.type === 'text'
         ? `<div class="style-actions">${addStrokeAction}</div>`
         : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
-  const body = `${fills}${fillBinding}${stroke}${outlineNote}${paintBlendWarning}${styleActions}${radius}`;
+  const body = `${fills}${fillBinding}${stroke}${outlineNote}${paintBlendWarning}${styleActions}${strokeCount ? outlineStrokeControls() : ''}${radius}`;
   return section('Appearance', body);
 }
 function strokeSection(node) {
   const strokeCount = strokeStackForNode(node).length;
   const addStroke = `<button class="add-fill" type="button" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>`;
-  return section('Stroke', `${strokeStackControls(node)}<div class="style-actions">${addStroke}</div>`);
+  return section('Stroke', `${strokeStackControls(node)}<div class="style-actions">${addStroke}</div>${strokeCount ? outlineStrokeControls() : ''}`);
+}
+
+function outlineStrokeReason(ids = rootSelectedIds()) {
+  return state.outlineStrokeController ? 'Strokes are being converted. Cancel or wait for this operation to finish.'
+    : isImageRecipeBatchActive(state.bulk) ? 'Finish or cancel the current image batch first.'
+      : outlineStrokeUnavailableReason(state.document, ids);
+}
+
+function outlineStrokeControls() {
+  if (state.outlineStrokeController) return '';
+  const reason = outlineStrokeReason();
+  return `<button class="add-fill" type="button" data-action="outline-stroke"${reason ? ' disabled' : ''}>Outline Stroke</button><div class="image-properties-note">${escapeHtml(reason || 'Turn strokes into filled vector paths, then edit their points with the Vector tool. Undo restores the original strokes.')}</div>`;
 }
 function imageAdjustmentsSection(node) {
   const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
@@ -4696,6 +4710,10 @@ function submitCommentForm(form) {
 function renderInspector() {
   syncImageCropToolbar();
   syncQuickExportControl();
+  const outlining = Boolean(state.outlineStrokeController);
+  $('#outline-stroke-progress').hidden = !outlining;
+  const outlineStatus = outlining ? 'Converting strokes… Original layers stay intact until the conversion finishes.' : '';
+  if ($('#outline-stroke-status').textContent !== outlineStatus) $('#outline-stroke-status').textContent = outlineStatus;
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
@@ -14802,6 +14820,9 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   const canCombine = canCombineBoolean(state.document, state.selectedIds);
   const selectedBoolean = selectedNodes().length === 1 && selectedNodes()[0].type === 'boolean' ? selectedNodes()[0] : null;
   const selectedGroup = selectedNodes().length === 1 && selectedNodes()[0].type === 'group' ? selectedNodes()[0] : null;
+  if (selectedNodes().some(item => strokeStackForNode(item).length)) items.unshift({
+    label: 'Outline Stroke', shortcut: '⌘⇧O', disabled: Boolean(outlineStrokeReason()), action: outlineSelectedStrokes
+  }, { separator: true });
   if (canFrameSelection(state.document, rootSelectedIds())) items.unshift({
     label: 'Frame selection', shortcut: propertyClipboardShortcut('g'), action: frameSelectedLayers
   }, { separator: true });
@@ -15101,6 +15122,19 @@ function quickActionCatalog() {
     deselectAll: () => setSelection([])
   });
   return [
+    ...(state.outlineStrokeController ? [{
+      id: 'cancel-outline-stroke', label: 'Cancel stroke conversion',
+      description: 'Stop the conversion and keep the original layers.',
+      keywords: ['stop outlining', 'cancel outline stroke', 'stop stroke conversion'],
+      run: () => state.outlineStrokeController?.abort(),
+    }] : []),
+    {
+      id: 'outline-stroke', label: 'Outline Stroke',
+      description: 'Turn strokes into filled vector paths. Edit their points with the Vector tool; Undo restores the original strokes.',
+      keywords: ['convert stroke', 'expand stroke', 'stroke to path', 'vector outline', 'outline strokes'],
+      shortcut: '⌘⇧O / Ctrl+Shift+O', disabled: Boolean(outlineStrokeReason(rootIds)), unavailableReason: outlineStrokeReason(rootIds),
+      run: outlineSelectedStrokes,
+    },
     {
       id: 'find-replace-text', label: 'Find and replace text',
       description: 'Search text layers on the current page, then replace one match or all editable matches.',
@@ -20805,6 +20839,39 @@ async function copyInspectText(kind) {
   showToast(copied ? `${label} copied.` : 'Clipboard unavailable. Select the code block and copy it.');
 }
 
+async function outlineSelectedStrokes() {
+  if (state.documentTransitioning || isLiveHostViewOnly()) return;
+  const ids = rootSelectedIds();
+  const reason = outlineStrokeReason(ids);
+  if (reason) { showToast(reason); return; }
+  const sourceDocument = state.document; const pageId = sourceDocument.activePageId;
+  const controller = new AbortController();
+  const geometryClient = new LocalVectorGeometryClient();
+  state.outlineStrokeController = controller;
+  renderInspector();
+  showToast('Converting strokes… Press Escape or choose Cancel conversion to stop.');
+  try {
+    const plan = await prepareOutlineStroke(sourceDocument, ids, { pageId, signal: controller.signal,
+      outline: (geometry, stroke, options) => geometryClient.outlineStroke(geometry, stroke, options) });
+    if (controller.signal.aborted || sourceDocument !== state.document || pageId !== state.document.activePageId
+      || state.documentTransitioning || isLiveHostViewOnly()) throw new DOMException('Outline Stroke cancelled.', 'AbortError');
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('The image batch started while outlining. Finish it, then try Outline Stroke again.');
+    validateOutlineStrokePlan(sourceDocument, plan);
+    checkpoint('Outline Stroke');
+    const nodes = applyOutlineStroke(sourceDocument, plan);
+    clearVectorAnchorSelection();
+    setSelection(nodes.map(node => node.id));
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast(`${nodes.length === 1 ? 'Stroke outlined' : `${nodes.length} layers outlined`}. ${nodes.some(node => node.type === 'group') ? 'Expand the group in Layers, select a stroke path, and use the Vector tool to edit its points.' : 'Use the Vector tool to edit its points.'} Undo restores the original strokes.`);
+  } catch (error) {
+    showToast(error.name === 'AbortError' ? 'Stroke conversion cancelled. Original layers kept.' : error.message || 'Could not outline these strokes. Original layers kept.');
+  } finally {
+    geometryClient.close();
+    if (state.outlineStrokeController === controller) state.outlineStrokeController = null;
+    renderInspector();
+  }
+}
+
 function applyVectorOffset() {
   if (state.documentTransitioning || isLiveHostViewOnly()) return;
   const entries = selectedEntries();
@@ -21304,6 +21371,8 @@ function applyInspectorAction(action, details = {}) {
   }
   if (action === 'shape-builder-start') { enterShapeBuilder(rootSelectedIds()); return; }
   if (action === 'offset-vector') { applyVectorOffset(); return; }
+  if (action === 'outline-stroke') { void outlineSelectedStrokes(); return; }
+  if (action === 'cancel-outline-stroke') { state.outlineStrokeController?.abort(); return; }
   if (action === 'delete-layer') {
     const layerId = typeof details.layerId === 'string' ? details.layerId : '';
     if (!layerId || !findNode(state.document, layerId)) {
@@ -23636,6 +23705,7 @@ function initEvents() {
   $('#text-replace-current').addEventListener('click', replaceCurrentTextMatch);
   $('#text-replace-all').addEventListener('click', replaceAllTextMatches);
   $('#quick-actions-close').addEventListener('click', () => $('#quick-actions-dialog').close('close'));
+  $('#outline-stroke-cancel').addEventListener('click', () => state.outlineStrokeController?.abort());
   $('#quick-actions-search').addEventListener('input', event => renderQuickActionResults(event.currentTarget.value));
   $('#quick-actions-suggestions').addEventListener('click', event => {
     const suggestion = event.target.closest('[data-quick-action-query]');
@@ -24013,6 +24083,11 @@ function onKeyDown(event) {
     return;
   }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && state.outlineStrokeController && !editing && !document.querySelector('dialog[open]')) {
+    state.outlineStrokeController.abort();
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && state.shapeBuilder && !editing && !document.querySelector('dialog[open]')) {
     exitShapeBuilderMode({ focusCanvas: true });
     event.preventDefault();
@@ -24096,6 +24171,11 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (mod && event.shiftKey && !event.altKey && key === 'o' && !event.repeat && !document.querySelector('dialog[open]')) {
+    event.preventDefault();
+    void outlineSelectedStrokes();
+    return;
+  }
   if (mod && event.shiftKey && !event.altKey && key === 'f' && !event.repeat
     && !document.querySelector('dialog[open]')) {
     event.preventDefault();

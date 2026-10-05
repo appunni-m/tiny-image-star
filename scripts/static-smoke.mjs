@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { unzipSync } from 'fflate';
+import { VECTOR_GEOMETRY_RUNTIME_ARTIFACTS } from '../src/vector-geometry-artifacts.js';
+import { VECTOR_GEOMETRY_LIMITS } from '../src/vector-geometry-contract.js';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -59,6 +61,8 @@ assert.equal((pagesWorkflow.match(/npm run build:woff2-worker/g) || []).length, 
   'both verification and GitHub Pages deployment must build the local WOFF2 decoder worker');
 assert.equal((pagesWorkflow.match(/npm run build:font-shaping-worker/g) || []).length, 2,
   'both verification and GitHub Pages deployment must build the local font-shaping worker');
+assert.equal((pagesWorkflow.match(/npm run build:vector-geometry-worker/g) || []).length, 2,
+  'verification and deployment must build the local vector geometry worker');
 assert.equal((pagesWorkflow.match(/npm run build:collaboration-qr/g) || []).length, 2,
   'verification and deployment must build the local QR handoff tools');
 assert.match(packageJson.scripts.predev, /build:woff2-worker/);
@@ -67,6 +71,8 @@ assert.match(packageJson.scripts['preverify:static'], /build:woff2-worker/);
 assert.match(packageJson.scripts.predev, /build:font-shaping-worker/);
 assert.match(packageJson.scripts.pretest, /build:font-shaping-worker/);
 assert.match(packageJson.scripts['preverify:static'], /build:font-shaping-worker/);
+for (const hook of ['predev', 'pretest', 'preverify:static']) assert.match(packageJson.scripts[hook], /build:vector-geometry-worker/);
+assert.equal(packageJson.dependencies['canvaskit-wasm'], VECTOR_GEOMETRY_RUNTIME_ARTIFACTS.version);
 assert.match(packageJson.scripts.predev, /build:collaboration-qr/);
 assert.match(packageJson.scripts['preverify:static'], /build:collaboration-qr/);
 assert.match(packageJson.scripts.predev, /build:background-removal-worker/);
@@ -93,6 +99,8 @@ for (const path of [
   'src/woff2-decoder.js', 'src/workers/woff2-decompress.worker.js', 'src/workers/woff2-decompress-worker.bundle.js', 'scripts/build-woff2-worker.mjs',
   'wasm/woff2-runtime.json', 'wasm/woff2/LICENSE.txt', 'wasm/woff2/GOOGLE-WOFF2-LICENSE.txt', 'wasm/woff2/GOOGLE-BROTLI-LICENSE.txt',
   'src/font-shaping.js', 'src/font-fallback.js', 'src/workers/font-shaping.worker.js', 'src/workers/font-shaping-worker.bundle.js', 'src/workers/harfbuzz.wasm', 'scripts/build-font-shaping-worker.mjs',
+  'src/outline-stroke.js', 'src/vector-shape-geometry.js', 'src/vector-geometry-runtime.js', 'src/vector-geometry-kernel.js', 'src/vector-geometry-contract.js', 'src/vector-outline-conversion.js', 'src/vector-geometry-artifacts.js',
+  'src/workers/vector-geometry.worker.js', 'src/workers/vector-geometry-worker.bundle.js', 'src/workers/vector-geometry.wasm', 'scripts/build-vector-geometry-worker.mjs', 'wasm/vector-geometry-runtime.json', 'wasm/canvaskit/LICENSE.txt',
   'src/collaboration/qr-transport.js', 'src/collaboration/qr-runtime.js', 'src/collaboration/qr-handoff-ui.js', 'src/collaboration/qr-handoff.css', 'src/collaboration/qr-runtime.bundle.js', 'scripts/build-collaboration-qr.mjs', 'wasm/collaboration-qr-runtime.json',
   'wasm/harfbuzz-runtime.json', 'wasm/harfbuzz/LICENSE.txt',
   'tests/fixtures/fonts/inter-latin-variable.woff2', 'tests/fixtures/fonts/OFL.txt', 'tests/fixtures/fonts/README.md',
@@ -346,4 +354,27 @@ assert.match(harfbuzzLicense.toString(), /Permission is hereby granted/);
 assert.match(harfbuzzLicense.toString(), /THE SOFTWARE IS PROVIDED "AS IS"/);
 const interFixtureLicense = await readFile(resolve(root, 'tests/fixtures/fonts/OFL.txt'), 'utf8');
 assert.match(interFixtureLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
-console.log('Static deployment inputs, local Pillow-RS/ONNX/MediaPipe/WOFF2 runtimes, models, and workers: PASS');
+const vectorManifest = JSON.parse(await readFile(resolve(root, 'wasm/vector-geometry-runtime.json'), 'utf8'));
+const vectorArtifacts = VECTOR_GEOMETRY_RUNTIME_ARTIFACTS;
+assert.equal(vectorManifest.schema, 1);
+assert.equal(vectorManifest.runtime.package, vectorArtifacts.package);
+assert.equal(vectorManifest.runtime.version, vectorArtifacts.version);
+assert.equal(vectorManifest.runtime.packageIntegrity, vectorArtifacts.packageIntegrity);
+assert.deepEqual(vectorManifest.runtime.limits, VECTOR_GEOMETRY_LIMITS);
+assert.equal(vectorManifest.runtime.license, 'BSD-3-Clause');
+assert.equal(vectorManifest.runtime.initialHeapBytes, 128 * 1024 * 1024);
+const vectorWasm = await readFile(resolve(root, 'src/workers/vector-geometry.wasm'));
+assert.equal(vectorWasm.byteLength, vectorArtifacts.wasmSizeBytes);
+assert.equal(createHash('sha256').update(vectorWasm).digest('hex'), vectorArtifacts.wasmSha256);
+assert.equal(vectorManifest.runtime.wasm.sizeBytes, vectorWasm.byteLength);
+assert.equal(vectorManifest.runtime.wasm.sha256, vectorArtifacts.wasmSha256);
+const vectorWorker = await readFile(resolve(root, 'src/workers/vector-geometry-worker.bundle.js'));
+assert.equal(vectorWorker.byteLength, vectorManifest.runtime.worker.sizeBytes);
+assert.equal(createHash('sha256').update(vectorWorker).digest('hex'), vectorManifest.runtime.worker.sha256);
+assert.doesNotMatch(vectorWorker.toString(), /(?:^|[;\n])\s*import\s+[^;]*from\s+["']https?:\/\//m);
+const vectorLicense = await readFile(resolve(root, 'wasm/canvaskit/LICENSE.txt'));
+assert.equal(vectorLicense.byteLength, vectorArtifacts.licenseSizeBytes);
+assert.equal(createHash('sha256').update(vectorLicense).digest('hex'), vectorArtifacts.licenseSha256);
+assert.match(vectorLicense.toString(), /Redistribution and use in source and binary forms/);
+assert.match(vectorLicense.toString(), /THIS SOFTWARE IS PROVIDED/);
+console.log('Static deployment inputs, local raster/font/vector runtimes, models, and workers: PASS');

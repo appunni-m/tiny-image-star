@@ -23,6 +23,8 @@ The local font inspector bundles `woff2-encoder` 2.0.0, Copyright (c) 2023-prese
 
 The local typography preview worker bundles `harfbuzzjs` 1.6.2, under the MIT License. Its pinned WebAssembly runtime and worker checksum are recorded in `wasm/harfbuzz-runtime.json`; the complete package license is shipped at `wasm/harfbuzz/LICENSE.txt`.
 
+The optional local vector geometry worker bundles Google's `canvaskit-wasm` 0.42.0 minimal build under the BSD 3-Clause license. It loads only when Outline Stroke is requested and processes geometry on this device. The audited package, local WASM, worker and license checksums are recorded in `wasm/vector-geometry-runtime.json`; the complete upstream license is shipped at `wasm/canvaskit/LICENSE.txt`.
+
 The variable-font test fixture `tests/fixtures/fonts/inter-latin-variable.woff2` is Inter Variable Latin from `@fontsource-variable/inter` 5.3.0, Copyright 2016 The Inter Project Authors, under the SIL Open Font License 1.1. Its complete upstream license is included beside the fixture at `tests/fixtures/fonts/OFL.txt`.
 
 The `.fig` compatibility samples in `tests/fixtures/fig-import/` are copied from OpenFig-org/openfig-core's test corpus at the commit named in that directory's README. The upstream package metadata declares MIT; the fixture directory contains its attribution and license notice.

@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr",
+    "predev": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr && npm run build:vector-geometry-worker",
     "dev": "node scripts/server.mjs",
-    "pretest": "npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker",
+    "pretest": "npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:vector-geometry-worker",
     "test": "node --test tests/*.test.mjs",
-    "preverify:static": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr",
+    "preverify:static": "npm run build:fig-import-worker && npm run build:inpaint-worker && npm run build:object-isolation-worker && npm run build:background-removal-worker && npm run build:resolution-boost-worker && npm run build:woff2-worker && npm run build:font-shaping-worker && npm run build:collaboration-qr && npm run build:vector-geometry-worker",
     "verify:static": "node scripts/static-smoke.mjs",
     "build:wasm": "node scripts/build-pillow-runtime.mjs",
     "build:fig-import-worker": "node scripts/build-fig-import-worker.mjs",
@@ -18,10 +18,12 @@
     "build:resolution-boost-worker": "node scripts/build-resolution-boost-worker.mjs",
     "build:collaboration-qr": "node scripts/build-collaboration-qr.mjs",
     "build:woff2-worker": "node scripts/build-woff2-worker.mjs",
-    "build:font-shaping-worker": "node scripts/build-font-shaping-worker.mjs"
+    "build:font-shaping-worker": "node scripts/build-font-shaping-worker.mjs",
+    "build:vector-geometry-worker": "node scripts/build-vector-geometry-worker.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
+    "canvaskit-wasm": "0.42.0",
     "fflate": "0.8.3",
     "fzstd": "0.1.1",
     "harfbuzzjs": "1.6.2",
