@@ -12,7 +12,17 @@ function sameRunStyle(left, right) {
   const leftKeys = Object.keys(left).filter(key => key !== 'text');
   const rightKeys = Object.keys(right).filter(key => key !== 'text');
   return leftKeys.length === rightKeys.length
-    && leftKeys.every(key => Object.hasOwn(right, key) && Object.is(left[key], right[key]));
+    && leftKeys.every(key => Object.hasOwn(right, key) && sameStyleValue(left[key], right[key]));
+}
+
+function sameStyleValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.hasOwn(right, key) && sameStyleValue(left[key], right[key]));
 }
 
 /**

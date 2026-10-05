@@ -1,5 +1,6 @@
 import { getNodePropertyValue } from './model.js';
 import { PdfVectorExportError } from './pdf-vector-export.js';
+import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
 
 const standardFontFamilies = new Set(['arial', 'helvetica', 'sans-serif']);
@@ -70,6 +71,15 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
     reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce these font settings.');
   }
   if (!Number.isFinite(fontSize) || fontSize <= 0) reject('text font metrics', 'the font size must be positive and finite.');
+
+  // Underlines are serialized as real filled paths by the shared decoration
+  // geometry helper. Validate their sparse settings here before any PDF text
+  // conversion; the writer keeps their color/alpha independent of glyph fills.
+  for (const style of [node, ...activeRuns]) for (const property of TEXT_DECORATION_PROPERTIES) {
+    if (style[property] !== undefined && !isValidTextDecorationProperty(property, style[property])) {
+      reject('custom underline settings', `invalid ${property}.`);
+    }
+  }
 
   if (activeRuns.length) {
     for (const run of activeRuns) {

@@ -24,9 +24,16 @@ function scaleTextRuns(runs, factor) {
     ...run,
     ...Object.fromEntries(['fontSize', 'letterSpacing', 'baselineShift'].filter(key => Number.isFinite(run?.[key]) && run[key] !== 0)
       .map(key => [key, scaleNumber(run[key], factor)])),
+    ...scaleTextDecorationMetrics(run, factor),
     ...(run?.lineHeightUnit === 'pixels' && Number.isFinite(run.lineHeight)
       ? { lineHeight: scaleNumber(run.lineHeight, factor) } : {})
   })) : runs;
+}
+
+function scaleTextDecorationMetrics(source, factor) {
+  return Object.fromEntries(['textDecorationThickness', 'textDecorationOffset']
+    .filter(key => source?.[key]?.unit === 'pixels')
+    .map(key => [key, { unit: 'pixels', value: scaleNumber(source[key].value, factor) }]));
 }
 
 function scaleParagraphStyles(styles, factor) {
@@ -39,7 +46,7 @@ function scaleParagraphStyles(styles, factor) {
 }
 
 function scaledAppearance(node, factor) {
-  const patch = {};
+  const patch = scaleTextDecorationMetrics(node, factor);
   for (const key of ['strokeWidth', 'radius', 'fontSize', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing']) {
     if (Number.isFinite(node[key]) && node[key] !== 0) patch[key] = scaleNumber(node[key], factor);
   }

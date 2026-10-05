@@ -1283,7 +1283,17 @@ dialog[data-dialog-modeless-fallback][open] { position: fixed; z-index: 20000; i
 .text-editor-overlay > :is(div, p, li, blockquote),
 .text-editor-paragraph > :is(div, p, li, blockquote) { text-indent: var(--text-first-line-indent, 0px); }
 .text-editor-paragraph:only-child:empty::before { content: 'Type something'; color: #999; pointer-events: none; }
-.text-format-toolbar { position: absolute; z-index: 4; display: flex; align-items: center; gap: 5px; width: max-content; max-width: calc(100% - 16px); padding: 5px; border: 1px solid #dedede; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 4px 18px rgba(0,0,0,.18); color: #333; touch-action: manipulation; }
+.text-format-toolbar { position: absolute; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; width: max-content; max-width: calc(100% - 16px); max-height: min(420px, 55dvh); overflow-y: auto; padding: 5px; border: 1px solid #dedede; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 4px 18px rgba(0,0,0,.18); color: #333; touch-action: manipulation; }
+.text-underline-settings { min-width: 0; margin-block: 8px; }
+.text-underline-settings > summary { cursor: pointer; min-height: 32px; align-content: center; font-size: 11px; }
+.text-underline-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-block: 8px; }
+.text-underline-field { min-width: 0; display: grid; gap: 5px; font-size: 10px; }
+.text-underline-field > input, .text-underline-field select { box-sizing: border-box; min-width: 0; width: 100%; min-height: 32px; }
+.text-underline-metric { display: grid; grid-template-columns: minmax(0, 1fr) 65px; gap: 4px; min-width: 0; }
+.text-underline-metric > input { min-width: 0; width: 100%; }
+.text-underline-check { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; font-size: 11px; }
+.text-underline-range-settings { flex: 1 0 100%; grid-column: 1 / -1; width: 100%; margin-block: 0; }
+.text-underline-range-settings .text-underline-controls { max-width: 500px; }
 .text-format-toolbar[hidden] { display: none; }
 .text-format-toolbar input[data-mixed="true"]:not([type="color"])::placeholder { color: #747985; opacity: 1; }
 .text-format-toolbar input[type="color"][data-mixed="true"] { outline: 2px dashed #7b5ca6; outline-offset: -4px; }
@@ -1332,6 +1342,9 @@ dialog[data-dialog-modeless-fallback][open] { position: fixed; z-index: 20000; i
   .bulk-bar { grid-template-columns: minmax(160px,1fr) minmax(120px,.7fr) minmax(190px,1fr) auto; gap: 10px; }
 }
 @media (max-width: 820px) {
+  .text-underline-settings > summary, .text-underline-check { min-height: 44px; }
+  .text-underline-field > input, .text-underline-field select, .text-underline-metric > input { min-height: 40px; font-size: 16px; }
+  .text-underline-check > input { width: 20px; height: 20px; flex: 0 0 20px; }
   .frame-quick-add-side { gap: 4px; padding: 4px; }
   .frame-quick-add-side button { width: 44px; height: 44px; font-size: 22px; }
   .shape-builder-bar { left: 8px; right: 8px; bottom: 8px; display: grid; gap: 8px; max-width: none; padding: 8px; transform: none; }

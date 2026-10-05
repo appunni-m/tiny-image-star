@@ -2609,6 +2609,59 @@ test('imports supported mixed character styles as editable rich-text runs', () =
   assert.equal(imported.report.flattenedTypes.TEXT_STYLE, undefined);
 });
 
+test('imports documented custom underline settings on text layers and ranged rich-text overrides', () => {
+  const pageGuid = { sessionID: 205, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, '!', {
+        name: 'Custom underline', textData: {
+          characters: 'AB', style: {
+            textDecorationStyle: 'WAVY',
+            textDecorationThickness: { unit: 'PERCENT', value: 17 },
+            textDecorationOffset: { unit: 'PIXELS', value: -2 },
+            textDecorationColor: { value: { type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.6, a: 1 }, opacity: 0.75, visible: true } },
+            textDecorationSkipInk: true
+          },
+          characterStyleOverrides: [0, 1],
+          styleOverrideTable: { 1: {
+            textDecorationStyle: 'DOTTED',
+            textDecorationThickness: { unit: 'PIXELS', value: 3 },
+            textDecorationOffset: { unit: 'AUTO' },
+            textDecorationColor: { value: 'AUTO' },
+            textDecorationSkipInk: false
+          } }
+        }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.textDecorationStyle, 'wavy');
+  assert.deepEqual(text.textDecorationThickness, { unit: 'percent', value: 17 });
+  assert.deepEqual(text.textDecorationOffset, { unit: 'pixels', value: -2 });
+  assert.deepEqual(text.textDecorationColor, { type: 'solid', color: '#336699', opacity: 0.75, visible: true });
+  assert.equal(text.textDecorationSkipInk, true);
+  assert.deepEqual(text.textRuns, [
+    { text: 'A' },
+    { text: 'B', textDecorationStyle: 'dotted', textDecorationThickness: { unit: 'pixels', value: 3 }, textDecorationOffset: { unit: 'auto' }, textDecorationColor: 'auto', textDecorationSkipInk: false }
+  ]);
+  assert.equal(imported.report.unsupportedTypes.TEXT_DECORATION, undefined);
+});
+
+test('unsupported underline enum data stays at default and is called out for import review', () => {
+  const pageGuid = { sessionID: 206, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, '!', { textData: { characters: 'Review', style: { textDecorationStyle: 'DOUBLE' } } })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.textDecorationStyle, undefined);
+  assert.equal(imported.report.unsupportedTypes.TEXT_DECORATION, 1);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'TEXT_DECORATION').detail, /textDecorationStyle/u);
+});
+
 test('preserves imported Auto and Percent line-height units while legacy numbers remain ratios', () => {
   const pageGuid = { sessionID: 121, localID: 1 };
   const nodes = [

@@ -1,4 +1,5 @@
 import { getBlobBytes, parseFigBinary, parseVectorNetworkBlob, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
+import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import {
   canSwapComponentTo, createComponentSet, createDocument, createId, createNode, isMaskSource,
   MAX_DOCUMENT_TREE_DEPTH, parseDocument, setComponentPropertyValue, switchComponentInstanceVariant
@@ -1267,6 +1268,45 @@ function inferredTextWeight(styleName) {
               : /\b(?:bold|heavy|black)\b/iu.test(name) ? 700 : 400;
 }
 
+function figTextDecorationSetting(property, value) {
+  if (property === 'textDecorationStyle') {
+    const normalized = String(value || '').toLowerCase();
+    return ['solid', 'dotted', 'wavy'].includes(normalized) ? normalized : null;
+  }
+  if (property === 'textDecorationThickness' || property === 'textDecorationOffset') {
+    if (!value || typeof value !== 'object') return null;
+    const unit = String(value.unit || '').toLowerCase();
+    if (unit === 'auto') return { unit: 'auto' };
+    const metric = { unit, value: value.value };
+    return isValidTextDecorationProperty(property, metric) ? metric : null;
+  }
+  if (property === 'textDecorationSkipInk') return typeof value === 'boolean' ? value : null;
+  if (property === 'textDecorationColor') {
+    const paint = value?.value;
+    if (paint === 'AUTO' || String(paint).toLowerCase() === 'auto') return 'auto';
+    if (paint && typeof paint === 'object' && String(paint.type || '').toUpperCase() === 'SOLID') {
+      const color = hexColor(paint.color);
+      const result = color ? { type: 'solid', color, opacity: paintOpacity(paint), ...(paint.visible === undefined ? {} : { visible: paint.visible === true }) } : null;
+      return result && isValidTextDecorationProperty(property, result) ? result : null;
+    }
+  }
+  return null;
+}
+
+function figTextDecorationOverrides(style, base, context, name) {
+  const result = {};
+  for (const property of TEXT_DECORATION_PROPERTIES) {
+    if (!Object.hasOwn(style, property)) continue;
+    const value = figTextDecorationSetting(property, style[property]);
+    if (value == null) {
+      warn(context.report, 'unsupported', 'TEXT_DECORATION', name, `The ${property} value could not be represented and was left at its default.`);
+      continue;
+    }
+    if (JSON.stringify(value) !== JSON.stringify(base[property])) result[property] = value;
+  }
+  return result;
+}
+
 function textRunStyleOverrides(style, base, context, name) {
   const result = {};
   const family = style.fontFamily || style.fontName?.family;
@@ -1303,6 +1343,7 @@ function textRunStyleOverrides(style, base, context, name) {
   const decoration = String(style.textDecoration || '').toUpperCase();
   const textDecoration = ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[decoration];
   if (textDecoration && textDecoration !== base.textDecoration) result.textDecoration = textDecoration;
+  Object.assign(result, figTextDecorationOverrides(style, base, context, name));
 
   if (typeof style.color === 'string' && /^#[0-9a-f]{6}$/iu.test(style.color) && style.color.toLowerCase() !== base.color.toLowerCase()) {
     result.color = style.color.toLowerCase();
@@ -1327,7 +1368,7 @@ function textRunStyleOverrides(style, base, context, name) {
 
   const supported = new Set([
     'fontFamily', 'fontName', 'fontSize', 'fontWeight', 'fontStyle', 'fontStyleName', 'italic',
-    'lineHeight', 'letterSpacing', 'textDecoration', 'color', 'fills', 'fillPaints',
+    'lineHeight', 'letterSpacing', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'color', 'fills', 'fillPaints',
     'textListData', 'listOptions', 'textListOptions', 'indentation', 'indentationLevel',
     'paragraphIndent', 'paragraphSpacing', 'listSpacing', 'textWrapStyle', 'textAlignHorizontal',
     'hangingList', 'hangingPunctuation'
@@ -1438,6 +1479,14 @@ function textProperties(source, context) {
       maxLines = undefined;
     }
   }
+  const decorationSettings = {};
+  for (const property of TEXT_DECORATION_PROPERTIES) {
+    const sourceValue = Object.hasOwn(source, property) ? source[property] : style[property];
+    if (sourceValue === undefined) continue;
+    const value = figTextDecorationSetting(property, sourceValue);
+    if (value == null) warn(context.report, 'unsupported', 'TEXT_DECORATION', source.name, `The ${property} value could not be represented and was left at its default.`);
+    else decorationSettings[property] = value;
+  }
   const properties = {
     // Layer paint opacity stays attached to each imported fill. The legacy
     // `color` field remains as a fallback for older local documents and runs.
@@ -1459,6 +1508,7 @@ function textProperties(source, context) {
     ...(textTruncation ? { textTruncation } : {}),
     ...(maxLines !== undefined ? { maxLines } : {}),
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
+    ...decorationSettings,
     ...paragraphMetrics
   };
   const textRuns = textRunsFromFigOverrides(source, characters, properties, context);
@@ -2094,7 +2144,7 @@ const componentOverrideProperties = [
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius',
   'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId',
-  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
+  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
   'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points',

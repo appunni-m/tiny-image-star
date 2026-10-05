@@ -2,6 +2,7 @@ import { vectorPathContours } from './vector-path.js';
 import { requiresComplexTextShaping, textGraphemes } from './text-layout.js';
 import { canvasFontWeight } from './font-variation.js';
 import { ellipseArcParameters, isValidEllipseArcData } from './ellipse-arc.js';
+import { decorationStyleForRun, canvasTextInkBounds, nativeInkContoursForShapedText, textDecorationGeometry, traceTextDecorationContours } from './text-decoration.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const MAX_TEXT_PATH_SAMPLES = 65_536;
@@ -235,6 +236,7 @@ function pathRunStyle(node, run, baseColor) {
     letterSpacing: Number(run?.letterSpacing ?? node.letterSpacing) || 0,
     color: run?.color || baseColor || node.color || '#1e1e1e',
     textDecoration: run?.textDecoration || node.textDecoration || 'none',
+    ...decorationStyleForRun(node, run),
     baselineShift: Number(run?.baselineShift) || 0
   };
 }
@@ -279,7 +281,7 @@ function samePathRunStyle(left, right) {
   if (!left || !right) return false;
   const leftKeys = Object.keys(left); const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every(key => Object.hasOwn(right, key)
-    && (['fontAxes', 'fontFeatures'].includes(key)
+    && (['fontAxes', 'fontFeatures', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor'].includes(key)
       ? sameMap(left[key], right[key])
       : Object.is(left[key], right[key])));
 }
@@ -321,7 +323,8 @@ export function textPathSvgData(path) {
 export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   fillOpacity = 1, paintMode = 'fill', fontSize: fontSizeOverride,
   letterSpacing: letterSpacingOverride, fontWeight, fontStyle, fontFamily,
-  color, overrideRunColors = false, includeDecorations = true, shapeText = null, drawShaped = null
+  color, overrideRunColors = false, includeDecorations = true, shapeText = null, drawShaped = null,
+  decorationsOnly = false, decorate = null
 } = {}) {
   const path = node.textPath;
   const sampler = createTextPathSampler(path, 0.5);
@@ -423,21 +426,38 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     const baseline = -style.baselineShift;
     ctx.fillStyle = style.color;
     if (paintMode !== 'stroke') ctx.strokeStyle = style.color;
+    const parentAlpha = ctx.globalAlpha;
     if (paintMode !== 'stroke') ctx.globalAlpha *= fillOpacity;
     const shapedTop = segment.shaped
       ? baseline - Number(segment.shaped.extents.ascender) / segment.shaped.upem * style.fontSize
       : baseline;
-    const paintedByShaper = segment.shaped && typeof drawShaped === 'function'
+    const paintedByShaper = !decorationsOnly && segment.shaped && typeof drawShaped === 'function'
       ? drawShaped(ctx, segment.shaped, segment.text, segment.shapedStartX ?? -segment.advance / 2,
         shapedTop, style.fontSize, 0, paintMode, segment.text)
       : false;
-    if (!paintedByShaper) {
+    if (!decorationsOnly && !paintedByShaper) {
       if (paintMode === 'stroke') ctx.strokeText(segment.text, 0, baseline);
       else ctx.fillText(segment.text, 0, baseline);
     }
     if (includeDecorations && paintMode !== 'stroke') {
       ctx.fillStyle = style.color;
-      if (includeDecorations && ['underline', 'line-through'].includes(style.textDecoration)) {
+      if (typeof decorate === 'function') decorate({ ctx, style, segment, baseline, shapedTop, parentAlpha });
+      else if (['underline', 'line-through'].includes(style.textDecoration)) {
+        const custom = style.textDecoration === 'underline' && (style.textDecorationStyle && style.textDecorationStyle !== 'solid'
+          || style.textDecorationThickness?.unit && style.textDecorationThickness.unit !== 'auto'
+          || style.textDecorationOffset?.unit && style.textDecorationOffset.unit !== 'auto'
+          || style.textDecorationColor && style.textDecorationColor !== 'auto' || style.textDecorationSkipInk);
+        if (custom) {
+          const inkContours = style.textDecorationSkipInk ? nativeInkContoursForShapedText(segment.shaped,
+            { x: segment.shapedStartX ?? -segment.advance / 2, y: shapedTop, fontSize: style.fontSize }) : null;
+          const geometry = textDecorationGeometry({ x: -segment.advance / 2, y: baseline, width: segment.advance, fontSize: style.fontSize,
+            decoration: style.textDecoration, style, baseline: true, inkContours,
+            fallbackInkBounds: style.textDecorationSkipInk && !inkContours ? canvasTextInkBounds(ctx, segment.text, { x: -segment.advance / 2, y: baseline }) : [] });
+          if (geometry.paint === 'auto' || geometry.paint.visible !== false) {
+            if (geometry.paint !== 'auto') { ctx.fillStyle = geometry.paint.color; ctx.globalAlpha = parentAlpha * geometry.paint.opacity; }
+            ctx.beginPath(); traceTextDecorationContours(ctx, geometry.contours); ctx.fill('nonzero');
+          }
+        } else {
         const decorationY = baseline + style.fontSize * (style.textDecoration === 'underline' ? 0.08 : -0.3);
         const textWidth = Math.max(0, segment.advance);
         const decorationWidth = Math.max(1, style.fontSize / 16);
@@ -447,6 +467,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
         ctx.moveTo(-textWidth / 2, decorationY);
         ctx.lineTo(textWidth / 2, decorationY);
         ctx.stroke();
+        }
       }
     }
     ctx.restore();

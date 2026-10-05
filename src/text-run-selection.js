@@ -1,4 +1,13 @@
 /** Summarize one property across the runs that overlap a UTF-16 editor range. */
+function sameValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && sameValue(left[key], right[key]));
+}
+
 export function summarizeTextRunRange(runs, start, end, resolveValue, normalize = value => value) {
   if (!Array.isArray(runs) || !Number.isInteger(start) || !Number.isInteger(end)
       || start < 0 || end <= start || typeof resolveValue !== 'function') {
@@ -16,7 +25,7 @@ export function summarizeTextRunRange(runs, start, end, resolveValue, normalize 
   const first = normalize(values[0]);
   return {
     selected: true,
-    mixed: values.some(value => !Object.is(normalize(value), first)),
+    mixed: values.some(value => !sameValue(normalize(value), first)),
     value: values[0]
   };
 }

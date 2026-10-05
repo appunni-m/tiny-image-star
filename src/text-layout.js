@@ -1,4 +1,5 @@
 import { canvasFontWeight } from './font-variation.js';
+import { TEXT_DECORATION_PROPERTIES, textDecorationDefaults } from './text-decoration-style.js';
 
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
@@ -763,7 +764,7 @@ export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
   return size * amount;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -777,6 +778,7 @@ function richTextStyle(base, run) {
   style.letterSpacing = Number(style.letterSpacing) || 0;
   style.color ||= '#1e1e1e';
   style.textDecoration ||= 'none';
+  Object.assign(style, textDecorationDefaults(style));
   style.baselineShift = Number(style.baselineShift) || 0;
   return style;
 }
@@ -1282,6 +1284,7 @@ export function calculateTextBox(ctx, node, {
       textWrapStyle: node.textWrapStyle || 'auto',
       align: node.align || 'left',
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
+      ...textDecorationDefaults(node),
       textCase: node.textCase || 'none'
     };
     let layout;

@@ -23,6 +23,8 @@ const LIMITS = Object.freeze({
  * WinAnsi/Windows-1252 extended Latin repertoire uses standard Helvetica PDF
  * fonts. Measured, flat inline rich-text runs also use standard Helvetica
  * variants when the SVG contains the editor's PDF placement metadata. Custom
+ * underline styles, thicknesses, offsets, colors and verified Skip ink gaps
+ * arrive as ordinary self-contained filled paths and retain vector geometry. Custom
  * fonts, shaped rich text, text paths, gradient strokes, unsupported filter
  * graphs, colored/translucent luminance masks, and blend modes are rejected with feature-specific
  * errors. A single user-space feDropShadow on a simple vector fill keeps its

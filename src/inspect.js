@@ -7,6 +7,8 @@ import { strokeSideMode, strokeSideWidths, strokeStackForNode } from './strokes.
 import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { resolvedLineHeight } from './text-layout.js';
 import { fontFeatureSettings } from './font-features.js';
+import { TEXT_DECORATION_PROPERTIES } from './text-decoration-style.js';
+import { textDecorationCss } from './text-decoration-controls.js';
 
 function hasFillablePathContour(node) {
   return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
@@ -317,6 +319,7 @@ function cssForEntry(document, entry) {
       ] : []),
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
       `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`,
+      ...Object.entries(textDecorationCss(node)).map(([property, value]) => `${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}: ${value};`),
       ...(['balance', 'pretty'].includes(node.textWrapStyle) ? [`text-wrap: ${node.textWrapStyle};`] : [])
     );
     if (node.textTruncation === 'ending') {
@@ -651,6 +654,7 @@ function summaryForEntry(document, entry) {
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
       textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none',
+      ...Object.fromEntries(TEXT_DECORATION_PROPERTIES.filter(property => node[property] != null).map(property => [property, structuredClone(node[property])])),
       textWrapStyle: ['auto', 'balance', 'pretty'].includes(node.textWrapStyle) ? node.textWrapStyle : 'auto',
       ...(node.textTruncation === 'ending' ? { textTruncation: node.textTruncation } : {}),
       ...(Number.isSafeInteger(node.maxLines) && node.maxLines > 0 ? { maxLines: node.maxLines } : {})

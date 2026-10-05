@@ -1,5 +1,6 @@
 import { createDocument, createNode, validateDocument } from './model.js';
-import { exportAlignedStrokeValidationSvg, svgDropShadowClipIsRedundant } from './svg-export.js';
+import { exportAlignedStrokeValidationSvg, exportTextDecorationValidationSvg, SVG_TEXT_DECORATION_METADATA_ATTRIBUTE, SVG_TEXT_DECORATION_SOURCE_FIELDS, svgDropShadowClipIsRedundant } from './svg-export.js';
+import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
@@ -3174,6 +3175,69 @@ function hasDefaultAlignedPaintContext(style) {
     .every(key => JSON.stringify(style[key]) === JSON.stringify(initialStyle[key]));
 }
 
+function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
+  const metadata = node.attrs[SVG_TEXT_DECORATION_METADATA_ATTRIBUTE];
+  if (typeof metadata !== 'string' || metadata.length > MAX_NETWORK_METADATA_LENGTH
+    || !hasDefaultAlignedPaintContext(style)
+    || ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'textAnchor',
+      'dominantBaseline', 'baselineShift', 'letterSpacing', 'lineHeight', 'textDecoration', 'textCase', 'xmlSpace']
+      .some(key => JSON.stringify(style[key]) !== JSON.stringify(initialStyle[key]))) return null;
+  let payload; try { payload = JSON.parse(metadata); } catch { return null; }
+  const source = payload?.source;
+  const record = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).every(key => keys.includes(key));
+  const runFields = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
+    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift',
+    ...TEXT_DECORATION_PROPERTIES];
+  const safeStyle = value => TEXT_DECORATION_PROPERTIES.every(key => value[key] === undefined || isValidTextDecorationProperty(key, value[key]))
+    && (value.fontAxes == null || isValidFontVariationValues(value.fontAxes))
+    && (value.fontFeatures == null || isValidFontFeatureValues(value.fontFeatures));
+  if (!record(payload, ['version', 'source', 'measurements']) || payload.version !== 1
+    || !record(source, SVG_TEXT_DECORATION_SOURCE_FIELDS) || !safeStyle(source)
+    || typeof source.text !== 'string' || source.text.length > MAX_TEXT_LENGTH || source.textDecorationSkipInk
+    || source.textRuns != null && (!Array.isArray(source.textRuns) || source.textRuns.length > 4096
+      || source.textRuns.some(run => !record(run, runFields) || !safeStyle(run) || run.textDecorationSkipInk
+        || typeof run.text !== 'string'))
+    || !Array.isArray(payload.measurements) || payload.measurements.length > 4096
+    || payload.measurements.some(entry => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
+      || entry[0].length > MAX_TEXT_LENGTH + 4096 || !Number.isFinite(entry[1]) || entry[1] < 0 || entry[1] > 10_000_000)
+    || new Set(payload.measurements.map(entry => entry[0])).size !== payload.measurements.length) return null;
+  let sourceNode; let expectedRoot;
+  const document = createDocument();
+  try {
+    sourceNode = createNode('text', { ...source, x: 0, y: 0, rotation: 0, stroke: null, strokeWidth: 0, children: [] });
+    document.pages[0].children = [sourceNode]; validateDocument(document);
+    expectedRoot = parseXml(exportTextDecorationValidationSvg(sourceNode, payload.measurements));
+    const expected = expectedRoot.children.find(child => child.tag === 'g');
+    const actual = { ...node, attrs: { ...node.attrs } }; delete actual.attrs[SVG_TEXT_DECORATION_METADATA_ATTRIBUTE];
+    if (JSON.stringify(canonicalAlignmentGraph(expected, svgDefinitionNodes(expectedRoot)))
+      !== JSON.stringify(canonicalAlignmentGraph(actual, counter.definitionNodes, { definitionContexts: counter.definitionContexts }))) return null;
+  } catch { return null; }
+  const scale = matrixScale(matrix);
+  if (!(scale > 0) || matrix[0] * matrix[3] - matrix[1] * matrix[2] <= 0) return null;
+  const metric = value => value?.unit === 'pixels' ? { unit: 'pixels', value: value.value * scale } : value;
+  const scaledStyle = value => ({ ...value,
+    ...(value.fontSize != null ? { fontSize: value.fontSize * scale } : {}),
+    ...(value.letterSpacing != null ? { letterSpacing: value.letterSpacing * scale } : {}),
+    ...(value.baselineShift != null ? { baselineShift: value.baselineShift * scale } : {}),
+    ...(value.lineHeightUnit === 'pixels' ? { lineHeight: value.lineHeight * scale } : {}),
+    ...(value.textDecorationThickness ? { textDecorationThickness: metric(value.textDecorationThickness) } : {}),
+    ...(value.textDecorationOffset ? { textDecorationOffset: metric(value.textDecorationOffset) } : {})
+  });
+  const center = mapPoint(matrix, { x: sourceNode.width / 2, y: sourceNode.height / 2 });
+  const imported = createNode('text', { ...scaledStyle(sourceNode), id: `${prefix}-text-decoration-${counter.next++}`,
+    name: cleanLayerName(localName(node)), opacity: style.opacity,
+    width: sourceNode.width * scale, height: sourceNode.height * scale,
+    x: center.x - sourceNode.width * scale / 2, y: center.y - sourceNode.height * scale / 2,
+    rotation: Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI,
+    ...(sourceNode.textRuns ? { textRuns: sourceNode.textRuns.map(scaledStyle) } : {}),
+    ...Object.fromEntries(['paragraphSpacing', 'firstLineIndent', 'listSpacing', 'maxHeight'].filter(key => sourceNode[key] != null).map(key => [key, sourceNode[key] * scale]))
+  });
+  document.pages[0].children = [imported];
+  try { validateDocument(document); } catch { return null; }
+  return imported;
+}
+
 function importEditorAlignedStrokeLayer(node, style, matrix, prefix, counter, budget) {
   const text = node.attrs[ALIGNMENT_METADATA_ATTRIBUTE];
   if (typeof text !== 'string' || text.length > MAX_NETWORK_METADATA_LENGTH) return null;
@@ -3533,7 +3597,8 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
     return [booleanLayer];
   }
   const nativePrimitive = node.tag === 'g'
-    ? importEditorAlignedStrokeLayer(node, style, matrix, prefix, counter, budget)
+    ? importEditorTextDecorationLayer(node, style, matrix, prefix, counter)
+      || importEditorAlignedStrokeLayer(node, style, matrix, prefix, counter, budget)
       || importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget)
     : null;
   if (nativePrimitive) return [nativePrimitive];

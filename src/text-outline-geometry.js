@@ -165,6 +165,13 @@ class TextGeometryContext {
     this.glyphs.push({ geometry, paint: colorPaint(this.fillStyle, this.globalAlpha), glyphId: metadata.glyphId,
       cluster: metadata.cluster, text: metadata.text, font: this.font });
   }
+  drawLocalDecorationGeometry(contours, metadata) {
+    const transformed = transformedContours(contours, this.matrix); this.addContours(transformed);
+    const paint = metadata.paint === 'auto' ? colorPaint(this.fillStyle, this.globalAlpha)
+      : { color: metadata.paint.color, opacity: metadata.paint.opacity * this.globalAlpha,
+        visible: metadata.paint.visible !== false, ...(metadata.independent ? { independent: true } : {}) };
+    this.decorations.push({ geometry: shapeFor(transformed), paint });
+  }
   stroke() {
     if (!this.path || this.path.points.length !== 2) fail('The text decoration has unsupported geometry.');
     const [start, end] = this.path.points; const width = coordinate(this.lineWidth);
@@ -177,6 +184,34 @@ class TextGeometryContext {
       commands: points.slice(1).map((end, index) => ({ type: 'line', start: points[index], end })) }], this.path.matrix);
     this.addContours(contours); this.decorations.push({ geometry: shapeFor(contours), paint: colorPaint(this.strokeStyle, this.globalAlpha) });
   }
+}
+
+/** Record decorations through the editor layout without pretending fallback text is editable glyph geometry. */
+export function collectTextDecorationGeometry(document, source, {
+  measureText, shapeText = measureText?.shapeText, textInkBounds = measureText?.textInkBounds,
+  colorOverride, fillOpacity = source?.fillOpacity ?? 1, decorationMode = 'all', forceDecorationGeometry = false, signal
+} = {}) {
+  abort(signal);
+  if (source?.type !== 'text' || typeof measureText !== 'function') fail('A text layer and an actual text measurement resolver are required for decorations.');
+  const node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
+  const context = new TextGeometryContext(signal); context.skipInvisibleDecorations = true; let measurements = 0;
+  context.measureText = text => {
+    abort(signal); if (++measurements > 16_384) fail('Text decorations exceed the bounded measurement limit.');
+    const match = context.font.match(/^(?:(italic)\s+)?([\d.]+)\s+([\d.]+)px\s+(.+)$/u);
+    if (!match) fail('Text decorations require a valid active font measurement style.');
+    const style = { fontStyle: match[1] || 'normal', fontWeight: Number(match[2]), fontSize: Number(match[3]), fontFamily: match[4] };
+    const width = measureText(text, style); if (!Number.isFinite(width) || width < 0) fail('Text decorations require finite actual font measurements.');
+    if (typeof textInkBounds !== 'function') return { width };
+    const bounds = textInkBounds(text, style, { x: 0, y: 0, letterSpacing: 0, baseline: context.textBaseline === 'alphabetic' });
+    if (!Array.isArray(bounds) || bounds.length > 4096 || bounds.some(item => !item || !['left', 'top', 'right', 'bottom'].every(key => Number.isFinite(item[key])))) fail('Skip ink requires finite actual glyph bounds.');
+    if (!bounds.length) return { width, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 };
+    return { width, actualBoundingBoxLeft: -Math.min(...bounds.map(item => item.left)), actualBoundingBoxRight: Math.max(...bounds.map(item => item.right)),
+      actualBoundingBoxAscent: -Math.min(...bounds.map(item => item.top)), actualBoundingBoxDescent: Math.max(...bounds.map(item => item.bottom)) };
+  };
+  const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
+    shapeText, colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true
+  });
+  abort(signal); return { decorations: context.decorations, ...(context.clipGeometry ? { clipGeometry: context.clipGeometry } : {}), layout };
 }
 
 /**

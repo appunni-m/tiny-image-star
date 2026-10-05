@@ -171,6 +171,9 @@ import { toolbarOverflowDestination, toolbarOverflowState } from './toolbar-over
 import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { defaultImageRecipeConcurrency } from './bulk-recipe-concurrency.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
+import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textDecorationDefaults } from './text-decoration-style.js';
+import { applyTextDecorationControlRange, textDecorationControlPatch, textDecorationCss, textStyleValuesEqual } from './text-decoration-controls.js';
+import { canvasTextInkBounds } from './text-decoration.js';
 import { findPageTextMatches, nextTextMatchIndex, planPageTextReplacement } from './text-find-replace.js';
 import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES, migrateImageLibraryEntry, removeImageLibraryEntry } from './image-asset-library.js';
 import { scopeImageAssetReferences } from './image-asset-restoration.js';
@@ -202,7 +205,7 @@ const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.ma
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textWrapStyle'
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES
 ]);
 const state = {
   shapeBuilder: null,
@@ -3536,6 +3539,15 @@ function fontFeatureControls(node) {
   }).join('');
   return `<details class="font-axis-section font-feature-details"><summary>OpenType features</summary><div class="font-feature-grid">${rows}</div><div class="font-feature-custom"><input id="font-feature-tag-input" class="prop-input" type="text" maxlength="4" placeholder="ss01" aria-label="Custom four-character OpenType feature tag"/><input id="font-feature-value-input" class="prop-input" type="number" min="0" max="65535" step="1" value="1" aria-label="Custom OpenType feature value; clear to restore Auto"/><button class="add-fill" type="button" data-action="set-custom-font-feature">Set feature</button></div><div class="image-properties-note">Set any four-character OpenType tag to a numeric value. Clear the value to restore Auto. Local HarfBuzz applies feature overrides in the canvas.</div></details>`;
 }
+function textUnderlineControls(node, { range = false } = {}) {
+  const style = textDecorationDefaults(node);
+  const paint = style.textDecorationColor;
+  const color = paint === 'auto' ? getNodeColor(state.document, node, 'text') : paint.color;
+  const disabled = node.locked ? ' disabled' : '';
+  const field = name => `data-text-decoration-field="${name}"${range ? ' data-text-decoration-range' : ''}`;
+  const metric = (kind, label, value) => `<label class="text-underline-field"><span>${label}</span><span class="text-underline-metric"><input class="prop-input" ${field(`${kind}Value`)} type="number" min="${kind === 'offset' ? -100000 : 0}" max="100000" step="0.01" value="${value.unit === 'auto' ? '' : value.value}" placeholder="Auto" aria-label="Underline ${label.toLowerCase()}"${disabled}${value.unit === 'auto' ? ' disabled' : ''}/><select class="select-field" ${field(`${kind}Unit`)} aria-label="Underline ${label.toLowerCase()} unit"${disabled}>${[['auto', 'Auto'], ['pixels', 'px'], ['percent', '%']].map(([unit, text]) => `<option value="${unit}"${value.unit === unit ? ' selected' : ''}>${text}</option>`).join('')}</select></span></label>`;
+  return `<div class="text-underline-controls"><label class="text-underline-field"><span>Style</span><select class="select-field" ${field('style')} aria-label="Underline style"${disabled}>${[['solid', 'Solid'], ['dotted', 'Dotted'], ['wavy', 'Wavy']].map(([value, text]) => `<option value="${value}"${value === style.textDecorationStyle ? ' selected' : ''}>${text}</option>`).join('')}</select></label>${metric('thickness', 'Thickness', style.textDecorationThickness)}${metric('offset', 'Offset', style.textDecorationOffset)}<label class="text-underline-field"><span>Color</span><select class="select-field" ${field('colorMode')} aria-label="Underline color mode"${disabled}><option value="auto"${paint === 'auto' ? ' selected' : ''}>Match text paint</option><option value="custom"${paint !== 'auto' ? ' selected' : ''}>Custom color</option></select></label><label class="text-underline-field"><span>Custom color</span><input ${field('color')} type="color" value="${/^#[0-9a-f]{6}$/i.test(color) ? color : '#1e1e1e'}" aria-label="Underline custom color"${disabled}${paint === 'auto' ? ' disabled' : ''}/></label><label class="text-underline-field"><span>Opacity %</span><input class="prop-input" ${field('opacity')} type="number" min="0" max="100" step="0.1" value="${paint === 'auto' ? 100 : paint.opacity * 100}" aria-label="Underline color opacity"${disabled}${paint === 'auto' ? ' disabled' : ''}/></label><label class="text-underline-check"><input ${field('skipInk')} type="checkbox"${style.textDecorationSkipInk ? ' checked' : ''}${disabled}/> Skip ink</label><label class="text-underline-check"><input ${field('visible')} type="checkbox"${paint === 'auto' || paint.visible !== false ? ' checked' : ''}${disabled}${paint === 'auto' ? ' disabled' : ''}/> Show custom color</label></div><div class="image-properties-note">Skip ink leaves gaps where the underline crosses letters. Offset moves the line from its default position.</div>`;
+}
 function textSection(node) {
   const fontFamily = getNodePropertyValue(state.document, node, 'fontFamily') || '';
   const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
@@ -3575,7 +3587,8 @@ function textSection(node) {
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
   const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select><label class="property-label">Text overflow<select class="prop-input select-field" data-prop="textTruncation" aria-label="Text overflow"${node.locked ? ' disabled' : ''}><option value="disabled"${textTruncation === 'disabled' ? ' selected' : ''}>No ellipsis</option><option value="ending"${textTruncation === 'ending' ? ' selected' : ''}>Ending ellipsis</option></select></label><label class="property-label">Max lines<input class="prop-input" data-prop="maxLines" data-optional-number type="number" min="1" max="100000" step="1" value="${maxLines}" placeholder="Unlimited" aria-label="Maximum text lines"${node.locked || textTruncation !== 'ending' ? ' disabled' : ''}/></label>${optionalNumberField('Max height', 'maxHeight', node.maxHeight, { disabled: node.locked })}</div><div class="image-properties-note">Ending ellipsis clips text to its box. Set a maximum line count or a maximum height; the two limits are mutually exclusive.</div>`;
-  return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}<div class="image-properties-note">`));
+  const underlineControls = textDecoration === 'underline' ? `<details class="text-underline-settings" open><summary>Underline settings</summary>${textUnderlineControls(node)}</details>` : '';
+  return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}${underlineControls}<div class="image-properties-note">`));
 }
 function frameVariableModesSection(frame) {
   const collections = state.document.variableCollections || [];
@@ -8082,7 +8095,7 @@ function resizeTextLayers(roots, variableId = null) {
   for (const parent of layoutParents) applyAutoLayout(parent);
 }
 
-const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
+const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift', ...TEXT_DECORATION_PROPERTIES];
 const textBlockTags = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE']);
 function textRunDataAttribute(property) { return `data-run-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`; }
 function normalizeTextRunStyle(source = {}) {
@@ -8090,7 +8103,10 @@ function normalizeTextRunStyle(source = {}) {
   for (const property of textRunStyleKeys) {
     let value = source[property];
     if (value == null) continue;
-    if (property === 'fontFamily') {
+    if (TEXT_DECORATION_PROPERTIES.includes(property)) {
+      if (!isValidTextDecorationProperty(property, value)) continue;
+      value = structuredClone(value);
+    } else if (property === 'fontFamily') {
       value = String(value).trim();
       if (!value || value.length > 160 || /[\x00-\x1f]/.test(value)) continue;
     } else if (property === 'fontWeight') {
@@ -8134,8 +8150,8 @@ function appendTextRun(runs, text, style) {
   const normalized = normalizeTextRunStyle(style);
   const previous = runs.at(-1);
   const keys = textRunStyleKeys.filter(property => normalized[property] != null);
-  if (previous && keys.every(property => previous[property] === normalized[property])
-    && Object.keys(previous).every(property => property === 'text' || normalized[property] != null && previous[property] === normalized[property])) previous.text += text;
+  if (previous && keys.every(property => textStyleValuesEqual(previous[property], normalized[property]))
+    && Object.keys(previous).every(property => property === 'text' || normalized[property] != null && textStyleValuesEqual(previous[property], normalized[property]))) previous.text += text;
   else runs.push({ text, ...normalized });
 }
 function normalizeTextRuns(runs) {
@@ -8157,11 +8173,15 @@ function textRunStyleForElement(element, inherited) {
   const tag = element.tagName;
   if (tag === 'B' || tag === 'STRONG') style.fontWeight = 700;
   if (tag === 'I' || tag === 'EM') style.fontStyle = 'italic';
+  if (tag === 'U') style.textDecoration = 'underline';
+  if (tag === 'S' || tag === 'DEL') style.textDecoration = 'line-through';
   for (const property of textRunStyleKeys) {
     const encoded = element.getAttribute(textRunDataAttribute(property));
+    if (encoded == null && element.dataset?.runPreview === 'true'
+      && (property === 'textDecoration' || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
     let value = encoded != null ? encoded : property === 'fontFeatures'
       ? parseFontFeatureSettings(element.style?.fontFeatureSettings) : element.style?.[property];
-    if (['fontAxes', 'fontFeatures'].includes(property) && encoded != null) {
+    if ((['fontAxes', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property)) && encoded != null) {
       try { value = JSON.parse(encoded); } catch { value = null; }
     }
     if (property === 'fontWeight' && value) value = value === 'bold' ? 700 : value === 'normal' ? 400 : Number(value);
@@ -8255,6 +8275,8 @@ function editorListMarkerLabels(paragraphStyles) {
 }
 function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
   editor.replaceChildren();
+  const textNode = findNode(state.document, state.textNodeId)?.node;
+  const baseStyle = textNode ? textBaseStyle(textNode) : null;
   const paragraphs = [[]];
   for (const run of runs) {
     const pieces = String(run.text || '').split('\n');
@@ -8285,11 +8307,12 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
     }
     for (const run of paragraphRuns) {
       const span = document.createElement('span');
+      span.dataset.runPreview = 'true';
       if (textRunStyleKeys.some(property => run[property] != null)) span.dataset.textRun = 'true';
       for (const property of textRunStyleKeys) {
         const value = run[property];
         if (value == null) continue;
-        span.setAttribute(textRunDataAttribute(property), ['fontAxes', 'fontFeatures'].includes(property) ? JSON.stringify(value) : String(value));
+        span.setAttribute(textRunDataAttribute(property), ['fontAxes', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property) ? JSON.stringify(value) : String(value));
         if (property === 'baselineShift') {
           span.style.position = 'relative';
           span.style.top = `${-value * state.zoom}px`;
@@ -8299,7 +8322,12 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
         } else if (property === 'fontFeatures') {
           const settings = fontFeatureSettings(value);
           if (settings) span.style.fontFeatureSettings = settings;
-        } else span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+        } else if (!TEXT_DECORATION_PROPERTIES.includes(property)) span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+      }
+      if (baseStyle) {
+        const effective = { ...baseStyle, ...run };
+        span.style.textDecoration = effective.textDecoration;
+        Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
       }
       span.textContent = run.text;
       paragraph.append(span);
@@ -8392,7 +8420,8 @@ function textBaseStyle(node) {
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
     baselineShift: 0,
     color: getNodeColor(state.document, node, 'text') || '#1e1e1e',
-    textDecoration: ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'
+    textDecoration: ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none',
+    ...textDecorationDefaults(node)
   };
 }
 function effectiveTextRunValue(run, property, node) {
@@ -8400,10 +8429,11 @@ function effectiveTextRunValue(run, property, node) {
 }
 function selectedTextRunValues(runs, start, end, property, node) {
   const values = [];
+  const base = textBaseStyle(node);
   let cursor = 0;
   for (const run of runs) {
     const next = cursor + run.text.length;
-    if (next > start && cursor < end) values.push(effectiveTextRunValue(run, property, node));
+    if (next > start && cursor < end) values.push(run[property] ?? base[property]);
     cursor = next;
   }
   return values;
@@ -8560,7 +8590,7 @@ function updateTextFormatToolbar() {
   const base = textBaseStyle(node);
   const summarize = (property, normalize = value => value) => selected
     ? summarizeTextRunRange(current.runs, range.start, range.end,
-      run => effectiveTextRunValue(run, property, node), normalize)
+      run => run[property] ?? base[property], normalize)
     : { selected: false, mixed: false, value: null };
   const familyState = summarize('fontFamily', value => String(value).trim());
   const weightState = summarize('fontWeight', value => Number(value));
@@ -8578,7 +8608,57 @@ function updateTextFormatToolbar() {
   setTextFormatControlValue(baselineShift, baselineShiftState.selected ? baselineShiftState.value : 0, baselineShiftState.mixed);
   setTextFormatControlValue(decoration, decorationState.selected ? decorationState.value : base.textDecoration, decorationState.mixed);
   setTextFormatControlValue(color, parseTextRunColor(colorState.selected ? colorState.value : base.color) || '#1e1e1e', colorState.mixed);
+  updateTextUnderlineRangeControls(node, current, range, selected, base);
   positionTextFormatToolbar();
+}
+function updateTextUnderlineRangeControls(node, current, range, selected, base) {
+  const panel = $('#text-format-underline-settings'); const content = $('#text-format-underline-controls');
+  const decorations = selected ? selectedTextRunValues(current.runs, range.start, range.end, 'textDecoration', node) : [];
+  panel.hidden = !selected || !decorations.includes('underline');
+  if (panel.hidden) return;
+  if (!content.childElementCount) content.innerHTML = textUnderlineControls(node, { range: true });
+  const readField = (run, field) => {
+    const source = { ...base, ...run }; const style = textDecorationDefaults(source);
+    if (field === 'style') return style.textDecorationStyle;
+    if (field === 'skipInk') return style.textDecorationSkipInk;
+    if (/^(thickness|offset)(Unit|Value)$/.test(field)) {
+      const [, kind, part] = /^(thickness|offset)(Unit|Value)$/.exec(field);
+      const value = style[kind === 'thickness' ? 'textDecorationThickness' : 'textDecorationOffset'];
+      return part === 'Unit' ? value.unit : value.value ?? '';
+    }
+    const paint = style.textDecorationColor;
+    if (field === 'colorMode') return paint === 'auto' ? 'auto' : 'custom';
+    if (field === 'color') return paint === 'auto' ? source.color : paint.color;
+    if (field === 'opacity') return paint === 'auto' ? 100 : paint.opacity * 100;
+    return paint === 'auto' || paint.visible !== false;
+  };
+  for (const control of content.querySelectorAll('[data-text-decoration-field]')) {
+    const field = control.dataset.textDecorationField;
+    const summary = summarizeTextRunRange(current.runs, range.start, range.end, run => readField(run, field));
+    if (control.type === 'checkbox') {
+      control.checked = Boolean(summary.value); control.indeterminate = summary.mixed;
+      control.setAttribute('aria-label', `${field === 'skipInk' ? 'Underline skip ink' : 'Show custom underline color'}${summary.mixed ? ', mixed values' : ''}`);
+    } else setTextFormatControlValue(control, summary.value, summary.mixed);
+    control.disabled = Boolean(node.locked);
+  }
+  for (const kind of ['thickness', 'offset']) {
+    const unit = content.querySelector(`[data-text-decoration-field="${kind}Unit"]`);
+    content.querySelector(`[data-text-decoration-field="${kind}Value"]`).disabled = Boolean(node.locked) || !unit.value || unit.value === 'auto';
+  }
+  const colorMode = content.querySelector('[data-text-decoration-field="colorMode"]');
+  for (const field of ['color', 'opacity', 'visible']) content.querySelector(`[data-text-decoration-field="${field}"]`).disabled = Boolean(node.locked) || colorMode.value !== 'custom';
+}
+function applyTextUnderlineRangeControl(input) {
+  const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
+  const current = readTextEditorContent(editor); const range = rememberTextSelection();
+  if (!node || node.locked || !range || range.end <= range.start) return;
+  const runs = applyTextDecorationControlRange(current.runs, range.start, range.end, textBaseStyle(node),
+    input.dataset.textDecorationField, input.type === 'checkbox' ? input.checked : input.value);
+  if (!runs) { updateTextFormatToolbar(); return; }
+  if (runs.length > 10_000) { showToast('This text has reached the 10,000 style-run limit.'); return; }
+  renderTextEditorRuns(editor, runs, current.paragraphStyles);
+  state.textSelection = range; setTextEditorSelection(editor, range.start, range.end);
+  editor.focus({ preventScroll: true }); updateTextFormatToolbar();
 }
 function applyTextFormat(property, value) {
   const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
@@ -8656,7 +8736,7 @@ function editTextNode(nodeId) {
   editor.style.setProperty('text-wrap-style', ['balance', 'pretty'].includes(entry.node.textWrapStyle) ? entry.node.textWrapStyle : 'auto');
   editor.style.textAlign = ['left', 'center', 'right', 'justify'].includes(entry.node.align) ? entry.node.align : 'left';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
-  editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
+  editor.style.textDecoration = 'none';
   editor.style.fontFamily = getNodePropertyValue(state.document, entry.node, 'fontFamily') || 'Arial, sans-serif';
   editor.style.fontWeight = String(getNodePropertyValue(state.document, entry.node, 'fontWeight') || 400);
   editor.style.fontStyle = getNodePropertyValue(state.document, entry.node, 'fontStyle') === 'italic' ? 'italic' : 'normal';
@@ -8791,6 +8871,8 @@ function initRichTextEditorEvents() {
     else if (event.target.closest('[data-text-format-done]')) commitTextEdit({ restoreFocus: true });
   });
   toolbar.addEventListener('change', event => {
+    const underlineField = event.target.closest('[data-text-decoration-range]');
+    if (underlineField) { applyTextUnderlineRangeControl(underlineField); return; }
     if (event.target.id === 'text-format-family') {
       const value = event.target.value.trim();
       if (value && value.length <= 160) applyTextFormat('fontFamily', value);
@@ -8825,6 +8907,7 @@ function initRichTextEditorEvents() {
       if (value) applyTextFormat('color', value);
     }
   });
+  toolbar.addEventListener('toggle', positionTextFormatToolbar, true);
   document.addEventListener('selectionchange', () => { if (state.textNodeId) refresh(); });
 }
 
@@ -11895,6 +11978,8 @@ function commitNumericFieldExpression(input) {
 }
 
 function updateInspectorInput(event) {
+  const decorationField = event.target.closest('[data-text-decoration-field]');
+  if (decorationField) { updateTextDecorationInspectorInput(decorationField, { commit: event.type === 'change' }); return; }
   const input = event.target.closest('[data-prop]');
   if (event.target.closest('[data-scale-field]') && updateScaleInspectorInput(event.target.closest('[data-scale-field]'))) return;
   const selected = selectedNodes();
@@ -12156,6 +12241,35 @@ function updateInspectorInput(event) {
     if (removedRoutes) showToast(`Removed ${removedRoutes} scroll-to interaction${removedRoutes === 1 ? '' : 's'} without a scrollable target.`);
   }
   renderer.invalidate();
+}
+
+function updateTextDecorationInspectorInput(input, { commit = false } = {}) {
+  const field = input.dataset.textDecorationField;
+  const raw = input.type === 'checkbox' ? input.checked : input.value;
+  const plans = selectedNodes().filter(node => node.type === 'text' && !node.locked
+    && !findNode(state.document, node.id)?.parents.some(parent => parent.locked)).map(node => ({ node,
+    patch: textDecorationControlPatch(node, field, raw, {
+      fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
+      color: getNodeColor(state.document, node, 'text')
+    }) }));
+  if (!plans.length || plans.some(plan => !plan.patch)) { if (commit) renderInspector(); return; }
+  const changed = plans.filter(({ node, patch }) => !textStyleValuesEqual(node[patch.property], patch.value));
+  if (!changed.length) return;
+  if (!state.controlEdit) { checkpoint('Edit underline'); state.controlEdit = true; }
+  for (const { node, patch } of changed) {
+    node[patch.property] = patch.value;
+    const properties = [patch.property];
+    if (node.typographyStyleId) { delete node.typographyStyleId; properties.push('typographyStyleId'); }
+    recordNodeComponentOverrides(node, properties);
+  }
+  renderer.invalidate();
+  if (field.endsWith('Unit') || field === 'colorMode') {
+    const container = input.closest('.text-underline-settings');
+    if (container && plans.length === 1) {
+      container.innerHTML = `<summary>Underline settings</summary>${textUnderlineControls(plans[0].node)}`;
+      container.querySelector(`[data-text-decoration-field="${field}"]`)?.focus({ preventScroll: true });
+    }
+  }
 }
 
 function applyScalePlan(plan, { recordOverrides = true } = {}) {
@@ -16932,7 +17046,7 @@ function pasteAppearanceToSelection() {
         componentProperties.add('radius'); componentProperties.add('cornerRadii'); componentProperties.add('vertexRadii');
       }
       if (changed.has('textStyle')) {
-        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textStyleId', 'textVariableId']) componentProperties.add(property);
         if (resizeTextNode(result.node)) {
           componentProperties.add('width'); componentProperties.add('height');
           if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
@@ -20071,6 +20185,12 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
     context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, fontAxes)} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
     return measureTrackedText(context, text, letterSpacing);
   };
+  measure.shapeText = pdfMetrics ? undefined : shapeLocalTextRun;
+  measure.textInkBounds = (text, style, placement) => {
+    context.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight || 400, style.fontAxes)} ${style.fontSize || 24}px ${pdfMetrics ? 'Helvetica' : style.fontFamily || 'Arial, sans-serif'}`;
+    context.textBaseline = placement?.baseline ? 'alphabetic' : 'top';
+    return canvasTextInkBounds(context, text, style, placement);
+  };
   if (pdfMetrics) {
     const configurePdfFont = node => {
       const fontSize = getNodePropertyValue(state.document, node, 'fontSize') || 24;
@@ -23167,6 +23287,8 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    const decorationField = event.target.closest('[data-text-decoration-field]');
+    if (decorationField) { updateTextDecorationInspectorInput(decorationField, { commit: true }); finishInspectorInput(); return; }
     const numericExpression = event.target.closest('[data-numeric-expression]');
     if (numericExpression) { commitNumericFieldExpression(numericExpression); return; }
     if (event.target.matches('[data-frame-preset-select]')) {

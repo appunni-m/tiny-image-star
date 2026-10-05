@@ -24,6 +24,9 @@ import { fontVariationSettings } from './font-variation.js';
 import { fontFeatureSettings } from './font-features.js';
 import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
 import { hasVisibleRenderedPaint, renderNodeInkBounds, transformInkBounds } from './render-ink-bounds.js';
+import { decorationStyleForRun } from './text-decoration.js';
+import { collectTextDecorationGeometry } from './text-outline-geometry.js';
+import { TEXT_DECORATION_PROPERTIES } from './text-decoration-style.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -634,7 +637,7 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
     else if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId, strokeWidthScale)}`);
     else if (node.type === 'text') markup = textMarkup(node, document, measureText, {
       fillValue: 'transparent', fillOpacity: 0, includeStroke: true,
-      strokeItem: stroke, strokeIndex: index, strokeGradientId, strokeWidthScale, clipSuffix: `stroke-${index}`
+      strokeItem: stroke, strokeIndex: index, strokeGradientId, strokeWidthScale, clipSuffix: `stroke-${index}`, decorationsMode: 'auto'
     });
     else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId, strokeWidthScale });
     if (markup) markup = markup.replace(/^<([a-z][\w:-]*)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"${paintBlendStyle(stroke.blendMode)}`);
@@ -1324,6 +1327,7 @@ function textLines(node, document, measureText) {
       align: node.align || 'left',
       color: color(document, node, 'text'),
       textDecoration: node.textDecoration || 'none',
+      ...decorationStyleForRun(node),
       textCase: node.textCase || 'none'
     };
     const layout = layoutTextRuns(runs, Math.max(1, Number(node.width)), baseStyle, (value, style) => {
@@ -1464,10 +1468,123 @@ function richLineJustificationOffsets(line) {
   return offsets;
 }
 
+export const SVG_TEXT_DECORATION_METADATA_ATTRIBUTE = 'data-tiny-image-star-text-decoration-v1';
+export const SVG_TEXT_DECORATION_SOURCE_FIELDS = Object.freeze([
+  'text', 'width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'align', 'verticalAlign', 'textCase', 'textDecoration',
+  'color', 'fillOpacity', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight',
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textRuns', ...TEXT_DECORATION_PROPERTIES
+]);
+export function svgTextMeasurementKey(text, style) {
+  return JSON.stringify([String(text), ...['fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
+    'letterSpacing', 'fontAxes', 'fontFeatures'].map(key => style[key] ?? null)]);
+}
+
+function textDecorationRecoveryMeasurer(node, document, measureText, options) {
+  if (options.recoveryMetadata === false || node.textPath || node.paragraphStyles?.length || node.fills != null
+    || strokeStackForNode(node).some(stroke => stroke.visible !== false && stroke.width > 0 && stroke.opacity > 0)
+    || options.fillValue !== undefined || options.strokeItem || typeof measureText !== 'function'
+    || measureText.pdfNaturalWidth || measureText.pdfBaselineOffset
+    || ![node, ...(node.textRuns || [])].some(customTextDecoration)
+    || [node, ...(node.textRuns || [])].some(style => style.textDecorationSkipInk)) return null;
+  const source = Object.fromEntries(SVG_TEXT_DECORATION_SOURCE_FIELDS.filter(key => node[key] !== undefined)
+    .map(key => [key, structuredClone(node[key])]));
+  source.text = String(getNodePropertyValue(document, node, 'text') ?? '');
+  for (const key of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent']) {
+    const value = getNodePropertyValue(document, node, key); if (value !== undefined) source[key] = value;
+  }
+  source.color = color(document, node, 'text');
+  const measurements = new Map();
+  const measured = (text, style) => {
+    const value = Number(measureText(text, style)); const key = svgTextMeasurementKey(text, style);
+    if (!Number.isFinite(value) || value < 0 || value > 10_000_000) throw new SvgExportError('unbounded underline text measurements', node);
+    if (measurements.has(key) && measurements.get(key) !== value) throw new SvgExportError('unstable underline text measurements', node);
+    measurements.set(key, value);
+    if (measurements.size > 4096) throw new SvgExportError('underline recovery requiring more than 4096 text measurements', node);
+    return value;
+  };
+  measured.shapeText = measureText.shapeText; measured.textInkBounds = measureText.textInkBounds;
+  return { measured, wrap(markup) {
+    const payload = JSON.stringify({ version: 1, source, measurements: [...measurements] });
+    if (payload.length > MAX_NETWORK_METADATA_LENGTH) throw new SvgExportError('underline recovery metadata larger than 1 MiB', node);
+    return `<g ${SVG_TEXT_DECORATION_METADATA_ATTRIBUTE}="${escapeXml(payload)}">${markup}</g>`;
+  } };
+}
+
+/** Regenerate only the self-contained text/decorations graph for safe native recovery. */
+export function exportTextDecorationValidationSvg(source, measurements) {
+  const values = new Map(measurements);
+  const measureText = (text, style) => {
+    const key = svgTextMeasurementKey(text, style);
+    if (!values.has(key)) throw new TypeError('Missing bound native text measurement.');
+    return values.get(key);
+  };
+  const node = { ...source, id: 'text-decoration-validation', type: 'text', x: 0, y: 0,
+    rotation: 0, opacity: 1, stroke: null, strokeWidth: 0, children: [] };
+  validateTree([node], emptyDocument, null);
+  const markup = textMarkup(node, emptyDocument, measureText, { recoveryMetadata: false });
+  return svgDocument(`<g>${markup}</g>`, [], { x: 0, y: 0, width: Math.max(1, node.width), height: Math.max(1, node.height) });
+}
+
+function customTextDecoration(style) {
+  return style?.textDecorationStyle != null && style.textDecorationStyle !== 'solid'
+    || style?.textDecorationThickness?.unit && style.textDecorationThickness.unit !== 'auto'
+    || style?.textDecorationOffset?.unit && style.textDecorationOffset.unit !== 'auto'
+    || style?.textDecorationColor != null && style.textDecorationColor !== 'auto'
+    || style?.textDecorationSkipInk === true;
+}
+
+function decorationContoursSvg(contours) {
+  return contours.map(contour => {
+    let data = `M ${number(contour.start.x)} ${number(contour.start.y)}`;
+    for (const command of contour.commands) {
+      if (command.type === 'line') data += ` L ${number(command.end.x)} ${number(command.end.y)}`;
+      else if (command.type === 'quadratic') data += ` Q ${number(command.control.x)} ${number(command.control.y)} ${number(command.end.x)} ${number(command.end.y)}`;
+      else if (command.type === 'cubic') data += ` C ${number(command.control1.x)} ${number(command.control1.y)} ${number(command.control2.x)} ${number(command.control2.y)} ${number(command.end.x)} ${number(command.end.y)}`;
+      else throw new TypeError('SVG decorations require native line, quadratic or cubic contours.');
+    }
+    return data + (contour.closed ? ' Z' : '');
+  }).join(' ');
+}
+
+function customDecorationRecords(node, document, measureText, mode = 'all') {
+  try {
+    return collectTextDecorationGeometry(document, node, { measureText, fillOpacity: 1,
+      decorationMode: mode === 'custom' ? 'independent' : mode }).decorations;
+  } catch (error) { throw new SvgExportError(`custom underline geometry (${error.message})`, node); }
+}
+
+function customDecorationMarkup(node, document, measureText, fillValue, fillOpacity, mode) {
+  const records = customDecorationRecords(node, document, measureText, mode);
+  const automatic = []; const independent = [];
+  for (const { geometry, paint } of records) {
+    if (paint.visible === false || !(paint.opacity > 0)) continue;
+    const ink = geometry.fillGroups.flatMap(group => group.contours);
+    if (!ink.length) continue;
+    const color = paint.independent || fillValue === undefined ? paint.color : fillValue;
+    const opacity = paint.independent ? paint.opacity : paint.opacity * (fillOpacity ?? node.fillOpacity ?? 1);
+    if (!color || ['none', 'transparent'].includes(color) || !(opacity > 0)) continue;
+    if (!isSvgPaintValue(color)) throw new SvgExportError('invalid underline color', node);
+    const markup = `<path data-tiny-image-star-text-decoration="underline" d="${decorationContoursSvg(ink)}" fill="${escapeXml(color)}" fill-opacity="${number(opacity)}" stroke="none"/>`;
+    (paint.independent ? independent : automatic).push(markup);
+  }
+  // Automatic decorations are part of each explicit glyph-fill plane. A
+  // custom solid color is an independent paint outside that plane.
+  const auto = automatic.join('');
+  return (node.fills != null && auto ? clipTruncatedTextMarkup({ ...node, textTruncation: 'ending' }, auto, 'decoration-fill-plane') : auto)
+    + independent.join('');
+}
+
 function textMarkup(node, document, measureText, {
   fillValue, fillOpacity, includeStroke = true, clipSuffix = 'base',
-  strokeItem, strokeIndex = 0, strokeGradientId = null, strokeWidthScale = 1
+  strokeItem, strokeIndex = 0, strokeGradientId = null, strokeWidthScale = 1, decorationsMode = 'all', recoveryMetadata = true
 } = {}) {
+  if (strokeItem && decorationsMode === 'all') decorationsMode = 'auto';
+  const recovery = textDecorationRecoveryMeasurer(node, document, measureText, { fillValue, strokeItem, recoveryMetadata });
+  if (recovery) measureText = recovery.measured;
+  const finish = markup => recovery ? recovery.wrap(markup) : markup;
+  const customDecorations = [node, ...(node.textRuns || [])].some(customTextDecoration);
+  const decorationMarkup = () => customDecorationMarkup(node, document, measureText, fillValue, fillOpacity, decorationsMode);
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
   const letterSpacing = Number(getNodePropertyValue(document, node, 'letterSpacing') ?? 0);
@@ -1522,7 +1639,7 @@ function textMarkup(node, document, measureText, {
         throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
       }
       const runDecoration = ['underline', 'line-through'].includes(run.textDecoration)
-        ? ` text-decoration="${run.textDecoration}"` : '';
+        && !(run.textDecoration === 'underline' && customTextDecoration({ ...node, ...run })) ? ` text-decoration="${run.textDecoration}"` : '';
       const baselineShift = Number(run.baselineShift || 0);
       if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
         throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
@@ -1530,7 +1647,8 @@ function textMarkup(node, document, measureText, {
       const baseline = baselineShift ? ` baseline-shift="${number(baselineShift)}px"` : '';
       return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}"${fontVariationAttribute(run.fontAxes || node.fontAxes)}${fontFeatureAttribute(run.fontFeatures || node.fontFeatures)} fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
     }).join('') : escapeXml(text);
-    return clipTruncatedTextMarkup(node, `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)} fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>`, clipSuffix);
+    const pathDecorations = customDecorations ? decorationMarkup() : '';
+    return clipTruncatedTextMarkup(node, `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)} fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>${pathDecorations}`, clipSuffix);
   }
   const align = node.align === 'center' ? 'middle' : node.align === 'right' ? 'end' : 'start';
   const anchorX = node.align === 'center' ? Number(node.width) / 2 : node.align === 'right' ? Number(node.width) : 0;
@@ -1580,15 +1698,16 @@ function textMarkup(node, document, measureText, {
           ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(pdfX)}" data-tiny-image-star-pdf-y="${number(pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"`
           : '';
         const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)}${baselineShiftAttribute} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
-        if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
+        if (customDecorations || !['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);
         const x = lineStartX + (part.offsetX + (justification?.before || 0)) * scaleX;
         const decoratedWidth = part.width + (justification?.within || 0);
         const decorationWidth = Math.max(1, style.fontSize / 16);
-        const y = line.y + verticalOffset - baselineShift + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
+        const top = line.y + verticalOffset - baselineShift;
+        const y = top + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
         const stroke = partColor === 'none' ? 'none' : partColor;
-        decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + decoratedWidth * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
+        if (decorationsMode !== 'custom') decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + decoratedWidth * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
         return partMarkup;
       }).join('');
       return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
@@ -1596,7 +1715,7 @@ function textMarkup(node, document, measureText, {
     }).join('');
     const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId, strokeWidthScale) : '';
     const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)}${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap"${pdfAscentAttribute}>${richTspans}</text>`;
-    return clipTruncatedTextMarkup(node, element + decorations.join(''), clipSuffix);
+    return finish(clipTruncatedTextMarkup(node, element + (customDecorations ? decorationMarkup() : decorations.join('')), clipSuffix));
   }
   const tspans = lines.map(line => {
     const { displayText, width, naturalWidth } = line;
@@ -1625,10 +1744,12 @@ function textMarkup(node, document, measureText, {
   const decorationWidth = Math.max(1, fontSize / 16);
   const decorations = decoration ? lines.filter(line => line.width > 0).map(line => {
     const x = textLineStartX(node, line);
-    const y = line.y + verticalOffset + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
+    const top = line.y + verticalOffset;
+    const y = top + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
+    if (decorationsMode === 'custom') return '';
     return `<path d="M ${number(x)} ${number(y)} L ${number(x + line.width)} ${number(y)}" fill="none" stroke="${escapeXml(textColor === 'transparent' ? 'none' : textColor)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`;
   }).join('') : '';
-  return clipTruncatedTextMarkup(node, element + decorations, clipSuffix);
+  return finish(clipTruncatedTextMarkup(node, element + (customDecorations ? decorationMarkup() : decorations), clipSuffix));
 }
 
 function markTextFillMarkup(markup, fill) {
@@ -1673,16 +1794,20 @@ function renderTextFillStack(node, document, context, layerIndex, measureText) {
       fillValue = `url(#${gradient.id})`;
     }
     const painted = textMarkup(node, document, measureText, {
-      fillValue, fillOpacity: fill.opacity, includeStroke: false, clipSuffix: `fill-${fillIndex}`
+      fillValue, fillOpacity: fill.opacity, includeStroke: false, clipSuffix: `fill-${fillIndex}`, decorationsMode: 'auto'
     });
     markup += markTextFillMarkup(painted, fill);
+  }
+  if ([node, ...(node.textRuns || [])].some(style => style.textDecorationColor && style.textDecorationColor !== 'auto')) {
+    markup += textMarkup(node, document, measureText, { fillValue: 'transparent', fillOpacity: 0,
+      includeStroke: false, clipSuffix: 'custom-decoration', decorationsMode: 'custom' });
   }
   // Text strokes trace glyph contours. Keep the complete ordered stack above
   // every fill, matching the vector renderer's paint order.
   if (Array.isArray(node.strokes)) {
     markup += shapeStrokeStackMarkup(node, document, measureText, null, context, layerIndex);
   } else {
-    markup += textMarkup(node, document, measureText, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, clipSuffix: 'outline' });
+    markup += textMarkup(node, document, measureText, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, clipSuffix: 'outline', decorationsMode: 'auto' });
   }
   return markup;
 }
@@ -1711,8 +1836,11 @@ function vectorMaskSourceMarkup(node, document, measureText, context, layerIndex
     && (stroke.gradient || stroke.color)).map(stroke => ({
     ...stroke, color: '#ffffff', opacity: 1, gradient: null, blendMode: 'normal'
   }));
+  const whiteDecoration = style => style.textDecorationColor && style.textDecorationColor !== 'auto'
+    ? { ...style, textDecorationColor: { ...style.textDecorationColor, color: '#ffffff', opacity: 1 } } : style;
   const whiteShape = {
-    ...node,
+    ...whiteDecoration(node),
+    ...(node.textRuns ? { textRuns: node.textRuns.map(run => ({ ...whiteDecoration(run), color: '#ffffff' })) } : {}),
     fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null,
     fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0,
     radius: getNodePropertyValue(document, node, 'radius') ?? node.radius,
@@ -1725,14 +1853,21 @@ function vectorMaskSourceMarkup(node, document, measureText, context, layerIndex
       fillValue, fillOpacity: 1, includeStroke: true, strokeItem: strokes[0], strokeIndex: 0
     });
   } else {
-    if (hasVisibleFill) paintedGeometry += shapeMarkup(whiteShape, document, measureText, null, {
-      fillValue: '#ffffff', fillOpacity: 1, includeStroke: false
-    });
+    if (hasVisibleFill) paintedGeometry += node.type === 'text'
+      ? textMarkup(whiteShape, document, measureText, { fillValue: '#ffffff', fillOpacity: 1, includeStroke: false, decorationsMode: 'auto' })
+      : shapeMarkup(whiteShape, document, measureText, null, { fillValue: '#ffffff', fillOpacity: 1, includeStroke: false });
     for (const [index, stroke] of strokes.entries()) {
       paintedGeometry += shapeMarkup(whiteShape, document, measureText, null, {
         fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index
       });
     }
+  }
+  if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.textDecorationColor
+    && style.textDecorationColor !== 'auto' && style.textDecorationColor.visible !== false)) {
+    // Independent underlines remain vector mask geometry even without glyph
+    // fills. Paint alpha/color do not attenuate a vector mask's coverage.
+    paintedGeometry += textMarkup(whiteShape, document, measureText, { fillValue: 'transparent', fillOpacity: 0,
+      includeStroke: false, decorationsMode: 'custom', clipSuffix: 'vector-decoration' });
   }
   return `<g${transform}>${paintedGeometry}</g>`;
 }
@@ -1740,7 +1875,10 @@ function vectorMaskSourceMarkup(node, document, measureText, context, layerIndex
 function maskSourceMarkup(source, document, measureText, context, maskMode = 'alpha', layerIndex = 0) {
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
-  if (maskMode === 'alpha' && node.booleanGeometry === 'vector') return renderTree([node], document, context, true, measureText);
+  if (maskMode === 'alpha' && (node.booleanGeometry === 'vector'
+    || node.type === 'text' && [node, ...(node.textRuns || [])].some(customTextDecoration))) {
+    return renderTree([node], document, context, true, measureText);
+  }
   if (maskMode === 'luminance') {
     if (['group', 'frame', 'section'].includes(node.type)) return renderTree([node], document, context, true, measureText);
     const gradient = gradientDefinition(node, layerIndex);
@@ -1767,8 +1905,11 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
     }).join('');
     return `<g${transform}>${faces}</g>`;
   }
+  const whiteDecoration = style => style.textDecorationColor && style.textDecorationColor !== 'auto'
+    ? { ...style, textDecorationColor: { ...style.textDecorationColor, color: '#ffffff', opacity: 1 } } : style;
   const whiteShape = {
-    ...node,
+    ...whiteDecoration(node),
+    ...(node.textRuns ? { textRuns: node.textRuns.map(run => ({ ...whiteDecoration(run), color: '#ffffff' })) } : {}),
     fill: '#ffffff', fillOpacity: alpha, fillGradient: null, imageFill: null,
     fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0,
     radius: getNodePropertyValue(document, node, 'radius') ?? node.radius,
@@ -1887,7 +2028,7 @@ function renderStagedGroup(node, document, context, index, includePosition, meas
     if (!Number.isFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1) throw new TypeError('SVG export requires valid staged fill opacity.');
     // Match legacy per-glyph alpha, including overlapping glyphs. A single
     // opacity wrapper would instead flatten those fills before scaling alpha.
-    if (fillOpacity !== 1) fillChildren = fillChildren.map(child => ({ ...child,
+    if (fillOpacity !== 1) fillChildren = fillChildren.map(child => child.effectPaintPhase === 'decoration' ? child : ({ ...child,
       opacity: Number(getNodePropertyValue(document, child, 'opacity') ?? 1) * fillOpacity,
       variableBindings: { ...(child.variableBindings || {}), opacity: null } }));
   }
@@ -2436,6 +2577,18 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
         const lines = textLines(node, document, measureText);
+        if ([node, ...(node.textRuns || [])].some(customTextDecoration)) {
+          for (const { geometry, paint } of customDecorationRecords(node, document, measureText)) {
+            if (paint.visible === false || !(paint.opacity > 0)) continue;
+            for (const group of geometry.fillGroups) for (const contour of group.contours) {
+              const points = [contour.start, ...contour.commands.flatMap(command => [command.end, command.control, command.control1, command.control2].filter(Boolean))];
+              const padding = layerEffectPadding(node.effects);
+              for (const point of points) for (const [dx, dy] of [[-padding.x, -padding.y], [padding.x, -padding.y], [-padding.x, padding.y], [padding.x, padding.y]]) {
+                include(transformPoint(matrix, point.x + dx, point.y + dy), bounds);
+              }
+            }
+          }
+        }
         const verticalOffset = textVerticalOffset(node, lines, lineHeight);
         for (const line of lines) {
           const lineWidth = line.width;

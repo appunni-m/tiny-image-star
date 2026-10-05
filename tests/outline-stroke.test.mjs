@@ -335,6 +335,28 @@ test('text color variables follow glyphs and decorations; text color styles mate
   validateDocument(styledDesign);
 });
 
+test('independently colored underline paths stay outside glyph fill masks and scalar text color links', async () => {
+  const node = createNode('text', { name:'Custom underline', text:'A', width:20, height:20, fillOpacity:.4,
+    fills:[createFillLayer('solid',{color:'#123456',opacity:.7})] });
+  const document = design(node); const collection=createVariableCollection(document,'Text colors');
+  const colorVariable=createColorVariable(document,collection.id,'Ink','#cc2244');
+  bindColorVariable(document,node.id,colorVariable.id,'text');
+  const glyph=nativeRect(1,2,10,18); const decoration=nativeRect(1,19,10,20);
+  const plan=await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>textOutlineFixture(node,[glyph],{
+    decorations:[{geometry:decoration,paint:{color:'#00aa88',opacity:.55,visible:true,independent:true}}]
+  })});
+  applyOutlineStroke(document,plan);
+  const independent=node.children.find(child=>child.effectPaintPhase==='decoration');
+  assert.ok(independent);
+  assert.equal(independent.fillVariableId,undefined);
+  assert.equal(independent.fills[0].color,'#00aa88');
+  assert.equal(independent.fills[0].opacity,.55);
+  const mask=node.children.find(child=>child.mask);
+  assert.ok(mask);
+  assert.equal(mask.children[0].children.length,1,'custom underline color is not included in the ordinary glyph mask');
+  validateDocument(document);
+});
+
 test('truncation that removes an earlier glyph does not shift later glyph paint assignments', async () => {
   const node=createNode('text',{text:'AB',width:20,height:20,textTruncation:'ending'}); const document=design(node);
   const first=nativeRect(1,1,8,18), second=nativeRect(9,1,19,18); let intersections=0;

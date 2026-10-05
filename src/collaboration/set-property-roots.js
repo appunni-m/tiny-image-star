@@ -1,3 +1,5 @@
+import { TEXT_DECORATION_PROPERTIES } from '../text-decoration-style.js';
+
 // Keep guest planning and host validation on the same explicit edit surface.
 // Document validation remains authoritative for each node type and value; this
 // list only prevents operations from rewriting identity and hierarchy fields.
@@ -16,7 +18,7 @@ const roots = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
-  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textWrapStyle', 'fit', 'scalingFactor',
+  'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'fit', 'scalingFactor',
   'adjustments', 'transforms', 'fileName', 'sourceWidth', 'sourceHeight'
 ]);
 
