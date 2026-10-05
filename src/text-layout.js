@@ -1,6 +1,7 @@
 import { canvasFontWeight } from './font-variation.js';
 import { TEXT_DECORATION_PROPERTIES, textDecorationDefaults } from './text-decoration-style.js';
 import { resolveTextPositionView } from './text-position.js';
+import { createTextLeadingTrimResolver, canvasLeadingTrimMetrics } from './text-leading-trim.js';
 
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
@@ -591,15 +592,15 @@ function justificationGapCount(text) {
   return gaps;
 }
 
-function textOverflowLimit(lines, { maxLines, maxHeight, boxHeight }) {
+function textOverflowLimit(lines, { maxLines, maxHeight, boxHeight, heightForLines }) {
   const lineLimit = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : Infinity;
   const heights = [maxHeight, boxHeight].filter(value => value != null).map(Number).filter(value => Number.isFinite(value) && value >= 0);
   const heightLimit = heights.length ? Math.min(...heights) : Infinity;
   let count = 0;
   for (const line of lines) {
     const lineTop = Number(line.y) || 0;
-    const lineBottom = lineTop + (Number(line.lineHeight) || 0);
-    if (count >= lineLimit || lineTop >= heightLimit || lineBottom > heightLimit) break;
+    const lineBottom = heightForLines ? heightForLines(lines, count + 1) : lineTop + (Number(line.lineHeight) || 0);
+    if (count >= lineLimit || !heightForLines && lineTop >= heightLimit || lineBottom > heightLimit) break;
     count += 1;
   }
   return count;
@@ -653,10 +654,10 @@ function truncateRichLine(line, width, measure, graphemes, fallbackStyle) {
 
 function applyTextTruncation(layout, {
   textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null,
-  width = Infinity, measure, rich = false, graphemes = graphemeSegmenter, fallbackStyle = null
+  width = Infinity, measure, rich = false, graphemes = graphemeSegmenter, fallbackStyle = null, heightForLines
 } = {}) {
   if (textTruncation !== 'ending') return layout;
-  const visibleCount = textOverflowLimit(layout.lines, { maxLines, maxHeight, boxHeight });
+  const visibleCount = textOverflowLimit(layout.lines, { maxLines, maxHeight, boxHeight, heightForLines });
   if (visibleCount >= layout.lines.length) return layout;
   const lines = layout.lines.slice(0, visibleCount);
   const lastLine = lines.at(-1);
@@ -688,7 +689,9 @@ export function layoutPlainText(text, maxWidth, measure, {
   maxHeight = null,
   boxHeight = null,
   wordSegmenter = thaiWordSegmenter,
-  graphemeSegmenter: graphemes = graphemeSegmenter
+  graphemeSegmenter: graphemes = graphemeSegmenter,
+  leadingTrim, leadingTrimStyle = markerStyle || {}, shapeText = measure?.shapeText,
+  leadingTrimMetrics = measure?.leadingTrimMetrics, strictLeadingTrim = false
 } = {}) {
   if (typeof measure !== 'function') throw new TypeError('Text layout requires a measurement function.');
   const limit = Number(maxWidth);
@@ -750,9 +753,12 @@ export function layoutPlainText(text, maxWidth, measure, {
       y += lineHeightPx;
     }
   }
-  return applyTextTruncation({ lines, width, height: y }, {
-    textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, graphemes
-  });
+  const trim = createTextLeadingTrimResolver({ ...leadingTrimStyle, leadingTrim: leadingTrim ?? leadingTrimStyle.leadingTrim }, {
+    shapeText, measureMetrics: leadingTrimMetrics, strict: strictLeadingTrim });
+  return trim.resolve(applyTextTruncation({ lines, width, height: y }, {
+    textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, graphemes,
+    ...(trim.active ? { heightForLines: trim.heightForLines } : {})
+  }));
 }
 
 export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
@@ -765,7 +771,7 @@ export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
   return size * amount;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift', 'textPosition', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift', 'textPosition', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset', 'leadingTrim'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -1068,7 +1074,9 @@ function splitRichWordByWidth(word, maxWidth, measure, segmenter) {
 export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
   wordSegmenter: thaiWords = thaiWordSegmenter,
   graphemeSegmenter: graphemes = graphemeSegmenter,
-  textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null
+  textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null,
+  shapeText = baseStyle.shapeText || measure?.shapeText, leadingTrimMetrics = measure?.leadingTrimMetrics,
+  strictLeadingTrim = false
 } = {}) {
   if (!Array.isArray(runs) || typeof measure !== 'function') throw new TypeError('Rich text layout requires runs and a measurement function.');
   const limit = Number(maxWidth);
@@ -1229,10 +1237,12 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     width: Math.max(0, ...lines.flatMap(line => [line.indent + line.naturalWidth, line.marker ? line.marker.x + line.marker.width : 0])),
     height: y
   };
-  return applyTextTruncation(layout, {
+  const trim = createTextLeadingTrimResolver({ ...baseStyle, textRuns: runs }, {
+    shapeText, measureMetrics: leadingTrimMetrics, strict: strictLeadingTrim });
+  return trim.resolve(applyTextTruncation(layout, {
     textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, rich: true, graphemes,
-    fallbackStyle: fallback
-  });
+    fallbackStyle: fallback, ...(trim.active ? { heightForLines: trim.heightForLines } : {})
+  }));
 }
 
 export function calculateTextBox(ctx, node, {
@@ -1295,7 +1305,7 @@ export function calculateTextBox(ctx, node, {
       align: node.align || 'left',
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
       ...textDecorationDefaults(node),
-      textCase: node.textCase || 'none'
+      textCase: node.textCase || 'none', leadingTrim: node.leadingTrim, baselineShift: node.baselineShift
     };
     let layout;
     try {
@@ -1305,20 +1315,21 @@ export function calculateTextBox(ctx, node, {
       }, {
         textTruncation: node.textTruncation,
         maxLines: node.maxLines,
-        maxHeight: node.maxHeight
+        maxHeight: node.maxHeight,
+        shapeText, leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle)
       });
     } finally {
       ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
     }
     if (mode === 'auto-width') {
-      const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+      const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
       return {
         width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
         height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
           ? Math.min(measuredHeight, node.maxHeight) : measuredHeight
       };
     }
-    const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+    const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
     return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
       ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
   }
@@ -1328,11 +1339,13 @@ export function calculateTextBox(ctx, node, {
       line => measure(line, { ...resolvedNode }),
       { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
         textWrapStyle: node.textWrapStyle || 'auto',
+        leadingTrim: node.leadingTrim, leadingTrimStyle: resolvedNode, shapeText,
+        leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle),
         textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
         fontFamily: family, fontSize: size, fontWeight: weight,
         fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
       } });
-    const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+    const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
     return {
       width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
       height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
@@ -1344,11 +1357,13 @@ export function calculateTextBox(ctx, node, {
     line => measure(line, { ...resolvedNode }),
     { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left',
       textWrapStyle: node.textWrapStyle || 'auto',
+      leadingTrim: node.leadingTrim, leadingTrimStyle: resolvedNode, shapeText,
+      leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle),
       textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
       fontFamily: family, fontSize: size, fontWeight: weight,
       fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
     } });
-  const measuredHeight = Math.max(36, Math.ceil(layout.height + 4));
+  const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
   return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
     ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
 }

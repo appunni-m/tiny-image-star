@@ -28,6 +28,22 @@ test('scaling positioned text preserves semantic ranges and scales authored metr
   assert.equal(node.fontSize, 20); assert.equal(node.textRuns[1].baselineShift, 2);
 });
 
+test('scaling vertically trimmed text preserves semantic range values without turning font metrics into authored offsets', () => {
+  const node = { id: 'trim', type: 'text', x: 0, y: 0, width: 100, height: 30, fontSize: 20,
+    lineHeight: 30, lineHeightUnit: 'pixels', leadingTrim: { type: 'CAP_HEIGHT' },
+    text: 'HgQ', textRuns: [{ text: 'Hg', fontSize: 16, baselineShift: 2 },
+      { text: 'Q', leadingTrim: { type: 'NONE' } }], children: [] };
+  const authored = structuredClone(node);
+  const patch = planScaleTransform([{ node, ancestors: [] }], 2, 'top-left').patches[0];
+  const scaled = { ...node, ...patch };
+  assert.equal(scaled.fontSize, 40); assert.equal(scaled.lineHeight, 60);
+  assert.deepEqual(scaled.leadingTrim, { type: 'CAP_HEIGHT' });
+  assert.deepEqual(scaled.textRuns[1].leadingTrim, { type: 'NONE' });
+  assert.equal(scaled.textRuns[0].fontSize, 32); assert.equal(scaled.textRuns[0].baselineShift, 4);
+  assert.equal(scaled.textRuns[0].textPositionTopOffset, undefined);
+  assert.deepEqual(node, authored);
+});
+
 test('all nine scale anchors preserve their page-space point through rotation and nesting', () => {
   const parent = { id: 'parent', x: 80, y: 35, width: 200, height: 120, rotation: 27 };
   const node = { id: 'root', x: 12, y: 18, width: 80, height: 40, rotation: -19, children: [] };

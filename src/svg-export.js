@@ -29,6 +29,8 @@ import { collectTextDecorationGeometry, collectTextOutlineGeometry } from './tex
 import { TEXT_DECORATION_PROPERTIES } from './text-decoration-style.js';
 import { resolveTextPositionView } from './text-position.js';
 import { isValidTextPosition } from './text-position-style.js';
+import { isValidLeadingTrim } from './text-leading-trim-style.js';
+import { hasTextLeadingTrim } from './text-leading-trim.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -721,6 +723,9 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
   if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.textPosition !== undefined && !isValidTextPosition(style.textPosition))) {
     throw new TypeError(`SVG export requires a valid text position on layer ${node.name || node.id || '(unnamed)'}.`);
   }
+  if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.leadingTrim !== undefined && !isValidLeadingTrim(style.leadingTrim))) {
+    throw new TypeError(`SVG export requires a valid leading trim on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
   const fillValidationNode = node.type === 'text' ? { ...node, type: 'rectangle' } : node;
   if (Array.isArray(node.fills)) {
     for (const fill of node.fills) {
@@ -1346,6 +1351,7 @@ function textLines(node, document, measureText) {
       textDecoration: node.textDecoration || 'none',
       ...decorationStyleForRun(node),
       textPosition: node.textPosition,
+      leadingTrim: node.leadingTrim,
       textCase: node.textCase || 'none'
     };
     const layout = layoutTextRuns(runs, Math.max(1, Number(node.width)), baseStyle, (value, style) => {
@@ -1357,15 +1363,17 @@ function textLines(node, document, measureText) {
       maxLines: node.maxLines,
       maxHeight: node.maxHeight,
       boxHeight: node.height,
-      textWrapStyle: node.textWrapStyle || 'auto'
+      textWrapStyle: node.textWrapStyle || 'auto',
+      shapeText: measureText.shapeText, leadingTrimMetrics: measureText.leadingTrimMetrics, strictLeadingTrim: true
     });
     for (const line of layout.lines) {
       if (![line.naturalWidth, line.width, line.y, line.lineHeight].every(Number.isFinite)
-        || line.naturalWidth < 0 || line.width < 0 || line.y < 0 || line.lineHeight <= 0
+        || line.naturalWidth < 0 || line.width < 0 || (!layout.leadingTrim && line.y < 0) || (layout.leadingTrim && Math.abs(line.y) > 100_000_000) || line.lineHeight <= 0
         || line.parts.some(part => !Number.isFinite(part.offsetX) || !Number.isFinite(part.width) || part.width < 0)) {
         throw new TypeError(`SVG export requires finite text measurements on layer ${node.name || node.id || '(unnamed)'}.`);
       }
     }
+    if (layout.leadingTrim) Object.defineProperty(layout.lines, 'leadingTrimHeight', { value: layout.height });
     return layout.lines;
   }
 
@@ -1383,19 +1391,23 @@ function textLines(node, document, measureText) {
     textTruncation: node.textTruncation,
     maxLines: node.maxLines,
     maxHeight: node.maxHeight,
-    boxHeight: node.height
+    boxHeight: node.height,
+    leadingTrim: node.leadingTrim, leadingTrimStyle: resolvedNode, markerStyle: resolvedNode,
+    shapeText: measureText.shapeText, leadingTrimMetrics: measureText.leadingTrimMetrics, strictLeadingTrim: true
   });
-  return layout.lines.map(line => {
+  const lines = layout.lines.map(line => {
     const { displayText, index, indent } = line;
     const naturalWidth = measure(displayText);
     if (!Number.isFinite(naturalWidth) || naturalWidth < 0) throw new TypeError(`SVG export requires a finite text measurement on layer ${node.name || node.id || '(unnamed)'}.`);
     const availableWidth = Math.max(1, Number(node.width) - indent);
     return { ...line, naturalWidth, width: line.justify ? availableWidth : Math.min(availableWidth, naturalWidth) };
   });
+  if (layout.leadingTrim) Object.defineProperty(lines, 'leadingTrimHeight', { value: layout.height });
+  return lines;
 }
 
 function textVerticalOffset(node, lines, lineHeight) {
-  const contentHeight = lines.reduce((height, line) => Math.max(height, Number(line.y || 0) + Number(line.lineHeight || lineHeight)), 0);
+  const contentHeight = Number.isFinite(lines.leadingTrimHeight) ? lines.leadingTrimHeight : lines.reduce((height, line) => Math.max(height, Number(line.y || 0) + Number(line.lineHeight || lineHeight)), 0);
   const freeSpace = Math.max(0, Number(node.height) - contentHeight);
   if (node.verticalAlign === 'middle') return freeSpace / 2;
   if (node.verticalAlign === 'bottom') return freeSpace;
@@ -1492,11 +1504,16 @@ export const SVG_TEXT_DECORATION_SOURCE_FIELDS = Object.freeze([
   'text', 'width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
   'lineHeight', 'lineHeightUnit', 'letterSpacing', 'align', 'verticalAlign', 'textCase', 'textDecoration',
   'color', 'fillOpacity', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textRuns', 'textPosition', ...TEXT_DECORATION_PROPERTIES
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textRuns', 'textPosition', 'leadingTrim', ...TEXT_DECORATION_PROPERTIES
 ]);
 export function svgTextMeasurementKey(text, style) {
   return JSON.stringify([String(text), ...['fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
     'letterSpacing', 'fontAxes', 'fontFeatures'].map(key => style[key] ?? null)]);
+}
+
+export function svgLeadingTrimMetricKey(style) {
+  return JSON.stringify(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures']
+    .map(key => style[key] ?? null));
 }
 
 function textDecorationRecoveryMeasurer(node, document, measureText, options) {
@@ -1504,7 +1521,7 @@ function textDecorationRecoveryMeasurer(node, document, measureText, options) {
     || strokeStackForNode(node).some(stroke => stroke.visible !== false && stroke.width > 0 && stroke.opacity > 0)
     || options.fillValue !== undefined || options.strokeItem || typeof measureText !== 'function'
     || measureText.pdfNaturalWidth || measureText.pdfBaselineOffset
-    || ![node, ...(node.textRuns || [])].some(style => customTextDecoration(style) || positionedTextStyle(style))
+    || ![node, ...(node.textRuns || [])].some(style => customTextDecoration(style) || positionedTextStyle(style) || style.leadingTrim?.type === 'CAP_HEIGHT')
     || positionedTextUsesLocalFont(node, measureText)
     || [node, ...(node.textRuns || [])].some(style => style.textDecorationSkipInk)) return null;
   const source = Object.fromEntries(SVG_TEXT_DECORATION_SOURCE_FIELDS.filter(key => node[key] !== undefined)
@@ -1514,7 +1531,7 @@ function textDecorationRecoveryMeasurer(node, document, measureText, options) {
     const value = getNodePropertyValue(document, node, key); if (value !== undefined) source[key] = value;
   }
   source.color = color(document, node, 'text');
-  const measurements = new Map();
+  const measurements = new Map(); const leadingTrimMetrics = new Map();
   const measured = (text, style) => {
     const value = Number(measureText(text, style)); const key = svgTextMeasurementKey(text, style);
     if (!Number.isFinite(value) || value < 0 || value > 10_000_000) throw new SvgExportError('unbounded underline text measurements', node);
@@ -1524,21 +1541,42 @@ function textDecorationRecoveryMeasurer(node, document, measureText, options) {
     return value;
   };
   measured.shapeText = measureText.shapeText; measured.textInkBounds = measureText.textInkBounds;
+  if (typeof measureText.leadingTrimMetrics === 'function') measured.leadingTrimMetrics = style => {
+    const value = measureText.leadingTrimMetrics(style); const key = svgLeadingTrimMetricKey(style);
+    if (!value || !['capHeight', 'ascender'].every(name => Number.isFinite(value[name]) && Math.abs(value[name]) <= 10_000_000) || !(value?.capHeight > 0)) {
+      throw new SvgExportError('unbounded leading trim font measurements', node);
+    }
+    const metric = { capHeight: value.capHeight, ascender: value.ascender };
+    if (leadingTrimMetrics.has(key) && JSON.stringify(leadingTrimMetrics.get(key)) !== JSON.stringify(metric)) {
+      throw new SvgExportError('unstable leading trim font measurements', node);
+    }
+    leadingTrimMetrics.set(key, metric);
+    if (leadingTrimMetrics.size > 4096) throw new SvgExportError('leading trim recovery requiring more than 4096 font measurements', node);
+    return value;
+  };
   return { measured, wrap(markup) {
-    const payload = JSON.stringify({ version: 1, source, measurements: [...measurements] });
+    const payload = JSON.stringify({ version: 1, source, measurements: [...measurements], ...(leadingTrimMetrics.size ? { leadingTrimMetrics: [...leadingTrimMetrics] } : {}) });
     if (payload.length > MAX_NETWORK_METADATA_LENGTH) throw new SvgExportError('underline recovery metadata larger than 1 MiB', node);
     return `<g ${SVG_TEXT_DECORATION_METADATA_ATTRIBUTE}="${escapeXml(payload)}">${markup}</g>`;
   } };
 }
 
 /** Regenerate only the self-contained text/decorations graph for safe native recovery. */
-export function exportTextDecorationValidationSvg(source, measurements) {
+export function exportTextDecorationValidationSvg(source, measurements, leadingTrimMetrics = []) {
   const values = new Map(measurements);
   const measureText = (text, style) => {
     const key = svgTextMeasurementKey(text, style);
     if (!values.has(key)) throw new TypeError('Missing bound native text measurement.');
     return values.get(key);
   };
+  if (leadingTrimMetrics.length) {
+    const metrics = new Map(leadingTrimMetrics);
+    measureText.leadingTrimMetrics = style => {
+      const key = svgLeadingTrimMetricKey(style);
+      if (!metrics.has(key)) throw new TypeError('Missing bound native leading trim measurement.');
+      return metrics.get(key);
+    };
+  }
   const node = { ...source, id: 'text-decoration-validation', type: 'text', x: 0, y: 0,
     rotation: 0, opacity: 1, stroke: null, strokeWidth: 0, children: [] };
   validateTree([node], emptyDocument, null);
@@ -1563,7 +1601,7 @@ function hasPositionedText(node) {
 }
 
 function positionedTextUsesLocalFont(node, measureText) {
-  if (!hasPositionedText(node) || typeof measureText?.shapeText !== 'function') return false;
+  if (!(hasPositionedText(node) || hasTextLeadingTrim(node)) || typeof measureText?.shapeText !== 'function') return false;
   const runs = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === String(node.text ?? '')
     ? node.textRuns : [{ text: String(node.text ?? '') }];
   return runs.some(run => measureText.shapeText.fontStatus?.({ ...node, ...run }, run.text) !== 'none');
@@ -1581,15 +1619,15 @@ function positionedGlyphGeometry(node, document, measureText, { whitePaint = fal
   const { node: view } = positionedTextView(node, document, measureText);
   const source = whitePaint ? { ...view, color: '#ffffff', textVariableId: null, textStyleId: null,
     textRuns: view.textRuns?.map(run => ({ ...run, color: '#ffffff' })) } : view;
-  try { return collectTextOutlineGeometry(document, source, { shapeText: measureText.shapeText }); }
+  try { return collectTextOutlineGeometry(document, source, { shapeText: measureText.shapeText, leadingTrimMetrics: measureText.leadingTrimMetrics }); }
   catch (error) {
     if (String(error?.code || '').endsWith('_PENDING')) throw error;
-    throw new SvgExportError(`positioned local glyph geometry (${error.message})`, node);
+    throw new SvgExportError(`local text glyph geometry (${error.message})`, node);
   }
 }
 
-// Genuine position glyphs and nonuniform local-font synthesis are actual
-// font contours, not CSS feature hints whose meaning changes on another device.
+// Positioned and vertically trimmed local text use actual font contours.
+// CSS metric hints alone cannot preserve their geometry on another device.
 function positionedGlyphMarkup(node, document, measureText, options) {
   const { fillValue, fillOpacity, includeStroke, strokeItem, strokeIndex, strokeGradientId,
     strokeWidthScale, decorationsMode, clipSuffix } = options;
@@ -1700,14 +1738,14 @@ function textMarkup(node, document, measureText, {
 } = {}) {
   if (strokeItem && decorationsMode === 'all') decorationsMode = 'auto';
   const position = positionedTextView(node, document, measureText);
-  if (position.plan.mode !== 'normal' && positionedTextUsesLocalFont(node, measureText)) {
+  if (positionedTextUsesLocalFont(node, measureText)) {
     return positionedGlyphMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke,
       strokeItem, strokeIndex, strokeGradientId, strokeWidthScale, decorationsMode, clipSuffix });
   }
   const recovery = textDecorationRecoveryMeasurer(node, document, measureText, { fillValue, strokeItem, recoveryMetadata });
   if (recovery) measureText = recovery.measured;
   const finish = markup => recovery ? recovery.wrap(markup) : markup;
-  const customDecorations = position.plan.mode !== 'normal' || [node, ...(node.textRuns || [])].some(customTextDecoration);
+  const customDecorations = position.plan.mode !== 'normal' || hasTextLeadingTrim(node) || [node, ...(node.textRuns || [])].some(customTextDecoration);
   const decorationMarkup = () => customDecorationMarkup(node, document, measureText, fillValue, fillOpacity, decorationsMode);
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -1783,6 +1821,8 @@ function textMarkup(node, document, measureText, {
   const verticalOffset = textVerticalOffset(node, lines, lineHeight);
   const richLines = lines.some(line => Array.isArray(line.parts));
   const positioned = position.plan.mode !== 'normal';
+  const trimmed = hasTextLeadingTrim(node);
+  const individuallyPlaced = positioned || trimmed;
   if (richLines) {
     const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
     const decorations = [];
@@ -1791,7 +1831,7 @@ function textMarkup(node, document, measureText, {
     const pdfAscentAttribute = Number.isFinite(pdfAscent) && pdfAscent > 0
       ? ` data-tiny-image-star-pdf-ascent="${number(pdfAscent)}"` : '';
     const richTspans = lines.map(line => {
-      const textLength = !positioned && line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
+      const textLength = !individuallyPlaced && line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
       const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
       const lineAnchorX = textLineAnchorX(node, line);
       const lineTextAnchor = svgTextAnchor(line.align || node.align || 'left');
@@ -1821,16 +1861,16 @@ function textMarkup(node, document, measureText, {
           : NaN;
         const positionX = pdfX + (style.textPositionOffsetX || 0) * pdfScaleX;
         const positionY = pdfY + (style.textPositionTopOffset || 0) - baselineShift;
-        const runAscent = positioned && typeof measureText?.pdfBaselineOffset === 'function'
+        const runAscent = individuallyPlaced && typeof measureText?.pdfBaselineOffset === 'function'
           ? Number(measureText.pdfBaselineOffset(pdfMetricStyle)) : NaN;
-        const pdfPositionAttributes = positioned && Number.isFinite(runAscent) && runAscent > 0
-          ? ` data-tiny-image-star-pdf-text-position="${style.textPosition || 'normal'}" data-tiny-image-star-pdf-run-ascent="${number(runAscent)}"` : '';
+        const pdfPositionAttributes = individuallyPlaced && Number.isFinite(runAscent) && runAscent > 0
+          ? `${positioned ? ` data-tiny-image-star-pdf-text-position="${style.textPosition || 'normal'}"` : ''}${trimmed ? ` data-tiny-image-star-pdf-leading-trim="${style.leadingTrim?.type || node.leadingTrim?.type || 'NONE'}"` : ''} data-tiny-image-star-pdf-run-ascent="${number(runAscent)}"` : '';
         const pdfRunAttributes = Number.isFinite(positionX) && Number.isFinite(positionY)
           && Number.isFinite(pdfWidth) && pdfWidth > 0
           && Number.isFinite(pdfNaturalWidth) && pdfNaturalWidth > 0
-          ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(positioned ? positionX : pdfX)}" data-tiny-image-star-pdf-y="${number(positioned ? positionY : pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"${pdfPositionAttributes}`
+          ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(individuallyPlaced ? positionX : pdfX)}" data-tiny-image-star-pdf-y="${number(individuallyPlaced ? positionY : pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"${pdfPositionAttributes}`
           : '';
-        const positionAttributes = positioned ? ` x="${number(positionX)}" y="${number(positionY)}" text-anchor="start"${!line.justify && pdfWidth > 0 ? ` textLength="${number(pdfWidth)}" lengthAdjust="spacingAndGlyphs"` : ''}` : baselineShiftAttribute;
+        const positionAttributes = individuallyPlaced ? ` x="${number(positionX)}" y="${number(positionY)}" text-anchor="start"${!line.justify && pdfWidth > 0 ? ` textLength="${number(pdfWidth)}" lengthAdjust="spacingAndGlyphs"` : ''}` : baselineShiftAttribute;
         const features = positioned ? positionedFontFeatures(style, node) : style.fontFeatures || node.fontFeatures;
         const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(features)}${positionAttributes} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
         if (customDecorations || !['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
@@ -2723,7 +2763,7 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
             }
           }
         }
-        if (hasPositionedText(node) || [node, ...(node.textRuns || [])].some(customTextDecoration)) {
+        if (hasPositionedText(node) || hasTextLeadingTrim(node) || [node, ...(node.textRuns || [])].some(customTextDecoration)) {
           for (const { geometry, paint } of customDecorationRecords(node, document, measureText)) {
             if (paint.visible === false || !(paint.opacity > 0)) continue;
             for (const group of geometry.fillGroups) for (const contour of group.contours) {

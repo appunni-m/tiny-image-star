@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from '../src/text-decoration-style.js';
+import { isValidLeadingTrim } from '../src/text-leading-trim-style.js';
 import { isValidTextPosition } from '../src/text-position-style.js';
 import { textStyleValuesEqual } from '../src/text-decoration-controls.js';
 import { isValidFontVariationValues } from '../src/font-variation.js';
@@ -15,10 +16,10 @@ const start = main.indexOf('const textRunStyleKeys =');
 const end = main.indexOf('function readTextEditorContent(', start);
 assert.ok(start >= 0 && end > start);
 const { textRunStyleForElement, textRunDataAttribute, appendTextRun } = new Function(
-  'TEXT_DECORATION_PROPERTIES', 'isValidTextDecorationProperty', 'textStyleValuesEqual', 'isValidTextPosition',
+  'TEXT_DECORATION_PROPERTIES', 'isValidTextDecorationProperty', 'textStyleValuesEqual', 'isValidTextPosition', 'isValidLeadingTrim',
   'isValidFontVariationValues', 'isValidFontFeatureValues', 'parseFontFeatureSettings', 'normalizeTextRunBaselineShift',
   `${main.slice(start, end)}\nreturn { textRunStyleForElement, textRunDataAttribute, appendTextRun };`
-)(TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textStyleValuesEqual, isValidTextPosition,
+)(TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textStyleValuesEqual, isValidTextPosition, isValidLeadingTrim,
   isValidFontVariationValues, isValidFontFeatureValues, parseFontFeatureSettings, normalizeTextRunBaselineShift);
 
 function element({ encoded = {}, style = {}, preview = false, tag = 'SPAN' } = {}) {
@@ -90,4 +91,34 @@ test('superscript and subscript markup retain source characters and explicit Nor
   const runs = [];
   appendTextRun(runs, '1', { textPosition: 'superscript' }); appendTextRun(runs, '2', { textPosition: 'subscript' });
   assert.equal(runs.map(run => run.text).join(''), '12'); assert.equal(runs.length, 2);
+});
+
+
+test('vertical trim survives editor reopening without promoting browser preview CSS to an authored override', () => {
+  const authored = { leadingTrim: { type: 'CAP_HEIGHT' }, fontSize: 24, lineHeight: 2 };
+  let reopened = authored;
+  for (let index = 0; index < 5; index++) reopened = textRunStyleForElement(element({ preview: true,
+    style: { textBoxTrim: 'trim-both', textBoxEdge: 'cap alphabetic', fontSize: '17px' }
+  }), reopened);
+  assert.deepEqual(reopened, authored);
+  assert.deepEqual(textRunStyleForElement(element({ preview: true, encoded: {
+    leadingTrim: '{"type":"NONE"}'
+  } }), authored).leadingTrim, { type: 'NONE' }, 'an explicit Standard range must clear inherited trim');
+  for (const value of ['{"type":"cap-height"}', '{"type":"CAP_HEIGHT","clip":true}', '{broken']) {
+    assert.deepEqual(textRunStyleForElement(element({ encoded: { leadingTrim: value } }), authored), authored);
+  }
+  const runs = [];
+  appendTextRun(runs, 'Ag', { leadingTrim: { type: 'CAP_HEIGHT' } });
+  appendTextRun(runs, 'yp', { leadingTrim: { type: 'CAP_HEIGHT' } });
+  appendTextRun(runs, 'Q', { leadingTrim: { type: 'NONE' } });
+  assert.equal(runs.map(run => run.text).join(''), 'AgypQ');
+  assert.deepEqual(runs.map(run => run.leadingTrim.type), ['CAP_HEIGHT', 'NONE']);
+});
+
+test('external text CSS imports only the supported cap-height to alphabetic-baseline trim semantics', () => {
+  assert.deepEqual(textRunStyleForElement(element({ style: {
+    textBoxTrim: 'trim-both', textBoxEdge: 'cap alphabetic'
+  } }), {}).leadingTrim, { type: 'CAP_HEIGHT' });
+  assert.deepEqual(textRunStyleForElement(element({ style: { textBoxTrim: 'none' } }), {}).leadingTrim, { type: 'NONE' });
+  assert.equal(textRunStyleForElement(element({ style: { textBoxTrim: 'trim-both', textBoxEdge: 'text text' } }), {}).leadingTrim, undefined);
 });

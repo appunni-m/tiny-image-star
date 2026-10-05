@@ -9,6 +9,7 @@ import { isValidFontVariationValues } from './font-variation.js';
 import { isValidFontFeatureValues } from './font-features.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textDecorationDefaults } from './text-decoration-style.js';
 import { isValidTextPosition } from './text-position-style.js';
+import { isValidLeadingTrim } from './text-leading-trim-style.js';
 
 const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
@@ -18,7 +19,7 @@ const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textStyleProperties = Object.freeze([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
-  'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'textPosition'
+  'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim'
 ]);
 
 /**
@@ -69,10 +70,12 @@ export function snapshotAppearance(sourceNode) {
         && (property !== 'fontFeatures' || isValidFontFeatureValues(sourceNode[property]))
         && (property !== 'textWrapStyle' || textWrapStyles.has(sourceNode[property]))
         && (!TEXT_DECORATION_PROPERTIES.includes(property) || isValidTextDecorationProperty(property, sourceNode[property]))
-        && (property !== 'textPosition' || isValidTextPosition(sourceNode[property])))
+        && (property !== 'textPosition' || isValidTextPosition(sourceNode[property]))
+        && (property !== 'leadingTrim' || isValidLeadingTrim(sourceNode[property])))
       .map(property => [property, clone(sourceNode[property])]));
     Object.assign(textStyle, textDecorationDefaults(sourceNode));
     textStyle.textPosition = isValidTextPosition(sourceNode.textPosition) ? sourceNode.textPosition : 'normal';
+    textStyle.leadingTrim = isValidLeadingTrim(sourceNode.leadingTrim) ? clone(sourceNode.leadingTrim) : { type:'NONE' };
     if (Object.keys(textStyle).length) snapshot.textStyle = textStyle;
   }
 
@@ -263,6 +266,9 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
       }
       if (appearance.textStyle.textPosition != null && !isValidTextPosition(appearance.textStyle.textPosition)) {
         throw new TypeError('The copied text position is invalid.');
+      }
+      if (appearance.textStyle.leadingTrim != null && !isValidLeadingTrim(appearance.textStyle.leadingTrim)) {
+        throw new TypeError('The copied text leading trim is invalid.');
       }
       if (TEXT_DECORATION_PROPERTIES.some(property => Object.hasOwn(appearance.textStyle, property)
         && !isValidTextDecorationProperty(property, appearance.textStyle[property]))) {

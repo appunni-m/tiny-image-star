@@ -243,6 +243,15 @@ function shapeText({ fontId, text, variations, features, script, language, direc
       .map(([key, suffix]) => [key, font.getMetricPosition(hb.MetricsTag[`${prefix}_EM_${suffix}`])])
       .filter(([, value]) => Number.isFinite(value)))];
   }));
+  let capHeight = font.getMetricPosition(hb.MetricsTag.CAP_HEIGHT);
+  let capHeightSource = 'font-metric';
+  if (!(Number.isFinite(capHeight) && capHeight > 0)) {
+    const capGlyph = font.nominalGlyph(0x48);
+    const capExtents = capGlyph ? font.glyphExtents(capGlyph) : null;
+    capHeight = capExtents?.yBearing;
+    capHeightSource = 'glyph-H';
+  }
+  const leadingTrimMetrics = Number.isFinite(capHeight) && capHeight > 0 ? { capHeight, source: capHeightSource } : {};
   const buffer = new hb.Buffer();
   buffer.addText(text);
   // Guess complete Unicode segment properties first, then apply explicit
@@ -255,7 +264,7 @@ function shapeText({ fontId, text, variations, features, script, language, direc
   const infos = buffer.getGlyphInfosAndPositions();
   if (infos.length > MAX_GLYPHS) fail('The shaped text exceeds the local glyph preview limit.');
   if (infos.some(glyph => glyph.codepoint === 0)) {
-    return { upem: face.upem, extents: font.hExtents(), positionMetrics, missingGlyph: true, glyphs: [] };
+    return { upem: face.upem, extents: font.hExtents(), positionMetrics, leadingTrimMetrics, missingGlyph: true, glyphs: [] };
   }
   let pathCharacters = 0;
   const glyphs = infos.map(glyph => {
@@ -272,7 +281,7 @@ function shapeText({ fontId, text, variations, features, script, language, direc
       path
     };
   });
-  return { upem: face.upem, extents: font.hExtents(), positionMetrics, glyphs };
+  return { upem: face.upem, extents: font.hExtents(), positionMetrics, leadingTrimMetrics, glyphs };
 }
 
 function releaseFont(fontId) {

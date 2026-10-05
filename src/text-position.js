@@ -76,7 +76,10 @@ export function resolveTextPositionPlan(node, { shapeText, transformText = trans
   if (displayed.reduce((size, run) => size + run.text.length, 0) > TEXT_POSITION_LIMITS.maxText) throw new RangeError('Text position exceeds the bounded displayed source budget.');
   const records = new Map(); const probes = new Map(); let pending = false; let complete = true; let queries = 0;
   for (const run of displayed) {
-    const style = run.style; const position = positionFor(style.textPosition); const text = run.text;
+    const style = run.style; const position = positionFor(style.textPosition);
+    // Block-layout controls have no displayed glyph. A retained font may map
+    // them to .notdef; probe equivalent spacing without changing authored text.
+    const text = run.text.replace(/[\r\n\t]/gu, ' ');
     const key = styleKey(style); const probeKey = JSON.stringify([key, text]);
     if (probes.has(probeKey)) continue;
     probes.set(probeKey, true);

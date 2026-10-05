@@ -14,7 +14,7 @@ export const MAX_OUTLINE_STROKE_SELECTION_NODES = 20_000;
 const MAX_OUTLINE_SNAPSHOT_CHARACTERS = 4_000_000;
 const supportedTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
 const geometryBindings = ['x', 'y', 'width', 'height', 'rotation', 'radius'];
-const textStyleProperties = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'textPosition', 'textWrapStyle', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'paragraphStyles', 'textRuns', 'color', 'fillOpacity', 'textPath'];
+const textStyleProperties = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'textPosition', 'leadingTrim', 'textWrapStyle', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'paragraphStyles', 'textRuns', 'color', 'fillOpacity', 'textPath'];
 const plans = new WeakMap();
 const clone = value => structuredClone(value);
 const abort = signal => { if (signal?.aborted) throw new DOMException('Outline Stroke cancelled.', 'AbortError'); };

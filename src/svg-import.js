@@ -2,6 +2,7 @@ import { createDocument, createNode, validateDocument } from './model.js';
 import { exportAlignedStrokeValidationSvg, exportTextDecorationValidationSvg, SVG_TEXT_DECORATION_METADATA_ATTRIBUTE, SVG_TEXT_DECORATION_SOURCE_FIELDS, svgDropShadowClipIsRedundant } from './svg-export.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import { isValidTextPosition } from './text-position-style.js';
+import { isValidLeadingTrim } from './text-leading-trim-style.js';
 import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
@@ -3188,13 +3189,14 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
   const record = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => keys.includes(key));
   const runFields = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift', 'textPosition',
+    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift', 'textPosition', 'leadingTrim',
     ...TEXT_DECORATION_PROPERTIES];
   const safeStyle = value => TEXT_DECORATION_PROPERTIES.every(key => value[key] === undefined || isValidTextDecorationProperty(key, value[key]))
     && (value.textPosition === undefined || isValidTextPosition(value.textPosition))
+    && (value.leadingTrim === undefined || isValidLeadingTrim(value.leadingTrim))
     && (value.fontAxes == null || isValidFontVariationValues(value.fontAxes))
     && (value.fontFeatures == null || isValidFontFeatureValues(value.fontFeatures));
-  if (!record(payload, ['version', 'source', 'measurements']) || payload.version !== 1
+  if (!record(payload, ['version', 'source', 'measurements', 'leadingTrimMetrics']) || payload.version !== 1
     || !record(source, SVG_TEXT_DECORATION_SOURCE_FIELDS) || !safeStyle(source)
     || typeof source.text !== 'string' || source.text.length > MAX_TEXT_LENGTH || source.textDecorationSkipInk
     || source.textRuns != null && (!Array.isArray(source.textRuns) || source.textRuns.length > 4096
@@ -3203,13 +3205,19 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
     || !Array.isArray(payload.measurements) || payload.measurements.length > 4096
     || payload.measurements.some(entry => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
       || entry[0].length > MAX_TEXT_LENGTH + 4096 || !Number.isFinite(entry[1]) || entry[1] < 0 || entry[1] > 10_000_000)
-    || new Set(payload.measurements.map(entry => entry[0])).size !== payload.measurements.length) return null;
+    || new Set(payload.measurements.map(entry => entry[0])).size !== payload.measurements.length
+    || payload.leadingTrimMetrics != null && (!Array.isArray(payload.leadingTrimMetrics) || payload.leadingTrimMetrics.length > 4096
+      || payload.leadingTrimMetrics.some(entry => !Array.isArray(entry) || entry.length !== 2
+        || typeof entry[0] !== 'string' || entry[0].length > 4096
+        || !record(entry[1], ['capHeight', 'ascender'])
+        || !['capHeight', 'ascender'].every(key => Number.isFinite(entry[1][key]) && Math.abs(entry[1][key]) <= 10_000_000) || !(entry[1].capHeight > 0))
+      || new Set(payload.leadingTrimMetrics.map(entry => entry[0])).size !== payload.leadingTrimMetrics.length)) return null;
   let sourceNode; let expectedRoot;
   const document = createDocument();
   try {
     sourceNode = createNode('text', { ...source, x: 0, y: 0, rotation: 0, stroke: null, strokeWidth: 0, children: [] });
     document.pages[0].children = [sourceNode]; validateDocument(document);
-    expectedRoot = parseXml(exportTextDecorationValidationSvg(sourceNode, payload.measurements));
+    expectedRoot = parseXml(exportTextDecorationValidationSvg(sourceNode, payload.measurements, payload.leadingTrimMetrics));
     const expected = expectedRoot.children.find(child => child.tag === 'g');
     const actual = { ...node, attrs: { ...node.attrs } }; delete actual.attrs[SVG_TEXT_DECORATION_METADATA_ATTRIBUTE];
     if (JSON.stringify(canonicalAlignmentGraph(expected, svgDefinitionNodes(expectedRoot)))

@@ -20,6 +20,21 @@ test('Inspect exports semantic superscript/subscript CSS while retaining authore
   }
 });
 
+test('Inspect exports vertical trim as semantic CSS and retains authored type sizes and range overrides', () => {
+  const document = createDocument();
+  const label = createNode('text', { text: 'HgQ', fontSize: 24, lineHeight: 2,
+    leadingTrim: { type: 'CAP_HEIGHT' }, textRuns: [{ text: 'Hg' }, { text: 'Q', leadingTrim: { type: 'NONE' } }] });
+  addNode(document, label);
+  const output = buildInspectOutput(document, [findNode(document, label.id)]);
+  assert.match(output.css, /text-box-trim: trim-both;/u);
+  assert.match(output.css, /text-box-edge: cap alphabetic;/u);
+  assert.match(output.css, /font-size: 24px;/u);
+  assert.deepEqual(output.layers[0].typography.leadingTrim, { type: 'CAP_HEIGHT' });
+  assert.deepEqual(JSON.parse(output.json).textRuns, label.textRuns);
+  label.leadingTrim = { type: 'NONE' };
+  assert.doesNotMatch(buildInspectOutput(document, [findNode(document, label.id)]).css, /text-box-trim/u);
+});
+
 test('Inspect reports independent vector-network vertex corner radii', () => {
   const document = createDocument();
   const network = createNode('network', {

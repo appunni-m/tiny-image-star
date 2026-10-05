@@ -1,6 +1,7 @@
 import { getBlobBytes, parseFigBinary, parseVectorNetworkBlob, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import { isValidTextPosition } from './text-position-style.js';
+import { isValidLeadingTrim } from './text-leading-trim-style.js';
 import {
   canSwapComponentTo, createComponentSet, createDocument, createId, createNode, isMaskSource,
   MAX_DOCUMENT_TREE_DEPTH, parseDocument, setComponentPropertyValue, switchComponentInstanceVariant
@@ -1312,6 +1313,10 @@ function figTextPosition(value) {
   return ({ NORMAL: 'normal', SUB: 'subscript', SUPER: 'superscript' })[value] || null;
 }
 
+function figLeadingTrim(value) {
+  return value === 'NONE' || value === 'CAP_HEIGHT' ? { type:value } : null;
+}
+
 function textRunStyleOverrides(style, base, context, name) {
   const result = {};
   const family = style.fontFamily || style.fontName?.family;
@@ -1352,6 +1357,11 @@ function textRunStyleOverrides(style, base, context, name) {
     const position = figTextPosition(style.fontVariantPosition);
     if (position == null) warn(context.report, 'unsupported', 'TEXT_POSITION', name, 'The Figma font-variant position value was unknown and was omitted.');
     else if (position !== base.textPosition) result.textPosition = position;
+  }
+  if (Object.hasOwn(style, 'leadingTrim')) {
+    const leadingTrim = figLeadingTrim(style.leadingTrim);
+    if (!isValidLeadingTrim(leadingTrim)) warn(context.report, 'unsupported', 'LEADING_TRIM', name, 'The Figma leading-trim value was unknown and was omitted.');
+    else if (leadingTrim.type !== (base.leadingTrim?.type || 'NONE')) result.leadingTrim = leadingTrim;
   }
   Object.assign(result, figTextDecorationOverrides(style, base, context, name));
 
@@ -1505,6 +1515,14 @@ function textProperties(source, context) {
       textPosition = undefined;
     }
   }
+  let leadingTrim;
+  if (Object.hasOwn(source, 'leadingTrim')) {
+    leadingTrim = figLeadingTrim(source.leadingTrim);
+    if (!isValidLeadingTrim(leadingTrim)) {
+      warn(context.report, 'unsupported', 'LEADING_TRIM', source.name, 'The Figma leading-trim value was unknown and was omitted.');
+      leadingTrim = undefined;
+    }
+  }
   const properties = {
     // Layer paint opacity stays attached to each imported fill. The legacy
     // `color` field remains as a fallback for older local documents and runs.
@@ -1528,6 +1546,7 @@ function textProperties(source, context) {
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
     ...decorationSettings,
     ...(textPosition ? { textPosition } : {}),
+    ...(leadingTrim ? { leadingTrim } : {}),
     ...paragraphMetrics
   };
   const textRuns = textRunsFromFigOverrides(source, characters, properties, context);
@@ -2163,7 +2182,7 @@ const componentOverrideProperties = [
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius',
   'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId',
-  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'fit', 'adjustments', 'transforms',
+  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
   'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
   'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points',

@@ -79,6 +79,8 @@ import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings
 import { LocalWoff2Decoder } from './woff2-decoder.js';
 import { LocalFontShapingClient } from './font-shaping.js';
 import { isValidTextPosition } from './text-position-style.js';
+import { isValidLeadingTrim } from './text-leading-trim-style.js';
+import { canvasLeadingTrimMetrics } from './text-leading-trim.js';
 import { resolveTextPositionPlan } from './text-position.js';
 import { withPreparedTextPositionShapes } from './text-position-export-preparation.js';
 import { localFontsForStyle, localFontAxisValues as localFontVariations } from './local-font-style.js';
@@ -208,13 +210,13 @@ const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.ma
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textPosition', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textPosition', 'leadingTrim', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES
 ]);
 const state = {
   shapeBuilder: null,
   booleanController: null,
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', scaleAnchor: 'center', scaleMultiplier: 1, zoom: 1, panX: 0, panY: 0,
-  fontShaper: new LocalFontShapingClient({ onReady: () => { renderer?.invalidate(); queueTextEditorPositionPreview(); } }), shapeLocalTextRun,
+  fontShaper: new LocalFontShapingClient({ onReady: () => { renderer?.invalidate(); queueTextEditorPositionPreview(); queueTextMetricReflow(); } }), shapeLocalTextRun,
   fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), previewDeferredKeys: new Set(), requestDeferredPreview: requestDeferredImagePreview, touchImagePreviewSource, imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
@@ -3601,8 +3603,9 @@ function textSection(node) {
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const textPosition = isValidTextPosition(node.textPosition) ? node.textPosition : 'normal';
+  const leadingTrim = isValidLeadingTrim(node.leadingTrim) ? node.leadingTrim.type : 'NONE';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
-  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><label class="property-label">Position<select class="prop-input select-field" data-prop="textPosition" aria-label="Text position"${node.locked ? ' disabled' : ''}>${[['normal', 'Normal'], ['superscript', 'Superscript'], ['subscript', 'Subscript']].map(([value, label]) => `<option value="${value}"${textPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select><label class="property-label">Text overflow<select class="prop-input select-field" data-prop="textTruncation" aria-label="Text overflow"${node.locked ? ' disabled' : ''}><option value="disabled"${textTruncation === 'disabled' ? ' selected' : ''}>No ellipsis</option><option value="ending"${textTruncation === 'ending' ? ' selected' : ''}>Ending ellipsis</option></select></label><label class="property-label">Max lines<input class="prop-input" data-prop="maxLines" data-optional-number type="number" min="1" max="100000" step="1" value="${maxLines}" placeholder="Unlimited" aria-label="Maximum text lines"${node.locked || textTruncation !== 'ending' ? ' disabled' : ''}/></label>${optionalNumberField('Max height', 'maxHeight', node.maxHeight, { disabled: node.locked })}</div><div class="image-properties-note">Ending ellipsis clips text to its box. Set a maximum line count or a maximum height; the two limits are mutually exclusive.</div>`;
+  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><label class="property-label">Position<select class="prop-input select-field" data-prop="textPosition" aria-label="Text position"${node.locked ? ' disabled' : ''}>${[['normal', 'Normal'], ['superscript', 'Superscript'], ['subscript', 'Subscript']].map(([value, label]) => `<option value="${value}"${textPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label class="property-label">Vertical trim<select class="prop-input select-field" data-prop="leadingTrim" aria-label="Text vertical trim"${node.locked ? ' disabled' : ''}>${[['NONE', 'Standard'], ['CAP_HEIGHT', 'Cap height to baseline']].map(([value, label]) => `<option value="${value}"${leadingTrim === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select><label class="property-label">Text overflow<select class="prop-input select-field" data-prop="textTruncation" aria-label="Text overflow"${node.locked ? ' disabled' : ''}><option value="disabled"${textTruncation === 'disabled' ? ' selected' : ''}>No ellipsis</option><option value="ending"${textTruncation === 'ending' ? ' selected' : ''}>Ending ellipsis</option></select></label><label class="property-label">Max lines<input class="prop-input" data-prop="maxLines" data-optional-number type="number" min="1" max="100000" step="1" value="${maxLines}" placeholder="Unlimited" aria-label="Maximum text lines"${node.locked || textTruncation !== 'ending' ? ' disabled' : ''}/></label>${optionalNumberField('Max height', 'maxHeight', node.maxHeight, { disabled: node.locked })}</div><div class="image-properties-note">Ending ellipsis clips text to its box. Set a maximum line count or a maximum height; the two limits are mutually exclusive.</div>`;
   const underlineControls = textDecoration === 'underline' ? `<details class="text-underline-settings" open><summary>Underline settings</summary>${textUnderlineControls(node)}</details>` : '';
   return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}${underlineControls}<div class="image-properties-note">`));
 }
@@ -8071,12 +8074,48 @@ function cancelCanvasInteraction(event) {
   }
 }
 
-function resizeTextNode(node) {
+const pendingTextMetricReflows = new Map();
+let textMetricReflowFrame = 0;
+function queueTextMetricReflow() {
+  if (!pendingTextMetricReflows.size || textMetricReflowFrame) return;
+  textMetricReflowFrame = requestAnimationFrame(() => {
+    textMetricReflowFrame = 0;
+    if (!state.ready || state.documentTransitioning || state.workspaceOnboardingRequired
+      || state.liveCollaboration?.role === 'guest') return;
+    if (state.interaction || state.controlEdit || state.textNodeId) {
+      setTimeout(queueTextMetricReflow, 125); return;
+    }
+    let changed = false; const parents = new Set();
+    for (const [id, pending] of pendingTextMetricReflows) {
+      const entry = findNode(state.document, id);
+      if (pending.document !== state.document || pending.generation !== state.documentGeneration
+        || pending.fontEpoch !== state.fontAssetEpoch || !entry || JSON.stringify(entry.node) !== pending.signature) {
+        pendingTextMetricReflows.delete(id); continue;
+      }
+      if (resizeTextNode(entry.node, { settledOnly: true })) {
+        changed = true; if (entry.parent?.autoLayout) parents.add(entry.parent);
+      }
+    }
+    if (changed) {
+      for (const parent of parents) applyAutoLayout(parent);
+      renderInspector(); renderer?.invalidate(); queueSave();
+    }
+  });
+}
+function resizeTextNode(node, { settledOnly = false } = {}) {
   if (node?.type !== 'text') return false;
   textMeasureContext ||= document.createElement('canvas').getContext('2d');
   if (!textMeasureContext) return false;
   const before = resolvedGeometry(node);
   const layoutNode = { ...node, ...before };
+  const metricEdits = hasTextMetricEdits([node]) && node.textFit !== 'fixed';
+  let pendingMetrics = false;
+  const shapeText = metricEdits ? (text, style) => {
+    const shaped = state.shapeLocalTextRun(text, style);
+    if (!shaped && state.shapeLocalTextRun.fontStatus?.(style, text) !== 'none') pendingMetrics = true;
+    return shaped;
+  } : state.shapeLocalTextRun;
+  if (metricEdits) shapeText.fontStatus = state.shapeLocalTextRun.fontStatus;
   const size = calculateTextBox(textMeasureContext, layoutNode, {
     fontFamily: getNodePropertyValue(state.document, node, 'fontFamily'),
     fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
@@ -8089,12 +8128,16 @@ function resizeTextNode(node) {
     listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles,
     text: getNodePropertyValue(state.document, node, 'text'),
-    shapeText: state.shapeLocalTextRun
+    shapeText
   });
+  if (pendingMetrics && settledOnly) return false;
   if (!node.variableBindings?.width) node.width = size.width;
   if (!node.variableBindings?.height) node.height = size.height;
   const after = resolvedGeometry(node);
   preserveAutoWidthTextAnchor(node, before, after);
+  if (pendingMetrics) pendingTextMetricReflows.set(node.id, { document: state.document,
+    generation: state.documentGeneration, fontEpoch: state.fontAssetEpoch, signature: JSON.stringify(node) });
+  else pendingTextMetricReflows.delete(node.id);
   return before.width !== after.width || before.height !== after.height;
 }
 
@@ -8111,7 +8154,7 @@ function resizeTextLayers(roots, variableId = null) {
   for (const parent of layoutParents) applyAutoLayout(parent);
 }
 
-const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'textPosition', 'baselineShift', ...TEXT_DECORATION_PROPERTIES];
+const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'textPosition', 'leadingTrim', 'baselineShift', ...TEXT_DECORATION_PROPERTIES];
 const textBlockTags = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE']);
 function textRunDataAttribute(property) { return `data-run-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`; }
 function normalizeTextRunStyle(source = {}) {
@@ -8151,6 +8194,9 @@ function normalizeTextRunStyle(source = {}) {
       value = structuredClone(value);
     } else if (property === 'textPosition') {
       if (!isValidTextPosition(value)) continue;
+    } else if (property === 'leadingTrim') {
+      if (!isValidLeadingTrim(value)) continue;
+      value = structuredClone(value);
     } else if (property === 'textDecoration') {
       value = String(value);
       if (!['none', 'underline', 'line-through'].includes(value)) continue;
@@ -8198,11 +8244,13 @@ function textRunStyleForElement(element, inherited) {
   for (const property of textRunStyleKeys) {
     const encoded = element.getAttribute(textRunDataAttribute(property));
     if (encoded == null && element.dataset?.runPreview === 'true'
-      && (['textDecoration', 'textPosition', 'fontSize', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
+      && (['textDecoration', 'textPosition', 'leadingTrim', 'fontSize', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
     let value = encoded != null ? encoded : property === 'textPosition'
-      ? ({ normal: 'normal', super: 'superscript', sub: 'subscript' })[element.style?.fontVariantPosition] : property === 'fontFeatures'
+      ? ({ normal: 'normal', super: 'superscript', sub: 'subscript' })[element.style?.fontVariantPosition] : property === 'leadingTrim'
+      ? element.style?.textBoxTrim === 'none' ? { type: 'NONE' }
+        : element.style?.textBoxTrim === 'trim-both' && element.style?.textBoxEdge === 'cap alphabetic' ? { type: 'CAP_HEIGHT' } : null : property === 'fontFeatures'
       ? parseFontFeatureSettings(element.style?.fontFeatureSettings) : element.style?.[property];
-    if ((['fontAxes', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property)) && encoded != null) {
+    if ((['fontAxes', 'fontFeatures', 'leadingTrim'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property)) && encoded != null) {
       try { value = JSON.parse(encoded); } catch { value = null; }
     }
     if (property === 'fontWeight' && value) value = value === 'bold' ? 700 : value === 'normal' ? 400 : Number(value);
@@ -8335,7 +8383,7 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
       for (const property of textRunStyleKeys) {
         const value = run[property];
         if (value == null) continue;
-        span.setAttribute(textRunDataAttribute(property), ['fontAxes', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property) ? JSON.stringify(value) : String(value));
+        span.setAttribute(textRunDataAttribute(property), ['fontAxes', 'fontFeatures', 'leadingTrim'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property) ? JSON.stringify(value) : String(value));
         if (property === 'baselineShift') {
           span.style.position = 'relative';
           span.style.top = `${-value * state.zoom}px`;
@@ -8345,11 +8393,12 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
         } else if (property === 'fontFeatures') {
           const settings = fontFeatureSettings(value);
           if (settings) span.style.fontFeatureSettings = settings;
-        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && property !== 'textPosition') span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && !['textPosition', 'leadingTrim'].includes(property)) span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
       }
       if (baseStyle) {
         const effective = positionPlan.resolveStyle({ ...baseStyle, ...run });
         applyTextEditorPositionPreview(span, effective);
+        applyTextEditorTrimPreview(span, effective);
         span.style.textDecoration = effective.textDecoration;
         Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
       }
@@ -8369,6 +8418,10 @@ function applyTextEditorPositionPreview(span, style) {
     span.style.left = `${(style.textPositionOffsetX || 0) * state.zoom}px`;
   }
 }
+function applyTextEditorTrimPreview(element, style) {
+  element.style.textBoxTrim = style.leadingTrim?.type === 'CAP_HEIGHT' ? 'trim-both' : 'none';
+  element.style.textBoxEdge = 'cap alphabetic';
+}
 let textPositionPreviewFrame = 0;
 function queueTextEditorPositionPreview() {
   if (!state.textNodeId || textPositionPreviewFrame) return;
@@ -8386,6 +8439,7 @@ function queueTextEditorPositionPreview() {
     for (const span of editor.querySelectorAll('[data-run-preview="true"]')) {
       const effective = plan.resolveStyle({ ...baseStyle, ...textRunStyleForElement(span, {}) });
       applyTextEditorPositionPreview(span, effective);
+      applyTextEditorTrimPreview(span, effective);
       Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
     }
   });
@@ -8475,6 +8529,7 @@ function textBaseStyle(node) {
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
     baselineShift: 0,
     textPosition: isValidTextPosition(node.textPosition) ? node.textPosition : 'normal',
+    leadingTrim: isValidLeadingTrim(node.leadingTrim) ? structuredClone(node.leadingTrim) : { type: 'NONE' },
     fontAxes: node.fontAxes,
     fontFeatures: node.fontFeatures,
     color: getNodeColor(state.document, node, 'text') || '#1e1e1e',
@@ -8643,8 +8698,8 @@ function updateTextFormatToolbar() {
   }
   const size = $('#text-format-size'); const lineHeight = $('#text-format-line-height'); const color = $('#text-format-color');
   const family = $('#text-format-family'); const weight = $('#text-format-weight');
-  const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration'); const baselineShift = $('#text-format-baseline-shift'); const position = $('#text-format-position');
-  for (const control of [size, lineHeight, color, family, weight, spacing, decoration, baselineShift, position]) control.disabled = !selected;
+  const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration'); const baselineShift = $('#text-format-baseline-shift'); const position = $('#text-format-position'); const trim = $('#text-format-trim');
+  for (const control of [size, lineHeight, color, family, weight, spacing, decoration, baselineShift, position, trim]) control.disabled = !selected;
   const base = textBaseStyle(node);
   const summarize = (property, normalize = value => value) => selected
     ? summarizeTextRunRange(current.runs, range.start, range.end,
@@ -8657,6 +8712,7 @@ function updateTextFormatToolbar() {
   const spacingState = summarize('letterSpacing', value => Number(value));
   const baselineShiftState = summarize('baselineShift', value => Number(value));
   const positionState = summarize('textPosition', value => isValidTextPosition(value) ? value : 'normal');
+  const trimState = summarize('leadingTrim', value => value?.type === 'CAP_HEIGHT' ? 'CAP_HEIGHT' : 'NONE');
   const decorationState = summarize('textDecoration');
   const colorState = summarize('color', value => String(value).toLowerCase());
   setTextFormatControlValue(family, familyState.selected ? familyState.value : base.fontFamily, familyState.mixed);
@@ -8666,6 +8722,7 @@ function updateTextFormatToolbar() {
   setTextFormatControlValue(spacing, spacingState.selected ? spacingState.value : base.letterSpacing, spacingState.mixed);
   setTextFormatControlValue(baselineShift, baselineShiftState.selected ? baselineShiftState.value : 0, baselineShiftState.mixed);
   setTextFormatControlValue(position, positionState.selected ? positionState.value : base.textPosition, positionState.mixed);
+  setTextFormatControlValue(trim, trimState.selected ? trimState.value : base.leadingTrim.type, trimState.mixed);
   setTextFormatControlValue(decoration, decorationState.selected ? decorationState.value : base.textDecoration, decorationState.mixed);
   setTextFormatControlValue(color, parseTextRunColor(colorState.selected ? colorState.value : base.color) || '#1e1e1e', colorState.mixed);
   updateTextUnderlineRangeControls(node, current, range, selected, base);
@@ -8797,6 +8854,7 @@ function editTextNode(nodeId) {
   editor.style.textAlign = ['left', 'center', 'right', 'justify'].includes(entry.node.align) ? entry.node.align : 'left';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
   editor.style.textDecoration = 'none';
+  applyTextEditorTrimPreview(editor, entry.node);
   editor.style.fontFamily = getNodePropertyValue(state.document, entry.node, 'fontFamily') || 'Arial, sans-serif';
   editor.style.fontWeight = String(getNodePropertyValue(state.document, entry.node, 'fontWeight') || 400);
   editor.style.fontStyle = getNodePropertyValue(state.document, entry.node, 'fontStyle') === 'italic' ? 'italic' : 'normal';
@@ -8952,6 +9010,10 @@ function initRichTextEditorEvents() {
       else updateTextFormatToolbar();
     } else if (event.target.id === 'text-format-position') {
       if (isValidTextPosition(event.target.value)) applyTextFormat('textPosition', event.target.value);
+      else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-trim') {
+      const value = { type: event.target.value };
+      if (isValidLeadingTrim(value)) applyTextFormat('leadingTrim', value);
       else updateTextFormatToolbar();
     } else if (event.target.id === 'text-format-decoration') {
       if (['none', 'underline', 'line-through'].includes(event.target.value)) applyTextFormat('textDecoration', event.target.value);
@@ -12065,6 +12127,7 @@ function updateInspectorInput(event) {
   if (selected.length > 1 && selected.some(node => node.type === 'image' && isActiveImageRecipeTarget(node.id))) return;
   const prop = input.dataset.prop;
   if (prop === 'textPosition' && (!isValidTextPosition(input.value) || selected.some(node => node.type !== 'text'))) return;
+  if (prop === 'leadingTrim' && (!isValidLeadingTrim({ type: input.value }) || selected.some(node => node.type !== 'text'))) return;
   const ellipseArcMatch = /^ellipseArc\.(start|end|innerRadius)$/.exec(prop);
   const fontAxisMatch = /^fontAxes\.([\x20-\x7e]{4})$/u.exec(prop);
   const fontFeatureMatch = /^fontFeatures\.([\x20-\x7e]{4})$/u.exec(prop);
@@ -12081,7 +12144,7 @@ function updateInspectorInput(event) {
   }
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : expressionField ? expressionValue : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
-  const propertyValue = ellipseArcMatch ? ellipseArcMatch[1] === 'innerRadius'
+  const propertyValue = prop === 'leadingTrim' ? { type: value } : ellipseArcMatch ? ellipseArcMatch[1] === 'innerRadius'
     ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
     : Math.max(0, Math.min(360, Number.isFinite(value) ? value : 0))
     : fontAxisMatch ? Math.max(Number(input.min), Math.min(Number(input.max), value))
@@ -12233,7 +12296,7 @@ function updateInspectorInput(event) {
         node.vertexRadii = Array.from({ length: count }, (_, index) => node.vertexRadii[index] ?? Math.max(0, Number(node.radius) || 0));
       }
     }
-    else if (prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
+    else if (prop === 'leadingTrim' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = ['scalingFactor', 'cornerSmoothing'].includes(prop) ? propertyValue : value;
     if (node.type === 'image' && prop === 'fit') {
@@ -12248,7 +12311,7 @@ function updateInspectorInput(event) {
     } else if (node.type === 'text' && prop === 'maxHeight' && propertyValue != null) {
       node.maxLines = null;
     }
-    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'textPosition', 'text', 'width'].includes(prop))) {
+    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'textPosition', 'leadingTrim', 'text', 'width'].includes(prop))) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent'].includes(prop)) {
@@ -17110,7 +17173,7 @@ function pasteAppearanceToSelection() {
         componentProperties.add('radius'); componentProperties.add('cornerRadii'); componentProperties.add('vertexRadii');
       }
       if (changed.has('textStyle')) {
-        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textPosition', ...TEXT_DECORATION_PROPERTIES, 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textPosition', 'leadingTrim', ...TEXT_DECORATION_PROPERTIES, 'textStyleId', 'textVariableId']) componentProperties.add(property);
         if (resizeTextNode(result.node)) {
           componentProperties.add('width'); componentProperties.add('height');
           if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
@@ -19743,12 +19806,12 @@ async function ensureImageLibraryCompatibility(documentData) {
 }
 
 let exportInkMeasureContext = null;
-function exportBoundsForNode(nodeId, booleanGeometryPlan = null) {
+function exportBoundsForNode(nodeId, booleanGeometryPlan = null, shapeText = shapeLocalTextRun) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
   exportInkMeasureContext ||= document.createElement('canvas').getContext('2d');
   return rasterExportBounds(state.document, entry.node, entry.parents, { booleanGeometryPlan,
-    textBounds: node => localTextInkBounds(state.document, node, shapeLocalTextRun, { measureContext: exportInkMeasureContext }) });
+    textBounds: node => localTextInkBounds(state.document, node, shapeText, { measureContext: exportInkMeasureContext }) });
 }
 
 function exportDimensions(nodeId, scale = 1) {
@@ -19795,8 +19858,8 @@ function hasDynamicFrameConstraints(node) {
   return horizontal !== 'left' || vertical !== 'top';
 }
 
-function sliceExportBoundsForNode(nodeId, booleanGeometryPlan) {
-  try { return exportBoundsForNode(nodeId, booleanGeometryPlan); }
+function sliceExportBoundsForNode(nodeId, booleanGeometryPlan, shapeText = null) {
+  try { return exportBoundsForNode(nodeId, booleanGeometryPlan, shapeText ?? undefined); }
   catch (error) {
     // Inspector estimates must not require a warmed native preview. Export
     // callers supply pinned geometry and retain fail-closed bounds checks.
@@ -19805,7 +19868,7 @@ function sliceExportBoundsForNode(nodeId, booleanGeometryPlan) {
   }
 }
 
-function sliceExportImageDependencyNeeded(node, crop, booleanGeometryPlan = null) {
+function sliceExportImageDependencyNeeded(node, crop, booleanGeometryPlan = null, shapeText = null) {
   if (!crop) return true;
   const entry = findNode(state.document, node.id);
   if (!entry) return false;
@@ -19826,11 +19889,11 @@ function sliceExportImageDependencyNeeded(node, crop, booleanGeometryPlan = null
     || (candidate.effects || []).some(effect => effect.visible !== false
       && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
   if (unresolvedGeometry || effectsCanBleed) return true;
-  const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan);
+  const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan, shapeText);
   return !bounds || sliceRasterBoundsIntersect(crop, bounds);
 }
 
-function sliceExportNodeMayAffectCrop(nodeId, crop, booleanGeometryPlan = null) {
+function sliceExportNodeMayAffectCrop(nodeId, crop, booleanGeometryPlan = null, shapeText = null) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return false;
   const chain = [...entry.parents, entry.node];
@@ -19843,21 +19906,21 @@ function sliceExportNodeMayAffectCrop(nodeId, crop, booleanGeometryPlan = null) 
       && ['drop-shadow', 'layer-blur'].includes(effect.type)
       && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
   if (unresolvedGeometry || effectsCanExtendBounds) return true;
-  const bounds = sliceExportBoundsForNode(nodeId, booleanGeometryPlan);
+  const bounds = sliceExportBoundsForNode(nodeId, booleanGeometryPlan, shapeText);
   return !bounds || sliceRasterBoundsIntersect(crop, bounds);
 }
 
-function sliceExportRootMayAffectCrop(rootId, crop, booleanGeometryPlan = null) {
+function sliceExportRootMayAffectCrop(rootId, crop, booleanGeometryPlan = null, shapeText = null) {
   const root = findNode(state.document, rootId)?.node;
   if (!root) return false;
   let mayAffect = false;
   walkBooleanPaintInputs([root], ({ node }) => {
-    if (!mayAffect && sliceExportNodeMayAffectCrop(node.id, crop, booleanGeometryPlan)) mayAffect = true;
+    if (!mayAffect && sliceExportNodeMayAffectCrop(node.id, crop, booleanGeometryPlan, shapeText)) mayAffect = true;
   });
   return mayAffect;
 }
 
-function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null, booleanGeometryPlan = null } = {}) {
+function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null, booleanGeometryPlan = null, shapeText = null } = {}) {
   let maximumWorldBleed = 0;
   for (const root of page.children || []) {
     if (root.type === 'slice') continue;
@@ -19877,7 +19940,7 @@ function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null, bool
         ['x', 'y', 'width', 'height', 'rotation'].some(property => candidate.variableBindings?.[property])
           || Boolean(candidate.autoLayout)
           || hasDynamicFrameConstraints(candidate));
-      const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan);
+      const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan, shapeText);
       if (!uncertainBounds && bounds && !sliceRasterBoundsIntersect(crop, bounds)) return;
       onBackdropNode?.(node);
       const worldBleed = effect.type === 'background-blur'
@@ -19889,23 +19952,23 @@ function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null, bool
   return maximumWorldBleed;
 }
 
-async function refreshImagesForExport(nodeIds, { crop = null, booleanGeometryPlan = null } = {}) {
+async function refreshImagesForExport(nodeIds, { crop = null, booleanGeometryPlan = null, shapeText = null } = {}) {
   const images = new Map();
   for (const id of nodeIds) {
     const node = findNode(state.document, id)?.node;
     if (node) walkBooleanPaintInputs([node], ({ node: child }) => {
-      if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) {
+      if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan, shapeText)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, inpaintStrokes: child.inpaintStrokes, previewKey });
       }
       if (Array.isArray(child.fills)) {
         for (const fill of child.fills) {
           if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId
-            || !sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) continue;
+            || !sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan, shapeText)) continue;
           const previewKey = imagePreviewKey(child.id, fill.id);
           images.set(previewKey, { node: child, fillId: fill.id, previewKey, assetId: fill.imageFill.assetId, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
         }
-      } else if (child.imageFill?.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) {
+      } else if (child.imageFill?.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan, shapeText)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, previewKey, assetId: child.imageFill.assetId, adjustments: child.imageFill.adjustments, transforms: child.imageFill.transforms });
       }
@@ -19938,14 +20001,14 @@ function abortIfExportCanceled(signal) {
 
 async function renderExportBlob(ids, setting, baseName, {
   signal, assertCurrent = () => {}, refreshImages = true, replaceKey = null, queueGroup = null,
-  renderBounds = null, rawPng = false
+  renderBounds = null, rawPng = false, preparedTextShaper = null
 } = {}) {
   const sourceDocument = state.document; const sourceGeneration = state.documentGeneration;
-  const sourceRevision = state.saveRevision;
+  const sourceRevision = state.saveRevision; const sourceFontEpoch = state.fontAssetEpoch;
   const checkCurrent = () => {
     abortIfExportCanceled(signal); assertCurrent();
     if (state.document !== sourceDocument || state.documentGeneration !== sourceGeneration
-      || state.saveRevision !== sourceRevision || state.documentTransitioning) {
+      || state.saveRevision !== sourceRevision || state.fontAssetEpoch !== sourceFontEpoch || state.documentTransitioning) {
       throw new Error('The design changed while export was being prepared. Retry the export.');
     }
   };
@@ -19955,6 +20018,18 @@ async function renderExportBlob(ids, setting, baseName, {
   if (selected.length !== ids.length) throw new Error('The selected layer is no longer available.');
   const slice = ids.length === 1 && selected[0]?.type === 'slice' ? selected[0] : null;
   if (!slice && selected.some(node => node.type === 'slice')) throw new Error('Export a slice by itself so its crop and export settings stay unambiguous.');
+  if (!preparedTextShaper) {
+    const roots = slice ? activePage()?.children || [] : ids.map(exportRenderTree).filter(Boolean);
+    if (hasTextMetricEdits(roots)) return withPreparedTextPositionShapes(pinned => renderExportBlob(ids, setting, baseName, {
+      signal, assertCurrent: checkCurrent, refreshImages, replaceKey, queueGroup, renderBounds, rawPng,
+      preparedTextShaper: pinned
+    }), { shapeText: shapeLocalTextRun, assertCurrent: checkCurrent, signal });
+  }
+  const exportShapeText = preparedTextShaper || shapeLocalTextRun;
+  const exportRenderer = preparedTextShaper ? Object.assign(Object.create(renderer), {
+    getState: () => ({ ...state, shapeLocalTextRun: exportShapeText })
+  }) : renderer;
+
   const scale = Number(setting.scale) || 1;
   const exportDocument = state.document; const exportGeneration = state.documentGeneration;
   const booleanGeometryPlan = await prepareBooleanVectorExport(exportDocument, slice ? activePage().children.map(node => node.id) : ids, { signal });
@@ -19988,13 +20063,13 @@ async function renderExportBlob(ids, setting, baseName, {
     ({ width, height } = slicePlan.outputSize);
     ({ x: left, y: top } = slicePlan.sourceCrop);
     const backdropWorldBleed = sliceExportBackdropWorldBleed(page, slicePlan.sourceCrop, {
-      onBackdropNode: node => sliceBackdropNodeIds.add(node.id), booleanGeometryPlan
+      onBackdropNode: node => sliceBackdropNodeIds.add(node.id), booleanGeometryPlan, shapeText: exportShapeText
     });
     const bleed = sliceRenderBleedPixels(backdropWorldBleed, scale);
     sliceSurfacePlan = planSliceRenderSurface(slicePlan, bleed);
     renderIds = page.children.map(root => root.id);
   } else {
-    const boundsList = renderBounds ? [renderBounds] : ids.map(id => exportBoundsForNode(id, booleanGeometryPlan)).filter(Boolean);
+    const boundsList = renderBounds ? [renderBounds] : ids.map(id => exportBoundsForNode(id, booleanGeometryPlan, exportShapeText)).filter(Boolean);
     if (!boundsList.length) throw new Error('The selected layer is no longer available.');
     left = Math.min(...boundsList.map(item => item.x)); top = Math.min(...boundsList.map(item => item.y));
     const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
@@ -20002,18 +20077,20 @@ async function renderExportBlob(ids, setting, baseName, {
     if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
   }
   checkCurrent();
-  if (refreshImages) await refreshImagesForExport(renderIds, { crop: slicePlan?.sourceCrop || null, booleanGeometryPlan });
+  if (refreshImages) await refreshImagesForExport(renderIds, { crop: slicePlan?.sourceCrop || null, booleanGeometryPlan, shapeText: exportShapeText });
   checkCurrent();
   await document.fonts?.ready;
   checkCurrent();
   await prepareRasterExportMasks(state.document, renderIds);
   checkCurrent();
   const output = document.createElement('canvas'); output.width = width; output.height = height;
+  let backdropSampler = null;
+  try {
   const outputContext = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
   if (!outputContext) throw new Error('This browser could not create an export surface.');
   outputContext.imageSmoothingEnabled = true; outputContext.imageSmoothingQuality = 'high';
   if (setting.format === 'jpeg') { outputContext.fillStyle = '#fff'; outputContext.fillRect(0, 0, width, height); }
-  const backdropSampler = slicePlan && sliceSurfacePlan.bleed > 0 ? document.createElement('canvas') : null;
+  backdropSampler = slicePlan && sliceSurfacePlan.bleed > 0 ? document.createElement('canvas') : null;
   if (backdropSampler) {
     backdropSampler.width = sliceSurfacePlan.width;
     backdropSampler.height = sliceSurfacePlan.height;
@@ -20031,13 +20108,13 @@ async function renderExportBlob(ids, setting, baseName, {
     exportRenderErrors.length = 0;
     for (const id of sceneIds) {
       const tree = exportRenderTree(id);
-      if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, renderOptions);
+      if (tree) exportRenderer.drawNode(context, tree, 0, 0, state.assets, false, false, renderOptions);
     }
     if (exportRenderErrors.length) throw exportRenderErrors[0];
   };
   if (slicePlan) {
     const { padding, sourceCrop } = slicePlan;
-    const croppedRenderIds = renderIds.filter(id => sliceExportRootMayAffectCrop(id, sourceCrop, booleanGeometryPlan));
+    const croppedRenderIds = renderIds.filter(id => sliceExportRootMayAffectCrop(id, sourceCrop, booleanGeometryPlan, exportShapeText));
     if (backdropSampler) {
       samplerContext.imageSmoothingEnabled = true; samplerContext.imageSmoothingQuality = 'high';
       samplerContext.setTransform(scale, 0, 0, scale,
@@ -20143,6 +20220,10 @@ async function renderExportBlob(ids, setting, baseName, {
   const scaleSuffix = !suffix && scale !== 1 ? `@${String(scale).replace('.', '_')}x` : suffix;
   const filename = `${safeExportName(baseName)}${scaleSuffix}.${extension}`;
   return { blob, filename, width, height };
+  } finally {
+    output.width = 0; output.height = 0;
+    if (backdropSampler) { backdropSampler.width = 0; backdropSampler.height = 0; }
+  }
 }
 
 function downloadBlob(blob, filename) {
@@ -20252,6 +20333,7 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
     return measureTrackedText(context, text, letterSpacing);
   };
   measure.shapeText = pdfMetrics ? undefined : shapeLocalTextRun;
+  measure.leadingTrimMetrics = style => canvasLeadingTrimMetrics(context, pdfMetrics ? { ...style, fontFamily: 'Helvetica' } : style);
   measure.textInkBounds = (text, style, placement) => {
     context.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight || 400, style.fontAxes)} ${style.fontSize || 24}px ${pdfMetrics ? 'Helvetica' : style.fontFamily || 'Arial, sans-serif'}`;
     context.textBaseline = placement?.baseline ? 'alphabetic' : 'top';
@@ -20420,12 +20502,17 @@ async function exportActivePageSvg() {
   showToast(`Downloaded editable page SVG · ${filename}.`);
 }
 
-async function preparePositionedSvg(roots, generate, assertCurrent) {
-  let positioned = false;
+function hasTextMetricEdits(roots) {
+  let active = false;
   walkBooleanPaintInputs(roots, ({ node }) => {
-    if (node.type === 'text' && ([node.textPosition, ...(node.textRuns || []).map(run => run.textPosition)]
-      .some(value => value === 'superscript' || value === 'subscript'))) positioned = true;
+    if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style =>
+      ['superscript', 'subscript'].includes(style.textPosition) || style.leadingTrim?.type === 'CAP_HEIGHT')) active = true;
   });
+  return active;
+}
+
+async function preparePositionedSvg(roots, generate, assertCurrent) {
+  const positioned = hasTextMetricEdits(roots);
   const measureText = createSvgTextMeasurer();
   return withPreparedTextPositionShapes(shapeText => {
     if (measureText) measureText.shapeText = shapeText;

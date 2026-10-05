@@ -238,6 +238,7 @@ function pathRunStyle(node, run, baseColor) {
     textDecoration: run?.textDecoration || node.textDecoration || 'none',
     ...decorationStyleForRun(node, run),
     baselineShift: Number(run?.baselineShift ?? node.baselineShift) || 0,
+    leadingTrim: run?.leadingTrim ?? node.leadingTrim,
     ...Object.fromEntries(['authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset']
       .filter(key => run?.[key] !== undefined || node[key] !== undefined).map(key => [key, run?.[key] ?? node[key]]))
   };

@@ -24,6 +24,7 @@ function copyResult(result) {
     upem: result.upem,
     extents: result.extents ? { ...result.extents } : null,
     ...(result.positionMetrics ? { positionMetrics: structuredClone(result.positionMetrics) } : {}),
+    ...(result.leadingTrimMetrics ? { leadingTrimMetrics: { ...result.leadingTrimMetrics } } : {}),
     missingGlyph: result.missingGlyph === true,
     glyphs: Array.isArray(result.glyphs) ? result.glyphs.map(glyph => ({ ...glyph })) : []
   };

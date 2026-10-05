@@ -2693,6 +2693,31 @@ test('imports parser fontVariantPosition enums as layer and ranged semantic text
   assert.equal(unknown.report.unsupportedTypes.TEXT_POSITION,1);
 });
 
+test('imports parser LeadingTrim enum as exact layer and ranged text values', async () => {
+  const pageGuid={sessionID:208,localID:1};
+  const parser=parseFig(new Uint8Array(await readFile(fixture('circle-v101.fig'))));
+  const decode=type=>parser.compiledSchema.decodeNodeChange(parser.compiledSchema.encodeNodeChange({leadingTrim:type}));
+  assert.deepEqual(decode('NONE'),{leadingTrim:'NONE'});
+  assert.deepEqual(decode('CAP_HEIGHT'),{leadingTrim:'CAP_HEIGHT'});
+  assert.deepEqual([...parser.compiledSchema.encodeNodeChange({leadingTrim:'CAP_HEIGHT'})],[194,2,1,0],
+    'compiled FIG NodeChange tag 322 encodes LeadingTrim.CAP_HEIGHT=1');
+  assert.deepEqual(parser.compiledSchema.LeadingTrim,{0:'NONE',1:'CAP_HEIGHT',NONE:0,CAP_HEIGHT:1});
+  const imported=convertFigDocument({nodes:[
+    node('CANVAS',1,null,'',{guid:pageGuid,name:'Page'}),
+    node('TEXT',2,pageGuid,'AB',{name:'Trimmed',leadingTrim:decode('CAP_HEIGHT').leadingTrim,
+      textData:{characters:'AB',characterStyleOverrides:[0,1],styleOverrideTable:[{},decode('NONE')]}})
+  ],images:new Map(),message:{blobs:[]}});
+  const text=imported.document.pages[0].children[0];
+  assert.deepEqual(text.leadingTrim,{type:'CAP_HEIGHT'});
+  assert.deepEqual(text.textRuns,[{text:'A'},{text:'B',leadingTrim:{type:'NONE'}}]);
+  assert.equal(imported.report.unsupportedTypes.LEADING_TRIM,undefined);
+
+  const unknown=convertFigDocument({nodes:[node('CANVAS',11,null,'',{guid:{sessionID:208,localID:11},name:'Page'}),
+    node('TEXT',12,{sessionID:208,localID:11},'!',{textData:{characters:'x'},leadingTrim:'TRIMMED'})],images:new Map(),message:{blobs:[]}});
+  assert.equal(unknown.document.pages[0].children[0].leadingTrim,undefined);
+  assert.equal(unknown.report.unsupportedTypes.LEADING_TRIM,1);
+});
+
 test('preserves imported Auto and Percent line-height units while legacy numbers remain ratios', () => {
   const pageGuid = { sessionID: 121, localID: 1 };
   const nodes = [

@@ -1,6 +1,7 @@
 import { drawTextLayerContent } from './renderer.js';
 import { findNode, getNodeGeometry, getNodeTextPath } from './model.js';
 import { resolveTextPositionView, TextPositionPendingError } from './text-position.js';
+import { hasTextLeadingTrim, TextLeadingTrimPendingError } from './text-leading-trim.js';
 
 export const TEXT_OUTLINE_LIMITS = Object.freeze({
   maxTextCodeUnits: 32_768, maxGlyphs: 1_024, maxContours: 4_096, maxCommands: 20_000,
@@ -20,6 +21,9 @@ function positionShapeValue(node, shapeText, text, style) {
   const value = shapeText?.(text, style);
   if (value == null && node.__textPositionResolved && typeof shapeText === 'function' && shapeText.fontStatus?.(style, text) !== 'none') {
     throw new TextPositionPendingError();
+  }
+  if (value == null && hasTextLeadingTrim(node) && !node.textPath && typeof shapeText === 'function' && shapeText.fontStatus?.(style, text) !== 'none') {
+    throw new TextLeadingTrimPendingError();
   }
   return value;
 }
@@ -199,6 +203,7 @@ class TextGeometryContext {
 /** Record decorations through the editor layout without pretending fallback text is editable glyph geometry. */
 export function collectTextDecorationGeometry(document, source, {
   measureText, shapeText = measureText?.shapeText, textInkBounds = measureText?.textInkBounds,
+  leadingTrimMetrics = measureText?.leadingTrimMetrics,
   colorOverride, fillOpacity = source?.fillOpacity ?? 1, decorationMode = 'all', forceDecorationGeometry = false, signal
 } = {}) {
   abort(signal);
@@ -219,9 +224,12 @@ export function collectTextDecorationGeometry(document, source, {
     return { width, actualBoundingBoxLeft: -Math.min(...bounds.map(item => item.left)), actualBoundingBoxRight: Math.max(...bounds.map(item => item.right)),
       actualBoundingBoxAscent: -Math.min(...bounds.map(item => item.top)), actualBoundingBoxDescent: Math.max(...bounds.map(item => item.bottom)) };
   };
+  const decorationShape = typeof shapeText === 'function' ? (text, style) => positionShapeValue(node, shapeText, text, style) : null;
+  if (decorationShape && shapeText.fontStatus) decorationShape.fontStatus = (...args) => shapeText.fontStatus(...args);
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
-    shapeText: typeof shapeText === 'function' ? (text, style) => positionShapeValue(node, shapeText, text, style) : null,
-    colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true
+    shapeText: decorationShape,
+    colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true,
+    leadingTrimMetrics, strictLeadingTrim: true
   });
   abort(signal); return { decorations: context.decorations, ...(context.clipGeometry ? { clipGeometry: context.clipGeometry } : {}), layout };
 }
@@ -235,7 +243,7 @@ export function collectTextDecorationGeometry(document, source, {
  * used to clip a glyph before stroking, which would invent box-edge strokes.
  */
 export function collectTextOutlineGeometry(document, source, {
-  shapeText, signal, includeDecorations = true, measureContext: _measureContext
+  shapeText, signal, includeDecorations = true, measureContext: _measureContext, leadingTrimMetrics
 } = {}) {
   abort(signal);
   if (source?.type !== 'text' || typeof shapeText !== 'function') fail('A text layer and a local font shaping resolver are required.');
@@ -247,8 +255,9 @@ export function collectTextOutlineGeometry(document, source, {
     abort(signal); if (typeof text !== 'string' || text.length > TEXT_OUTLINE_LIMITS.maxTextCodeUnits) fail('This text exceeds the local font shaping limit.');
     return checkShaped(positionShapeValue(node, shapeText, text, style), text);
   };
+  if (shapeText.fontStatus) checkedShape.fontStatus = (...args) => shapeText.fontStatus(...args);
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
-    shapeText: checkedShape, fillOpacity: 1, includeDecorations
+    shapeText: checkedShape, fillOpacity: 1, includeDecorations, leadingTrimMetrics, strictLeadingTrim: true
   });
   abort(signal);
   const glyphFillGroups = context.glyphs.flatMap(record => record.geometry.fillGroups);
@@ -294,7 +303,7 @@ async function awaitShape(value, signal, deadline) {
 
 /** Resolve only real shaping queries, then retry the same layout with immutable results. */
 export async function prepareTextOutlineGeometry(document, node, {
-  shapeText, signal, includeDecorations = true, measureContext, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
+  shapeText, signal, includeDecorations = true, measureContext, leadingTrimMetrics, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
 } = {}) {
   if (typeof shapeText !== 'function' || typeof assertCurrent !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > TEXT_OUTLINE_LIMITS.timeoutMs) fail('The text outline preparation options are invalid.');
   abort(signal); assertCurrent(); const signature = sourceSignature(document, node);
@@ -313,7 +322,7 @@ export async function prepareTextOutlineGeometry(document, node, {
   };
   while (true) {
     current();
-    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext }); }
+    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext, leadingTrimMetrics }); }
     catch (pending) {
       if (!(pending instanceof PendingShape)) throw pending;
       const value = await awaitShape(shapeText(pending.text, pending.style, { signal }), signal, deadline);

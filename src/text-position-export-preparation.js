@@ -43,7 +43,7 @@ function pause(ms, signal) {
   });
 }
 
-/** Retry the actual synchronous export, pinning glyph answers independently of preview LRU eviction. */
+/** Retry the actual export, pinning glyph answers independently of preview LRU eviction. */
 export async function withPreparedTextPositionShapes(generate, {
   shapeText, enabled = true, assertCurrent = () => {}, signal,
   maxQueries = TEXT_POSITION_EXPORT_LIMITS.maxQueries, maxBytes = TEXT_POSITION_EXPORT_LIMITS.maxBytes,
@@ -89,16 +89,17 @@ export async function withPreparedTextPositionShapes(generate, {
     return structuredClone(result);
   };
   pinned.fontStatus = fontStatus;
+  Object.defineProperty(pinned, 'isPreparedTextExport', { value: true });
   const expires = Date.now() + deadlineMs;
   try {
     for (;;) {
       abort(signal); assertCurrent();
       try {
-        const result = generate(pinned);
+        const result = await generate(pinned);
         abort(signal); assertCurrent();
         return result;
       } catch (error) {
-        if (error?.code !== 'TEXT_POSITION_PENDING') throw error;
+        if (!['TEXT_POSITION_PENDING', 'TEXT_LEADING_TRIM_PENDING'].includes(error?.code)) throw error;
         if (Date.now() >= expires) throw new Error('The local font could not finish preparing this export. Check its font file and retry.');
         await pause(Math.min(pollMs, Math.max(1, expires - Date.now())), signal);
       }

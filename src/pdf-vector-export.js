@@ -741,19 +741,24 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     if (positioned && !['normal', 'superscript', 'subscript'].includes(attrs['data-tiny-image-star-pdf-text-position'])) {
       fail('text position', 'the generated run uses an unknown superscript/subscript mode');
     }
+    const trimmed = attrs['data-tiny-image-star-pdf-leading-trim'] != null;
+    if (trimmed && !['NONE', 'CAP_HEIGHT'].includes(attrs['data-tiny-image-star-pdf-leading-trim'])) {
+      fail('leading trim', 'the generated run uses an unknown vertical trim mode');
+    }
+    const measuredPlacement = positioned || trimmed;
     const shiftText = String(attrs['baseline-shift'] ?? 0);
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px)?$/iu.test(shiftText)) {
       fail('rich text baseline shifts', 'only bounded generated pixel offsets have a PDF mapping');
     }
     const baselineShift = finite(shiftText.replace(/px$/iu, ''), 'rich text baseline shift');
-    if (baselineShift !== 0 && !positioned) fail('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics; use raster PDF');
+    if (baselineShift !== 0 && !measuredPlacement) fail('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics; use raster PDF');
     const size = finite(attrs['font-size'] ?? parentSize, 'rich text font size');
     if (size <= 0) throw new TypeError('SVG rich text font sizes must be positive.');
-    if (size !== parentSize && !positioned) {
+    if (size !== parentSize && !measuredPlacement) {
       fail('rich text font metrics', 'inline runs must use the text layer font size so the measured baseline remains exact');
     }
     let runAscent = ascent;
-    if (positioned) {
+    if (measuredPlacement) {
       if (attrs['data-tiny-image-star-pdf-run-ascent'] == null) fail('text position metrics', 'a positioned run needs measured standard-font ascent');
       runAscent = finite(attrs['data-tiny-image-star-pdf-run-ascent'], 'positioned text run ascent');
       if (!(runAscent > 0) || runAscent > size * 4 || Math.abs(baselineShift) > 100_000) {
@@ -769,7 +774,7 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     const desiredWidth = finite(attrs['data-tiny-image-star-pdf-width'], 'rich text run width');
     const naturalWidth = finite(attrs['data-tiny-image-star-pdf-natural-width'], 'standard-font rich text run width');
     if (['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust'].some(name => attrs[name] != null)) {
-      if (!positioned || attrs['text-anchor'] !== 'start' || attrs.lengthAdjust !== 'spacingAndGlyphs'
+      if (!measuredPlacement || attrs['text-anchor'] !== 'start' || attrs.lengthAdjust !== 'spacingAndGlyphs'
         || Math.abs(finite(attrs.x, 'positioned SVG run x') - x) > 1e-8
         || Math.abs(finite(attrs.y, 'positioned SVG run y') - (y - runAscent + baselineShift)) > 1e-8
         || Math.abs(finite(attrs.textLength, 'positioned SVG run width') - desiredWidth) > 1e-8) {

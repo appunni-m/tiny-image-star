@@ -115,6 +115,13 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
     assert.equal(missingGlyph.glyphs.length, 0);
     assert.deepEqual(base.positionMetrics.superscript, { xSize: 1331, ySize: 1229, xOffset: 0, yOffset: 717 });
     assert.deepEqual(base.positionMetrics.subscript, { xSize: 1331, ySize: 1229, xOffset: 0, yOffset: 154 });
+    assert.ok(base.leadingTrimMetrics.capHeight > 0);
+    assert.equal(base.leadingTrimMetrics.source, 'font-metric');
+    const capHeight = base.leadingTrimMetrics.capHeight;
+    base.leadingTrimMetrics.capHeight = -1;
+    assert.equal(harness.client.get('inter-variable', { text: 'ToWa', variations: { wght: 400, opsz: 14 } }).leadingTrimMetrics.capHeight, capHeight,
+      'actual cap metrics cannot be mutated through a returned shaping result');
+    base.leadingTrimMetrics.capHeight = capHeight;
     base.positionMetrics.superscript.ySize = -1;
     assert.equal(harness.client.get('inter-variable', { text: 'ToWa', variations: { wght: 400, opsz: 14 } }).positionMetrics.superscript.ySize, 1229,
       'worker metrics are cloned at the public cache boundary');
@@ -137,6 +144,30 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
     assert.equal(await harness.client.releaseFont('inter-variable'), true);
     assert.equal(harness.client.get('inter-variable', { text: 'ToWa', variations: { wght: 400, opsz: 14 } }), null);
     await assert.rejects(harness.client.shape('inter-variable', { text: 'ToWa' }), /no longer available/i);
+  } finally { await harness.restore(); }
+});
+
+test('retained fonts without OS/2 cap metrics use actual H glyph extents rather than a synthesized ratio', async () => {
+  const harness = await shapingHarness();
+  try {
+    const sfnt = new Uint8Array(await decompress(new Uint8Array(await readFile(fixtureUrl))));
+    const view = new DataView(sfnt.buffer, sfnt.byteOffset, sfnt.byteLength);
+    const count = view.getUint16(4, false); let os2;
+    for (let index = 0; index < count; index++) {
+      const record = 12 + index * 16;
+      if (new TextDecoder().decode(sfnt.subarray(record, record + 4)) === 'OS/2') os2 = view.getUint32(record + 8, false);
+    }
+    assert.ok(os2 > 0);
+    view.setUint16(os2, 1, false); // Version 1 does not contain sCapHeight.
+    const hb = await import('harfbuzzjs');
+    const face = new hb.Face(new hb.Blob(sfnt)); const font = new hb.Font(face);
+    font.setScale(face.upem, face.upem);
+    assert.equal(font.getMetricPosition(hb.MetricsTag.CAP_HEIGHT), undefined);
+    const expected = font.glyphExtents(font.nominalGlyph(0x48)).yBearing;
+    await harness.client.loadFont('without-cap-metric', sfnt);
+    const shaped = await harness.client.shape('without-cap-metric', { text: 'Hg' });
+    assert.deepEqual(shaped.leadingTrimMetrics, { capHeight: expected, source: 'glyph-H' });
+    assert.ok(expected > 0 && shaped.extents.ascender > expected);
   } finally { await harness.restore(); }
 });
 

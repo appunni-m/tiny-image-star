@@ -44,6 +44,7 @@ import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from '
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
 import { drawTextAlongPath } from './text-on-path.js';
 import { resolveTextPositionView } from './text-position.js';
+import { canvasLeadingTrimMetrics } from './text-leading-trim.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
@@ -346,7 +347,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
     fontWeight: Number(fontWeight) || 400,
     fontStyle,
     fontAxes: node.fontAxes,
-    fontFeatures: node.fontFeatures
+    fontFeatures: node.fontFeatures, leadingTrim: node.leadingTrim, baselineShift: node.baselineShift
   };
   const shapedWidth = value => {
     const shaped = options.shapeText?.(value, shapeStyle);
@@ -360,32 +361,38 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
     paragraphStyles: node.paragraphStyles, markerStyle: {
       fontFamily, fontSize: fontSize || 24,
       fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
-      fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: letterSpacing || 0, color: textColor
+      fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: letterSpacing || 0, color: textColor,
+      leadingTrim: node.leadingTrim, baselineShift: node.leadingTrim?.type === 'CAP_HEIGHT' ? node.baselineShift : 0
     },
     firstLineIndent, align: node.align,
     textTruncation: node.textTruncation, maxLines: node.maxLines,
-    maxHeight: node.maxHeight, boxHeight: height
+    maxHeight: node.maxHeight, boxHeight: height,
+    leadingTrim: node.leadingTrim, leadingTrimStyle: shapeStyle, shapeText: options.shapeText,
+    leadingTrimMetrics: options.leadingTrimMetrics || (style => canvasLeadingTrimMetrics(ctx, style)),
+    strictLeadingTrim: options.strictLeadingTrim
   });
   const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
   layout.lines.forEach(line => {
+    const lineY = textY + line.y - (node.leadingTrim?.type === 'CAP_HEIGHT' ? Number(node.baselineShift || 0) : 0);
     if (line.marker && !options.decorationsOnly) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
       fontFamily, fontSize: fontSize || 24,
       fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
-      letterSpacing: letterSpacing || 0, color: textColor
+      letterSpacing: letterSpacing || 0, color: textColor,
+      baselineShift: node.leadingTrim?.type === 'CAP_HEIGHT' ? node.baselineShift : 0
     }, fillOpacity, paintMode, options.shapeText);
     const availableWidth = Math.max(1, width - line.indent);
     const lineAlign = line.align || node.align || 'left';
     const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
     let shaped = null; const ink = { inkContours: [], fallbackInkBounds: [] };
-    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace, paintMode,
+    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, lineY, letterSpacing, line.justificationExtraSpace, paintMode,
       options.shapeText, shapeStyle, { ...ink, collectInk: node.textDecorationSkipInk, decorationsOnly: options.decorationsOnly });
     else {
       shaped = options.shapeText?.(line.displayText, shapeStyle);
-      if (!options.decorationsOnly && !drawShapedText(ctx, shaped, line.displayText, x + offsetX, textY + line.y, shapeStyle.fontSize, letterSpacing, paintMode)) {
-        drawTrackedTextPaint(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth, paintMode);
+      if (!options.decorationsOnly && !drawShapedText(ctx, shaped, line.displayText, x + offsetX, lineY, shapeStyle.fontSize, letterSpacing, paintMode)) {
+        drawTrackedTextPaint(ctx, line.displayText, x + offsetX, lineY, letterSpacing, availableWidth, paintMode);
       }
     }
-    if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none', {
+    if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, x + offsetX, lineY, line.width, fontSize || 24, node.textDecoration || 'none', {
       style: decorationStyleForRun(node), shaped, text: line.displayText, letterSpacing,
       ...(line.justify ? ink : {}), mode: options.decorationMode,
       forceGeometryColor: options.forceDecorationGeometry
@@ -397,7 +404,8 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
 export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
   colorOverride = undefined, fillOpacity = node.fillOpacity ?? 1,
   paintMode = 'fill', includeDecorations = true, overrideRunColors = false, shapeText = null,
-  decorationMode = 'all', decorationsOnly = false, forceDecorationGeometry = false
+  decorationMode = 'all', decorationsOnly = false, forceDecorationGeometry = false,
+  leadingTrimMetrics, strictLeadingTrim = false
 } = {}) {
   const text = getNodePropertyValue(document, node, 'text');
   if (!node.__textPositionResolved) node = resolveTextPositionView({ ...node, text }, { shapeText }).node;
@@ -443,7 +451,7 @@ export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
     if (!currentRuns) {
       return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {
-        fillOpacity, paintMode, includeDecorations, shapeText, decorationMode, decorationsOnly, forceDecorationGeometry
+        fillOpacity, paintMode, includeDecorations, shapeText, decorationMode, decorationsOnly, forceDecorationGeometry, leadingTrimMetrics, strictLeadingTrim
       });
     }
 
@@ -465,7 +473,7 @@ export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
       textCase: node.textCase || 'none',
       textDecoration: node.textDecoration || 'none',
       ...decorationStyleForRun(node),
-      textPosition: node.textPosition, baselineShift: node.baselineShift,
+      textPosition: node.textPosition, baselineShift: node.baselineShift, leadingTrim: node.leadingTrim,
       paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing') || 0,
       listSpacing: node.listSpacing || 0,
       paragraphStyles: node.paragraphStyles || [],
@@ -480,7 +488,7 @@ export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
       fillOpacity,
       paintMode,
       includeDecorations,
-      shapeText, decorationMode, decorationsOnly, forceDecorationGeometry
+      shapeText, decorationMode, decorationsOnly, forceDecorationGeometry, leadingTrimMetrics, strictLeadingTrim
     });
   } finally {
     if (truncate) ctx.restore();
@@ -1398,7 +1406,10 @@ export function localTextInkBounds(document, node, shapeText, { forStroke = fals
   if (typeof shapeText !== 'function') return canvasTextLayerInkBounds(document, node, shapeText, measureContext, forStroke);
   let collected;
   try { collected = collectTextOutlineGeometry(document, node, { shapeText }); }
-  catch { return canvasTextLayerInkBounds(document, node, shapeText, measureContext, forStroke); }
+  catch (error) {
+    if (shapeText.isPreparedTextExport && (error?.code === 'TEXT_POSITION_PENDING' || error?.code === 'TEXT_LEADING_TRIM_PENDING')) throw error;
+    return canvasTextLayerInkBounds(document, node, shapeText, measureContext, forStroke);
+  }
   const bounds = { left: 0, top: 0, right: node.width, bottom: node.height };
   const contours = forStroke ? collected.geometry.strokeContours
     : collected.geometry.fillGroups.flatMap(group => group.contours);
@@ -1697,7 +1708,10 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
       maxLines: baseStyle.maxLines,
       maxHeight: baseStyle.maxHeight,
       boxHeight: baseStyle.height,
-      textWrapStyle: baseStyle.textWrapStyle || 'auto'
+      textWrapStyle: baseStyle.textWrapStyle || 'auto',
+      shapeText: baseStyle.shapeText,
+      leadingTrimMetrics: baseStyle.leadingTrimMetrics || (style => canvasLeadingTrimMetrics(ctx, style)),
+      strictLeadingTrim: baseStyle.strictLeadingTrim
     });
   } finally {
     ctx.font = previousFont;
@@ -1783,7 +1797,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     }
     ctx.restore();
   }
-  return { lines: lines.map(line => line.parts), height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign) };
+  return { lines: lines.map(line => line.parts), height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign),
+    ...(layout.leadingTrim ? { leadingTrim: layout.leadingTrim } : {}) };
 }
 
 function richTextStyleForMarker(baseStyle) {

@@ -117,3 +117,42 @@ test('unexpected generator failures never enter the font retry loop', async () =
     { shapeText: shape }), /invalid SVG paint/u);
   assert.equal(attempts, 1);
 });
+
+test('asynchronous cold-trim export retries actual layout and retains a pinned metric snapshot', async () => {
+  const ready = new Map(); const queued = new Set(); let attempts = 0;
+  const metricShape = (text, options) => ({ ...shape(text, options), leadingTrimMetrics: { capHeight: 700 } });
+  const cold = (text, options) => {
+    const key = JSON.stringify([text, options.fontSize, options.fontFeatures || {}]);
+    if (ready.has(key)) return ready.get(key);
+    if (!queued.has(key)) { queued.add(key); setTimeout(() => ready.set(key, metricShape(text, options)), 1); }
+    return null;
+  };
+  cold.fontStatus = () => 'ready';
+  const node = createNode('text', { text: 'H2\nHp', ...style, leadingTrim: { type: 'CAP_HEIGHT' },
+    width: 70, height: 50, textRuns: [{ text: 'H' }, { text: '2\n', textPosition: 'superscript' },
+      { text: 'Hp', fontSize: 24, baselineShift: 2 }], stroke: null });
+  const authored = structuredClone(node);
+  const measure = (text, options) => text.length * options.fontSize * .6;
+  const output = await withPreparedTextPositionShapes(async pinned => {
+    attempts++; await Promise.resolve();
+    const measuring = (...args) => measure(...args); measuring.shapeText = pinned;
+    return exportNodeToSvg(node, { measureText: measuring });
+  }, { shapeText: cold, pollMs: 1, deadlineMs: 1000 });
+  const warm = (...args) => measure(...args); warm.shapeText = metricShape;
+  assert.equal(output, exportNodeToSvg(node, { measureText: warm }));
+  assert.ok(attempts > 1); assert.deepEqual(node, authored);
+  assert.ok([...queued].some(key => key.includes('24')));
+});
+
+test('asynchronous preparation failures and cancellation cannot publish an unfinished export', async () => {
+  let attempts = 0;
+  await assert.rejects(withPreparedTextPositionShapes(async () => {
+    attempts++; await Promise.resolve(); throw new Error('invalid raster paint');
+  }, { shapeText: shape }), /invalid raster paint/u);
+  assert.equal(attempts, 1);
+  const controller = new AbortController(); let published = false;
+  await assert.rejects(withPreparedTextPositionShapes(async pinned => {
+    await Promise.resolve(); controller.abort(); pinned('1', style); published = true;
+  }, { shapeText: shape, signal: controller.signal }), error => error.name === 'AbortError');
+  assert.equal(published, false);
+});
