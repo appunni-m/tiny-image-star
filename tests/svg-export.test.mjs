@@ -1197,9 +1197,12 @@ test('SVG fails closed for regular-shape effects that cannot preserve paint phas
     effects: [{ id: 'rounded-star-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5,
       offsetX: 1, offsetY: 2, blur: 3 }]
   });
-  assert.throws(() => exportNodeToSvg(roundedStar), error => error instanceof SvgExportError
-    && /inner shadows on regular shapes with incompatible fill, stroke, or corner geometry/.test(error.feature),
-  'rounded regular shapes with strokes do not silently filter their stroke with the fill');
+  const roundedSvg = exportNodeToSvg(roundedStar);
+  assert.match(roundedSvg, /data-tiny-image-star-rounded-shape-v1=/u);
+  assert.match(roundedSvg, /data-tiny-image-star-paint-stage="fill"[^>]*>\s*<path/u,
+    'the inner shadow applies to the canonical rounded fill path');
+  assert.match(roundedSvg, /data-tiny-image-star-paint-stage="stroke"[^>]*>\s*<path/u,
+    'the compatible stroke stays in a separate crisp rounded path stage');
 
   const translucentStrokeShadow = createNode('polygon', {
     width: 64, height: 64, fill: '#ffffff', fillOpacity: 1,

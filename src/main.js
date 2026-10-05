@@ -87,7 +87,7 @@ import { exportNodeToSvg, exportPageToSvg, getPageContentBounds } from './svg-ex
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { fitPdfContent, pdfContentRenderScale, planPdfPage, PDF_PAGE_PRESETS } from './pdf-page-layout.js';
-import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
+import { assertVectorPdfTextSupported } from './pdf-text-support.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
@@ -3048,7 +3048,7 @@ function exportSettingsSection(node) {
     ? '<button class="add-fill" type="button" data-action="export-raster-pdf">Download 1× raster PDF</button><div class="image-properties-note">This local PDF is a flattened 1× export. Use vector PDF for supported shapes or editable SVG for full vector artwork.</div>'
     : '';
   const vectorPdf = node.type === 'frame'
-    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes, paths, masks, and single-style, left-, center-, or right-aligned ASCII text editable; text uses built-in Helvetica regular, bold, and italic with zero letter spacing. Custom fonts, rich text, non-ASCII text, justified paragraphs, case transforms, ellipsis, lists, variable-font settings, text strokes, unsupported image formats, filters, blend modes, and unsupported effects need raster PDF. Use raster PDF to preserve the editor’s exact typography.</div>'
+    ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps shapes and supported text editable. Text uses built-in Helvetica and supports extended Latin, styled runs at one font size, lists, case changes, and ellipsis. Use raster PDF for exact editor typography, custom fonts, other writing systems, or unsupported effects.</div>'
     : '';
   const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes supported linear/radial gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Angular gradients are canvas-editable but require raster export because SVG/PDF vector export cannot preserve them. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${rasterPdf}${vectorPdf}${svgExport}`);
@@ -20336,47 +20336,6 @@ async function exportActivePagePdf(pagePlan) {
     imageEngine.dispose(rasterAssetId);
     if (state.imageExportAbortController === controller) state.imageExportAbortController = null;
     if (state.pagePdfAbortController === controller) state.pagePdfAbortController = null;
-  }
-}
-
-function assertVectorPdfTextSupported(documentSnapshot, node) {
-  const label = node.name || 'Text';
-  const reject = (feature, detail) => {
-    throw new PdfVectorExportError(feature, `layer “${label}”: ${detail} Use raster PDF to preserve this text exactly`);
-  };
-  const text = String(getNodePropertyValue(documentSnapshot, node, 'text') ?? '');
-  if (node.textPath) reject('text on a path', 'the vector writer cannot preserve shaped path placement.');
-  if (Array.isArray(node.textRuns) && node.textRuns.map(run => run?.text ?? '').join('') === text) {
-    reject('rich text', 'the vector writer supports one style per text layer, not styled runs.');
-  }
-  if (node.textTruncation === 'ending') reject('truncated text', 'the rendered ellipsis and clip cannot be represented as editable text.');
-  if (node.textCase && node.textCase !== 'none') reject('text case transforms', 'choose the desired case in the layer content before exporting.');
-  const alignmentIssue = vectorPdfTextAlignmentIssue(node);
-  if (alignmentIssue) reject('text alignment', alignmentIssue);
-  if ((node.paragraphStyles || []).some(paragraph => paragraph?.listStyle && paragraph.listStyle !== 'none')) {
-    reject('paragraph lists', 'list markers require rich text positioning.');
-  }
-  if (Number(getNodePropertyValue(documentSnapshot, node, 'letterSpacing') ?? 0) !== 0) {
-    reject('letter spacing', 'the current vector text subset requires zero letter spacing.');
-  }
-  if (Object.keys(node.fontAxes || {}).length || Object.keys(node.fontFeatures || {}).length) {
-    reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce these font settings.');
-  }
-  if (Array.isArray(node.fills) || node.fillGradient || node.imageFill || (node.strokes?.length)
-    || (node.stroke && Number(node.strokeWidth) > 0)) {
-    reject('text paint stacks or outlines', 'only a single solid text fill is supported.');
-  }
-  const families = String(getNodePropertyValue(documentSnapshot, node, 'fontFamily') || 'Arial, sans-serif')
-    .split(',').map(family => family.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
-  if (!families.length || families.some(family => !['arial', 'helvetica', 'sans-serif'].includes(family))) {
-    reject('custom text fonts', 'only Arial or Helvetica can map to the built-in PDF Helvetica fonts.');
-  }
-  const weight = Number(getNodePropertyValue(documentSnapshot, node, 'fontWeight') || 400);
-  if (![400, 700].includes(weight) || !['normal', 'italic'].includes(getNodePropertyValue(documentSnapshot, node, 'fontStyle') || 'normal')) {
-    reject('text font variants', 'only regular, bold, italic, and bold italic are supported.');
-  }
-  if (!/^[\x20-\x7e\r\n]*$/.test(text)) {
-    reject('non-ASCII text', 'the built-in PDF fonts support printable ASCII only.');
   }
 }
 

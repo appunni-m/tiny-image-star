@@ -877,6 +877,115 @@ test('round-trips phased editor stars and polygons with native controls and orde
   }
 });
 
+test('round-trips phased rounded stars and polygons only when every stage matches the tagged geometry', () => {
+  const originals = [
+    createNode('star', {
+      id: 'phased-rounded-star', name: 'Phased rounded star', x: 14, y: 18, width: 86, height: 72,
+      rotation: -12, points: 7, innerRadius: 0.34, radius: 4, cornerSmoothing: 0.3,
+      fills: [
+        { id: 'base', type: 'solid', visible: true, opacity: 0.85, blendMode: 'normal', color: '#345678' },
+        { id: 'highlight', type: 'solid', visible: true, opacity: 0.4, blendMode: 'normal', color: '#abcdef' }
+      ],
+      effects: [
+        { id: 'star-inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.5, offsetX: 1, offsetY: 2, blur: 3 },
+        { id: 'star-blur', type: 'layer-blur', visible: true, radius: 2 },
+        { id: 'star-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: true, color: '#010203', opacity: 0.3, offsetX: 3, offsetY: 4, blur: 5 }
+      ]
+    }),
+    createNode('polygon', {
+      id: 'phased-rounded-polygon', name: 'Phased custom polygon', x: 122, y: 18, width: 78, height: 64,
+      rotation: 9, points: 6, cornerSmoothing: 0.2, vertexRadii: [2, 3, 4, 5, 6, 7],
+      fill: '#778899', stroke: '#abcdef', strokeWidth: 2,
+      effects: [{ id: 'polygon-inner', type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: -1, offsetY: 2, blur: 3 }]
+    }),
+    createNode('polygon', {
+      id: 'phased-opaque-clipped-shadow', name: 'Phased opaque clipped-shadow polygon', width: 70, height: 58,
+      points: 5, fill: '#ffffff',
+      effects: [
+        { id: 'opaque-inner', type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: 1, offsetY: -2, blur: 3 },
+        { id: 'opaque-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false, color: '#010203', opacity: 0.3, offsetX: 3, offsetY: 4, blur: 5 }
+      ]
+    }),
+    ...['rectangle', 'ellipse'].map(type => createNode(type, {
+      id: `phased-opaque-${type}`, name: `Phased opaque ${type}`, width: 70, height: 58, fill: '#ffffff',
+      effects: [
+        { id: `${type}-inner`, type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: 1, offsetY: -2, blur: 3 },
+        { id: `${type}-drop`, type: 'drop-shadow', visible: true, showShadowBehindNode: false, color: '#010203', opacity: 0.3, offsetX: 3, offsetY: 4, blur: 5 }
+      ]
+    }))
+  ];
+  for (const original of originals) {
+    const sourceSvg = exportNodeToSvg(original);
+    assert.match(sourceSvg, /data-tiny-image-star-paint-phases="layer-v1"/u);
+    const copy = allNodes(importSvgToLayers(sourceSvg).nodes).find(node => node.name === original.name);
+    assert.equal(copy?.type, original.type);
+    assert.equal(copy.points, original.points);
+    if (original.type === 'star') assert.equal(copy.innerRadius, original.innerRadius);
+    assert.equal(copy.cornerSmoothing, original.cornerSmoothing);
+    assert.ok(Math.abs(Number(copy.radius || 0) - Number(original.radius || 0)) < 1e-8);
+    if (original.vertexRadii) {
+      assert.equal(copy.vertexRadii.length, original.vertexRadii.length);
+      original.vertexRadii.forEach((radius, index) => assert.ok(Math.abs(copy.vertexRadii[index] - radius) < 1e-8));
+    } else assert.equal(copy.vertexRadii, undefined);
+    assert.deepEqual(copy.effects.map(effect => effect.type), original.effects.map(effect => effect.type));
+    original.effects.forEach((effect, index) => {
+      for (const [property, value] of Object.entries(effect)) {
+        if (property === 'id') continue;
+        if (typeof value === 'number') {
+          assert.ok(Math.abs(copy.effects[index][property] - value) <= 1e-8 * Math.max(1, Math.abs(value)),
+            `${original.type}: ${property} survives the staged effect round-trip`);
+        } else assert.equal(copy.effects[index][property], value,
+          `${original.type}: ${property} survives the staged effect round-trip`);
+      }
+    });
+    if (original.stroke) {
+      assert.equal(copy.stroke, original.stroke);
+      assert.equal(copy.strokeWidth, original.strokeWidth);
+    }
+    if (original.fills) {
+      assert.equal(copy.fills.length, 2);
+      assert.deepEqual(copy.fills.map(fill => [fill.color, fill.opacity]), [['#345678', 0.85], ['#abcdef', 0.4]]);
+    }
+
+    if (original.name === 'Phased rounded star') {
+      for (const [label, replacement] of [
+        ['forged clipped-shadow flag', '[false]'],
+        ['malformed drop-shadow metadata', 'invalid'],
+        ['drop-shadow count mismatch', '[]'],
+        ['drop-shadow value type mismatch', '[1]']
+      ]) {
+        const tampered = sourceSvg.replace(/data-tiny-image-star-drop-shadow-behind-v1="[^"]+"/u,
+          `data-tiny-image-star-drop-shadow-behind-v1="${replacement}"`);
+        const recovered = allNodes(importSvgToLayers(tampered).nodes);
+        assert.equal(recovered.some(node => node.name === original.name && node.type === original.type), false,
+          `${label} must not recover rounded native geometry`);
+        assert.ok(recovered.some(node => node.type === 'path'), `${label} remains editable vector geometry`);
+      }
+      const legacyWithoutFlags = sourceSvg.replace(/ data-tiny-image-star-drop-shadow-behind-v1="[^"]+"/u, '');
+      const legacyCopy = allNodes(importSvgToLayers(legacyWithoutFlags).nodes).find(node => node.name === original.name);
+      assert.equal(legacyCopy.effects.find(effect => effect.type === 'drop-shadow').showShadowBehindNode, true,
+        'older phased exports without drop-shadow metadata retain SVG unclipped-shadow semantics');
+    }
+
+    if (sourceSvg.includes('data-tiny-image-star-rounded-shape-v1=')) {
+      const firstStageGeometry = sourceSvg.match(/(<g data-tiny-image-star-paint-stage="fill"[^>]*>\s*<path d=")([^"]+)/u);
+      assert.ok(firstStageGeometry, 'rounded paint stages use canonical path geometry');
+      const altered = sourceSvg.replace(firstStageGeometry[0], `${firstStageGeometry[1]}${firstStageGeometry[2].replace(/^M (-?[\d.]+) (-?[\d.]+)/u, (_m, x, y) => `M ${Number(x) + 0.01} ${y}`)}`);
+      const fallback = allNodes(importSvgToLayers(altered).nodes);
+      assert.equal(fallback.some(node => node.name === original.name && node.type === original.type), false,
+        'edited stage geometry cannot recover native controls');
+      assert.ok(fallback.some(node => node.type === 'path'), 'edited stage geometry remains editable vector content');
+
+      const tamperedMetadata = sourceSvg.replace(/data-tiny-image-star-rounded-shape-v1="[^"]+"/u,
+        'data-tiny-image-star-rounded-shape-v1="{&quot;version&quot;:99}"');
+      const malformed = allNodes(importSvgToLayers(tamperedMetadata).nodes);
+      assert.equal(malformed.some(node => node.name === original.name && node.type === original.type), false,
+        'tampered rounded metadata cannot recover native controls');
+      assert.ok(malformed.some(node => node.type === 'path'), 'tampered geometry remains editable vector content');
+    }
+  }
+});
+
 test('round-trips phased rounded rectangles as native editable controls only for exact geometry', () => {
   const original = createNode('rectangle', {
     id: 'rounded-phase', name: 'Phased rounded card', x: 18, y: 22, width: 120, height: 80,
@@ -922,6 +1031,58 @@ test('round-trips phased rounded rectangles as native editable controls only for
     'unknown rectangle metadata versions cannot restore native controls');
   assert.ok(malformedNodes.some(node => node.type === 'path'),
     'unknown-version rounded geometry remains editable as paths');
+});
+
+test('native phased filters map offsets into recovered local coordinates around child transforms', () => {
+  const original = createNode('rectangle', {
+    name: 'Transformed staged rectangle', width: 70, height: 58, fill: '#ffffff',
+    effects: [
+      { id: 'child-inner', type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: 1, offsetY: -2, blur: 3 },
+      { id: 'child-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false, color: '#010203', opacity: 0.3, offsetX: 3, offsetY: 4, blur: 5 }
+    ]
+  });
+  const sourceSvg = exportNodeToSvg(original)
+    .replaceAll('x="-18" y="-19" width="106" height="96"', 'x="-50" y="-50" width="170" height="160"')
+    .replace('<rect x="0" y="0"', '<rect transform="rotate(23 35 29)" x="0" y="0"');
+  const copy = allNodes(importSvgToLayers(sourceSvg).nodes).find(node => node.name === original.name);
+  assert.equal(copy?.type, 'rectangle', 'the tagged primitive remains eligible for native recovery');
+  assert.ok(Math.abs(copy.rotation - 23) < 1e-8);
+  const drop = copy.effects.find(effect => effect.type === 'drop-shadow');
+  const radians = copy.rotation * Math.PI / 180;
+  const worldX = Math.cos(radians) * drop.offsetX - Math.sin(radians) * drop.offsetY;
+  const worldY = Math.sin(radians) * drop.offsetX + Math.cos(radians) * drop.offsetY;
+  assert.ok(Math.abs(worldX - 3) < 1e-8, 'layer rotation maps the local offset back to the SVG filter dx');
+  assert.ok(Math.abs(worldY - 4) < 1e-8, 'layer rotation maps the local offset back to the SVG filter dy');
+  assert.equal(drop.showShadowBehindNode, false, 'opaque clipped shadows retain the authored clipping flag');
+
+  const clippedRegionSvg = exportNodeToSvg(original)
+    .replace('<rect x="0" y="0"', '<rect transform="rotate(23 35 29)" x="0" y="0"');
+  assert.throws(() => importSvgToLayers(clippedRegionSvg), error => error.code === 'filter-region-clips-output',
+    'retained local offsets still reject SVG filters whose original region clips transformed output');
+});
+
+test('native phased filters preserve reflected group offsets when the primitive reflection restores orientation', () => {
+  const original = createNode('rectangle', {
+    name: 'Reflected staged rectangle', width: 70, height: 58, fill: '#ffffff',
+    effects: [
+      { id: 'reflected-inner', type: 'inner-shadow', visible: true, color: '#123456', opacity: 0.4, offsetX: 1, offsetY: -2, blur: 3 },
+      { id: 'reflected-drop', type: 'drop-shadow', visible: true, showShadowBehindNode: false, color: '#010203', opacity: 0.3, offsetX: 3, offsetY: 4, blur: 5 }
+    ]
+  });
+  const sourceSvg = exportNodeToSvg(original)
+    .replaceAll('x="-18" y="-19" width="106" height="96"', 'x="-50" y="-50" width="170" height="160"')
+    .replace('<g opacity="1"', '<g transform="matrix(-1 0 0 1 70 0)" opacity="1"')
+    .replace('<rect x="0" y="0"', '<rect transform="matrix(-1 0 0 1 70 0)" x="0" y="0"');
+  const copy = allNodes(importSvgToLayers(sourceSvg).nodes).find(node => node.name === original.name);
+  assert.equal(copy?.type, 'rectangle');
+  assert.ok(Math.abs(copy.rotation) < 1e-8, 'the two reflections restore the native shape orientation');
+  original.effects.forEach((effect, index) => {
+    assert.ok(Math.abs(copy.effects[index].offsetX + effect.offsetX) < 1e-8,
+      'filter offsets retain the group reflection along X');
+    assert.ok(Math.abs(copy.effects[index].offsetY - effect.offsetY) < 1e-8,
+      'the group reflection preserves the filter Y direction');
+    assert.equal(copy.effects[index].blur, effect.blur);
+  });
 });
 
 test('edited or malformed phased regular-shape metadata stays editable vector geometry', () => {

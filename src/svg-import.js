@@ -1,4 +1,5 @@
 import { createDocument, createNode, validateDocument } from './model.js';
+import { svgDropShadowClipIsRedundant } from './svg-export.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
 import { isValidFontVariationValues, parseFontVariationSettings } from './font-variation.js';
@@ -1941,7 +1942,7 @@ function mappedFilterRegion(region, matrix, sourceBounds, element) {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) {
+function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element, retainedLayerRotation = null) {
   if (!filter?.effects.length) return [];
   if (filter.effects.length > 8) fail('unsupported-filter-graph', 'SVG filter has more than 8 effects and cannot be represented by this editor.', element);
   const scale = matrixScale(matrix);
@@ -1951,18 +1952,33 @@ function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) 
     if ((blur > 0 || spread !== 0) && scale == null) {
       fail('unsupported-filter-transform', 'SVG blur or shadow spread under a non-uniform or skewed transform cannot be represented faithfully as an editable effect.', element);
     }
-    const mappedBlur = blur * (scale ?? 1);
+    const effectScale = retainedLayerRotation != null && scale != null ? Number(scale.toPrecision(12)) : scale;
+    const mappedBlur = blur * (effectScale ?? 1);
+    // Map filter vectors through the SVG group transform, then into the
+    // recovered layer's local coordinates. Its own rotation remains on the
+    // native layer and will be applied later by the renderer.
+    const mapOffset = (x, y) => {
+      const mappedX = matrix[0] * x + matrix[2] * y;
+      const mappedY = matrix[1] * x + matrix[3] * y;
+      if (retainedLayerRotation == null) return { x: mappedX, y: mappedY };
+      const radians = -retainedLayerRotation * Math.PI / 180;
+      const cosine = Math.cos(radians); const sine = Math.sin(radians);
+      return { x: cosine * mappedX - sine * mappedY, y: sine * mappedX + cosine * mappedY };
+    };
     const mapped = effect.type === 'layer-blur'
       ? { type: effect.type, radius: mappedBlur }
-      : {
-        type: effect.type,
-        color: effect.color,
-        opacity: effect.opacity,
-        offsetX: matrix[0] * effect.offsetX + matrix[2] * effect.offsetY,
-        offsetY: matrix[1] * effect.offsetX + matrix[3] * effect.offsetY,
-        blur: mappedBlur,
-        ...(spread !== 0 ? { spread: spread * (scale ?? 1) } : {})
-      };
+      : (() => {
+        const offset = mapOffset(effect.offsetX, effect.offsetY);
+        return {
+          type: effect.type,
+          color: effect.color,
+          opacity: effect.opacity,
+          offsetX: offset.x,
+          offsetY: offset.y,
+          blur: mappedBlur,
+          ...(spread !== 0 ? { spread: spread * (effectScale ?? 1) } : {})
+        };
+      })();
     if (mapped.type === 'layer-blur'
       ? !Number.isFinite(mapped.radius) || mapped.radius < 0 || mapped.radius > 100
       : !Number.isFinite(mapped.blur) || mapped.blur < 0 || mapped.blur > 100
@@ -1976,7 +1992,19 @@ function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) 
   const contentBounds = visualBoundsOf(sourceNodes);
   if (contentBounds) {
     const region = mappedFilterRegion(filter.region, matrix, contentBounds, element);
-    const padding = effectPadding(effects);
+    const regionEffects = retainedLayerRotation == null ? effects : effects.map(effect => {
+      if (effect.type === 'layer-blur') return effect;
+      const radians = retainedLayerRotation * Math.PI / 180;
+      const cosine = Math.cos(radians); const sine = Math.sin(radians);
+      return {
+        ...effect,
+        offsetX: cosine * effect.offsetX - sine * effect.offsetY,
+        offsetY: sine * effect.offsetX + cosine * effect.offsetY
+      };
+    });
+    // Region limits live in the SVG filter's coordinate space, so restore the
+    // recovered local offsets to that frame before checking clipped output.
+    const padding = effectPadding(regionEffects);
     const required = { x: contentBounds.x - padding.x, y: contentBounds.y - padding.y,
       width: contentBounds.width + padding.x * 2, height: contentBounds.height + padding.y * 2 };
     const epsilon = Math.max(1, required.width, required.height) * 1e-7;
@@ -2634,12 +2662,12 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
   });
 }
 
-function resolveNodeFilter(style, filters, matrix, sourceNodes, prefix, node, name = localName(node)) {
+function resolveNodeFilter(style, filters, matrix, sourceNodes, prefix, node, name = localName(node), retainedLayerRotation = null) {
   if (!style.filterRef) return [];
   const filter = filters.get(style.filterRef);
   if (!filter) fail('missing-filter', `SVG layer references missing filter “${style.filterRef}”.`, node.tag);
   if (filter.alphaInversion) fail('unsupported-filter-graph', 'SVG alpha-inversion filters are supported only inside editor Boolean cutout masks.', node.tag);
-  const effects = mapFilterEffects(filter, matrix, sourceNodes, prefix, node.serial, name);
+  const effects = mapFilterEffects(filter, matrix, sourceNodes, prefix, node.serial, name, retainedLayerRotation);
   if (effects.some(effect => effect.spread != null && effect.spread !== 0)
     && (sourceNodes.length !== 1 || !supportsShadowSpread(sourceNodes[0]))) {
     fail('unsupported-shadow-spread-target',
@@ -2992,6 +3020,16 @@ function reorderPaintStageEffects(orderText, effects) {
   return [...remaining.values()].every(entries => entries.length === 0) ? result : null;
 }
 
+function readEditorDropShadowBehindMetadata(node, dropShadowCount) {
+  const text = node.attrs['data-tiny-image-star-drop-shadow-behind-v1'];
+  if (text == null) return Array(dropShadowCount).fill(true);
+  if (typeof text !== 'string' || text.length > 256) return null;
+  let values;
+  try { values = JSON.parse(text); } catch { return null; }
+  if (!Array.isArray(values) || values.length !== dropShadowCount || values.some(value => typeof value !== 'boolean')) return null;
+  return values;
+}
+
 // Preserve native shape controls only when Tiny Image Star metadata and one
 // simple SVG primitive make the original rectangle, frame, ellipse, line, star, or polygon unambiguous.
 function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget) {
@@ -3022,7 +3060,7 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
   let fillStageStyle = null;
   if (phasedPaint) {
     if (!['rectangle', 'ellipse', 'star', 'polygon'].includes(type)
-      || regularShape && Object.hasOwn(node.attrs, ROUNDED_SHAPE_METADATA_ATTRIBUTE)) return null;
+      || regularShape && Object.hasOwn(node.attrs, ROUNDED_SHAPE_METADATA_ATTRIBUTE) && !roundedShapeMetadata) return null;
     const stages = shapeNodes.filter(child => child.tag === 'g'
       && ['fill', 'stroke'].includes(child.attrs['data-tiny-image-star-paint-stage']));
     if (stages.length !== shapeNodes.length) return null;
@@ -3111,7 +3149,8 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
     || shapeStyle.fillGradient || sideStrokeGroup && shapeStyle.stroke && shapeStyle.strokeWidth > 0 && shapeStyle.strokeAlpha > 0
     || lineShape && (shapeStyle.fill || shapeStyle.fillAlpha > 0)) return null;
   const shapeMatrix = matrixMultiply(matrix, parseTransform(shape.attrs.transform, shape.tag));
-  const scale = matrixScale(shapeMatrix);
+  const rawScale = matrixScale(shapeMatrix);
+  const scale = rawScale == null ? null : Number(rawScale.toPrecision(12));
   if (scale == null || scale <= 0 || shapeMatrix[0] * shapeMatrix[3] - shapeMatrix[1] * shapeMatrix[2] <= 0) return null;
 
   let x; let y; let width; let height; let radius = 0; let regularShapeGeometry = null; let lineGeometry = null;
@@ -3238,14 +3277,23 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
   });
   if (importedSideStroke) syncLegacyStrokeFields(layer);
   if (phasedPaint) {
-    const innerEffects = resolveNodeFilter(fillStageStyle, filters, matrix, [layer], prefix, fillStage);
-    const outerEffects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node);
+    const innerEffects = resolveNodeFilter(fillStageStyle, filters, matrix, [layer], prefix, fillStage, localName(fillStage), layer.rotation);
+    const outerEffects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node, localName(node), layer.rotation);
     if (!innerEffects.length || innerEffects.some(effect => effect.type !== 'inner-shadow')
       || outerEffects.some(effect => !['layer-blur', 'drop-shadow'].includes(effect.type))) return null;
     const ordered = reorderPaintStageEffects(node.attrs['data-tiny-image-star-effect-order'], [...innerEffects, ...outerEffects]);
     if (!ordered) return null;
-    layer.effects = ordered;
-  } else layer.effects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node);
+    const dropShadowBehind = readEditorDropShadowBehindMetadata(node,
+      ordered.filter(effect => effect.type === 'drop-shadow').length);
+    if (!dropShadowBehind) return null;
+    let dropShadowIndex = 0;
+    const effects = ordered.map(effect => effect.type === 'drop-shadow'
+      ? { ...effect, showShadowBehindNode: dropShadowBehind[dropShadowIndex++] }
+      : effect);
+    if (dropShadowBehind.some(value => !value)
+      && !svgDropShadowClipIsRedundant({ ...layer, strokeWidth: layer.stroke ? layer.strokeWidth : 0, effects })) return null;
+    layer.effects = effects;
+  } else layer.effects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node, localName(node), layer.rotation);
   return layer;
 }
 

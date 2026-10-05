@@ -702,7 +702,7 @@ function isNodeVisible(document, node) {
 // it. In that restricted case an ordinary SVG drop-shadow (painted below the
 // shape) has the same visible result. Keep every alpha-bearing or more complex
 // paint path fail-closed.
-function svgDropShadowClipIsRedundant(node, document) {
+export function svgDropShadowClipIsRedundant(node, document = emptyDocument) {
   const path = node.type === 'path';
   const regularShape = ['star', 'polygon'].includes(node.type);
   if (!['rectangle', 'ellipse', 'path', 'star', 'polygon'].includes(node.type)
@@ -1724,7 +1724,7 @@ function canExportPhasedLayerPaint(node, document = emptyDocument) {
   const regularShape = ['star', 'polygon'].includes(node.type);
   if (!['rectangle', 'ellipse', 'path', 'star', 'polygon'].includes(node.type) || node.children?.length || node.mask
     || node.type === 'path' && !hasOnlyClosedRenderablePathContours(node)
-    || regularShape && !hasPlainRegularShapeGeometry(node, document)) return false;
+    || regularShape && !roundedRegularShapeRoundTripMetadata(document, node) && !hasPlainRegularShapeGeometry(node, document)) return false;
   const effects = (node.effects || []).filter(effect => effect.visible !== false);
   if (!effects.some(effect => effect.type === 'inner-shadow')
     || effects.some(effect => !['inner-shadow', 'layer-blur', 'drop-shadow'].includes(effect.type)
@@ -2084,7 +2084,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
     const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask ? ` mask="url(#${booleanMask.id})"` : '';
     const paintPhaseMetadata = phasedPaintMarkup
-      ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}"`
+      ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}" data-tiny-image-star-drop-shadow-behind-v1="${escapeXml(JSON.stringify(visibleEffects.filter(effect => effect.type === 'drop-shadow').map(effect => effect.showShadowBehindNode === true)))}"`
       : '';
     markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}>${title}${ownShape}${childNodes}</g>`;
   }
