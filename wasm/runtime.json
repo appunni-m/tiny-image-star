@@ -2,7 +2,7 @@
   "package": "pillow-rs",
   "version": "12.2.0-alpha.5",
   "sourceRef": "main",
-  "sourceCommit": "97ca5dc94ab6093e72a36eaf159c04a89cadec20",
+  "sourceCommit": "66ce7ba04037e585bee9c3cdacf323ec82907d3f",
   "sourcePatches": [
     {
       "path": "patches/pillow-rs/encode-quality.patch",
@@ -20,10 +20,10 @@
   },
   "files": {
     "pillow_rs_js.js": "052c02e17b5c9ae6319a1e29332c31a816246c3314724a9962bde3b19f00df32",
-    "pillow_rs_js_bg.wasm": "670de201f5ba2e01a6adf1dc928d7f14ebab4da57f0b0027b9ad37f7dbe6f8a7",
+    "pillow_rs_js_bg.wasm": "32940b7bc7eeb6716e18f0123475e71000e792ccedde9d59f1e7121db976b6d1",
     "PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405"
   },
   "integrityAlgorithm": "sha512 over each sorted filename, NUL, file bytes, NUL",
-  "integrity": "sha512-nzqOlhBZ8bZgxG83coSUHcCSAHNeBPsA9RKUZshN3pi3pBrCL385y+4kGlmG6nDkTGlz4sWxC4hchU63qJTz5A==",
-  "artifactSource": "Release-profile WASM compiled from upstream main at commit 97ca5dc94ab6093e72a36eaf159c04a89cadec20 with the local JPEG/WebP quality and luminance-mask patches and fixed build toolchain."
+  "integrity": "sha512-bGqzobaNKJYDZ0LqUG0JuGj/hKHwpTXTMxGxvZvOJobZbj31t35bAEOjnidNQoIxx2owaOkTkLiJeV678ZmtYg==",
+  "artifactSource": "Release-profile WASM compiled from upstream main at commit 66ce7ba04037e585bee9c3cdacf323ec82907d3f with the local JPEG/WebP quality and luminance-mask patches and fixed build toolchain."
 }

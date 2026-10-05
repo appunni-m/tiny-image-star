@@ -2085,13 +2085,123 @@ function figPropertyDisplayName(sourceName) {
   return safeName(String(sourceName || '').replace(/#\d+:\d+$/u, ''), 'Imported property').slice(0, 80);
 }
 
-function sourcePropertyDefinitions(source) {
-  const definitions = source?.componentPropertyDefinitions;
-  return definitions && typeof definitions === 'object' && !Array.isArray(definitions)
-    ? Object.entries(definitions).slice(0, 100) : [];
+function figEnumValueFromEmbeddedMessageField(schema, messageName, fieldName, numericValue) {
+  if (!Number.isSafeInteger(numericValue) || !Array.isArray(schema?.definitions)) return null;
+  const messages = schema.definitions.filter(definition => definition?.kind === 'MESSAGE' && definition.name === messageName);
+  if (messages.length !== 1) return null;
+  const enumTypes = new Set((messages[0].fields || [])
+    .filter(field => field?.name === fieldName && typeof field.type === 'string')
+    .map(field => field.type));
+  if (enumTypes.size !== 1) return null;
+  const enums = schema.definitions.filter(definition => definition?.kind === 'ENUM' && definition.name === [...enumTypes][0]);
+  if (enums.length !== 1) return null;
+  return enums[0].fields?.find(field => field?.value === numericValue)?.name || null;
 }
 
-function sourceComponentPropertyTargets(rootSourceId, propertyName, referenceField, childrenMap, sourcesById) {
+function figComponentPropertyType(value, schema) {
+  const raw = typeof value === 'string' ? value.toUpperCase()
+    : figEnumValueFromEmbeddedMessageField(schema, 'ComponentPropDef', 'type', value);
+  return ({ BOOL: 'BOOLEAN', BOOLEAN: 'BOOLEAN', TEXT: 'TEXT', INSTANCE_SWAP: 'INSTANCE_SWAP',
+    VARIANT: 'VARIANT', SLOT: 'SLOT', COLOR: 'COLOR', NUMBER: 'NUMBER', IMAGE: 'IMAGE', EASING: 'EASING' })[raw] || raw || null;
+}
+
+function figComponentPropertyValue(value, type) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { found: false };
+  if (type === 'BOOLEAN') {
+    if (typeof value.boolValue === 'boolean') return { found: true, value: value.boolValue };
+    // Kiwi retains an explicitly encoded false. An absent field is unknown,
+    // so it must not silently hide a visible layer.
+    return { found: false };
+  }
+  if (type === 'TEXT' || type === 'VARIANT') {
+    const textData = value.textValue;
+    if (typeof textData === 'string') return { found: true, value: textData };
+    if (textData && typeof textData === 'object' && typeof textData.characters === 'string') {
+      return { found: true, value: textData.characters };
+    }
+    return { found: false };
+  }
+  if (type === 'INSTANCE_SWAP') {
+    const component = value.guidValue;
+    const id = typeof component === 'string' ? component : guidKey(component);
+    return id ? { found: true, value: id } : { found: false };
+  }
+  if (type === 'SLOT') return { found: true, value: [] };
+  if (type === 'NUMBER' && Number.isFinite(value.floatValue)) return { found: true, value: value.floatValue };
+  if (type === 'COLOR' && value.guidValue) {
+    const id = typeof value.guidValue === 'string' ? value.guidValue : guidKey(value.guidValue);
+    return id ? { found: true, value: id } : { found: false };
+  }
+  return { found: false };
+}
+
+function figComponentPreferredValues(value, schema) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = Array.isArray(value.instanceSwapValues) ? value.instanceSwapValues : [];
+  const values = raw.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const type = typeof item.type === 'string' ? item.type.toUpperCase()
+      : figEnumValueFromEmbeddedMessageField(schema, 'InstanceSwapPreferredValue', 'type', item.type);
+    if (!['COMPONENT', 'STATE_GROUP'].includes(type) || typeof item.key !== 'string' || !item.key) return [];
+    return [{ type: type === 'STATE_GROUP' ? 'COMPONENT_SET' : 'COMPONENT', key: item.key }];
+  });
+  return values.length ? values : undefined;
+}
+
+function rawFigComponentPropertyDefinitions(source, schema) {
+  if (!Array.isArray(source?.componentPropDefs)) return [];
+  return source.componentPropDefs.slice(0, 100).flatMap(definition => {
+    if (!definition || typeof definition !== 'object' || definition.isDeleted === true) return [];
+    const id = guidKey(definition.id);
+    const name = typeof definition.name === 'string' ? definition.name.trim() : '';
+    if (!name) return [];
+    const sourceName = id ? `${name}#${id}` : name;
+    const type = figComponentPropertyType(definition.type, schema);
+    const normalized = { type, _figDefinitionId: id, _figSourceName: sourceName };
+    const initialValue = figComponentPropertyValue(definition.initialValue, type);
+    if (initialValue.found) normalized.defaultValue = initialValue.value;
+    const preferredValues = figComponentPreferredValues(definition.preferredValues, schema);
+    if (preferredValues) normalized.preferredValues = preferredValues;
+    if (definition.parameterConfig) normalized.slotSettings = definition.parameterConfig;
+    return [[sourceName, normalized]];
+  });
+}
+
+function sourcePropertyDefinitions(source, schema = null) {
+  const definitions = source?.componentPropertyDefinitions;
+  if (definitions && typeof definitions === 'object' && !Array.isArray(definitions)) {
+    return Object.entries(definitions).slice(0, 100);
+  }
+  return rawFigComponentPropertyDefinitions(source, schema);
+}
+
+function sourceComponentPropertyReferenceField(reference, schema) {
+  const value = reference?.componentPropNodeField;
+  const raw = typeof value === 'string' ? value.toUpperCase()
+    : figEnumValueFromEmbeddedMessageField(schema, 'ComponentPropRef', 'componentPropNodeField', value);
+  return ({ VISIBLE: 'visible', TEXT_DATA: 'characters', OVERRIDDEN_SYMBOL_ID: 'mainComponent',
+    SLOT_CONTENT_ID: 'slotContentId' })[raw] || null;
+}
+
+function sourceComponentPropertyReferences(source, definitionNamesById, schema) {
+  const references = source?.componentPropertyReferences && typeof source.componentPropertyReferences === 'object'
+    && !Array.isArray(source.componentPropertyReferences) ? { ...source.componentPropertyReferences } : {};
+  if (!Array.isArray(source?.componentPropRefs)) return references;
+  for (const reference of source.componentPropRefs) {
+    if (reference?.isDeleted === true) continue;
+    const field = sourceComponentPropertyReferenceField(reference, schema);
+    const name = definitionNamesById.get(guidKey(reference?.defID));
+    if (field && name) references[field] = name;
+  }
+  return references;
+}
+
+function figDefinitionNamesById(definitions) {
+  return new Map([...definitions].flatMap(([name, definition]) => definition?._figDefinitionId
+    ? [[definition._figDefinitionId, name]] : []));
+}
+
+function sourceComponentPropertyTargets(rootSourceId, propertyName, referenceField, childrenMap, sourcesById, definitionNamesById, schema) {
   const targets = [];
   const active = new Set();
   const visit = (sourceId, isRoot = false) => {
@@ -2099,7 +2209,8 @@ function sourceComponentPropertyTargets(rootSourceId, propertyName, referenceFie
     const source = sourcesById.get(sourceId);
     if (!source) return;
     active.add(sourceId);
-    if (source.componentPropertyReferences?.[referenceField] === propertyName) targets.push(source);
+    const references = sourceComponentPropertyReferences(source, definitionNamesById, schema);
+    if (references[referenceField] === propertyName) targets.push(source);
     // A nested instance owns a separate property namespace. The instance layer
     // itself may be this component's swap target, but its descendants are not.
     if (isRoot || !['INSTANCE', 'SYMBOL'].includes(source.type)) {
@@ -2156,16 +2267,50 @@ function resolveImportedComponentId(value, sourcesById, componentsBySourceId, so
   return null;
 }
 
+function sourceVariantProperties(source, definitionNamesById) {
+  const values = source?.variantProperties && typeof source.variantProperties === 'object' && !Array.isArray(source.variantProperties)
+    ? { ...source.variantProperties } : {};
+  if (Array.isArray(source?.variantPropSpecs)) {
+    for (const spec of source.variantPropSpecs) {
+      const name = definitionNamesById.get(guidKey(spec?.propDefId));
+      if (name && typeof spec?.value === 'string') values[name] = spec.value;
+    }
+  }
+  return values;
+}
+
+function sourceInstancePropertyValues(source, definitionsById, context) {
+  const values = source?.componentProperties && typeof source.componentProperties === 'object' && !Array.isArray(source.componentProperties)
+    ? { ...source.componentProperties } : {};
+  if (!Array.isArray(source?.componentPropAssignments)) return values;
+  for (const assignment of source.componentPropAssignments) {
+    const definition = definitionsById.get(guidKey(assignment?.defID));
+    if (!definition?._figSourceName) continue;
+    const decoded = figComponentPropertyValue(assignment.value, definition.type);
+    if (decoded.found) values[definition._figSourceName] = { type: definition.type, value: decoded.value };
+    else warn(context.report, 'flattened', 'COMPONENT_PROPERTY_VALUE', source.name,
+      `The “${figPropertyDisplayName(definition._figSourceName)}” instance value has no supported ${definition.type} payload; the imported layer state was retained.`);
+  }
+  return values;
+}
+
 function applyFigVariantDefinitions(document, sourceSet, localSet, childrenMap, sourcesById, componentsBySourceId, context) {
-  const definitions = sourcePropertyDefinitions(sourceSet).filter(([, definition]) => definition?.type === 'VARIANT');
+  const definitions = sourcePropertyDefinitions(sourceSet, context.parsed?.schema).filter(([, definition]) => definition?.type === 'VARIANT');
   if (!definitions.length) return;
+  const definitionNamesById = figDefinitionNamesById(definitions);
+  const members = (childrenMap.get(idOf(sourceSet)) || [])
+    .map(source => ({ source, component: componentsBySourceId.get(idOf(source)) }))
+    .filter(({ source, component }) => ['COMPONENT', 'SYMBOL'].includes(source.type) && component?.componentSetId === localSet.id);
   const properties = [];
   const sourceNames = new Set();
   for (const [sourceName, definition] of definitions) {
     const name = figPropertyDisplayName(sourceName);
+    const memberValues = definition._figDefinitionId
+      ? members.map(({ source }) => sourceVariantProperties(source, definitionNamesById)[sourceName])
+      : [];
     const values = Array.isArray(definition.variantOptions)
       ? [...new Set(definition.variantOptions.filter(value => typeof value === 'string').map(value => value.trim()))]
-      : [];
+      : [...new Set(memberValues.filter(value => typeof value === 'string').map(value => value.trim()))];
     if (!name || sourceNames.has(sourceName) || !values.length || values.some(value => !value || value.length > 80 || /[\x00-\x1f\x7f]/u.test(value))) {
       warn(context.report, 'flattened', 'COMPONENT_VARIANT_PROPERTY', sourceSet.name,
         `Variant property “${name}” has invalid or missing options; the name-derived variant axes were retained.`);
@@ -2174,14 +2319,11 @@ function applyFigVariantDefinitions(document, sourceSet, localSet, childrenMap, 
     sourceNames.add(sourceName);
     properties.push({ name, values });
   }
-  const members = (childrenMap.get(idOf(sourceSet)) || [])
-    .map(source => ({ source, component: componentsBySourceId.get(idOf(source)) }))
-    .filter(({ source, component }) => ['COMPONENT', 'SYMBOL'].includes(source.type) && component?.componentSetId === localSet.id);
   if (members.length !== localSet.componentIds.length) return;
   const valuesByComponent = new Map();
   const combinations = new Set();
   for (const { source, component } of members) {
-    const raw = source.variantProperties && typeof source.variantProperties === 'object' ? source.variantProperties : {};
+    const raw = sourceVariantProperties(source, definitionNamesById);
     const values = {};
     for (const [sourceName, definition] of definitions) {
       const displayName = figPropertyDisplayName(sourceName);
@@ -2207,6 +2349,12 @@ function applyFigVariantDefinitions(document, sourceSet, localSet, childrenMap, 
 }
 
 function preserveFigComponentProperties(document, parsed, childrenMap, context, sourcesById, componentsBySourceId, setsBySourceId) {
+  const definitionsById = new Map();
+  for (const source of sourcesById.values()) {
+    for (const [, definition] of sourcePropertyDefinitions(source, parsed.schema)) {
+      if (definition?._figDefinitionId) definitionsById.set(definition._figDefinitionId, definition);
+    }
+  }
   const sourceComponentsByKey = new Map();
   for (const [sourceId, source] of sourcesById) {
     if (['COMPONENT', 'SYMBOL'].includes(source.type) && typeof source.key === 'string' && source.key) {
@@ -2238,13 +2386,14 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
     const sourceSet = parentId ? sourcesById.get(parentId) : null;
     const definitions = new Map();
     if (sourceSet?.type === 'COMPONENT_SET') {
-      for (const [name, definition] of sourcePropertyDefinitions(sourceSet)) {
+      for (const [name, definition] of sourcePropertyDefinitions(sourceSet, parsed.schema)) {
         if (definition?.type !== 'VARIANT') definitions.set(name, definition);
       }
     }
-    for (const [name, definition] of sourcePropertyDefinitions(source)) {
+    for (const [name, definition] of sourcePropertyDefinitions(source, parsed.schema)) {
       if (definition?.type !== 'VARIANT') definitions.set(name, definition);
     }
+    const definitionNamesById = figDefinitionNamesById(definitions);
     const propertyMap = new Map();
     const importedNames = new Set();
     for (const [sourceName, definition] of definitions) {
@@ -2258,7 +2407,7 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
           `The “${figPropertyDisplayName(sourceName)}” ${String(type || 'unknown')} property type is not represented by the local component property model.`);
         continue;
       }
-      const targets = sourceComponentPropertyTargets(sourceId, sourceName, referenceField, childrenMap, sourcesById);
+      const targets = sourceComponentPropertyTargets(sourceId, sourceName, referenceField, childrenMap, sourcesById, definitionNamesById, parsed.schema);
       if (!targets.length) {
         warn(context.report, 'flattened', 'COMPONENT_PROPERTY', source.name,
           `The “${figPropertyDisplayName(sourceName)}” property has no matching ${referenceField} layer reference and was not imported.`);
@@ -2379,8 +2528,7 @@ function preserveFigComponentProperties(document, parsed, childrenMap, context, 
     if (!instance?.isInstance) continue;
     let component = document.components.find(item => item.id === instance.componentId);
     let map = propertyMapsByComponentId.get(component?.id);
-    const sourceInstanceProperties = source.componentProperties && typeof source.componentProperties === 'object' && !Array.isArray(source.componentProperties)
-      ? source.componentProperties : {};
+    const sourceInstanceProperties = sourceInstancePropertyValues(source, definitionsById, context);
     const variantValues = {};
     for (const [sourceName, value] of Object.entries(sourceInstanceProperties)) {
       if (value?.type === 'VARIANT' && typeof value.value === 'string') variantValues[figPropertyDisplayName(sourceName)] = value.value;
@@ -2538,11 +2686,13 @@ function preserveFigComponents(document, parsed, childrenMap, context) {
     const masterParentId = masterSource.parentIndex?.guid ? guidKey(masterSource.parentIndex.guid) : null;
     const masterSetSource = masterParentId ? sourcesById.get(masterParentId) : null;
     const slotDefinitions = [
-      ...(masterSetSource?.type === 'COMPONENT_SET' ? sourcePropertyDefinitions(masterSetSource) : []),
-      ...sourcePropertyDefinitions(masterSource)
+      ...(masterSetSource?.type === 'COMPONENT_SET' ? sourcePropertyDefinitions(masterSetSource, parsed.schema) : []),
+      ...sourcePropertyDefinitions(masterSource, parsed.schema)
     ].filter(([, definition]) => definition?.type === 'SLOT');
+    const slotDefinitionNamesById = figDefinitionNamesById(slotDefinitions);
     const slotSourceIds = new Set(slotDefinitions.flatMap(([propertyName]) =>
-      sourceComponentPropertyTargets(targetSourceId, propertyName, 'slotContentId', childrenMap, sourcesById).map(idOf)));
+      sourceComponentPropertyTargets(targetSourceId, propertyName, 'slotContentId', childrenMap, sourcesById,
+        slotDefinitionNamesById, parsed.schema).map(idOf)));
     const localPairsBySourceId = new Map([[targetSourceId, { master, instance, nestedComponentBoundary: false }]]);
     const visitedPairs = new Set();
     const mapChildren = (masterSourceNode, instanceSourceNode, insideNestedComponent = false) => {

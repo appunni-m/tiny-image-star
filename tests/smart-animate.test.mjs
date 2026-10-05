@@ -257,6 +257,85 @@ test('smart animation switches frame clipping and overflow behavior at the midpo
   assert.deepEqual(sample(1), to, 'destination clipping settings remain exact at the endpoint');
 });
 
+test('smart animation switches mask activation, mode, and source atomically at the midpoint', () => {
+  const makeMaskGroup = ({ mask = false, maskMode, maskSourceId } = {}) => createNode('group', {
+    id: 'mask-group', name: 'Photo mask', mask,
+    ...(maskMode ? { maskMode } : {}),
+    ...(maskSourceId ? { maskSourceId } : {}),
+    children: [
+      createNode('rectangle', { id: 'mask-alpha', name: 'Alpha source' }),
+      createNode('rectangle', { id: 'mask-luminance', name: 'Luminance source' }),
+      createNode('rectangle', { id: 'masked-content', name: 'Content' })
+    ]
+  });
+  const sample = (from, to, progress) => interpolateSmartFrame(
+    createNode('frame', { children: [from] }),
+    createNode('frame', { children: [to] }),
+    progress
+  ).children[0];
+  const settings = group => [group.mask, group.maskMode, group.maskSourceId];
+
+  const unmasked = makeMaskGroup();
+  const alphaMasked = makeMaskGroup({ mask: true, maskMode: 'alpha', maskSourceId: 'mask-alpha' });
+  assert.deepEqual(settings(sample(unmasked, alphaMasked, .001)), [false, undefined, undefined]);
+  assert.deepEqual(settings(sample(unmasked, alphaMasked, .499)), [false, undefined, undefined]);
+  assert.deepEqual(settings(sample(unmasked, alphaMasked, .5)), [true, 'alpha', 'mask-alpha']);
+  assert.deepEqual(sample(unmasked, alphaMasked, 0), unmasked, 'the source mask settings remain exact at the endpoint');
+  assert.deepEqual(sample(unmasked, alphaMasked, 1), alphaMasked, 'the destination mask settings remain exact at the endpoint');
+
+  const luminanceMasked = makeMaskGroup({ mask: true, maskMode: 'luminance', maskSourceId: 'mask-luminance' });
+  assert.deepEqual(settings(sample(alphaMasked, luminanceMasked, .001)), [true, 'alpha', 'mask-alpha']);
+  assert.deepEqual(settings(sample(alphaMasked, luminanceMasked, .499)), [true, 'alpha', 'mask-alpha']);
+  assert.deepEqual(settings(sample(alphaMasked, luminanceMasked, .5)), [true, 'luminance', 'mask-luminance']);
+  assert.deepEqual(sample(alphaMasked, luminanceMasked, 0), alphaMasked, 'the source mask mode and source remain exact at the endpoint');
+  assert.deepEqual(sample(alphaMasked, luminanceMasked, 1), luminanceMasked, 'the destination mask mode and source remain exact at the endpoint');
+});
+
+test('smart animation keeps mask references bound to matched children with different frame IDs', () => {
+  const makeGroup = (prefix, mode, source, fixed = false) => createNode('group', {
+    id: `${prefix}-group`, name: 'Masked photo', mask: true, maskMode: mode,
+    maskSourceId: `${prefix}-${source}`,
+    children: [
+      createNode('rectangle', { id: `${prefix}-content`, name: 'Content' }),
+      createNode('ellipse', { id: `${prefix}-alpha`, name: 'Alpha mask', fixedPositionWhenScrolling: fixed }),
+      createNode('rectangle', { id: `${prefix}-luminance`, name: 'Luminance mask' })
+    ]
+  });
+  const from = createNode('frame', { children: [makeGroup('from', 'alpha', 'alpha')] });
+  const to = createNode('frame', { children: [makeGroup('to', 'luminance', 'luminance')] });
+  to.children[0].children.reverse();
+  const snapshots = structuredClone([from, to]);
+  const assertMask = (group, mode, name) => {
+    assert.equal(group.maskMode, mode);
+    assert.equal(group.children.find(child => child.id === group.maskSourceId)?.name, name,
+      'the mask must reference the intended child rather than relying on the renderer first-child fallback');
+  };
+  for (const progress of [.001, .25, .499]) {
+    const group = interpolateSmartFrame(from, to, progress).children[0];
+    assertMask(group, 'alpha', 'Alpha mask');
+    assert.equal(group.maskSourceId, 'to-alpha');
+  }
+  for (const progress of [.5, .75, .999]) {
+    assertMask(interpolateSmartFrame(from, to, progress).children[0], 'luminance', 'Luminance mask');
+  }
+  const replaced = structuredClone(to);
+  replaced.children[0].children.find(child => child.id === 'to-alpha').name = 'Replacement mask';
+  assertMask(interpolateSmartFrame(from, replaced, .25).children[0], 'alpha', 'Alpha mask');
+  assertMask(interpolateSmartFrame(from, replaced, .75).children[0], 'luminance', 'Luminance mask');
+  // Matching-layer transitions hold fixed children on their source snapshot,
+  // including their IDs, even after the parent mask configuration switches.
+  const fixedFrom = createNode('frame', { children: [makeGroup('fixed-from', 'alpha', 'alpha', true)] });
+  const fixedTo = createNode('frame', { children: [makeGroup('fixed-to', 'vector', 'alpha', true)] });
+  for (const progress of [.25, .75]) {
+    const group = splitSmartFrameMatches(fixedFrom, fixedTo, progress).matchingFrame.children[0];
+    assertMask(group, progress < .5 ? 'alpha' : 'vector', 'Alpha mask');
+    assert.equal(group.maskSourceId, 'fixed-from-alpha');
+  }
+  assert.deepEqual([from, to], snapshots, 'transition sampling leaves both authored frames unchanged');
+  assert.deepEqual(interpolateSmartFrame(from, to, 0), from);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1), to);
+});
+
 test('smart animation switches a child fixed-position flag at the scroll-mode midpoint', () => {
   const from = createNode('frame', {
     overflowBehavior: 'vertical',

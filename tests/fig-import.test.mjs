@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { zipSync } from 'fflate';
-import { encodeCommandsBlob, encodeVectorNetwork, encodeVectorNetworkBlob } from 'openfig-core';
+import { encodeCommandsBlob, encodeVectorNetwork, encodeVectorNetworkBlob, parseFig } from 'openfig-core';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
 import { componentPropertyExposureGroups } from '../src/component-property-exposure.js';
 import { parseDocument, resetComponentSlotContent, serializeDocument, setComponentPropertyValue, setComponentSlotContent, switchComponentInstanceVariant, syncAllComponentInstances } from '../src/model.js';
@@ -1485,6 +1485,225 @@ test('imports an exposed nested variant axis into the owning component instance 
   const restoredOwner = restored.components.find(component => component.id === localOwner.id);
   const restoredUse = restored.pages[0].children.find(item => item.id === ownerUseNode.id);
   assert.deepEqual(componentPropertyExposureGroups(restored, restoredOwner, restoredUse)[0].variantProperties[0].values, ['Small', 'Large']);
+});
+
+test('normalizes raw v106 Kiwi component definitions, references, variant specs, and assignments', async () => {
+  const v106 = parseFig(new Uint8Array(await readFile(vectorPath)));
+  const sessionID = 106;
+  const page = { sessionID, localID: 1 };
+  const badgeSet = { sessionID, localID: 10 };
+  const badgeRest = { sessionID, localID: 11 };
+  const badgeHover = { sessionID, localID: 13 };
+  const badgeUse = { sessionID, localID: 20 };
+  const stateDef = { sessionID, localID: 1001 };
+  const labelDef = { sessionID, localID: 1002 };
+  const visibleDef = { sessionID, localID: 1003 };
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema: v106.schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT_SET', 10, page, 'a', { guid: badgeSet, name: 'Badge', componentPropDefs: [
+        { id: stateDef, name: 'State', type: 4, initialValue: { textValue: { characters: 'Rest' } } },
+        { id: labelDef, name: 'Label', type: 1, initialValue: { textValue: { characters: 'Continue' } } },
+        { id: visibleDef, name: 'Visible', type: 0, initialValue: { boolValue: true } }
+      ] }),
+      node('COMPONENT', 11, badgeSet, 'a', { guid: badgeRest, name: 'Badge/state=rest', variantPropSpecs: [
+        { propDefId: stateDef, value: 'Rest' }
+      ] }),
+      node('TEXT', 12, badgeRest, 'a', { name: 'Label', textData: { characters: 'Continue' }, componentPropRefs: [
+        { defID: labelDef, componentPropNodeField: 1 }
+      ] }),
+      node('RECTANGLE', 13, badgeRest, 'b', { name: 'Icon', visible: true, componentPropRefs: [
+        { defID: visibleDef, componentPropNodeField: 0 }
+      ] }),
+      node('COMPONENT', 14, badgeSet, 'b', { guid: badgeHover, name: 'Badge/state=hover', variantPropSpecs: [
+        { propDefId: stateDef, value: 'Hover' }
+      ] }),
+      node('TEXT', 15, badgeHover, 'a', { name: 'Label', textData: { characters: 'Continue' }, componentPropRefs: [
+        { defID: labelDef, componentPropNodeField: 1 }
+      ] }),
+      node('RECTANGLE', 16, badgeHover, 'b', { name: 'Icon', visible: true, componentPropRefs: [
+        { defID: visibleDef, componentPropNodeField: 0 }
+      ] }),
+      node('INSTANCE', 20, page, 'b', { guid: badgeUse, name: 'Badge use', componentId: badgeRest, componentPropAssignments: [
+        { defID: stateDef, value: { textValue: { characters: 'Hover' } } },
+        { defID: labelDef, value: { textValue: { characters: 'Go now' } } },
+        { defID: visibleDef, value: { boolValue: false } }
+      ] }),
+      node('TEXT', 21, badgeUse, 'a', { name: 'Label', textData: { characters: 'Go now' } }),
+      node('RECTANGLE', 22, badgeUse, 'b', { name: 'Icon', visible: false })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+
+  const badge = imported.document.components.find(component => component.id === imported.document.pages[0].children.find(item => item.name === 'Badge use')?.componentId);
+  const set = imported.document.componentSets.find(item => item.name === 'Badge');
+  const instance = imported.document.pages[0].children.find(item => item.name === 'Badge use');
+  const propertyMap = new Map(badge.componentProperties.map(property => [property.name, property]));
+  assert.deepEqual(set.properties, [{ name: 'State', values: ['Rest', 'Hover'] }]);
+  assert.equal(instance.componentId, imported.document.components.find(component => component.name === 'Badge/state=hover').id);
+  assert.equal(propertyMap.get('Label')?.type, 'TEXT');
+  assert.equal(propertyMap.get('Visible')?.type, 'BOOLEAN');
+  assert.equal(instance.children.find(child => child.name === 'Label')?.text, 'Go now');
+  assert.equal(instance.children.find(child => child.name === 'Icon')?.visible, false);
+  assert.equal(imported.report.flattenedTypes.COMPONENT_PROPERTY, undefined);
+  assert.equal(imported.report.flattenedTypes.COMPONENT_VARIANT_PROPERTY, undefined);
+});
+
+test('does not treat a missing raw v106 boolean value as explicit false', async () => {
+  const schema = parseFig(new Uint8Array(await readFile(vectorPath))).schema;
+  const sessionID = 106;
+  const page = { sessionID, localID: 1 };
+  const component = { sessionID, localID: 2 };
+  const instance = { sessionID, localID: 5 };
+  const definition = { sessionID, localID: 1001 };
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropDefs: [
+        { id: definition, name: 'Visible', type: 0, initialValue: { boolValue: true } }
+      ] }),
+      node('RECTANGLE', 3, component, 'a', { name: 'Target', visible: true, componentPropRefs: [
+        { defID: definition, componentPropNodeField: 0 }
+      ] }),
+      node('INSTANCE', 5, page, 'b', { guid: instance, name: 'Card use', componentId: component, componentPropAssignments: [
+        // An empty ComponentPropValue has no boolValue field on the wire.
+        { defID: definition, value: {} }
+      ] }),
+      node('RECTANGLE', 6, instance, 'a', { name: 'Target', visible: true })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const instanceNode = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  assert.equal(instanceNode.children[0].visible, true);
+  assert.ok(imported.report.warnings.some(warning => warning.type === 'COMPONENT_PROPERTY_VALUE'));
+});
+
+test('ignores deleted raw v106 property refs, including one following a live ref', async () => {
+  const schema = parseFig(new Uint8Array(await readFile(vectorPath))).schema;
+  const sessionID = 106;
+  const page = { sessionID, localID: 1 };
+  const component = { sessionID, localID: 2 };
+  const definition = { sessionID, localID: 1001 };
+  const deletedDefinition = { sessionID, localID: 1002 };
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropDefs: [
+        { id: definition, name: 'Visible', type: 0, initialValue: { boolValue: true } },
+        { id: deletedDefinition, name: 'Stale', type: 0, initialValue: { boolValue: true } }
+      ] }),
+      node('RECTANGLE', 3, component, 'a', { name: 'Live target', visible: true, componentPropRefs: [
+        { defID: definition, componentPropNodeField: 0 },
+        // A deleted later ref for the same field must not overwrite the live ref.
+        { defID: deletedDefinition, componentPropNodeField: 0, isDeleted: true }
+      ] })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const property = localComponent.componentProperties?.[0];
+  assert.equal(property?.name, 'Visible');
+  assert.equal(property.targetSourceId,
+    imported.document.pages[0].children[0].children.find(item => item.name === 'Live target').id);
+  assert.equal(localComponent.componentProperties.some(item => item.name === 'Stale'), false);
+  assert.doesNotMatch(imported.report.warnings.map(warning => warning.detail).join('\n'), /multiple layers/u);
+});
+
+test('imports raw v106 instance-swap GUID defaults, assignments, and preferred values', async () => {
+  const schema = parseFig(new Uint8Array(await readFile(vectorPath))).schema;
+  const sessionID = 106;
+  const page = { sessionID, localID: 1 };
+  const primary = { sessionID, localID: 10 };
+  const alternate = { sessionID, localID: 12 };
+  const card = { sessionID, localID: 20 };
+  const cardIcon = { sessionID, localID: 23 };
+  const use = { sessionID, localID: 30 };
+  const useIcon = { sessionID, localID: 33 };
+  const definition = { sessionID, localID: 1001 };
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 10, page, 'a', { guid: primary, name: 'Icon/Primary', key: 'primary-key' }),
+      node('COMPONENT', 12, page, 'b', { guid: alternate, name: 'Icon/Alternate', key: 'alternate-key' }),
+      node('COMPONENT', 20, page, 'c', { guid: card, name: 'Card', componentPropDefs: [
+        { id: definition, name: 'Icon', type: 3, initialValue: { guidValue: primary },
+          preferredValues: { instanceSwapValues: [{ type: 0, key: 'alternate-key' }] } }
+      ] }),
+      node('INSTANCE', 23, card, 'a', { guid: cardIcon, name: 'Icon', componentId: primary, componentPropRefs: [
+        { defID: definition, componentPropNodeField: 2 }
+      ] }),
+      node('INSTANCE', 30, page, 'd', { guid: use, name: 'Card use', componentId: card, componentPropAssignments: [
+        { defID: definition, value: { guidValue: alternate } }
+      ] }),
+      node('INSTANCE', 33, use, 'a', { guid: useIcon, name: 'Icon', componentId: alternate })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const property = localComponent.componentProperties?.find(item => item.name === 'Icon');
+  const primaryLocal = imported.document.components.find(item => item.name === 'Icon/Primary');
+  const alternateLocal = imported.document.components.find(item => item.name === 'Icon/Alternate');
+  const instance = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  assert.ok(property, JSON.stringify(imported.report.warnings));
+  assert.equal(property.defaultValue, primaryLocal.id);
+  assert.deepEqual(property.preferredComponentIds, [alternateLocal.id]);
+  assert.equal(instance.componentPropertyValues[property.id], alternateLocal.id);
+  assert.equal(instance.children.find(item => item.name === 'Icon').componentId, alternateLocal.id);
+  const restored = parseDocument(serializeDocument(imported.document));
+  const restoredProperty = restored.components.find(item => item.id === localComponent.id).componentProperties[0];
+  const restoredInstance = restored.pages[0].children.find(item => item.name === 'Card use');
+  assert.equal(restoredProperty.defaultValue, primaryLocal.id);
+  assert.deepEqual(restoredProperty.preferredComponentIds, [alternateLocal.id]);
+  assert.equal(restoredInstance.componentPropertyValues[restoredProperty.id], alternateLocal.id);
+  syncAllComponentInstances(restored);
+  assert.equal(restored.pages[0].children.find(item => item.isInstance).componentPropertyValues[restoredProperty.id], alternateLocal.id);
+});
+
+test('imports raw v106 SLOT references and preserves authored slot content across save and sync', async () => {
+  const schema = parseFig(new Uint8Array(await readFile(vectorPath))).schema;
+  const sessionID = 106;
+  const page = { sessionID, localID: 1 };
+  const component = { sessionID, localID: 2 };
+  const masterSlot = { sessionID, localID: 3 };
+  const instance = { sessionID, localID: 5 };
+  const instanceSlot = { sessionID, localID: 6 };
+  const definition = { sessionID, localID: 1001 };
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT', 2, page, 'a', { guid: component, name: 'Card', componentPropDefs: [
+        { id: definition, name: 'Content', type: 7, initialValue: {} }
+      ] }),
+      node('FRAME', 3, component, 'a', { guid: masterSlot, name: 'Content', componentPropRefs: [
+        { defID: definition, componentPropNodeField: 4 }
+      ] }),
+      node('TEXT', 4, masterSlot, 'a', { name: 'Placeholder', textData: { characters: 'Default content' } }),
+      node('INSTANCE', 5, page, 'b', { guid: instance, name: 'Card use', componentId: component }),
+      node('FRAME', 6, instance, 'a', { guid: instanceSlot, name: 'Content' }),
+      node('RECTANGLE', 7, instanceSlot, 'a', { name: 'Custom body' }),
+      node('TEXT', 8, instanceSlot, 'b', { name: 'Custom label', textData: { characters: 'Custom content' } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  });
+  const localComponent = imported.document.components.find(item => item.name === 'Card');
+  const property = localComponent.componentProperties?.find(item => item.name === 'Content');
+  const instanceNode = imported.document.pages[0].children.find(item => item.name === 'Card use');
+  assert.deepEqual(property.defaultValue, []);
+  assert.deepEqual(instanceNode.componentPropertyValues[property.id], instanceNode.children[0].children.map(child => child.id));
+  assert.deepEqual(instanceNode.children[0].children.map(child => child.name), ['Custom body', 'Custom label']);
+  const restored = parseDocument(serializeDocument(imported.document));
+  const restoredProperty = restored.components.find(item => item.name === 'Card').componentProperties[0];
+  const restoredPreSync = restored.pages[0].children.find(item => item.isInstance);
+  assert.deepEqual(restoredPreSync.componentPropertyValues[restoredProperty.id], restoredPreSync.children[0].children.map(child => child.id));
+  syncAllComponentInstances(restored);
+  const restoredInstance = restored.pages[0].children.find(item => item.id === instanceNode.id);
+  assert.deepEqual(restoredInstance.children[0].children.map(child => child.name), ['Custom body', 'Custom label']);
+  assert.deepEqual(restoredInstance.componentPropertyValues[restoredProperty.id], restoredInstance.children[0].children.map(child => child.id));
 });
 
 test('preserves nested local component ownership and overrides through import, save, and synchronization', () => {

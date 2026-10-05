@@ -17,7 +17,8 @@ const midpointProperties = [
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'affineTransform', 'points', 'innerRadius', 'vertexRadii', 'arcData',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
-  'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
+  'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'fillRule', 'clip', 'mask', 'maskMode', 'maskSourceId',
+  'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
 ];
 
 const AFFINE_DETERMINANT_EPSILON = 1e-12;
@@ -1060,7 +1061,22 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
     copy.edges = network.edges;
     copy.faces = network.faces;
   }
-  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers);
+  const fromChildren = from.children || [];
+  const toChildren = to.children || [];
+  const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
+  copy.children = blendChildren(fromChildren, toChildren, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers, siblingMatches);
+  if (copy.maskSourceId) {
+    const endpointChildren = progress < .5 ? fromChildren : toChildren;
+    const maskIndex = endpointChildren.findIndex(child => child.id === copy.maskSourceId);
+    const match = (progress < .5 ? siblingMatches.matchesBySourceIndex : siblingMatches.matchesByDestinationIndex).get(maskIndex);
+    if (match) {
+      // Matched children normally use destination IDs; fixed children can keep
+      // their source snapshot. Bind the categorical mask to the rendered child.
+      const holdsSource = preserveFixedLayers && progress < 1
+        && (match.source.fixedPositionWhenScrolling === true || match.destination.fixedPositionWhenScrolling === true);
+      copy.maskSourceId = holdsSource ? match.source.id : match.destination.id;
+    }
+  }
   return copy;
 }
 
@@ -1129,8 +1145,7 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false) {
-  const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false, siblingMatches = matchSiblingNodes(fromChildren, toChildren)) {
 
   // Back and spring easings can briefly leave [0, 1]. Keep layer presence and
   // order on the corresponding endpoint while matched geometry anticipates or
