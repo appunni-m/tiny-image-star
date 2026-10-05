@@ -1798,9 +1798,12 @@ export function resolveBooleanSourceNode(document, source) {
   return resolved;
 }
 
-function booleanSourceResolver(document, resolveNode) {
+function booleanSourceResolver(document, resolveNode, { remapById = false } = {}) {
   return source => {
-    const localSource = source?.id ? findNode(document, source.id)?.node || source : source;
+    // Normal renderer/key reads already receive nodes from this document and
+    // must stay O(source-tree), not rescan the page for every operand. Only a
+    // prepared cross-document text pin validator needs ID remapping.
+    const localSource = remapById && source?.id ? findNode(document, source.id)?.node || source : source;
     const resolved = resolveBooleanSourceNode(document, localSource);
     return resolveNode?.(resolved) ?? resolved;
   };
@@ -1976,7 +1979,7 @@ export async function prepareBooleanCombine(document, nodeIds, operation = 'unio
       let found = false; walkNodes([entry.node], ({ node }) => { if (node.type === 'text') found = true; }); return found;
     })) {
       textPin = await prepareBooleanTextGeometry(document, [group], {
-        ...textOptions, ...options, resolveNode: booleanSourceResolver(candidate, options.resolveNode)
+        ...textOptions, ...options, resolveNode: booleanSourceResolver(candidate, options.resolveNode, { remapById: true })
       });
       textPin.validateCurrent();
     }

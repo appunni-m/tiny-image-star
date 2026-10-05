@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import {
   addNode, applyBooleanBake, applyBooleanCombine, bindColorVariable, bindVariable, combineBoolean,
   createColorVariable, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode,
-  createVariable, createVariableCollection, deleteVariable, getBooleanVectorPath, prepareBooleanBake, prepareBooleanCombine,
+  createVariable, createVariableCollection, deleteVariable, getBooleanVectorGeometryKey, getBooleanVectorPath, prepareBooleanBake, prepareBooleanCombine,
   resolveBooleanSourceNode, setVariableValue,
   separateBoolean, removeNode, reorderNode, validateDocument, validateBooleanCombinePlan
 } from '../src/model.js';
@@ -34,6 +34,8 @@ test('resolving an unbound Boolean source does not scan the page tree', () => {
   assert.equal(resolved.width, 49); assert.equal(resolved.height, 31);
   assert.equal(resolved.fill, '#224466');
   assert.equal(group.children[0], source);
+  group.booleanGeometry = 'vector';
+  getBooleanVectorGeometryKey(observedDocument, group);
   assert.equal(pageReads, 0, 'unbound source coordinates already use the Boolean local frame');
 });
 
