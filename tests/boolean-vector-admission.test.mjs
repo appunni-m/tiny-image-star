@@ -48,10 +48,16 @@ function rendererFor(document) {
     } });
   function draw() {
     renderer.pruneBooleanVectorRenderScope(document);
+    let ready = true;
     for (const node of document.pages[0].children) {
       try { renderer.getRenderedBooleanVectorPath(node); }
-      catch (error) { if (['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code)) renderer.loadBooleanVectorPath(node); else errors.push(error); }
+      catch (error) {
+        ready = false;
+        if (['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code)) renderer.loadBooleanVectorPath(node);
+        else errors.push(error);
+      }
     }
+    renderer.lastDrawReady = ready;
   }
   return { renderer, errors, draw, close: () => {
     renderer.destroyed = true;
@@ -64,8 +70,26 @@ function rendererFor(document) {
 async function waitReady(document, renderer) {
   const deadline = Date.now() + 20_000;
   while (true) {
-    try { for (const node of document.pages[0].children) { renderer.getRenderedBooleanVectorPath(node); model.getBooleanVectorPath(document, node); } return; }
-    catch (error) { if (!['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code) || Date.now() > deadline) throw error; }
+    try {
+      // Coalesced draws already inspect every current renderer key. Wait for
+      // a complete draw, then check every inspector/hit-test path once; a
+      // second whole-page scan on each timer competes with pending jobs.
+      if (!renderer.lastDrawReady) {
+        if (Date.now() > deadline) {
+          throw Object.assign(new Error('The renderer did not finish a complete Boolean draw.'), { code: 'BOOLEAN_VECTOR_PENDING' });
+        }
+        await new Promise(resolve => setTimeout(resolve, 5));
+        continue;
+      }
+      for (const node of document.pages[0].children) model.getBooleanVectorPath(document, node);
+      return;
+    } catch (error) {
+      if (!['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code)) throw error;
+      if (Date.now() > deadline) {
+        error.message += ` (${renderer.booleanVectorPaths.size}/${document.pages[0].children.length} regions retained; ${renderer.booleanVectorPending.size} pending)`;
+        throw error;
+      }
+    }
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -187,7 +211,7 @@ test('257 distinct text regions remain ready through glyph/native cache eviction
   const h = rendererFor(document); t.after(h.close); h.draw(); await waitReady(document, h.renderer);
   const initial = { jobs, shapes }; assert.ok(peak <= 4); assert.equal(h.renderer.booleanVectorPaths.size, 257);
   assert.ok([...h.renderer.booleanVectorPaths.values()].every(entry => entry.textGeometryPlan?.bytes > 0));
-  // More than 256 final regions and 128 text sources already evict both LRUs.
+  // More than 256 final regions and text sources already evict both LRUs.
   // Full native disposal intentionally unregisters page owners; glyph disposal
   // clears only its shared contour cache, so retained page pins stay valid.
   disposeBooleanTextGeometryCache(document);
