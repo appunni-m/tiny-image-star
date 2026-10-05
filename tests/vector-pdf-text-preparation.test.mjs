@@ -197,6 +197,25 @@ test('asynchronous generators cannot publish after cancellation or retain a runn
   assert.equal(slow.state.closed, 1);
 });
 
+test('synchronous generation crossing the wall-clock deadline before the timer runs cannot publish an expired PDF', async () => {
+  const h = fakeOptions(); let generated = false; let published = false;
+  const originalNow = Date.now; let now = originalNow();
+  // Top-level tests in this file run sequentially in their own Node process.
+  // Keep preparation time fixed, then simulate synchronous serialization
+  // crossing the deadline without relying on machine speed or cold retries.
+  Date.now = () => now;
+  try {
+    const work = withPreparedVectorPdfText(pinned => {
+      pinned('O', style);
+      now += VECTOR_PDF_TEXT_LIMITS.deadlineMs + 1;
+      generated = true; return new Uint8Array([1, 2, 3]);
+    }, h.options);
+    await assert.rejects(work.then(value => { published = true; return value; }), error => error.code === 'VECTOR_PDF_TEXT_TIMEOUT');
+  } finally { Date.now = originalNow; }
+  assert.equal(generated, true); assert.equal(published, false);
+  assert.equal(h.state.created, 1); assert.equal(h.state.closed, 1); assert.equal(h.state.settings.signal.aborted, true);
+});
+
 test('native handoffs admit at most eight pending requests and shaping snapshots keep the existing byte/query limits', async () => {
   const entered = deferred(); let pending = 0; const h = fakeOptions(() => { if (++pending === 8) entered.resolve(); return new Promise(() => {}); });
   await assert.rejects(withPreparedVectorPdfText(async pinned => {

@@ -15,6 +15,8 @@ const keyFor = (text, style, metrics) => JSON.stringify([metrics ? 'metrics' : '
   canvasFontWeight(style?.fontWeight, style?.fontAxes), style?.fontStyle || 'normal', sorted(style?.fontAxes),
   ...(metrics ? [] : [sorted(style?.fontFeatures)])]);
 const abortError = signal => signal?.reason instanceof Error ? signal.reason : new DOMException('Vector PDF text export cancelled.', 'AbortError');
+const timeoutError = () => Object.assign(new Error('Local vector PDF text preparation timed out. Export fewer text layers or retry with smaller fonts.'),
+  { code: 'VECTOR_PDF_TEXT_TIMEOUT' });
 const freeze = value => {
   if (value && typeof value === 'object') { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
   return value;
@@ -123,6 +125,7 @@ export async function withPreparedVectorPdfText(generate, {
     || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > VECTOR_PDF_TEXT_LIMITS.maxBytes
     || !Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > VECTOR_PDF_TEXT_LIMITS.maxDeadlineMs
     || !Number.isSafeInteger(pollMs) || pollMs < 1 || pollMs > 1000) throw new TypeError('The vector PDF text preparation options are invalid.');
+  const expires = Date.now() + deadlineMs;
   const capturedFonts = fontSnapshot(fonts); const controller = new AbortController();
   const cancel = () => controller.abort(abortError(signal));
   signal?.addEventListener('abort', cancel, { once: true }); if (signal?.aborted) cancel();
@@ -133,6 +136,9 @@ export async function withPreparedVectorPdfText(generate, {
     if (closed) throw new Error('The vector PDF text operation is closed.');
     if (failure) throw failure;
     if (assertCurrent() === false) throw new Error('The design or its fonts changed while preparing vector PDF text. Retry the export.');
+    // Synchronous layout/serialization can postpone timer callbacks. Fence
+    // resumed queries and publication against elapsed wall time as well.
+    if (Date.now() >= expires) throw timeoutError();
   };
   const status = style => { check(); return localFontsForStyle(style, capturedFonts).length ? 'ready' : 'none'; };
   const read = (text, style, metrics = false) => {
@@ -169,9 +175,8 @@ export async function withPreparedVectorPdfText(generate, {
   controller.signal.addEventListener('abort', onAbort, { once: true });
   try {
     check(); timer = setTimeout(() => {
-      const error = new Error('Local vector PDF text preparation timed out. Export fewer text layers or retry with smaller fonts.');
-      error.code = 'VECTOR_PDF_TEXT_TIMEOUT'; controller.abort(error);
-    }, deadlineMs);
+      controller.abort(timeoutError());
+    }, Math.max(1, expires - Date.now()));
     // Reject an unresponsive asynchronous generator inside the shared pin
     // owner too, so its snapshot maps drain when the operation is cancelled.
     const work = withPreparedTextPositionShapes(pinned => Promise.race([
