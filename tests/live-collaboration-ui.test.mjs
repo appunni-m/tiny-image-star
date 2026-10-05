@@ -81,6 +81,8 @@ test('phone live-sharing close controls stay sticky, safe-area clear, and finger
   const phoneSafeAreaRules = ruleBlock(stylesheet.slice(safeAreaStart), '@media (max-width: 820px) {');
   assert.match(phoneRules, /\.live-collaboration-content > \.modal-title-row\s*\{[^}]*position:\s*sticky[^}]*top:\s*0/,
     'the header close control should remain reachable while the sharing content scrolls');
+  assert.match(phoneRules, /\.live-collaboration-content > \.modal-title-row\s*\{[^}]*background:\s*var\(--panel,\s*#fff\)/,
+    'the sticky header should use the active theme surface so its close icon and title retain contrast');
   assert.match(phoneRules, /\.live-collaboration-content #live-collaboration-close\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px[^}]*min-height:\s*44px/,
     'the sticky header close icon should have a 44px hit area');
   assert.match(phoneRules, /\.live-collaboration-content > \.live-collaboration-dismiss-actions\s*\{[^}]*bottom:\s*0[^}]*padding:\s*12px 16px max\(12px,\s*env\(safe-area-inset-bottom\)\)/,
@@ -89,6 +91,8 @@ test('phone live-sharing close controls stay sticky, safe-area clear, and finger
     'the footer close action should span the narrow dialog and meet the 44px target');
   assert.match(stylesheet, /\.live-collaboration-content > \.live-collaboration-dismiss-actions\s*\{[^}]*position:\s*sticky/,
     'the footer close control should stay pinned as the dialog scrolls');
+  assert.match(stylesheet, /\.live-collaboration-content > \.live-collaboration-dismiss-actions\s*\{[^}]*background:\s*var\(--panel,\s*#fff\)/,
+    'the pinned footer should use the active theme surface instead of turning white in dark mode');
   assert.match(stylesheet, /\.live-collaboration-dialog\s*\{[^}]*overflow:\s*auto/,
     'the full sharing dialog should keep normal scrolling beneath the sticky close controls');
   assert.match(phoneSafeAreaRules, /\.modal\s*\{[^}]*max-height:\s*calc\(100dvh - max\(16px, env\(safe-area-inset-top\)\) - max\(16px, env\(safe-area-inset-bottom\)\)\)/,
