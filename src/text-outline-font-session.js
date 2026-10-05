@@ -7,7 +7,7 @@ import { localFontsForStyle, localFontAxisValues } from './local-font-style.js';
 export const TEXT_OUTLINE_FONT_LIMITS = Object.freeze({ maxBytes: 64 * 1024 * 1024, maxFonts: 32, maxPending: 8, requestTimeoutMs: 15_000 });
 
 const abortError = () => new DOMException('Text conversion cancelled. Original layers kept.', 'AbortError');
-const staleError = () => new Error('The design or its fonts changed while outlining. Try Outline Stroke again.');
+const staleError = () => new Error('The design or its fonts changed while preparing text geometry. Retry the operation.');
 const copyMetrics = value => value?.upem > 0 && ['ascender', 'descender', 'lineGap'].every(key => Number.isFinite(value.extents?.[key]))
   ? { upem: value.upem, extents: { ...value.extents }, ...(value.leadingTrimMetrics ? { leadingTrimMetrics: { ...value.leadingTrimMetrics } } : {}) } : null;
 

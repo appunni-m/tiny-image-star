@@ -1,13 +1,28 @@
 import { findNode, getNodePropertyValue, prepareBooleanVectorPath, resolveBooleanSourceNode } from './model.js';
 import { booleanVectorGeometryKey } from './boolean-vector-geometry.js';
+import { prepareBooleanTextGeometry } from './boolean-text-geometry.js';
 
 const MAX_EXPORT_GEOMETRY_BYTES = 32 * 1024 * 1024;
-const keyFor = (document, node) => booleanVectorGeometryKey(node, { resolveNode: source => resolveBooleanSourceNode(document, source) });
+const sourceResolver = (document, options) => source => {
+  const resolved = resolveBooleanSourceNode(document, source);
+  return options.resolveNode?.(resolved) ?? resolved;
+};
+const keyFor = (document, node, options = {}) => booleanVectorGeometryKey(node, {
+  ...options,
+  resolveNode: sourceResolver(document, options)
+});
 
 /** Prepare the exact vector regions that the subsequent local export will draw. */
 export async function prepareBooleanVectorExport(document, nodeIds, {
-  signal, prepare = prepareBooleanVectorPath
+  signal, prepare = prepareBooleanVectorPath, prepareTextGeometry = prepareBooleanTextGeometry,
+  ...geometryOptions
 } = {}) {
+  if (typeof prepare !== 'function' || typeof prepareTextGeometry !== 'function') throw new TypeError('Vector export preparation requires geometry functions.');
+  const assertCurrent = () => {
+    if (signal?.aborted) throw new DOMException('Vector export cancelled.', 'AbortError');
+    geometryOptions.assertCurrent?.();
+  };
+  assertCurrent();
   const roots = [];
   for (const id of nodeIds) {
     const entry = findNode(document, id);
@@ -22,23 +37,49 @@ export async function prepareBooleanVectorExport(document, nodeIds, {
   }
   const seen = new Set(); const prepared = new Map(); let bytes = 0;
   while (roots.length) {
-    if (signal?.aborted) throw new DOMException('Vector export cancelled.', 'AbortError');
+    assertCurrent();
     const node = roots.pop();
     if (seen.has(node) || getNodePropertyValue(document, node, 'visible') === false) continue;
     seen.add(node);
     if (node.type === 'boolean' && node.booleanGeometry === 'vector') {
       // Sequential admission avoids filling the bounded native worker queue.
-      const key = keyFor(document, node);
-      const path = await prepare(document, node, { signal });
+      // Capture text geometry before the native region operation. These pins
+      // remain usable after either global cache or the font session is closed.
+      const text = await prepareTextGeometry(document, [node], { ...geometryOptions, signal,
+        resolveNode: sourceResolver(document, geometryOptions) });
+      assertCurrent();
+      if (!text || typeof text.resolveTextGeometry !== 'function' || typeof text.validateCurrent !== 'function') {
+        throw new TypeError('Text Boolean export preparation did not retain a current geometry resolver.');
+      }
+      if (text.bytes != null && (!Number.isSafeInteger(text.bytes) || text.bytes < 0)) {
+        throw new TypeError('Text Boolean export preparation returned an invalid retained geometry size.');
+      }
+      // Captured text pins outlive the shared LRU and are not enumerable on
+      // the path. Account for them even when the final region is empty.
+      bytes += text.bytes ?? 0;
+      if (bytes > MAX_EXPORT_GEOMETRY_BYTES) throw new Error('This export exceeds the local vector geometry budget. Export fewer layers together.');
+      const options = { ...geometryOptions, signal, resolveTextGeometry: text.resolveTextGeometry,
+        textGeometryPlan: text };
+      const validateCurrent = () => {
+        assertCurrent(); text.validateCurrent();
+        if (findNode(document, node.id)?.node !== node) throw new Error('A Boolean source changed before export finished. Retry the export.');
+      };
+      validateCurrent();
+      const key = keyFor(document, node, options);
+      const path = await prepare(document, node, options);
+      validateCurrent();
+      if (keyFor(document, node, options) !== key) throw new Error('A Boolean source changed before export finished. Retry the export.');
       bytes += (key.length + JSON.stringify(path).length) * 2;
       if (bytes > MAX_EXPORT_GEOMETRY_BYTES) throw new Error('This export exceeds the local vector geometry budget. Export fewer layers together.');
-      prepared.set(node.id, { source: node, key, path });
+      prepared.set(node.id, { document, source: node, key, path, validateCurrent,
+        keyFor: current => keyFor(document, current, options) });
     } else for (const child of node.children || []) roots.push(child);
   }
-  if (signal?.aborted) throw new DOMException('Vector export cancelled.', 'AbortError');
+  assertCurrent();
   // An earlier region may have changed while a later one was preparing.
-  for (const entry of prepared.values()) if (keyFor(document, entry.source) !== entry.key) {
-    throw new Error('A Boolean source changed before export finished. Retry the export.');
+  for (const entry of prepared.values()) {
+    entry.validateCurrent();
+    if (entry.keyFor(entry.source) !== entry.key) throw new Error('A Boolean source changed before export finished. Retry the export.');
   }
   return prepared;
 }
@@ -48,7 +89,9 @@ export function projectBooleanVectorPaintTree(document, node, prepared) {
   if (getNodePropertyValue(document, node, 'visible') === false) return node;
   if (node.type === 'boolean' && node.booleanGeometry === 'vector') {
     const entry = prepared?.get(node.id);
-    if (!entry || keyFor(document, node) !== entry.key) throw new Error('The Boolean geometry changed or was not prepared for this export. Retry the export.');
+    if (entry?.document && entry.document !== document) throw new Error('The Boolean geometry belongs to another design. Prepare this export again.');
+    entry?.validateCurrent?.();
+    if (!entry || (entry.keyFor ? entry.keyFor(node) : keyFor(document, node)) !== entry.key) throw new Error('The Boolean geometry changed or was not prepared for this export. Retry the export.');
     const { children, ...own } = resolveBooleanSourceNode(document, node);
     const path = entry.path;
     return { ...own, type: 'path', children: [], points: path.points, closed: path.closed,

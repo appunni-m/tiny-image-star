@@ -42,7 +42,7 @@ function harness({ cold = false, trim = true, onWait = () => {} } = {}) {
   } };
   const names = ['state', 'findNode', 'document', 'rasterExportBounds', 'localTextInkBounds', 'shapeLocalTextRun',
     'withPreparedTextPositionShapes', 'walkBooleanPaintInputs', 'exportRenderTree', 'renderer', 'abortIfExportCanceled',
-    'prepareBooleanVectorExport', 'refreshImagesForExport', 'prepareRasterExportMasks', 'safeExportName'];
+    'prepareEditorBooleanVectorExport', 'refreshImagesForExport', 'prepareRasterExportMasks', 'safeExportName'];
   const render = new Function(...names, production + 'return renderExportBlob;')(state, findNode, browserDocument,
     rasterExportBounds, (_doc, text, shapeText) => {
       const shape = shapeText('bounds', text);

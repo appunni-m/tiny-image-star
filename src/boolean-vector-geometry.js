@@ -132,8 +132,10 @@ function snapshot(node, { resolveNode = value => value, resolveTextGeometry } = 
         // even when a face has no paint. Select painted faces independently.
         fillGroupIndices = geometry.fillGroups.flatMap((group, index) => faceFillEnabled(resolved, resolved.faces[index]) ? [index] : []);
       }
-      region = { kind: 'shape', transform: identity(), geometry, includeFill: resolved.type === 'network'
-        ? fillGroupIndices.length > 0 : fillEnabled(resolved), strokes: enabledStrokes(resolved),
+      const preparedTextCoverage = resolved.type === 'text' && geometry.coverage === true;
+      if (preparedTextCoverage) geometry = geometry.geometry;
+      region = { kind: 'shape', transform: identity(), geometry, includeFill: preparedTextCoverage || (resolved.type === 'network'
+        ? fillGroupIndices.length > 0 : fillEnabled(resolved)), strokes: preparedTextCoverage ? [] : enabledStrokes(resolved),
         ...(fillGroupIndices ? { fillGroupIndices } : {}) };
     }
     state.ancestors.delete(source); state.resolvedAncestors.delete(resolved);

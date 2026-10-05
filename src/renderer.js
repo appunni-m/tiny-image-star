@@ -1,5 +1,6 @@
-import { findNode, getBooleanStrokePath, getBooleanVectorPath, prepareBooleanVectorPath, resolveBooleanSourceNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
-import { booleanVectorGeometryKey, registerBooleanVectorGeometryProvider } from './boolean-vector-geometry.js';
+import { findNode, getBooleanStrokePath, getBooleanVectorPath, getBooleanVectorGeometryKey, prepareBooleanVectorPath, resolveBooleanSourceNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
+import { registerBooleanVectorGeometryProvider } from './boolean-vector-geometry.js';
+import { getBooleanTextGeometryOptions, registerBooleanTextGeometryProvider } from './boolean-text-geometry.js';
 import { projectBooleanVectorPaintTree } from './boolean-vector-export-preflight.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
@@ -2157,7 +2158,7 @@ export class SceneRenderer {
         ? projectBooleanVectorPaintTree(document, node, renderOptions.booleanGeometryPlan)
         : this.getRenderedBooleanVectorPath(node, { resolveNode }); }
       catch (error) {
-        if (error.code === 'BOOLEAN_VECTOR_PENDING' && !renderOptions.onRenderError) {
+        if (['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code) && !renderOptions.onRenderError) {
           this.loadBooleanVectorPath(node, { resolveNode });
         } else this.reportBooleanStrokeError(node, error, renderOptions);
         return;
@@ -3825,12 +3826,14 @@ export class SceneRenderer {
   }
 
   resetBooleanVectorRenderScope(document) {
+    this.getState().configureBooleanTextGeometry?.(document);
     this.booleanVectorPaths ||= new Map();
     this.booleanVectorPending ||= new Map();
     this.booleanVectorFailures ||= new Map();
     if (this.booleanVectorScopeDocument === document && this.booleanVectorScopePage === document.activePageId
-      && this.booleanVectorUnregister?.isRegistered()) return;
+      && this.booleanVectorUnregister?.isRegistered() && this.booleanVectorTextUnregister?.isRegistered()) return;
     this.booleanVectorUnregister?.();
+    this.booleanVectorTextUnregister?.();
     for (const ticket of this.booleanVectorPending.values()) ticket.controller.abort();
     this.booleanVectorPending.clear(); this.booleanVectorFailures.clear();
     this.booleanVectorPaths.clear(); this.booleanVectorPathBytes = 0; this.booleanVectorBudgetError = null;
@@ -3838,6 +3841,14 @@ export class SceneRenderer {
     this.booleanVectorUnregister = registerBooleanVectorGeometryProvider(key => {
       if (this.destroyed || this.getState().document !== document || document.activePageId !== this.booleanVectorScopePage) return null;
       for (const entry of this.booleanVectorPaths.values()) if (entry.key === key) return entry;
+      return null;
+    });
+    this.booleanVectorTextUnregister = registerBooleanTextGeometryProvider(document, key => {
+      if (this.destroyed || this.getState().document !== document || document.activePageId !== this.booleanVectorScopePage) return null;
+      for (const entry of this.booleanVectorPaths.values()) {
+        const geometry = entry.textGeometryPlan?.geometryForKey(key);
+        if (geometry) return geometry;
+      }
       return null;
     });
   }
@@ -3862,10 +3873,28 @@ export class SceneRenderer {
   }
 
   booleanVectorRenderKey(node, document, options = {}) {
-    return booleanVectorGeometryKey(node, { resolveNode: source => {
+    return getBooleanVectorGeometryKey(document, node, options);
+  }
+
+  booleanVectorPreparationKey(node, document, options = {}) {
+    const settings = getBooleanTextGeometryOptions(document, options);
+    const ancestors = new Set(); let count = 0;
+    const visit = (source, depth = 0) => {
+      if (!source || typeof source !== 'object' || ancestors.has(source) || depth > 32 || ++count > 256) {
+        throw new Error('The Boolean sources exceed the local preparation limit.');
+      }
+      ancestors.add(source);
       const resolved = resolveBooleanSourceNode(document, source);
-      return options.resolveNode?.(resolved) ?? resolved;
-    } });
+      const current = options.resolveNode?.(resolved) ?? resolved;
+      const result = { ...current, children: (current.children || []).map(child => visit(child, depth + 1)) };
+      ancestors.delete(source); return result;
+    };
+    // This admission key exists before glyph contours are ready. Recompute the
+    // exact native key only after preparation; never pin a pending key as ink.
+    const key = JSON.stringify([visit(node), document.variables, document.variableCollections,
+      document.typographyStyles, document.colorStyles, settings.getFontRevision?.()]);
+    if (key.length > 2 * 1024 * 1024) throw new Error('These Boolean sources exceed the local preparation memory limit.');
+    return key;
   }
 
   retainBooleanVectorRenderPath(node, key, document, path) {
@@ -3873,7 +3902,9 @@ export class SceneRenderer {
     const geometry = structuredClone({ points: path.points, closed: path.closed, fillRule: path.fillRule,
       ...(path.subpaths ? { subpaths: path.subpaths } : {}) });
     const bounds = structuredClone(path.__booleanGeometryBounds);
-    const bytes = (key.length + JSON.stringify(geometry).length + JSON.stringify(bounds).length) * 2;
+    const textGeometryPlan = path.__booleanTextGeometryPlan || null;
+    const bytes = (key.length + JSON.stringify(geometry).length + JSON.stringify(bounds).length) * 2
+      + (textGeometryPlan?.bytes || 0);
     const nextBytes = this.booleanVectorPathBytes - (previous?.bytes || 0) + bytes;
     // Visible regions must stay retained together. LRU eviction here causes a
     // redraw to continuously recompute a page larger than the shared cache.
@@ -3881,7 +3912,7 @@ export class SceneRenderer {
       const error = new Error('This page exceeds the local Boolean preview geometry budget. Hide or remove some Boolean layers, or simplify their sources.');
       error.code = 'BOOLEAN_VECTOR_RENDER_LIMIT'; this.booleanVectorBudgetError = error; throw error;
     }
-    this.booleanVectorPaths.set(node.id, { document, key, geometry, bounds, bytes });
+    this.booleanVectorPaths.set(node.id, { document, key, geometry, bounds, textGeometryPlan, bytes });
     this.booleanVectorPathBytes = nextBytes;
   }
 
@@ -3910,7 +3941,7 @@ export class SceneRenderer {
     this.resetBooleanVectorRenderScope(document);
     if (this.booleanVectorBudgetError) { this.reportBooleanStrokeError(node, this.booleanVectorBudgetError); return; }
     let key;
-    try { key = this.booleanVectorRenderKey(node, document, options); }
+    try { key = this.booleanVectorPreparationKey(node, document, options); }
     catch (error) { this.reportBooleanStrokeError(node, error); return; }
     const previous = this.booleanVectorPending.get(node.id);
     if (previous?.document === document && previous.key === key) return;
@@ -3922,12 +3953,14 @@ export class SceneRenderer {
     const controller = new AbortController();
     const ticket = { key, document, pageId: document.activePageId, controller };
     this.booleanVectorPending.set(node.id, ticket);
-    prepareBooleanVectorPath(document, node, { ...options, signal: controller.signal }).then(path => {
+    const prepare = this.getState().prepareBooleanVectorPath || prepareBooleanVectorPath;
+    prepare(document, node, { ...options, signal: controller.signal }).then(path => {
       if (controller.signal.aborted || this.destroyed || this.getState().document !== document
         || document.activePageId !== ticket.pageId || this.booleanVectorPending.get(node.id) !== ticket) return;
-      this.retainBooleanVectorRenderPath(node, key, document, path);
+      if (this.booleanVectorPreparationKey(node, document, options) !== key) return;
+      this.retainBooleanVectorRenderPath(node, this.booleanVectorRenderKey(node, document, options), document, path);
     }).catch(error => {
-      if (['BOOLEAN_VECTOR_QUEUE_FULL', 'VECTOR_GEOMETRY_QUEUE_FULL'].includes(error.code)) {
+      if (['BOOLEAN_VECTOR_QUEUE_FULL', 'VECTOR_GEOMETRY_QUEUE_FULL', 'BOOLEAN_TEXT_QUEUE_FULL'].includes(error.code)) {
         ticket.deferred = true;
         if (!this.destroyed && !this.booleanVectorRetryTimer) this.booleanVectorRetryTimer = setTimeout(() => {
           this.booleanVectorRetryTimer = null; this.invalidate();
@@ -3935,7 +3968,7 @@ export class SceneRenderer {
         return;
       }
       if (!controller.signal.aborted && !this.destroyed && this.getState().document === document
-        && !['AbortError'].includes(error.name) && error.code !== 'BOOLEAN_VECTOR_STALE') {
+        && !['AbortError'].includes(error.name) && !['BOOLEAN_VECTOR_STALE', 'BOOLEAN_TEXT_STALE'].includes(error.code)) {
         if (this.booleanVectorFailures.size >= 256) this.booleanVectorFailures.delete(this.booleanVectorFailures.keys().next().value);
         this.booleanVectorFailures.set(node.id, { key, document });
         this.reportBooleanStrokeError(node, error);
@@ -4855,6 +4888,7 @@ export class SceneRenderer {
     this.booleanVectorPending.clear();
     this.booleanVectorPaths?.clear(); this.booleanVectorPathBytes = 0; this.booleanVectorBudgetError = null;
     this.booleanVectorUnregister?.(); this.booleanVectorUnregister = null;
+    this.booleanVectorTextUnregister?.(); this.booleanVectorTextUnregister = null;
     clearTimeout(this.booleanVectorRetryTimer);
     cancelAnimationFrame(this.frame); this.resizeObserver.disconnect();
   }

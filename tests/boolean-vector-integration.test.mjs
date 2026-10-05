@@ -35,6 +35,8 @@ function harness(work = run) {
   const context = {
     state, AbortController, DOMException, isLiveHostViewOnly: () => false, isImageRecipeBatchActive: () => false,
     rootSelectedIds: () => state.selectedIds,
+    configureEditorBooleanTextGeometry: () => {},
+    withEditorBooleanTextPreparation: (_doc, signal, run) => run({ signal }),
     prepareBooleanCombine: (doc, ids, operation, pageId, options) => model.prepareBooleanCombine(doc, ids, operation, pageId, { ...options, booleanGeometry: work }),
     validateBooleanCombinePlan: model.validateBooleanCombinePlan, applyBooleanCombine: model.applyBooleanCombine,
     checkpoint: label => { history.checkpoint(state.document, label); events.push('checkpoint'); },

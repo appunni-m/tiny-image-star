@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
+import * as hb from 'harfbuzzjs';
+import decompress from 'woff2-encoder/decompress';
 import * as model from '../src/model.js';
 import { booleanGeometryWithKit } from '../src/vector-geometry-kernel.js';
 import { booleanVectorGeometryKey, disposeBooleanVectorGeometryCache, registerBooleanVectorGeometryProvider } from '../src/boolean-vector-geometry.js';
+import { configureBooleanTextGeometry, disposeBooleanTextGeometryCache, getBooleanTextGeometryOptions, registerBooleanTextGeometryProvider } from '../src/boolean-text-geometry.js';
 
 const kit = await createRequire(import.meta.url)('canvaskit-wasm')({});
 const source = await readFile(new URL('../src/renderer.js', import.meta.url), 'utf8');
@@ -14,6 +17,7 @@ const end = source.indexOf('\n  reportBooleanStrokeError(', start);
 assert.ok(start >= 0 && end > start);
 const loader = runInNewContext(`class Loader { ${source.slice(start, end)} }; Loader`, {
   AbortController, setTimeout, structuredClone, booleanVectorGeometryKey, registerBooleanVectorGeometryProvider,
+  getBooleanTextGeometryOptions, registerBooleanTextGeometryProvider, getBooleanVectorGeometryKey: model.getBooleanVectorGeometryKey,
   getBooleanVectorPath: model.getBooleanVectorPath,
   getNodePropertyValue: model.getNodePropertyValue,
   resolveBooleanSourceNode: model.resolveBooleanSourceNode,
@@ -46,13 +50,13 @@ function rendererFor(document) {
     renderer.pruneBooleanVectorRenderScope(document);
     for (const node of document.pages[0].children) {
       try { renderer.getRenderedBooleanVectorPath(node); }
-      catch (error) { if (error.code === 'BOOLEAN_VECTOR_PENDING') renderer.loadBooleanVectorPath(node); else errors.push(error); }
+      catch (error) { if (['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code)) renderer.loadBooleanVectorPath(node); else errors.push(error); }
     }
   }
   return { renderer, errors, draw, close: () => {
     renderer.destroyed = true;
     for (const ticket of renderer.booleanVectorPending.values()) ticket.controller.abort();
-    renderer.booleanVectorPending.clear(); renderer.booleanVectorUnregister?.();
+    renderer.booleanVectorPending.clear(); renderer.booleanVectorUnregister?.(); renderer.booleanVectorTextUnregister?.();
     clearTimeout(renderer.booleanVectorRetryTimer);
   } };
 }
@@ -61,7 +65,7 @@ async function waitReady(document, renderer) {
   const deadline = Date.now() + 20_000;
   while (true) {
     try { for (const node of document.pages[0].children) { renderer.getRenderedBooleanVectorPath(node); model.getBooleanVectorPath(document, node); } return; }
-    catch (error) { if (error.code !== 'BOOLEAN_VECTOR_PENDING' || Date.now() > deadline) throw error; }
+    catch (error) { if (!['BOOLEAN_VECTOR_PENDING', 'BOOLEAN_TEXT_PENDING'].includes(error.code) || Date.now() > deadline) throw error; }
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -137,4 +141,76 @@ test('renderer geometry limits fail actionably without repeated work and reset a
   const replacement = scene(1); h.renderer.getState = () => ({ document: replacement });
   h.renderer.resetBooleanVectorRenderScope(replacement);
   assert.equal(h.renderer.booleanVectorPaths.size, 0); assert.equal(h.renderer.booleanVectorPathBytes, 0);
+});
+
+const fontBytes = await decompress(new Uint8Array(await readFile(new URL('./fixtures/fonts/inter-latin-variable.woff2', import.meta.url))));
+const fontFace = new hb.Face(new hb.Blob(fontBytes));
+function shapeLocalGlyphs(text) {
+  const font = new hb.Font(fontFace); font.setScale(fontFace.upem, fontFace.upem);
+  const buffer = new hb.Buffer(); buffer.addText(text); buffer.guessSegmentProperties(); hb.shape(font, buffer);
+  return { upem: fontFace.upem, extents: font.hExtents(),
+    glyphs: buffer.getGlyphInfosAndPositions().map(g => ({ ...g, id: g.codepoint, path: font.glyphToPath(g.codepoint) })) };
+}
+function textScene(count) {
+  const document = model.createDocument();
+  for (let index = 0; index < count; index++) model.addNode(document, model.createNode('boolean', {
+    width: 100, height: 80, booleanGeometry: 'vector', children: [
+      model.createNode('text', { text: 'O', fontFamily: 'Retained Inter', fontSize: 20 + index / 10, width: 90, height: 80 }),
+      model.createNode('rectangle', { x: 90, width: 10, height: 80 })]
+  }));
+  return document;
+}
+
+test('cold text Booleans load real glyphs, refresh edited operands and reject old font revisions without sticky failures', async t => {
+  disposeBooleanVectorGeometryCache(); const document = textScene(3); let revision = 1; let shapes = 0;
+  const release = configureBooleanTextGeometry(document, { getFontRevision: () => revision,
+    shapeText: (...args) => { shapes++; return shapeLocalGlyphs(...args); } });
+  t.after(release); processor = async request => booleanGeometryWithKit(kit, request);
+  const h = rendererFor(document); t.after(h.close); h.draw(); await waitReady(document, h.renderer);
+  assert.ok(shapes > 0, 'cold rendering invokes actual local font geometry preparation');
+  const first = document.pages[0].children[0]; const before = model.getBooleanVectorGeometryKey(document, first);
+  first.children[0].text = 'B'; h.draw(); await waitReady(document, h.renderer);
+  assert.notEqual(model.getBooleanVectorGeometryKey(document, first), before);
+  const ready = shapes; revision++; h.draw(); await waitReady(document, h.renderer);
+  assert.ok(shapes > ready); assert.equal(h.errors.length, 0); assert.equal(h.renderer.booleanVectorFailures.size, 0);
+});
+
+test('257 distinct text regions remain ready through glyph/native cache eviction without repeated font or native jobs', { timeout: 30_000 }, async t => {
+  disposeBooleanVectorGeometryCache(); const document = textScene(257); let shapes = 0, jobs = 0, active = 0, peak = 0;
+  const release = configureBooleanTextGeometry(document, { getFontRevision: () => 'retained Inter',
+    shapeText: (...args) => { shapes++; return shapeLocalGlyphs(...args); } });
+  t.after(release); processor = async request => {
+    jobs++; active++; peak = Math.max(peak, active);
+    try { await new Promise(resolve => setImmediate(resolve)); return booleanGeometryWithKit(kit, request); }
+    finally { active--; }
+  };
+  const h = rendererFor(document); t.after(h.close); h.draw(); await waitReady(document, h.renderer);
+  const initial = { jobs, shapes }; assert.ok(peak <= 4); assert.equal(h.renderer.booleanVectorPaths.size, 257);
+  assert.ok([...h.renderer.booleanVectorPaths.values()].every(entry => entry.textGeometryPlan?.bytes > 0));
+  // More than 256 final regions and 128 text sources already evict both LRUs.
+  // Full native disposal intentionally unregisters page owners; glyph disposal
+  // clears only its shared contour cache, so retained page pins stay valid.
+  disposeBooleanTextGeometryCache(document);
+  for (let pass = 0; pass < 3; pass++) { h.draw(); await waitReady(document, h.renderer); }
+  assert.deepEqual({ jobs, shapes }, initial, 'independent page pins supply both glyph and final region geometry');
+  const node = document.pages[0].children[0];
+  assert.ok(model.prepareBooleanBake(document, node.id));
+  node.children[0].fontSize = 100.777; h.draw(); await waitReady(document, h.renderer);
+  assert.equal(jobs, initial.jobs + 2, 'one changed text silhouette and its region are recomputed');
+  assert.equal(h.errors.length, 0); assert.equal(h.renderer.booleanVectorFailures.size, 0);
+  document.pages[0].children.splice(0, 1); h.draw(); assert.equal(h.renderer.booleanVectorPaths.size, 256);
+});
+
+test('a first draw from warm native geometry captures text pins before later glyph eviction', async t => {
+  disposeBooleanVectorGeometryCache(); const document = textScene(1); let shapes = 0, jobs = 0;
+  const release = configureBooleanTextGeometry(document, { getFontRevision: () => 'Inter',
+    shapeText: (...args) => { shapes++; return shapeLocalGlyphs(...args); } });
+  t.after(release); processor = async request => { jobs++; return booleanGeometryWithKit(kit, request); };
+  const node = document.pages[0].children[0];
+  await model.prepareBooleanVectorPath(document, node, { booleanGeometry: processor });
+  const ready = { jobs, shapes }; const h = rendererFor(document); t.after(h.close); h.draw();
+  const entry = h.renderer.booleanVectorPaths.get(node.id);
+  assert.ok(entry.textGeometryPlan?.bytes > 0, 'the synchronous warm-path branch also retains verified text contours');
+  disposeBooleanTextGeometryCache(document); h.draw(); await waitReady(document, h.renderer);
+  assert.deepEqual({ jobs, shapes }, ready, 'eviction cannot reopen a font session or resubmit ready native geometry');
 });

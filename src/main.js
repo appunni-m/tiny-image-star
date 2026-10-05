@@ -26,7 +26,8 @@ import { effectiveStrokeAlignment, supportsStrokeAlignment } from './stroke-alig
 import { rasterExportBounds } from './raster-export-bounds.js';
 import { prepareRasterExportMasks } from './raster-export-preflight.js';
 import { prepareBooleanVectorExport, projectBooleanVectorPaintTree, walkBooleanPaintInputs } from './boolean-vector-export-preflight.js';
-import { prepareBooleanCombine, validateBooleanCombinePlan, applyBooleanCombine } from './model.js';
+import { configureBooleanTextGeometry } from './boolean-text-geometry.js';
+import { prepareBooleanCombine, prepareBooleanVectorPath, validateBooleanCombinePlan, applyBooleanCombine } from './model.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
@@ -217,6 +218,8 @@ const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
 const state = {
   shapeBuilder: null,
   booleanController: null,
+  configureBooleanTextGeometry: configureEditorBooleanTextGeometry,
+  prepareBooleanVectorPath: prepareEditorBooleanVectorPath,
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', scaleAnchor: 'center', scaleMultiplier: 1, zoom: 1, panX: 0, panY: 0,
   fontShaper: new LocalFontShapingClient({ onReady: () => { renderer?.invalidate(); queueTextEditorPositionPreview(); queueTextMetricReflow(); } }), shapeLocalTextRun,
   fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
@@ -286,6 +289,7 @@ const localWoff2Decoder = new LocalWoff2Decoder();
 const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
+let editorBooleanTextScope = null;
 let previousCanvasViewportSize = null;
 let canvasViewportObserver = null;
 let pendingRecipeAction = null;
@@ -787,7 +791,9 @@ function createTextOutlinePreparation(sourceDocument, signal) {
   if (!context) { session.close(); throw new Error('This browser cannot prepare local text outlines. Original layers kept.'); }
   return {
     getTextOutline: (design, node, options) => {
-      if (design !== sourceDocument) throw new Error('Prepare text outlines in the active design.');
+      if (design !== sourceDocument && !(options?.allowDocumentSnapshot && design?.id === sourceDocument.id)) {
+        throw new Error('Prepare text outlines in the active design.');
+      }
       session.validateCurrent();
       return prepareTextOutlineGeometry(design, node, {
         ...options, measureContext: context, assertCurrent: () => session.validateCurrent(),
@@ -797,6 +803,63 @@ function createTextOutlinePreparation(sourceDocument, signal) {
     validateCurrent: () => session.validateCurrent(),
     close: () => session.close()
   };
+}
+
+function currentBooleanFontRevision() {
+  return JSON.stringify([state.documentGeneration, state.fontAssetEpoch, [...state.fontAssets.values()]]);
+}
+
+/** One Boolean operation owns a retained font session; completed contours outlive it. */
+async function withEditorBooleanTextPreparation(sourceDocument, signal, run) {
+  const generation = state.documentGeneration; const workspace = state.workspace;
+  const assertCurrent = () => {
+    if (signal?.aborted) throw new DOMException('Boolean operation cancelled.', 'AbortError');
+    if (state.document !== sourceDocument || state.documentGeneration !== generation
+      || state.workspace !== workspace || state.documentTransitioning) {
+      throw new Error('The design changed while Boolean text was being prepared. Retry the operation.');
+    }
+  };
+  let preparation = null;
+  const options = {
+    signal, getFontRevision: currentBooleanFontRevision, assertCurrent,
+    getTextOutline: (design, node, settings) => {
+      assertCurrent();
+      preparation ||= createTextOutlinePreparation(sourceDocument, signal);
+      return preparation.getTextOutline(design, node, { ...settings, allowDocumentSnapshot: true });
+    }
+  };
+  try { assertCurrent(); return await run(options); }
+  finally { preparation?.close(); }
+}
+
+function configureEditorBooleanTextGeometry(sourceDocument = state.document) {
+  const generation = state.documentGeneration; const workspace = state.workspace;
+  if (editorBooleanTextScope?.document === sourceDocument && editorBooleanTextScope.generation === generation
+    && editorBooleanTextScope.workspace === workspace) return;
+  editorBooleanTextScope?.unregister();
+  const assertCurrent = () => {
+    if (sourceDocument !== state.document || generation !== state.documentGeneration || workspace !== state.workspace) {
+      throw new Error('The active design changed. Prepare its Boolean text again.');
+    }
+  };
+  const unregister = configureBooleanTextGeometry(sourceDocument, {
+    getFontRevision: currentBooleanFontRevision, assertCurrent,
+    getTextOutline: (design, node, options) => withEditorBooleanTextPreparation(sourceDocument, options?.signal,
+      settings => settings.getTextOutline(design, node, options))
+  });
+  editorBooleanTextScope = { document: sourceDocument, generation, workspace, unregister };
+}
+
+async function prepareEditorBooleanVectorPath(sourceDocument, node, options = {}) {
+  configureEditorBooleanTextGeometry(sourceDocument);
+  return withEditorBooleanTextPreparation(sourceDocument, options.signal,
+    settings => prepareBooleanVectorPath(sourceDocument, node, { ...settings, ...options }));
+}
+
+async function prepareEditorBooleanVectorExport(sourceDocument, nodeIds, options = {}) {
+  configureEditorBooleanTextGeometry(sourceDocument);
+  return withEditorBooleanTextPreparation(sourceDocument, options.signal,
+    settings => prepareBooleanVectorExport(sourceDocument, nodeIds, { ...settings, ...options }));
 }
 
 function documentUsesFontFamily(design, family) {
@@ -15351,7 +15414,9 @@ async function combineSelectedBoolean(operation) {
   state.booleanController = controller;
   renderInspector();
   try {
-    const plan = await prepareBooleanCombine(sourceDocument, ids, operation, pageId, { signal: controller.signal });
+    configureEditorBooleanTextGeometry(sourceDocument);
+    const plan = await withEditorBooleanTextPreparation(sourceDocument, controller.signal,
+      settings => prepareBooleanCombine(sourceDocument, ids, operation, pageId, settings));
     if (controller.signal.aborted || state.document !== sourceDocument || state.documentGeneration !== generation
       || state.document.activePageId !== pageId || state.documentTransitioning || isLiveHostViewOnly()) {
       throw new DOMException('Boolean operation cancelled.', 'AbortError');
@@ -20215,7 +20280,7 @@ async function renderExportBlob(ids, setting, baseName, {
 
   const scale = Number(setting.scale) || 1;
   const exportDocument = state.document; const exportGeneration = state.documentGeneration;
-  const booleanGeometryPlan = await prepareBooleanVectorExport(exportDocument, slice ? activePage().children.map(node => node.id) : ids, { signal });
+  const booleanGeometryPlan = await prepareEditorBooleanVectorExport(exportDocument, slice ? activePage().children.map(node => node.id) : ids, { signal });
   if (state.document !== exportDocument || state.documentGeneration !== exportGeneration) throw new Error('The active design changed before export finished.');
   checkCurrent();
   let left; let top; let width; let height; let renderIds = ids; let slicePlan = null; let sliceSurfacePlan = null;
@@ -20644,7 +20709,7 @@ async function exportSelectedNodeSvg(nodeId) {
   if (!node) throw new Error('The selected layer is no longer available.');
   const imagePreviews = await imagePreviewsForSvgExport([nodeId]);
   assertCurrent();
-  const booleanGeometryPlan = await prepareBooleanVectorExport(state.document, [nodeId]);
+  const booleanGeometryPlan = await prepareEditorBooleanVectorExport(state.document, [nodeId]);
   assertCurrent();
   if (generation !== state.documentGeneration || findNode(state.document, nodeId)?.node !== node) throw new Error('The active design changed before SVG export finished.');
   const projected = projectBooleanVectorPaintTree(state.document, node, booleanGeometryPlan);
@@ -20673,7 +20738,7 @@ async function exportActivePageSvg() {
   if (!page) throw new Error('There is no active page to export.');
   const imagePreviews = await imagePreviewsForSvgExport(page.children.map(node => node.id));
   assertCurrent();
-  const booleanGeometryPlan = await prepareBooleanVectorExport(state.document, page.children.map(node => node.id));
+  const booleanGeometryPlan = await prepareEditorBooleanVectorExport(state.document, page.children.map(node => node.id));
   assertCurrent();
   if (generation !== state.documentGeneration || activePage() !== page) throw new Error('The active design changed before SVG export finished.');
   const projectedPage = { ...page, children: page.children.map(node => projectBooleanVectorPaintTree(state.document, node, booleanGeometryPlan)) };
@@ -20892,7 +20957,7 @@ async function exportActivePagePdf(pagePlan) {
     status.textContent = 'Rendering the current page locally… Large designs may take a moment.';
     status.classList.remove('is-error');
     showToast(`Preparing ${page.name || 'page'} for ${pagePlan.label} PDF at ${pagePlan.dpi} DPI… Press Escape to cancel.`, 5000);
-    const booleanGeometryPlan = await prepareBooleanVectorExport(documentSnapshot, rootIds, { signal: controller.signal });
+    const booleanGeometryPlan = await prepareEditorBooleanVectorExport(documentSnapshot, rootIds, { signal: controller.signal });
     assertCurrent();
     const projectedPage = { ...page, children: page.children.map(node => projectBooleanVectorPaintTree(documentSnapshot, node, booleanGeometryPlan)) };
     bounds = getPageContentBounds(projectedPage, { document: documentSnapshot, measureText: createSvgTextMeasurer() });
@@ -21176,7 +21241,7 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
   try {
     assertCurrent();
     showToast(`Preparing ${frames.length} frame${frames.length === 1 ? '' : 's'} for vector PDF… Press Escape to cancel.`, 5000);
-    const booleanGeometryPlan = await prepareBooleanVectorExport(documentSnapshot, frames.map(frame => frame.id), { signal: controller.signal });
+    const booleanGeometryPlan = await prepareEditorBooleanVectorExport(documentSnapshot, frames.map(frame => frame.id), { signal: controller.signal });
     assertCurrent();
     const measureText = createSvgTextMeasurer({ pdfMetrics: true });
     for (const { node } of frames) {

@@ -33,6 +33,7 @@ import { isValidEllipseArcData } from './ellipse-arc.js';
 import { planTidyUp } from './tidy-up.js';
 import { getBooleanVectorPath as cachedBooleanVectorPath, prepareBooleanVectorPath as prepareCachedBooleanVectorPath,
   booleanVectorGeometryKey as cachedBooleanVectorGeometryKey } from './boolean-vector-geometry.js';
+import { captureBooleanTextGeometry, getBooleanTextGeometryOptions, prepareBooleanTextGeometry } from './boolean-text-geometry.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -1014,7 +1015,7 @@ export function detachNodeTextPath(document, nodeId, pageId = document.activePag
   return detachTextPathLink(document, entry.node, source.node);
 }
 
-function detachTextPathLinksCrossingNodes(document, nodeIds) {
+function detachTextPathLinksCrossingNodes(document, nodeIds, { freezeWithinSelection = false } = {}) {
   const movingIds = new Set();
   for (const nodeId of nodeIds || []) {
     const entry = findNodeAcrossPages(document, nodeId);
@@ -1026,6 +1027,13 @@ function detachTextPathLinksCrossingNodes(document, nodeIds) {
     if (!sourceId) return;
     const textMoves = movingIds.has(node.id);
     const sourceMoves = movingIds.has(sourceId);
+    if (textMoves && sourceMoves && freezeWithinSelection) {
+      // Boolean groups cannot resolve cross-child linked paths. Other group
+      // and frame operations retain their same-parent live links.
+      const sourceEntry = findNode(document, sourceId, page.id);
+      if (sourceEntry && sourceEntry.parent === parent) detachTextPathLink(document, node, sourceEntry.node);
+      return;
+    }
     if (textMoves === sourceMoves) return;
     const sourceEntry = findNode(document, sourceId, page.id);
     if (sourceEntry && sourceEntry.parent === parent) detachTextPathLink(document, node, sourceEntry.node);
@@ -1622,7 +1630,8 @@ function isLegacyBooleanOperand(node) {
 }
 
 function isBooleanVectorOperand(node) {
-  if (!node || !booleanOperandTypes.has(node.type) || node.type === 'text') return false;
+  if (!node || !booleanOperandTypes.has(node.type)) return false;
+  if (node.type === 'text') return typeof node.text === 'string' && !node.children?.length;
   if (node.type === 'path') return vectorPathContours(node).some(contour => Array.isArray(contour.points) && contour.points.length >= 2)
     && vectorPathContours(node).every(contour => Array.isArray(contour.points) && contour.points.length >= 2);
   if (node.type === 'network') return (node.edges || []).length > 0 || (node.faces || []).length > 0;
@@ -1682,7 +1691,7 @@ function booleanSourceFrame(entries, left, top, width, height) {
   };
 }
 
-function inheritedBooleanAppearance(source) {
+function inheritedBooleanAppearance(source, document = null) {
   const result = {};
   const keys = [
     'fill', 'fillOpacity', 'fillGradient', 'fills', 'imageFill', 'fillStyleId', 'fillVariableId',
@@ -1691,13 +1700,21 @@ function inheritedBooleanAppearance(source) {
     'effects', 'effectStyleId'
   ];
   for (const key of keys) if (Object.hasOwn(source, key)) result[key] = clone(source[key]);
+  if (source.type === 'text' && document) {
+    // Text's scalar color is stored in `color`/text bindings; a Boolean result
+    // paints the geometric result using the source layer's actual text color.
+    if (!Array.isArray(source.fills)) {
+      result.fill = getNodeColor(document, source, 'text');
+      if (source.fillGradient) result.fillGradient = clone(source.fillGradient);
+      if (source.imageFill) result.imageFill = clone(source.imageFill);
+    }
+  }
   if (source.variableBindings?.opacity) result.variableBindings = { opacity: source.variableBindings.opacity };
   return result;
 }
 
 function vectorBooleanSources(entries) {
-  const containsText = node => node.type === 'text' || (node.children || []).some(containsText);
-  return entries.every(entry => !containsText(entry.node));
+  return entries.every(entry => isBooleanVectorOperand(entry.node));
 }
 
 function requiresVectorBoolean(node) {
@@ -1726,37 +1743,129 @@ export function resolveBooleanSourceNode(document, source) {
   if (booleanFrame && source.variableBindings?.x) geometry.x -= booleanFrame.x;
   if (booleanFrame && source.variableBindings?.y) geometry.y -= booleanFrame.y;
   const resolvedFill = getNodeColor(document, source, 'fill');
+  const resolvedTextColor = source.type === 'text' ? getNodeColor(document, source, 'text') : null;
   const boundFill = source.fillVariableId || source.fillStyleId;
   const fills = source.fills?.map((fill, index) => index === 0 && boundFill && fill.type === 'solid'
     ? { ...fill, color: resolvedFill } : fill);
   const strokes = source.strokes?.map((stroke, index) => index === 0 && source.strokeVariableId
     ? { ...stroke, color: getNodeColor(document, source, 'stroke') } : stroke);
-  return {
+  const resolved = {
     ...source, ...geometry,
     opacity: getNodePropertyValue(document, source, 'opacity'),
     visible: getNodePropertyValue(document, source, 'visible'),
     radius: getNodePropertyValue(document, source, 'radius'),
-    fill: resolvedFill, fillOpacity: getNodePropertyValue(document, source, 'fillOpacity'),
+    fill: resolvedTextColor ?? resolvedFill,
+    ...(resolvedTextColor ? { color: resolvedTextColor } : {}),
+    fillOpacity: getNodePropertyValue(document, source, 'fillOpacity'),
     ...(fills ? { fills } : {}), ...(strokes ? { strokes } : {}),
     ...(source.strokeVariableId ? { stroke: getNodeColor(document, source, 'stroke') } : {})
   };
+  if (source.type === 'text') {
+    // Typography styles are live references, so resolve their values before
+    // text geometry is recorded. A Boolean request must not silently shape
+    // with stale denormalized fields left on the text layer.
+    const style = document.typographyStyles?.find(item => item.id === source.typographyStyleId);
+    if (style && Object.hasOwn(style, 'color')) resolved.color = style.color;
+    const textProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit',
+      'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase',
+      'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'textWrapStyle', 'align',
+      'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'text', 'textRuns'];
+    for (const property of textProperties) {
+      if (style && Object.hasOwn(style, property)) resolved[property] = clone(style[property]);
+      if (source.variableBindings?.[property]) resolved[property] = getNodePropertyValue(document, source, property);
+    }
+    if (style) {
+      if (style.fontAxes) resolved.fontAxes = clone(style.fontAxes); else delete resolved.fontAxes;
+      if (style.fontFeatures) resolved.fontFeatures = clone(style.fontFeatures); else delete resolved.fontFeatures;
+      if (Object.hasOwn(style, 'letterSpacing') && !Object.hasOwn(style, 'letterSpacingUnit')) resolved.letterSpacingUnit = 'pixels';
+      if (Object.hasOwn(style, 'lineHeight') && !Object.hasOwn(style, 'lineHeightUnit')) resolved.lineHeightUnit = 'ratio';
+    }
+    // A mode-bound base property may be inherited by runs. Materialize each
+    // run's own supported bindings against the same source-node mode context.
+    if (Array.isArray(resolved.textRuns)) resolved.textRuns = resolved.textRuns.map(run => {
+      const value = { ...run };
+      for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit',
+        'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase',
+        'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim']) {
+        if (run.variableBindings?.[property]) value[property] = getNodePropertyValue(document, { ...source, ...run }, property);
+      }
+      return value;
+    });
+    delete resolved.typographyStyleId;
+    delete resolved.textVariableId;
+    delete resolved.variableBindings;
+  }
+  return resolved;
 }
 
 function booleanSourceResolver(document, resolveNode) {
   return source => {
-    const resolved = resolveBooleanSourceNode(document, source);
+    const localSource = source?.id ? findNode(document, source.id)?.node || source : source;
+    const resolved = resolveBooleanSourceNode(document, localSource);
     return resolveNode?.(resolved) ?? resolved;
   };
 }
 
 /** Read a prepared exact vector result for a new full-geometry Boolean. */
 export function getBooleanVectorPath(document, node, options = {}) {
-  return cachedBooleanVectorPath(node, { ...options, resolveNode: booleanSourceResolver(document, options.resolveNode) });
+  const settings = booleanVectorOptions(document, options);
+  let plan = options.textGeometryPlan || null;
+  if (booleanTreeHasText(node, settings) && !plan) {
+    plan = captureBooleanTextGeometry(document, [node], settings);
+    settings.resolveTextGeometry = plan.resolveTextGeometry;
+  } else if (plan) settings.resolveTextGeometry = plan.resolveTextGeometry;
+  const path = cachedBooleanVectorPath(node, settings);
+  if (plan) Object.defineProperty(path, '__booleanTextGeometryPlan', { value: plan, configurable: true });
+  return path;
 }
 
 /** Prepare the current exact Boolean path before render, export, or combine. */
 export function prepareBooleanVectorPath(document, node, options = {}) {
-  return prepareCachedBooleanVectorPath(node, { ...options, resolveNode: booleanSourceResolver(document, options.resolveNode) });
+  return (async () => {
+    const settings = booleanVectorOptions(document, options);
+    let plan = options.textGeometryPlan || null;
+    if (booleanTreeHasText(node, settings) && !plan) {
+      plan = await prepareBooleanTextGeometry(document, [node], settings);
+      settings.resolveTextGeometry = plan.resolveTextGeometry;
+    } else if (plan) settings.resolveTextGeometry = plan.resolveTextGeometry;
+    const path = await prepareCachedBooleanVectorPath(node, settings);
+    plan?.validateCurrent();
+    if (plan) Object.defineProperty(path, '__booleanTextGeometryPlan', { value: plan, configurable: true });
+    return path;
+  })();
+}
+
+function booleanTreeHasText(node, settings) {
+  const stack = [node]; const seen = new Set();
+  while (stack.length) {
+    const source = stack.pop(); if (!source || seen.has(source)) continue; seen.add(source);
+    const resolved = settings.resolveNode(source);
+    if (resolved.visible === false) continue;
+    if (resolved.type === 'text') return true;
+    stack.push(...(resolved.children || []));
+  }
+  return false;
+}
+
+function booleanVectorOptions(document, options = {}) {
+  const geometryOptions = options.booleanGeometry === 'vector'
+    ? Object.fromEntries(Object.entries(options).filter(([key]) => key !== 'booleanGeometry')) : options;
+  const textOptions = getBooleanTextGeometryOptions(document, geometryOptions);
+  return { ...textOptions, resolveNode: booleanSourceResolver(document, options.resolveNode) };
+}
+
+function assertBooleanTextPins(document, entries, options) {
+  const resolver = booleanVectorOptions(document, options).resolveTextGeometry;
+  for (const entry of entries) walkNodes([entry.node], ({ node }) => {
+    if (node.type === 'text' && getNodePropertyValue(document, node, 'visible') !== false) {
+      resolver(resolveBooleanSourceNode(document, node));
+    }
+  });
+}
+
+/** Return the exact resolved geometry key used by render/export and bake pins. */
+export function getBooleanVectorGeometryKey(document, node, options = {}) {
+  return cachedBooleanVectorGeometryKey(node, booleanVectorOptions(document, options));
 }
 
 /** Derive a legacy Boolean outline using the same inherited modes as its paints. */
@@ -1775,10 +1884,11 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   if (entries.some(entry => requiresVectorBoolean(entry.node)) && options.booleanGeometry !== 'vector') {
     throw new Error('Open paths, lines, network edges, and nested vector Booleans require asynchronous vector preparation. Use prepareBooleanCombine before applying this operation.');
   }
-  if (options.booleanGeometry === 'vector' && !vectorBooleanSources(entries)) {
-    throw new Error('Text sources need resolved glyph outlines before they can join a vector Boolean. Use the existing text Boolean workflow or outline the text first.');
-  }
-  detachTextPathLinksCrossingNodes(document, nodeIds);
+  if (options.booleanGeometry === 'vector' && !vectorBooleanSources(entries)) throw new Error('This selection contains a source that cannot be represented by exact editable vector geometry.');
+  if (options.booleanGeometry === 'vector' && !options.skipBooleanTextPinCheck && entries.some(entry => {
+    let found = false; walkNodes([entry.node], ({ node }) => { if (node.type === 'text') found = true; }); return found;
+  })) assertBooleanTextPins(document, entries, options);
+  detachTextPathLinksCrossingNodes(document, nodeIds, { freezeWithinSelection: options.booleanGeometry === 'vector' });
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
   const list = parent ? parent.children : page.children;
@@ -1797,7 +1907,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   const group = createNode('boolean', {
     name: `${operationNames[operation]} group`, operation,
     x: left, y: top, width: groupWidth, height: groupHeight,
-    ...inheritedBooleanAppearance(styleSource),
+    ...inheritedBooleanAppearance(styleSource, document),
     ...(isVector ? { booleanGeometry: 'vector' } : {}),
     booleanSourceFrame: booleanSourceFrame(selectedEntries, left, top, groupWidth, groupHeight),
     children: selectedEntries.map(entry => {
@@ -1820,16 +1930,26 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
 const booleanCombinePlans = new WeakMap();
 const MAX_BOOLEAN_COMBINE_SNAPSHOT_CHARACTERS = 4_000_000;
 
-function booleanCombineContextSnapshot(document, nodeIds, pageId) {
+function booleanCombineContextSnapshot(document, nodeIds, pageId, fontRevision = null) {
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   if (entries.some(entry => !entry)) throw new Error('A selected Boolean source no longer exists.');
   const parent = entries[0].parent;
   const list = parent ? parent.children : document.pages.find(page => page.id === pageId)?.children;
   const ancestors = entries[0].parents.map(item => ({ id: item.id, type: item.type, locked: item.locked, variableModes: item.variableModes }));
+  const textPathSources = [];
+  for (const entry of entries) walkNodes([entry.node], ({ node }) => {
+    const sourceId = node.type === 'text' ? node.textPath?.sourceId : null;
+    if (!sourceId) return;
+    const source = findNodeAcrossPages(document, sourceId);
+    textPathSources.push({ id: sourceId, parentId: source?.parent?.id || null,
+      node: source?.node || null, geometry: source?.node ? getNodeGeometry(document, source.node) : null,
+      linkedGeometry: getNodeTextPath(document, node) });
+  });
   const snapshot = JSON.stringify({
     pageId, parentId: parent?.id || null, order: list?.map(node => node.id), ancestors,
-    sources: entries.map(entry => entry.node), variables: document.variables, variableCollections: document.variableCollections,
-    colorStyles: document.colorStyles, effectStyles: document.effectStyles
+    sources: entries.map(entry => entry.node), textPathSources, fontRevision,
+    variables: document.variables, variableCollections: document.variableCollections,
+    colorStyles: document.colorStyles, typographyStyles: document.typographyStyles, effectStyles: document.effectStyles
   });
   if (snapshot.length > MAX_BOOLEAN_COMBINE_SNAPSHOT_CHARACTERS) throw new Error('The selected Boolean sources exceed the safe preparation size. Select fewer or simpler layers.');
   return snapshot;
@@ -1845,16 +1965,30 @@ export async function prepareBooleanCombine(document, nodeIds, operation = 'unio
   if (!vector && entries.some(entry => requiresVectorBoolean(entry.node))) {
     throw new Error('Text sources cannot yet join open vector geometry. Outline the text first, or combine closed text and shapes with the existing workflow.');
   }
-  const expected = booleanCombineContextSnapshot(document, nodeIds, pageId);
+  const textOptions = getBooleanTextGeometryOptions(document, options);
+  const fontRevision = textOptions.getFontRevision?.() ?? null;
+  const expected = booleanCombineContextSnapshot(document, nodeIds, pageId, fontRevision);
   const candidate = cloneDocument(document);
-  const group = combineBoolean(candidate, nodeIds, operation, pageId, { booleanGeometry: vector ? 'vector' : undefined });
-  if (vector) await prepareBooleanVectorPath(candidate, group, options);
+  const group = combineBoolean(candidate, nodeIds, operation, pageId, { booleanGeometry: vector ? 'vector' : undefined, skipBooleanTextPinCheck: true });
+  let textPin = null;
+  if (vector) {
+    if (entries.some(entry => {
+      let found = false; walkNodes([entry.node], ({ node }) => { if (node.type === 'text') found = true; }); return found;
+    })) {
+      textPin = await prepareBooleanTextGeometry(document, [group], {
+        ...textOptions, ...options, resolveNode: booleanSourceResolver(candidate, options.resolveNode)
+      });
+      textPin.validateCurrent();
+    }
+    await prepareBooleanVectorPath(candidate, group, { ...options, resolveTextGeometry: textPin?.resolveTextGeometry, textGeometryPlan: textPin });
+  }
   if (options.signal?.aborted) throw new DOMException('Boolean operation cancelled.', 'AbortError');
   validateDocument(candidate);
   // A worker may have been awaiting while another actor changed this design.
-  if (booleanCombineContextSnapshot(document, nodeIds, pageId) !== expected) throw new Error('The selected layers or their variable context changed while the Boolean geometry was preparing. Try again.');
+  if (textPin) textPin.validateCurrent();
+  if (booleanCombineContextSnapshot(document, nodeIds, pageId, textOptions.getFontRevision?.() ?? null) !== expected) throw new Error('The selected layers, retained font, or their variable context changed while the Boolean geometry was preparing. Try again.');
   const plan = Object.freeze({ pageId, nodeIds: Object.freeze([...nodeIds]), operation });
-  booleanCombinePlans.set(plan, { document, expected, vector });
+  booleanCombinePlans.set(plan, { document, expected, vector, textOptions, textPin });
   return plan;
 }
 
@@ -1862,11 +1996,13 @@ export async function prepareBooleanCombine(document, nodeIds, operation = 'unio
 export function validateBooleanCombinePlan(document, plan) {
   const prepared = booleanCombinePlans.get(plan);
   if (!prepared || prepared.document !== document) throw new TypeError('Prepare this Boolean operation before applying it.');
-  if (booleanCombineContextSnapshot(document, plan.nodeIds, plan.pageId) !== prepared.expected) throw new Error('The selected layers or their variable context changed while the Boolean geometry was preparing. Try again.');
+  if (booleanCombineContextSnapshot(document, plan.nodeIds, plan.pageId, prepared.textOptions?.getFontRevision?.() ?? null) !== prepared.expected) throw new Error('The selected layers, retained font, or their variable context changed while the Boolean geometry was preparing. Try again.');
+  prepared.textPin?.validateCurrent();
   const candidate = cloneDocument(document);
-  const group = combineBoolean(candidate, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: prepared.vector ? 'vector' : undefined });
+  const group = combineBoolean(candidate, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: prepared.vector ? 'vector' : undefined, skipBooleanTextPinCheck: true,
+    ...(prepared.textPin ? { resolveTextGeometry: prepared.textPin.resolveTextGeometry } : {}) });
   if (Boolean(group.booleanGeometry === 'vector') !== prepared.vector) throw new Error('The selected Boolean geometry mode changed. Prepare it again.');
-  if (prepared.vector) getBooleanVectorPath(candidate, group);
+  if (prepared.vector) getBooleanVectorPath(candidate, group, prepared.textPin ? { resolveTextGeometry: prepared.textPin.resolveTextGeometry } : {});
   validateDocument(candidate);
   return true;
 }
@@ -1874,7 +2010,9 @@ export function validateBooleanCombinePlan(document, plan) {
 /** Commit one prepared Boolean group atomically while preserving source objects and IDs. */
 export function applyBooleanCombine(document, plan) {
   validateBooleanCombinePlan(document, plan);
-  const group = combineBoolean(document, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: booleanCombinePlans.get(plan)?.vector ? 'vector' : undefined });
+  const prepared = booleanCombinePlans.get(plan);
+  const group = combineBoolean(document, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: prepared?.vector ? 'vector' : undefined, skipBooleanTextPinCheck: true,
+    ...(prepared?.textPin ? { resolveTextGeometry: prepared.textPin.resolveTextGeometry } : {}) });
   booleanCombinePlans.delete(plan);
   return group;
 }
@@ -2086,7 +2224,7 @@ export function prepareBooleanBake(document, nodeId, pageId = document.activePag
   booleanBakePlans.set(plan, {
     document, expected: JSON.stringify(group), geometry,
     vectorKey: group.booleanGeometry === 'vector'
-      ? cachedBooleanVectorGeometryKey(group, { resolveNode: booleanSourceResolver(document) }) : null
+      ? getBooleanVectorGeometryKey(document, group) : null
   });
   return plan;
 }
@@ -2100,7 +2238,7 @@ export function applyBooleanBake(document, plan) {
     throw new Error('The Boolean group changed after the bake was prepared. Prepare it again before committing.');
   }
   if (prepared.vectorKey != null
-    && cachedBooleanVectorGeometryKey(entry.node, { resolveNode: booleanSourceResolver(document) }) !== prepared.vectorKey) {
+    && getBooleanVectorGeometryKey(document, entry.node) !== prepared.vectorKey) {
     throw new Error('The resolved Boolean source geometry changed after the bake was prepared. Prepare it again before committing it.');
   }
   const node = entry.node;
