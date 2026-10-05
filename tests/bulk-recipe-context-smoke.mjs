@@ -41,7 +41,7 @@ function setInput(app, input, value) {
   input.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
   input.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
 }
-function fixtureBmp() {
+function fixtureBmp(variant = 0) {
   const width = 64; const height = 32; const pixels = width * height * 3;
   const bytes = new Uint8Array(54 + pixels); const view = new DataView(bytes.buffer);
   bytes[0] = 66; bytes[1] = 77;
@@ -51,8 +51,8 @@ function fixtureBmp() {
   let offset = 54;
   for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
     const left = x < width / 2;
-    bytes[offset++] = left ? 32 : 224;
-    bytes[offset++] = left ? 72 : 148;
+    bytes[offset++] = left ? (32 + variant * 19) % 256 : 224;
+    bytes[offset++] = left ? 72 : (148 + variant * 23) % 256;
     bytes[offset++] = left ? 208 : 48;
   }
   return bytes;
@@ -154,9 +154,8 @@ try {
   click(app, app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`));
   await waitFor(() => app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true', 'starting page selection');
 
-  const bytes = fixtureBmp();
   addImages(app, Array.from({ length: IMAGE_COUNT }, (_, index) =>
-    new app.defaultView.File([bytes], `context-recipe-${index + 1}.bmp`, { type: 'image/bmp' })));
+    new app.defaultView.File([fixtureBmp(index + 1)], `context-recipe-${index + 1}.bmp`, { type: 'image/bmp' })));
   await waitFor(() => app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,
     `${IMAGE_COUNT} imported images`);
   await waitFor(() => workerGate.rendered.length >= IMAGE_COUNT, 'initial image previews');
@@ -233,6 +232,8 @@ try {
   const latestBeforeBatch = await latestDocument(app);
   const targetAssetIds = targetLayerIds.map(id => imageNodes(latestBeforeBatch).find(node => node.id === id)?.assetId);
   assert(targetAssetIds.every(Boolean), 'Each selected recipe target should retain its source asset identity.');
+  assert(new Set(targetAssetIds).size === targetLayerIds.length,
+    'The selected targets should begin with distinct source images so an accidental shared-source render is observable.');
   const batchStart = workerGate.submissions.length;
   await canvasContextMenuOnImage(app, targetLayerIds[1]);
   const menuLabel = app.querySelector('#context-menu .menu-label')?.textContent.trim();
@@ -321,6 +322,8 @@ try {
     const node = appliedImages.find(item => item.id === id);
     return node?.outputFormat === 'webp' && node.outputQuality === 73;
   }), 'Applying the recipe should persist WebP format and quality on each original target image.');
+  assert(targetLayerIds.every((id, index) => appliedImages.find(node => node.id === id)?.assetId === targetAssetIds[index]),
+    'Applying a recipe should keep each original target bound to its own source asset.');
   for (const assetId of targetAssetIds) {
     assert(workerGate.submissions.slice(batchStart).some(job => job.assetId === assetId
       && job.format === 'webp' && job.quality === 73 && job.outputMode === 'preview'),

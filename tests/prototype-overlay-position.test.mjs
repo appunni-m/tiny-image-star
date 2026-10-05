@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createNode } from '../src/model.js';
 import { isValidPrototypeOverlayRelativePosition, prototypeOverlayPositionInFrame } from '../src/prototype-overlay-position.js';
+import { smartAnimateOverlaySwapPlan } from '../src/smart-animate.js';
 
 test('manual overlay placement adds its persisted trigger-relative offset to the rendered trigger origin', () => {
   assert.deepEqual(prototypeOverlayPositionInFrame(
@@ -27,4 +29,20 @@ test('preset edge placements use the remaining space when the 16px inset does no
   assert.deepEqual(prototypeOverlayPositionInFrame(
     'bottom-right', { width: 320, height: 568 }, { width: 310, height: 550 }
   ), { x: 0, y: 2 });
+});
+
+test('centered overlay swaps place the interpolated-size frame without interpolating its origin twice', () => {
+  const source = createNode('frame', { width: 200, height: 200 });
+  const target = createNode('frame', { width: 400, height: 400 });
+  const presentationFrame = { width: 400, height: 600 };
+  const overlay = smartAnimateOverlaySwapPlan(source, target, 0.5).frame;
+  const position = prototypeOverlayPositionInFrame('center', presentationFrame, overlay);
+
+  assert.deepEqual([overlay.width, overlay.height], [300, 300]);
+  assert.deepEqual(position, { x: 50, y: 150 });
+  assert.deepEqual(
+    [position.x + overlay.width / 2, position.y + overlay.height / 2],
+    [presentationFrame.width / 2, presentationFrame.height / 2],
+    'positioning from the interpolated dimensions keeps the overlay centered throughout the swap'
+  );
 });

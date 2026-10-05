@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, bindVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, getNodePropertyValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
-import { interpolateSmartFrame, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from '../src/smart-animate.js';
+import { interpolateSmartFrame, smartAnimateOverlaySwapPlan, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from '../src/smart-animate.js';
 import { easePrototypeProgress } from '../src/prototype-easing.js';
 
 test('back and spring easing preserve bounded layer presence while spatial geometry anticipates and overshoots', () => {
@@ -71,6 +71,122 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   );
   assert.equal(from.children[0].x, 10, 'the source frame remains unchanged');
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
+});
+
+test('Smart Animate overlay swap plans interpolate matches and dissolve unmatched roots in one paint pass', () => {
+  const sourceMatch = createNode('rectangle', { name: 'Shared card', x: 8, y: 12, width: 20, height: 18, fill: '#ff0000' });
+  const sourceOnly = createNode('ellipse', { name: 'Leaving badge', x: 80, y: 12, width: 16, height: 16 });
+  const targetMatch = createNode('rectangle', { name: 'Shared card', x: 120, y: 140, width: 60, height: 54, fill: '#0000ff' });
+  const targetOnly = createNode('ellipse', { name: 'Entering badge', x: 180, y: 140, width: 28, height: 28 });
+  const source = createNode('frame', { width: 300, height: 500, children: [sourceMatch, sourceOnly] });
+  const target = createNode('frame', { width: 300, height: 500, children: [targetMatch, targetOnly] });
+
+  const swapping = smartAnimateOverlaySwapPlan(source, target, 0.4);
+  assert.deepEqual(swapping.matchedSourceIds, [sourceMatch.id]);
+  assert.deepEqual(swapping.matchedDestinationIds, [targetMatch.id]);
+  assert.deepEqual(swapping.entries.map(entry => entry.kind), ['matched', 'source', 'destination']);
+  assert.equal(swapping.entries.filter(entry => entry.kind === 'matched').length, 1,
+    'a matched root must have exactly one visible transition owner during a swap');
+  assert.equal(swapping.entries.find(entry => entry.kind === 'source').transitionMotion.opacity, 0.6);
+  assert.equal(swapping.entries.find(entry => entry.kind === 'destination').transitionMotion.opacity, 0.4);
+  assert.equal(swapping.hasAnimatedLayers, true);
+  assert.equal(swapping.frame.children.length, swapping.entries.length);
+  assert.deepEqual(source.children.map(node => node.id), [sourceMatch.id, sourceOnly.id],
+    'building the overlay plan must not mutate either authored frame');
+  assert.deepEqual(target.children.map(node => node.id), [targetMatch.id, targetOnly.id]);
+});
+
+test('Smart Animate overlay swap plans preserve exact start and end poses', () => {
+  const sourceMatch = createNode('rectangle', { name: 'Shared card', x: 12, y: 24, width: 30, height: 18 });
+  const sourceOnly = createNode('ellipse', { name: 'Leaving badge', x: 70, y: 24, width: 12, height: 12 });
+  const targetMatch = createNode('rectangle', { name: 'Shared card', x: 132, y: 144, width: 60, height: 36 });
+  const targetOnly = createNode('ellipse', { name: 'Entering badge', x: 210, y: 144, width: 24, height: 24 });
+  const source = createNode('frame', { width: 300, height: 500, children: [sourceMatch, sourceOnly] });
+  const target = createNode('frame', { width: 300, height: 500, children: [targetMatch, targetOnly] });
+
+  const atStart = smartAnimateOverlaySwapPlan(source, target, 0);
+  const atEnd = smartAnimateOverlaySwapPlan(source, target, 1);
+  assert.deepEqual(
+    [atStart.entries.find(entry => entry.kind === 'matched').node.x,
+      atStart.entries.find(entry => entry.kind === 'source').transitionMotion.opacity,
+      atStart.entries.find(entry => entry.kind === 'destination').transitionMotion.opacity],
+    [sourceMatch.x, 1, 0],
+    'the swap starts on the source overlay with outgoing roots visible and incoming roots transparent'
+  );
+  assert.deepEqual(
+    [atEnd.entries.find(entry => entry.kind === 'matched').node.x,
+      atEnd.entries.find(entry => entry.kind === 'source').transitionMotion.opacity,
+      atEnd.entries.find(entry => entry.kind === 'destination').transitionMotion.opacity],
+    [targetMatch.x, 0, 1],
+    'the swap ends on the destination overlay with outgoing roots transparent and incoming roots visible'
+  );
+});
+
+test('Smart Animate overlay swap preserves and interpolates overlay frame paint', () => {
+  const sourceFrame = createNode('frame', {
+    fill: '#ff0000',
+    fills: [{ id: 'source-fill', type: 'solid', color: '#ff0000', visible: true, opacity: 1 }],
+    stroke: '#00ff00',
+    effects: [createLayerEffect('drop-shadow', { id: 'source-shadow', offsetX: 2, blur: 4 })],
+    children: [createNode('rectangle', { name: 'Shared content', width: 40, height: 30 })]
+  });
+  const targetFrame = createNode('frame', {
+    fill: '#0000ff',
+    fills: [{ id: 'target-fill', type: 'solid', color: '#0000ff', visible: true, opacity: 1 }],
+    stroke: '#ff00ff',
+    effects: [createLayerEffect('drop-shadow', { id: 'target-shadow', offsetX: 8, blur: 12 })],
+    children: [createNode('rectangle', { name: 'Shared content', x: 80, width: 60, height: 45 })]
+  });
+
+  const atStart = smartAnimateOverlaySwapPlan(sourceFrame, targetFrame, 0).frame;
+  const halfway = smartAnimateOverlaySwapPlan(sourceFrame, targetFrame, 0.5).frame;
+  const atEnd = smartAnimateOverlaySwapPlan(sourceFrame, targetFrame, 1).frame;
+
+  assert.deepEqual(
+    [atStart.fill, atStart.fills, atStart.stroke, atStart.effects],
+    [sourceFrame.fill, sourceFrame.fills, sourceFrame.stroke, sourceFrame.effects],
+    'the composed overlay is fully painted at the source endpoint'
+  );
+  assert.equal(halfway.fill, '#800080', 'the overlay frame fill follows the same color interpolation as its layers');
+  assert.equal(halfway.fills[0].color, '#800080', 'modern frame fill stacks remain painted during the transition');
+  assert.ok(halfway.effects?.length, 'frame effects remain present while the children use a one-pass composition');
+  assert.deepEqual(
+    [atEnd.fill, atEnd.fills, atEnd.stroke, atEnd.effects],
+    [targetFrame.fill, targetFrame.fills, targetFrame.stroke, targetFrame.effects],
+    'the composed overlay is fully painted at the target endpoint'
+  );
+  assert.equal(sourceFrame.children[0].x, 0, 'the source frame remains immutable while composing paint');
+  assert.equal(targetFrame.children[0].x, 80, 'the target frame remains immutable while composing paint');
+});
+
+test('unmatched-only overlay swaps dissolve even without matched roots', () => {
+  const sourceOnly = createNode('rectangle', { name: 'Old label' });
+  const destinationOnly = createNode('rectangle', { name: 'New label' });
+  const source = createNode('frame', { width: 300, height: 500, children: [sourceOnly] });
+  const target = createNode('frame', { width: 300, height: 500, children: [destinationOnly] });
+  const plan = smartAnimateOverlaySwapPlan(source, target, 0.35);
+  assert.equal(plan.matchCount, 0);
+  assert.equal(plan.hasAnimatedLayers, true);
+  assert.deepEqual(plan.entries.map(entry => entry.kind), ['source', 'destination']);
+  assert.deepEqual(plan.entries.map(entry => entry.transitionMotion.opacity), [0.65, 0.35]);
+});
+
+test('fixed-only overlay roots do not claim animated composition without a counterpart', () => {
+  const fixedSource = createNode('rectangle', {
+    name: 'Pinned source detail', fixedPositionWhenScrolling: true
+  });
+  const source = createNode('frame', {
+    width: 300, height: 500, fill: '#111111', children: [fixedSource]
+  });
+  const target = createNode('frame', {
+    width: 300, height: 500, fill: '#fefefe', children: []
+  });
+
+  const plan = smartAnimateOverlaySwapPlan(source, target, 0.4);
+  assert.equal(plan.matchCount, 0);
+  assert.equal(plan.fixedLayerCount, 1);
+  assert.equal(plan.hasAnimatedLayers, false,
+    'a fixed root is not transferred between overlay surfaces without a matching counterpart');
 });
 
 test('Smart Animate snaps visibility changes at the midpoint while visible opacity still dissolves', () => {

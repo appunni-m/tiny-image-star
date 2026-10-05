@@ -81,7 +81,7 @@ import { defaultStrokeDashArray, MAX_STROKE_DASH_SEGMENTS, parseStrokeDashArray 
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout, gridTrackLayout } from './layout-engine.js';
 import { addGridTrack, deleteGridTrack, gridTrackCount, gridTrackMoveRange, gridTrackResizeHandles, moveGridTrack, resizeGridTrack } from './grid-track-editing.js';
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
-import { interpolateSmartFrame, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from './smart-animate.js';
+import { interpolateSmartFrame, smartAnimateOverlaySwapPlan, smartAnimatePresentationPaintPlan, splitSmartFrameMatches } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg, getPageContentBounds } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
@@ -97,7 +97,7 @@ import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRaste
 import { importSvgToLayers } from './svg-import.js';
 import { parseLocalFigFile } from './fig-import-worker-client.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { addPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, lastPrototypePresentationAction, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeActionProgramCandidates, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
 import { prototypeTransitionMotion } from './prototype-transition.js';
 import { prototypeOverlayMotion, reversePrototypeOverlayTransition } from './prototype-overlay-motion.js';
 import { prototypeOverlayPositionInFrame } from './prototype-overlay-position.js';
@@ -3977,8 +3977,15 @@ function prototypeInspector() {
       'spring-gentle': 'Spring · gentle', 'spring-quick': 'Spring · quick', 'spring-bouncy': 'Spring · bouncy',
       'spring-slow': 'Spring · slow', 'custom-bezier': 'Custom Bézier'
     })[interaction.easing] || 'Ease in and out';
+    const transitionLabel = interaction.action === 'close-overlay'
+      ? 'Reverse opening transition'
+      : interaction.transition === 'smart-animate' ? 'Smart animate' : easingLabel;
+    const transitionSummary = interaction.action === 'close-overlay'
+      ? ` · ${transitionLabel}`
+      : interaction.action === 'back' ? ''
+        : interaction.transition && interaction.transition !== 'instant' ? ` · ${transitionLabel}` : '';
     const selected = interaction.id === state.prototypeEditingInteractionId;
-    return `<div class="prototype-interaction-row${selected ? ' is-editing' : ''}"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : interaction.action === 'scroll-to' ? '↓' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(easingLabel)}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="prototype-edit-button" type="button" data-action="edit-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Edit ${escapeHtml(triggerLabel)} ${escapeHtml(actionLabel)} interaction">${selected ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    return `<div class="prototype-interaction-row${selected ? ' is-editing' : ''}"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : interaction.action === 'scroll-to' ? '↓' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${transitionSummary}${escapeHtml(conditionLabel)}</small></span><button class="prototype-edit-button" type="button" data-action="edit-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Edit ${escapeHtml(triggerLabel)} ${escapeHtml(actionLabel)} interaction">${selected ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
   const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
   const needsScrollTarget = state.prototypeAction === 'scroll-to' && !selectedScrollTarget;
@@ -4005,7 +4012,9 @@ function prototypeInspector() {
     ['Push', transitionDirections.map(direction => [`push-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
     ['Slide In', transitionDirections.map(direction => [`slide-in-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
     ['Slide Out', transitionDirections.map(direction => [`slide-out-${direction}`, direction[0].toUpperCase() + direction.slice(1)])],
-    ...(state.prototypeAction === 'swap-overlay' ? [['', [['smart-animate', 'Smart animate']]]] : [])
+    ...(state.prototypeAction === 'swap-overlay'
+      ? [['', [['smart-animate', 'Smart animate']]]]
+      : [])
   ];
   const overlayTransitionOptions = overlayTransitionGroups.flatMap(([, choices]) => choices);
   const unsupportedOverlayTransition = isOverlayAction
@@ -17624,6 +17633,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   const backdropChildren = [];
   const overlayChildren = [];
   const positionedOverlays = [];
+  let overlayPresentationLayerPlan = null;
   const sceneDocument = children => ({
     activePageId: target.page.id,
     pages: [{ id: target.page.id, name: target.page.name, children }],
@@ -17634,6 +17644,8 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     const overlayTarget = findNode(runtimeDocument, overlayState.frameId, overlayState.pageId) || findNodeAcrossPages(runtimeDocument, overlayState.frameId);
     if (!overlayTarget || overlayTarget.node.type !== 'frame') continue;
     const isTopOverlay = index === state.presenting.overlays.length - 1;
+    const smartOverlaySwap = isTopOverlay && interaction?.action === 'swap-overlay'
+      && interaction.transition === 'smart-animate' && previousOverlayFrame && Number.isFinite(progress);
     if (overlayState.background) {
       const backdrop = {
         id: `presentation-overlay-backdrop-${index}`, type: 'rectangle', name: 'Overlay background',
@@ -17645,13 +17657,14 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
       if (isTopOverlay) backdropChildren.push(backdrop);
       else underlayChildren.push(backdrop);
     }
-    const overlayFrame = previousOverlayFrame && Number.isFinite(progress) && index === state.presenting.overlays.length - 1
-      ? interpolateSmartFrame(previousOverlayFrame, overlayTarget.node, progress, {
-        resolveRadius: resolveTransitionRadius,
-        resolveImageTransition: resolveSmartAnimateImageTransition,
-        allowOvershoot: true
-      })
-      : structuredClone(overlayTarget.node);
+    let swapComposition = null;
+    let overlayFrame;
+    if (smartOverlaySwap) {
+      swapComposition = smartAnimateOverlaySwapPlan(previousOverlayFrame, overlayTarget.node, progress, interpolationOptions);
+      overlayFrame = swapComposition?.hasAnimatedLayers
+        ? swapComposition.frame
+        : interpolateSmartFrame(previousOverlayFrame, overlayTarget.node, progress, interpolationOptions);
+    } else overlayFrame = structuredClone(overlayTarget.node);
     const displayOverlay = applySessionVariableModes(overlayFrame);
     let manualAnchorPoint = null;
     if (overlayState.position === 'manual' && overlayState.anchorId) {
@@ -17676,6 +17689,9 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     Object.assign(displayOverlay, prototypeOverlayPositionInFrame(
       overlayState.position, displayFrame, displayOverlay, manualAnchorPoint, overlayState.relativePosition
     ));
+    if (isTopOverlay && smartOverlaySwap && swapComposition?.hasAnimatedLayers) {
+      overlayPresentationLayerPlan = { frameId: displayOverlay.id, entries: swapComposition.entries };
+    }
     positionedOverlays[index] = displayOverlay;
     sceneChildren.push(displayOverlay);
     if (isTopOverlay) overlayChildren.push(displayOverlay);
@@ -17698,7 +17714,21 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     presentationLayerPlan: presentationLayerPlan ? { frameId: incomingBaseFrame.id, entries: presentationLayerPlan } : null
   };
   presentBackdropRenderState = { ...presentRenderState, document: sceneDocument(backdropChildren) };
-  presentOverlayRenderState = { ...presentRenderState, document: sceneDocument(overlayChildren) };
+  presentOverlayRenderState = {
+    ...presentRenderState,
+    document: sceneDocument(overlayChildren),
+    presentationLayerPlan: overlayPresentationLayerPlan
+  };
+  const smartOverlayTransitionActive = Number.isFinite(progress)
+    && interaction?.action === 'swap-overlay' && interaction.transition === 'smart-animate'
+    && Boolean(previousOverlayFrame);
+  if (smartOverlayTransitionActive) {
+    $('#present-dialog').dataset.smartOverlayCompositor = overlayPresentationLayerPlan ? 'single-pass' : 'frame-interpolation';
+    $('#present-dialog').dataset.smartOverlayTransitionRoots = String(overlayPresentationLayerPlan?.entries?.length || 0);
+  } else {
+    delete $('#present-dialog').dataset.smartOverlayCompositor;
+    delete $('#present-dialog').dataset.smartOverlayTransitionRoots;
+  }
   presentMatchingRenderState = { ...presentRenderState, document: sceneDocument(matchingDisplayFrame ? [matchingDisplayFrame] : []) };
   $('#present-title').textContent = target.node.name;
   $('#present-back').disabled = state.presenting.stack.length === 0 && state.presenting.overlays.length === 0;
@@ -18026,16 +18056,25 @@ function animateSmartTransition(fromFrame, interaction, { target = 'frame' } = {
   cancelPresentationAnimation();
   const duration = Math.max(0, Number(interaction.duration) || 0);
   if (!duration) { renderPresentationFrame(); schedulePresentationDelay(); return; }
+  const renderProgress = progress => renderPresentationFrame(
+    interaction,
+    target === 'frame' ? fromFrame : null,
+    progress,
+    target === 'overlay' ? fromFrame : null
+  );
+  renderProgress(0);
   const startTime = performance.now();
   const tick = now => {
     if (!state.presenting) { presentationAnimationFrame = 0; return; }
     const linear = Math.min(1, (now - startTime) / duration);
     const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
-    renderPresentationFrame(interaction, target === 'frame' ? fromFrame : null, eased,
-      target === 'overlay' ? fromFrame : null);
-    if (linear < 1) presentationAnimationFrame = requestAnimationFrame(tick);
+    if (linear < 1) {
+      renderProgress(eased);
+      presentationAnimationFrame = requestAnimationFrame(tick);
+    }
     else {
       presentationAnimationFrame = 0;
+      renderProgress(eased);
       renderPresentationFrame();
       schedulePresentationDelay();
     }
@@ -18050,7 +18089,7 @@ function animateOverlayPresentationTransition(interaction, result, outgoingSnaps
   const overlayCanvas = $('#present-overlay-canvas');
   const sceneElement = $('#present-scene');
   const transitionCanvas = $('#present-transition-canvas');
-  if (!duration || interaction.transition === 'instant' || !state.presenting || !dialog.open) return false;
+  if (!duration || ['instant', 'smart-animate'].includes(interaction.transition) || !state.presenting || !dialog.open) return false;
   if (['overlay-swapped', 'overlay-closed'].includes(result) && !outgoingSnapshot) return false;
   const rect = overlayCanvas.getBoundingClientRect();
   const width = Math.max(1, rect.width);
@@ -18231,16 +18270,21 @@ function restartPresentation(flowId = undefined) {
 function navigatePresentation(interaction, sourceNode = null) {
   if (!state.presenting || $('#present-dialog').dataset.transitioning === 'true'
     || $('#present-dialog').dataset.overlayAnimating === 'true') return;
-  const linkUrl = interaction.action === 'open-link' ? normalizePrototypeLinkUrl(interaction.url) : null;
   const runtimeDocument = presentRuntimeDocument || state.document;
+  const actionCandidates = prototypeActionProgramCandidates(interaction);
   const isSmartAnimate = interaction.transition === 'smart-animate';
   const currentOverlay = state.presenting.overlays?.at(-1) || null;
+  const maySmartAnimateFrame = !currentOverlay && actionCandidates.some(candidate =>
+    candidate.transition === 'smart-animate' && ['navigate', 'swap-overlay'].includes(candidate.action));
+  const maySmartAnimateOverlaySwap = Boolean(currentOverlay && actionCandidates.some(candidate =>
+    candidate.action === 'swap-overlay' && candidate.transition === 'smart-animate'));
   const frameAction = interaction.action === 'navigate'
     || (interaction.action === 'swap-overlay' && !currentOverlay)
     || (interaction.action === 'back' && !currentOverlay);
   const wantsMatchingLayers = interaction.smartAnimateMatchingLayers === true
     && interaction.action === 'navigate' && frameAction && !currentOverlay;
-  const source = (isSmartAnimate || wantsMatchingLayers) && (interaction.action === 'navigate' || (interaction.action === 'swap-overlay' && !currentOverlay))
+  const source = (isSmartAnimate || wantsMatchingLayers || maySmartAnimateFrame)
+    && (frameAction || maySmartAnimateFrame)
     ? findNode(runtimeDocument, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
   const previousFrame = source ? structuredClone(source) : null;
@@ -18257,25 +18301,23 @@ function navigatePresentation(interaction, sourceNode = null) {
     $('#present-dialog').dataset.matchingStacking = matchingSplit.matchingStacking;
     $('#present-dialog').dataset.matchingComposite = 'true';
   }
-  const previousOverlaySource = isSmartAnimate && currentOverlay
+  const previousOverlaySource = (isSmartAnimate && currentOverlay || maySmartAnimateOverlaySwap)
     ? findNode(runtimeDocument, currentOverlay.frameId, currentOverlay.pageId)?.node
       || findNodeAcrossPages(runtimeDocument, currentOverlay.frameId)?.node
     : null;
   const previousOverlayFrame = previousOverlaySource ? structuredClone(previousOverlaySource) : null;
-  const changesOverlay = Boolean(currentOverlay && ['swap-overlay', 'close-overlay', 'back'].includes(interaction.action));
-  const overlayTransition = interaction.action === 'back' && currentOverlay
-    ? {
-      ...interaction,
-      transition: reversePrototypeOverlayTransition(currentOverlay.transition || 'instant'),
-      easing: currentOverlay.easing || interaction.easing || 'ease-in-out',
-      easingBezier: currentOverlay.easingBezier || interaction.easingBezier,
-      duration: currentOverlay.duration ?? interaction.duration
-    }
-    : interaction;
+  const changesOverlay = Boolean(currentOverlay && actionCandidates.some(candidate =>
+    ['swap-overlay', 'close-overlay', 'back'].includes(candidate.action)));
   clearPresentationDelay();
   cancelPresentationAnimation();
-  const outgoingOverlaySnapshot = changesOverlay && overlayTransition.duration > 0
-    && overlayTransition.transition !== 'instant' && overlayTransition.transition !== 'smart-animate'
+  const outgoingOverlaySnapshot = changesOverlay && actionCandidates.some(candidate => {
+    const closesOverlay = ['back', 'close-overlay'].includes(candidate.action) && currentOverlay;
+    const transition = closesOverlay
+      ? reversePrototypeOverlayTransition(currentOverlay.transition || 'instant')
+      : candidate.transition;
+    const duration = closesOverlay ? currentOverlay.duration ?? candidate.duration : candidate.duration;
+    return Number(duration) > 0 && transition !== 'instant' && transition !== 'smart-animate';
+  })
     ? capturePresentationOverlaySnapshot()
     : null;
   const snapshotEligible = !matchingLayerTransition && Number(interaction.duration) > 0
@@ -18293,7 +18335,24 @@ function navigatePresentation(interaction, sourceNode = null) {
     })()
     : null;
   const transitionSize = outgoingSnapshot || matchingCompositeSize;
-  const result = applyPrototypeInteraction(runtimeDocument, state.presenting, interaction, { sourceNodeId: sourceNode?.id || null });
+  const execution = executePrototypeActionProgram(runtimeDocument, state.presenting, interaction, { sourceNodeId: sourceNode?.id || null });
+  let result = execution.result;
+  const executedPresentationAction = result !== false ? lastPrototypePresentationAction(execution) : null;
+  if (executedPresentationAction) {
+    interaction = executedPresentationAction.interaction;
+    result = executedPresentationAction.result;
+  }
+  const linkUrl = interaction.action === 'open-link' ? normalizePrototypeLinkUrl(interaction.url) : null;
+  const effectiveSmartAnimate = interaction.transition === 'smart-animate';
+  const overlayTransition = ['back', 'close-overlay'].includes(interaction.action) && currentOverlay
+    ? {
+      ...interaction,
+      transition: reversePrototypeOverlayTransition(currentOverlay.transition || 'instant'),
+      easing: currentOverlay.easing || interaction.easing || 'ease-in-out',
+      easingBezier: currentOverlay.easingBezier || interaction.easingBezier,
+      duration: currentOverlay.duration ?? interaction.duration
+    }
+    : interaction;
   if (!result) {
     cancelPresentationAnimation();
     showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.');
@@ -18357,7 +18416,7 @@ function navigatePresentation(interaction, sourceNode = null) {
     return;
   }
   if (result === 'navigated' && previousFrame) {
-    if (isSmartAnimate) {
+    if (effectiveSmartAnimate) {
       animateSmartTransition(previousFrame, interaction);
       return;
     }
@@ -23113,7 +23172,8 @@ function initEvents() {
       }
       if (state.prototypeSourceId && !['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction)) clearPrototypeConnectPrompt();
       if (!['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTrigger === 'after-delay') state.prototypeTrigger = 'on-click';
-      if (!['navigate', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
+      if (!['navigate', 'swap-overlay'].includes(state.prototypeAction)
+        && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'scroll-to') state.prototypeTransition = 'scroll';
       else if (previousAction === 'scroll-to' && state.prototypeTransition === 'scroll') state.prototypeTransition = 'instant';
       if (!canSmartAnimateMatchingLayers(state.prototypeAction, state.prototypeTransition)) state.prototypeSmartAnimateMatchingLayers = false;

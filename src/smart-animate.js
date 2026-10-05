@@ -1511,6 +1511,49 @@ export function smartAnimatePresentationPaintPlan(split, destinationFrame, incom
   return plan;
 }
 
+/** Build one ordered Smart Animate paint pass while swapping the top overlay. */
+export function smartAnimateOverlaySwapPlan(sourceFrame, targetFrame, progress, options = {}) {
+  if (sourceFrame?.type !== 'frame' || targetFrame?.type !== 'frame') return null;
+  const { requestedProgress, amount, allowOvershoot, geometryProgress } = normalizeSmartProgress(progress, options);
+  const split = splitSmartFrameMatches(sourceFrame, targetFrame, requestedProgress, options);
+  const incomingMotion = { x: 0, y: 0, opacity: amount };
+  const outgoingMotion = { x: 0, y: 0, opacity: 1 - amount };
+  const entries = smartAnimatePresentationPaintPlan(split, targetFrame, incomingMotion, amount, outgoingMotion);
+  // split.matchingFrame is deliberately paint-free because it is also used
+  // as a clipping shell for children. The final overlay still needs its own
+  // interpolated frame paint while those child layers share one paint pass.
+  const frame = allowOvershoot && requestedProgress === 0
+    ? structuredClone(sourceFrame)
+    : allowOvershoot && requestedProgress === 1
+      ? structuredClone(targetFrame)
+      : interpolateFrameProperties(
+        sourceFrame,
+        targetFrame,
+        amount,
+        geometryProgress,
+        typeof options?.resolveRadius === 'function' ? options.resolveRadius : null,
+        typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null
+      );
+  const matchedSourceIds = split.matches
+    .map(match => sourceFrame.children?.[match.sourceIndex]?.id)
+    .filter(id => typeof id === 'string');
+  const matchedDestinationIds = split.matches
+    .map(match => targetFrame.children?.[match.destinationIndex]?.id)
+    .filter(id => typeof id === 'string');
+  return {
+    frame: { ...frame, children: entries.map(entry => entry.node) },
+    entries,
+    matchCount: split.matchCount,
+    fixedLayerCount: split.fixedLayerCount,
+    matchedSourceIds,
+    matchedDestinationIds,
+    // Unmatched ordinary roots dissolve in and out with the overlay. Fixed
+    // roots alone do not transfer between overlay surfaces, so they stay on
+    // the normal frame interpolation path.
+    hasAnimatedLayers: split.matchCount > 0 || entries.some(entry => entry.kind === 'source' || entry.kind === 'destination')
+  };
+}
+
 export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
   if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
   const { requestedProgress, amount, allowOvershoot, geometryProgress } = normalizeSmartProgress(progress, options);

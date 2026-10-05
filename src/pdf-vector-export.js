@@ -696,6 +696,108 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
   return commands.flat().filter(Boolean).join('\n');
 }
 
+// Figma-style list markers are emitted as separately positioned SVG tspans.
+// Their SVG textLength is measured using the user's local font, while vector
+// PDF intentionally maps only Arial/Helvetica to the built-in Helvetica
+// faces. Use the standard Helvetica AFM widths for the small marker alphabet
+// supported by the editor (digits, Latin letters, period, and bullet), then
+// horizontally scale to the SVG's measured width just like ordinary text.
+const HELVETICA_MARKER_WIDTHS = Object.freeze({
+  regular: Object.freeze({
+    '.': 278,
+    '0': 556, '1': 556, '2': 556, '3': 556, '4': 556,
+    '5': 556, '6': 556, '7': 556, '8': 556, '9': 556,
+    A: 667, B: 667, C: 722, D: 722, E: 667, F: 611, G: 778,
+    H: 722, I: 278, J: 500, K: 667, L: 556, M: 833, N: 722,
+    O: 778, P: 667, Q: 778, R: 722, S: 667, T: 611, U: 722,
+    V: 667, W: 944, X: 667, Y: 667, Z: 611,
+    a: 556, b: 556, c: 500, d: 556, e: 556, f: 278, g: 556,
+    h: 556, i: 222, j: 222, k: 500, l: 222, m: 833, n: 556,
+    o: 556, p: 556, q: 556, r: 333, s: 500, t: 278, u: 556,
+    v: 500, w: 722, x: 500, y: 500, z: 500,
+    '•': 350,
+  }),
+  bold: Object.freeze({
+    '.': 278,
+    '0': 556, '1': 556, '2': 556, '3': 556, '4': 556,
+    '5': 556, '6': 556, '7': 556, '8': 556, '9': 556,
+    A: 722, B: 667, C: 667, D: 722, E: 611, F: 556, G: 722,
+    H: 722, I: 333, J: 389, K: 722, L: 611, M: 889, N: 722,
+    O: 722, P: 556, Q: 722, R: 667, S: 556, T: 611, U: 722,
+    V: 667, W: 944, X: 667, Y: 667, Z: 611,
+    a: 556, b: 611, c: 556, d: 611, e: 556, f: 333, g: 611,
+    h: 611, i: 278, j: 278, k: 556, l: 278, m: 889, n: 611,
+    o: 611, p: 611, q: 611, r: 389, s: 556, t: 333, u: 611,
+    v: 556, w: 778, x: 556, y: 556, z: 500,
+    '•': 350,
+  }),
+});
+
+function standardHelveticaMarkerWidth(value, attributes, size) {
+  const weight = String(attributes['font-weight'] || '400').toLowerCase();
+  const widths = HELVETICA_MARKER_WIDTHS[weight === '700' || weight === 'bold' ? 'bold' : 'regular'];
+  let units = 0;
+  for (const character of value) {
+    const width = widths[character];
+    if (width == null) {
+      fail('paragraph list marker metrics', 'the built-in Helvetica widths are unavailable for this marker; use raster PDF');
+    }
+    units += width;
+  }
+  return units * size / 1000;
+}
+
+function paintPositionedListMarker(marker, parentSize, ascent, alpha, context) {
+  const attrs = marker.attributes;
+  assertAttributes(marker, new Set([
+    'x', 'y', 'text-anchor', 'text-transform', 'font-family', 'font-size',
+    'font-weight', 'font-style', 'letter-spacing', 'fill', 'textLength', 'lengthAdjust',
+  ]));
+  if (marker.children.some(child => child.name !== '#text')) {
+    fail('paragraph lists', 'nested marker spans are unsupported; use raster PDF');
+  }
+  if (attrs['text-transform'] != null && attrs['text-transform'] !== 'none') {
+    fail('paragraph list marker transforms', 'transformed markers are unsupported; use raster PDF');
+  }
+  const letterSpacing = finite(attrs['letter-spacing'] ?? 0, 'list marker letter spacing');
+  if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF list-marker subset requires zero letter spacing');
+  const size = finite(attrs['font-size'] ?? parentSize, 'list marker font size');
+  if (size <= 0) throw new TypeError('SVG list marker font sizes must be positive.');
+  if (size !== parentSize) {
+    fail('paragraph list marker metrics', 'list markers must use the text layer font size to preserve their measured baseline; use raster PDF');
+  }
+
+  const value = marker.children.map(child => child.text).join('');
+  if (!value) return '';
+  const literal = pdfTextLiteral(value);
+  const anchor = attrs['text-anchor'] ?? 'start';
+  if (anchor !== 'end') fail('paragraph list marker alignment', 'list markers need an end-aligned measured position');
+  if (attrs['textLength'] == null || attrs.lengthAdjust !== 'spacingAndGlyphs') {
+    fail('paragraph list marker metrics', 'list markers need measured textLength positioning; use raster PDF');
+  }
+  const desiredWidth = finite(attrs.textLength, 'list marker width');
+  const naturalWidth = standardHelveticaMarkerWidth(value, attrs, size);
+  if (desiredWidth <= 0 || naturalWidth <= 0) {
+    fail('paragraph list marker metrics', 'the editor did not provide positive measured marker widths; use raster PDF');
+  }
+  const horizontalScale = desiredWidth / naturalWidth * 100;
+  if (!Number.isFinite(horizontalScale) || horizontalScale <= 0 || horizontalScale > 10_000) {
+    fail('paragraph list marker metrics', 'the requested marker width is outside the supported PDF text scale');
+  }
+
+  const x = finite(attrs.x, 'list marker x') - desiredWidth;
+  const y = finite(attrs.y, 'list marker y') + ascent;
+  const fill = colorOperator(attrs.fill ?? '#000000', 'fill');
+  if (!fill) return '';
+  const state = alphaState(alpha, 1, context.stateNames);
+  const font = textFont(attrs, context);
+  return [
+    'q', `1 0 0 -1 0 ${pdfNumber(2 * y)} cm`, fill, state,
+    'BT', `/${font} ${pdfNumber(size)} Tf`, `${pdfNumber(horizontalScale)} Tz`,
+    `1 0 0 1 ${pdfNumber(x)} ${pdfNumber(y)} Tm`, `${literal} Tj`, 'ET', 'Q',
+  ].filter(Boolean).join('\n');
+}
+
 function paintText(node, inheritedOpacity, context) {
   const attrs = node.attributes;
   assertAttributes(node, new Set([
@@ -749,11 +851,12 @@ function paintText(node, inheritedOpacity, context) {
     textFont(attrs, context);
     const commands = [];
     for (const line of node.children) {
-      assertAttributes(line, new Set(['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust', 'word-spacing']));
-      if (line.attributes['data-tiny-image-star-list-marker'] != null
-        || line.children.some(child => child.attributes?.['data-tiny-image-star-list-marker'] != null)) {
-        fail('paragraph lists', 'list marker spans need rich text positioning');
+      if (line.attributes['data-tiny-image-star-list-marker'] != null) {
+        const marker = paintPositionedListMarker(line, size, ascent, alpha, context);
+        if (marker) commands.push(marker);
+        continue;
       }
+      assertAttributes(line, new Set(['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust', 'word-spacing']));
       if (line.children.some(child => child.name === 'tspan')) {
         if (line.attributes['word-spacing'] != null && finite(line.attributes['word-spacing'], 'text word spacing') !== 0) {
           fail('rich text justification', 'justified word spacing needs per-word PDF positions; use raster PDF');

@@ -338,7 +338,10 @@ try {
   prototypeTrigger.value = 'on-click'; prototypeTrigger.dispatchEvent(new Event('change', { bubbles: true }));
   const prototypeAction = app.querySelector('#prototype-action');
   prototypeAction.value = 'open-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
-  assert(![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should keep overlay transitions separate');
+  assert([...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should offer Smart animate for opening overlays');
+  prototypeTransition = app.querySelector('#prototype-transition');
+  prototypeTransition.value = 'smart-animate'; prototypeTransition.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(app.querySelector('#prototype-duration')?.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'Smart animate duration should fit inside the phone prototype inspector');
   prototypeAction.value = 'swap-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   assert([...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should offer Smart animate when swapping overlays');
   prototypeAction.value = 'navigate'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));

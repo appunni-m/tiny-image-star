@@ -391,6 +391,7 @@ const prototypeActionProgramActionFields = new Set([
   'variableId', 'value', 'valueExpression', 'scrollTargetId', 'scrollAlignment',
   'smartAnimateMatchingLayers', 'scrollPosition', 'key', 'keyModifiers'
 ]);
+const MAX_PROTOTYPE_ACTION_PROGRAM_STEPS = 128;
 
 function invalidPrototypeCondition(condition, document) {
   const conditionFields = ['variableId', 'type', 'operator', 'value'];
@@ -414,7 +415,7 @@ function hasInvalidPrototypeActionProgram(program, envelope, document) {
     if (!Array.isArray(steps) || depth > 8) return true;
     for (const step of steps) {
       count += 1;
-      if (count > 128 || !step || typeof step !== 'object' || Array.isArray(step)) return true;
+      if (count > MAX_PROTOTYPE_ACTION_PROGRAM_STEPS || !step || typeof step !== 'object' || Array.isArray(step)) return true;
       if (step.type === 'action') {
         const keys = Object.keys(step);
         if (keys.some(key => key !== 'type' && key !== 'actionId' && !prototypeActionProgramActionFields.has(key))
@@ -5037,6 +5038,61 @@ export function parseDocument(json) {
   }
   if (document.prototypeStartFlowId == null && document.prototypeFlows.length) {
     document.prototypeStartFlowId = document.prototypeFlows[0].id;
+  }
+  // Early local builds exposed Smart Animate for Open overlay even though the
+  // supported prototype behavior is frame navigation and overlay swaps. Keep
+  // those designs editable by preserving duration and easing and falling back
+  // to dissolve. Action-program steps can inherit action/transition values
+  // from their interaction envelope, so migrate the effective action without
+  // changing a different valid action on that envelope.
+  for (const page of Array.isArray(document.pages) ? document.pages : []) {
+    if (!Array.isArray(page?.children)) continue;
+    walkNodes(page.children, ({ node }) => {
+      if (!Array.isArray(node.interactions)) return;
+      for (const interaction of node.interactions) {
+        if (!interaction || typeof interaction !== 'object' || Array.isArray(interaction)) continue;
+        const preserveSupportedEnvelopeTransition = interaction.action === 'open-overlay'
+          && interaction.transition === 'smart-animate';
+        const migrateOpenOverlay = step => {
+          const action = step?.action ?? interaction.action;
+          const transition = step?.transition ?? interaction.transition;
+          if (action === 'open-overlay' && transition === 'smart-animate') {
+            if (step) step.transition = 'dissolve';
+            else interaction.transition = 'dissolve';
+            return;
+          }
+          // If the invalid envelope action itself is Open overlay, explicit
+          // Navigate and Swap overlay steps inherited its Smart Animate value.
+          // Preserve that supported behavior before correcting the envelope.
+          if (step && preserveSupportedEnvelopeTransition && step.transition == null
+            && ['navigate', 'swap-overlay'].includes(action)) step.transition = 'smart-animate';
+        };
+        const rootSteps = interaction.actionProgram?.steps;
+        if (Array.isArray(rootSteps)) {
+          const pendingSteps = [{ steps: rootSteps, index: rootSteps.length - 1 }];
+          const visitedSteps = new Set();
+          let visitedCount = 0;
+          while (pendingSteps.length && visitedCount < MAX_PROTOTYPE_ACTION_PROGRAM_STEPS) {
+            const pending = pendingSteps[pendingSteps.length - 1];
+            if (pending.index < 0) {
+              pendingSteps.pop();
+              continue;
+            }
+            const step = pending.steps[pending.index];
+            pending.index -= 1;
+            visitedCount += 1;
+            if (!step || typeof step !== 'object' || Array.isArray(step) || visitedSteps.has(step)) continue;
+            visitedSteps.add(step);
+            if (step.type === 'action') migrateOpenOverlay(step);
+            else if (step.type === 'if') {
+              if (Array.isArray(step.else)) pendingSteps.push({ steps: step.else, index: step.else.length - 1 });
+              if (Array.isArray(step.then)) pendingSteps.push({ steps: step.then, index: step.then.length - 1 });
+            }
+          }
+        }
+        migrateOpenOverlay(null);
+      }
+    });
   }
   validateDocument(document);
   return document;

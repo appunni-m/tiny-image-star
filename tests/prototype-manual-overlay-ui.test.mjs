@@ -28,5 +28,6 @@ test('presentation positions manual overlays from their trigger origin and curre
     'presentation should use the shared overlay placement helper');
   assert.match(main, /manualAnchorPoint, overlayState\.relativePosition/,
     'manual placement should use the computed trigger origin and its saved offset');
-  assert.match(main, /applyPrototypeInteraction\(runtimeDocument, state\.presenting, interaction, \{ sourceNodeId: sourceNode\?\.id \|\| null \}\)/);
+  assert.match(main, /executePrototypeActionProgram\(runtimeDocument, state\.presenting, interaction, \{ sourceNodeId: sourceNode\?\.id \|\| null \}\)/,
+    'presentation routing should execute the selected action-program branch before choosing its transition');
 });

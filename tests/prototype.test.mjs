@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, executePrototypeActionProgram, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, findPrototypeKeyboardInteraction, getPrototypeStartFrame, lastPrototypePresentationAction, normalizePrototypeLinkUrl, prototypeActionProgram, prototypeActionProgramCandidates, prototypeEasingTimingFunction, prototypeMoveInOffset, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -397,7 +397,7 @@ test('press and drag prototype triggers are validated and resolve independently 
   assert.throws(() => addPrototypeInteraction(document, source.id, dragTarget.id, { trigger: 'on-release' }), /Unsupported prototype trigger/);
 });
 
-test('smart animate is stored for frame navigation and swap overlays, but rejected for opening or closing overlays', () => {
+test('smart animate is stored for frame navigation and overlay swaps, but rejected for opening or closing overlays', () => {
   const document = createDocument();
   const source = createNode('rectangle', { name: 'Open details' });
   const firstFrame = createNode('frame', { name: 'Home' });
@@ -414,25 +414,42 @@ test('smart animate is stored for frame navigation and swap overlays, but reject
     action: 'swap-overlay', transition: 'smart-animate', easing: 'ease-out', duration: 500
   });
   assert.equal(swapOverlay.transition, 'smart-animate');
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
+    action: 'open-overlay', transition: 'smart-animate', easing: 'ease-out', duration: 625
+  }), /frame navigation or swap-overlay/);
+  const openOverlay = addPrototypeInteraction(document, source.id, destination.id, {
+    action: 'open-overlay', transition: 'dissolve', easing: 'ease-out', duration: 625
+  });
+  assert.equal(openOverlay.transition, 'dissolve');
+  assert.equal(openOverlay.easing, 'ease-out');
+  assert.equal(openOverlay.duration, 625);
+
   const reloaded = parseDocument(serializeDocument(document));
   assert.equal(findNode(reloaded, source.id).node.interactions.find(item => item.action === 'swap-overlay').transition, 'smart-animate',
     'swap-overlay Smart Animate should survive local document persistence');
+  const persistedOpen = findNode(reloaded, source.id).node.interactions.find(item => item.action === 'open-overlay');
+  assert.equal(persistedOpen.transition, 'dissolve');
+  assert.equal(persistedOpen.easing, 'ease-out');
+  assert.equal(persistedOpen.duration, 625);
 
-  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
-    action: 'open-overlay', transition: 'smart-animate'
-  }), /frame navigation or swap-overlay/);
+  const legacy = structuredClone(document);
+  const legacyOpen = findNode(legacy, source.id).node.interactions.find(item => item.id === openOverlay.id);
+  legacyOpen.transition = 'smart-animate';
+  assert.throws(() => validateDocument(legacy), /Invalid prototype interactions/,
+    'new validation must not accept the unsupported Open overlay Smart Animate transition');
+  const migrated = parseDocument(JSON.stringify(legacy));
+  const migratedOpen = findNode(migrated, source.id).node.interactions.find(item => item.id === openOverlay.id);
+  assert.deepEqual(
+    [migratedOpen.transition, migratedOpen.easing, migratedOpen.duration],
+    ['dissolve', 'ease-out', 625],
+    'older local designs keep their easing and duration while unsupported Open overlay Smart Animate becomes a dissolve'
+  );
+
   assert.throws(() => addPrototypeInteraction(document, source.id, null, {
     action: 'close-overlay', transition: 'smart-animate'
   }), /frame navigation or swap-overlay/);
 
-  const invalid = structuredClone(document);
-  invalid.pages[0].children[0].children[0].interactions[0].action = 'open-overlay';
-  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
-  const invalidSwap = structuredClone(document);
-  const persistedSwap = findNode(invalidSwap, source.id).node.interactions.find(item => item.action === 'swap-overlay');
-  persistedSwap.action = 'open-overlay';
-  assert.throws(() => validateDocument(invalidSwap), /Invalid prototype interactions/,
-    'persisted open-overlay Smart Animate should be rejected');
+  assert.equal(validateDocument(reloaded), true, 'persisted navigation and overlay-swap Smart Animate should pass model validation');
   const invalidClose = structuredClone(document);
   const persistedClose = findNode(invalidClose, source.id).node.interactions.find(item => item.action === 'swap-overlay');
   persistedClose.action = 'close-overlay';
@@ -440,10 +457,102 @@ test('smart animate is stored for frame navigation and swap overlays, but reject
   persistedClose.destinationPageId = null;
   assert.throws(() => validateDocument(invalidClose), /Invalid prototype interactions/,
     'persisted close-overlay Smart Animate should be rejected');
-  assert.equal(validateDocument(reloaded), true, 'persisted swap-overlay Smart Animate should pass model validation');
   const invalidEasing = structuredClone(document);
   invalidEasing.pages[0].children[0].children[0].interactions[0].easing = 'bounce';
   assert.throws(() => validateDocument(invalidEasing), /Invalid prototype interactions/);
+});
+
+test('legacy Smart Animate Open overlay actions migrate through both branches without mutating object input', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Legacy overlay migration');
+  const conditionVariable = createVariable(document, collection.id, 'use overlay', 'boolean', true);
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Trigger' });
+  const overlay = createNode('frame', { name: 'Details' });
+  home.children.push(trigger);
+  addNode(document, home);
+  addNode(document, overlay);
+  const interaction = addPrototypeInteraction(document, trigger.id, overlay.id, {
+    action: 'navigate', transition: 'smart-animate', easing: 'ease-out', duration: 625
+  });
+  interaction.actionProgram = {
+    version: 2,
+    steps: [{
+      type: 'if', branchId: 'choose-overlay',
+      condition: { variableId: conditionVariable.id, type: 'boolean', operator: 'equals', value: true },
+      then: [{ type: 'action', actionId: 'inherited-open', action: 'open-overlay' }],
+      else: [{ type: 'action', actionId: 'explicit-open', action: 'open-overlay', transition: 'smart-animate' }]
+    }]
+  };
+
+  const objectInput = structuredClone(document);
+  const objectParsed = parseDocument(objectInput);
+  const originalInteraction = findNode(objectInput, trigger.id).node.interactions[0];
+  const migratedObjectInteraction = findNode(objectParsed, trigger.id).node.interactions[0];
+  assert.equal(originalInteraction.transition, 'smart-animate');
+  assert.equal(originalInteraction.actionProgram.steps[0].then[0].transition, undefined,
+    'parsing an object must not mutate the caller\'s inherited-transition action');
+  assert.equal(originalInteraction.actionProgram.steps[0].else[0].transition, 'smart-animate');
+  assert.equal(migratedObjectInteraction.transition, 'smart-animate',
+    'a valid Navigate envelope retains its Smart Animate transition');
+  assert.equal(migratedObjectInteraction.duration, 625);
+  assert.equal(migratedObjectInteraction.easing, 'ease-out');
+  assert.equal(migratedObjectInteraction.actionProgram.steps[0].then[0].transition, 'dissolve',
+    'the Open overlay action that inherited Smart Animate gets a local dissolve override');
+  assert.equal(migratedObjectInteraction.actionProgram.steps[0].else[0].transition, 'dissolve',
+    'the Open overlay action that explicitly used Smart Animate migrates to dissolve');
+
+  const stringParsed = parseDocument(JSON.stringify(document));
+  assert.deepEqual(
+    stringParsed.pages[0].children[0].children[0].interactions[0].actionProgram,
+    migratedObjectInteraction.actionProgram,
+    'string and object inputs receive the same nested action migration'
+  );
+
+  const invalidOpenEnvelope = structuredClone(document);
+  const openEnvelope = findNode(invalidOpenEnvelope, trigger.id).node.interactions[0];
+  openEnvelope.action = 'open-overlay';
+  openEnvelope.transition = 'smart-animate';
+  openEnvelope.actionProgram.steps = [{ type: 'action', actionId: 'nested-navigation', action: 'navigate' }];
+  const migratedOpenEnvelope = findNode(parseDocument(invalidOpenEnvelope), trigger.id).node.interactions[0];
+  assert.deepEqual(
+    [migratedOpenEnvelope.action, migratedOpenEnvelope.transition,
+      migratedOpenEnvelope.actionProgram.steps[0].action, migratedOpenEnvelope.actionProgram.steps[0].transition],
+    ['open-overlay', 'dissolve', 'navigate', 'smart-animate'],
+    'migrating an invalid Open overlay envelope must not erase the valid Smart Animate inherited by a Navigate step'
+  );
+});
+
+test('oversized legacy action-program branches fail through normal validation, not migration argument overflow', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Oversized overlay migration');
+  const conditionVariable = createVariable(document, collection.id, 'show', 'boolean', true);
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Trigger' });
+  const overlay = createNode('frame', { name: 'Details' });
+  home.children.push(trigger);
+  addNode(document, home);
+  addNode(document, overlay);
+  const interaction = addPrototypeInteraction(document, trigger.id, overlay.id, {
+    action: 'navigate', transition: 'smart-animate'
+  });
+  const oversizedAction = {
+    type: 'action', actionId: 'duplicate-action', action: 'open-overlay', transition: 'smart-animate'
+  };
+  interaction.actionProgram = {
+    version: 2,
+    steps: [{
+      type: 'if', branchId: 'large-branch',
+      condition: { variableId: conditionVariable.id, type: 'boolean', operator: 'equals', value: true },
+      then: new Array(200_000).fill(oversizedAction), else: []
+    }]
+  };
+
+  assert.throws(() => parseDocument(document), error => {
+    assert(error instanceof TypeError, `Expected schema validation TypeError, received ${error?.constructor?.name}`);
+    assert.match(error.message, /Invalid prototype interactions/);
+    return true;
+  });
 });
 
 test('prototype transition kinds validate, update, and retain their direction after reload', () => {
@@ -880,6 +989,37 @@ test('manual prototype overlays persist trigger-relative offsets and anchor to t
   assert.throws(() => validateDocument(invalid), /Invalid prototype interaction/);
 });
 
+test('nested overlays stack and return to the previously visible overlay', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home', width: 400, height: 700 });
+  const homeTrigger = createNode('rectangle', { name: 'Open menu' });
+  const menu = createNode('frame', { name: 'Menu', width: 240, height: 320 });
+  const menuTrigger = createNode('rectangle', { name: 'Open nested sheet' });
+  const sheet = createNode('frame', { name: 'Sheet', width: 220, height: 280 });
+  home.children.push(homeTrigger);
+  menu.children.push(menuTrigger);
+  addNode(document, home); addNode(document, menu); addNode(document, sheet);
+  const openMenu = addPrototypeInteraction(document, homeTrigger.id, menu.id, {
+    action: 'open-overlay', transition: 'move-in-left'
+  });
+  const openSheet = addPrototypeInteraction(document, menuTrigger.id, sheet.id, {
+    action: 'open-overlay', transition: 'dissolve'
+  });
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+
+  assert.equal(applyPrototypeInteraction(document, session, openMenu, { sourceNodeId: homeTrigger.id }), 'overlay-opened');
+  assert.equal(applyPrototypeInteraction(document, session, openSheet, { sourceNodeId: menuTrigger.id }), 'overlay-opened');
+  assert.deepEqual(session.overlays.map(({ frameId, transition }) => ({ frameId, transition })), [
+    { frameId: menu.id, transition: 'move-in-left' },
+    { frameId: sheet.id, transition: 'dissolve' }
+  ]);
+  assert.equal(backPrototypeSession(session), 'overlay-closed');
+  assert.equal(session.overlays.at(-1).frameId, menu.id,
+    'Back after a nested overlay restores the previously visible overlay');
+  assert.equal(backPrototypeSession(session), 'overlay-closed');
+  assert.equal(session.overlays.length, 0);
+});
+
 test('swap overlay replaces the top overlay in place without adding history', () => {
   const document = createDocument();
   const home = createNode('frame', { name: 'Home' });
@@ -1125,6 +1265,60 @@ test('v2 prototype action programs run actions in order and choose nested if/els
   const elseExecution = executePrototypeActionProgram(document, session, elseProgram);
   assert.deepEqual(elseExecution.actionResults, ['variables-updated', 'variables-updated']);
   assert.equal(resolveVariableValue(document, result.id), -1, 'the false branch executes when its condition does not match');
+});
+
+test('presentation routing follows the executed action-program override instead of its envelope action', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Presentation action routing');
+  const shouldSwap = createVariable(document, collection.id, 'swap', 'boolean', true);
+  const home = createNode('frame', { name: 'Home' });
+  const menu = createNode('frame', { name: 'Menu' });
+  const trigger = createNode('rectangle', { name: 'Open details' });
+  const oldSheet = createNode('frame', { name: 'Old sheet' });
+  const nextSheet = createNode('frame', { name: 'New sheet' });
+  menu.children.push(trigger);
+  addNode(document, home);
+  addNode(document, menu);
+  addNode(document, oldSheet);
+  addNode(document, nextSheet);
+  const openMenu = addPrototypeInteraction(document, home.id, menu.id, {
+    action: 'open-overlay', transition: 'move-in-left'
+  });
+  const envelope = addPrototypeInteraction(document, trigger.id, oldSheet.id, {
+    action: 'open-overlay', transition: 'dissolve'
+  });
+  envelope.actionProgram = {
+    version: 2,
+    steps: [{
+      type: 'if', branchId: 'choose-sheet',
+      condition: { variableId: shouldSwap.id, type: 'boolean', operator: 'equals', value: true },
+      then: [{
+        type: 'action', actionId: 'swap-sheet', action: 'swap-overlay', destinationId: nextSheet.id,
+        destinationPageId: document.activePageId, transition: 'smart-animate', duration: 480
+      }],
+      else: [{
+        type: 'action', actionId: 'open-sheet', action: 'open-overlay', destinationId: oldSheet.id,
+        destinationPageId: document.activePageId, transition: 'dissolve', duration: 480
+      }]
+    }]
+  };
+
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, session, openMenu, { sourceNodeId: home.id }), 'overlay-opened');
+  const candidates = prototypeActionProgramCandidates(envelope);
+  assert.deepEqual(candidates.map(action => [action.action, action.transition]), [
+    ['swap-overlay', 'smart-animate'], ['open-overlay', 'dissolve']
+  ], 'both conditional routes should be discoverable before the live branch executes');
+
+  const execution = executePrototypeActionProgram(document, session, envelope, { sourceNodeId: trigger.id });
+  assert.equal(execution.result, 'overlay-swapped');
+  assert.deepEqual(execution.executedActions.map(action => [action.id, action.action, action.transition]), [
+    ['swap-sheet', 'swap-overlay', 'smart-animate']
+  ]);
+  assert.deepEqual(lastPrototypePresentationAction(execution), {
+    interaction: execution.executedActions[0], result: 'overlay-swapped'
+  }, 'the renderer must receive the effective action and transition used by the selected branch');
+  assert.equal(session.overlays.at(-1).frameId, nextSheet.id);
 });
 
 test('v2 prototype action programs reject malformed versions, duplicate IDs, invalid conditions, bad actions, and excessive nesting', () => {

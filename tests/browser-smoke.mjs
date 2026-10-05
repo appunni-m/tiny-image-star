@@ -127,6 +127,27 @@ async function clickDialogCloseAndWait(dialog, closeButton, label) {
 function dispatchContextMenu(element) {
   element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160 }));
 }
+async function addNamedRectangleToFrame(app, canvas, frame, name, bounds, pointerId) {
+  const designTab = app.querySelector('.inspector-tab[data-inspector-tab="design"]');
+  if (!designTab.classList.contains('is-active')) dispatchClick(designTab);
+  dispatchClick(app.querySelector('.tool-button[data-tool="rectangle"]'));
+  const start = worldToScreen({ x: frame.x + bounds.left, y: frame.y + bounds.top }, canvas, { zoom: 1, panX: canvas.clientWidth / 2, panY: canvas.clientHeight / 2 });
+  const end = worldToScreen({ x: frame.x + bounds.right, y: frame.y + bounds.bottom }, canvas, { zoom: 1, panX: canvas.clientWidth / 2, panY: canvas.clientHeight / 2 });
+  dispatchCanvasPointer(app, canvas, 'pointerdown', start.x, start.y, pointerId);
+  dispatchCanvasPointer(app, canvas, 'pointermove', end.x, end.y, pointerId);
+  dispatchCanvasPointer(app, canvas, 'pointerup', end.x, end.y, pointerId);
+  const selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  assert(selectedRow, `The ${name} rectangle was not selected after drawing.`);
+  const layerId = selectedRow.dataset.layerId;
+  app.defaultView.prompt = () => name;
+  dispatchContextMenu(selectedRow);
+  const rename = [...app.querySelectorAll('#context-menu button')].find(item => item.querySelector('span')?.textContent.trim() === 'Rename');
+  assert(rename, `The context menu could not rename ${name}.`);
+  dispatchClick(rename);
+  await waitFor(() => app.querySelector(`[data-layer-id="${layerId}"] .layer-name`)?.textContent === name, `${name} layer rename`);
+  await waitForSaveCycle(app, `${name} layer`);
+  return layerId;
+}
 function dispatchImageCanvasContextMenu(app, xOffset = 32, yOffset = 24) {
   const canvas = app.querySelector('#scene-canvas');
   const rect = canvas.getBoundingClientRect();
@@ -733,13 +754,31 @@ try {
   const overlayFrame = overlayDocument?.pages[0]?.children.find(node => node.type === 'frame' && node.id !== sourceFrame.id && node.id !== destinationFrame.id);
   assert(overlayFrame, 'the overlay destination frame was not saved');
 
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const overlaySourceCardId = await addNamedRectangleToFrame(app, designCanvas, sourceFrame, 'Shared overlay card', {
+    left: 12, top: 14, right: 72, bottom: 66
+  }, 98);
+  dispatchClick(app.querySelector(`[data-layer-id="${overlayFrame.id}"]`));
+  const overlayTargetCardId = await addNamedRectangleToFrame(app, designCanvas, overlayFrame, 'Shared overlay card', {
+    left: 24, top: 22, right: 82, bottom: 74
+  }, 99);
+  const transitionRecords = await readStore('documents'); transitionRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const transitionDocument = transitionRecords[0]?.document;
+  const transitionSource = transitionDocument?.pages[0]?.children.find(node => node.id === sourceFrame.id);
+  const transitionTarget = transitionDocument?.pages[0]?.children.find(node => node.id === overlayFrame.id);
+  const sourceCard = transitionSource?.children.find(node => node.id === overlaySourceCardId);
+  const targetCard = transitionTarget?.children.find(node => node.id === overlayTargetCardId);
+  assert(sourceCard?.type === 'rectangle' && targetCard?.type === 'rectangle'
+    && sourceCard.name === targetCard.name && sourceCard.x !== targetCard.x,
+  'the Smart Animate overlay fixture must persist a same-named layer with different source and target geometry');
+
   dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
   let actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'open-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
   assert(app.querySelector('#prototype-transition').value === 'dissolve'
     && [...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'move-in-left')
     && ![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'),
-  'open-overlay should offer directional transitions and exclude Smart animate');
+  'open-overlay should offer directional transitions but keep Smart Animate unavailable');
   app.querySelector('#prototype-transition').value = 'move-in-left';
   app.querySelector('#prototype-transition').dispatchEvent(new Event('change', { bubbles: true }));
   const overlayPosition = app.querySelector('#prototype-overlay-position');
@@ -755,16 +794,18 @@ try {
   dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 85);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Open overlay'), 'prototype overlay connection');
 
-  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  dispatchClick(app.querySelector(`[data-layer-id="${overlayTargetCardId}"]`));
   actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'swap-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
   const swapTransition = app.querySelector('#prototype-transition');
   assert([...swapTransition.options].some(option => option.value === 'smart-animate'), 'swap-overlay should offer Smart animate for matching layers');
   swapTransition.value = 'smart-animate'; swapTransition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
-  dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 86);
-  dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 86);
-  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('Swap overlay') && row.textContent.includes(overlayFrame.name)), 'prototype swap overlay connection');
+  const swapTargetX = canvasRect.left + panCenter.x;
+  const swapTargetY = canvasRect.top + panCenter.y;
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', swapTargetX, swapTargetY, 86);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', swapTargetX, swapTargetY, 86);
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('Swap overlay') && row.textContent.includes(sourceFrame.name)), 'prototype Smart Animate swap overlay connection');
 
   dispatchClick(app.querySelector(`[data-layer-id="${overlayFrame.id}"]`));
   actionSelect = app.querySelector('#prototype-action');
@@ -773,6 +814,8 @@ try {
   dispatchClick(closeOverlayConnect);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Close overlay'),
     `close overlay interaction ${JSON.stringify({ selected: [...app.querySelectorAll('.layer-row.is-selected[data-layer-id]')].map(row => row.dataset.layerId), action: actionSelect.value, disabled: closeOverlayConnect.disabled, rows: [...app.querySelectorAll('.prototype-interaction-row')].map(row => row.textContent.trim()), toast: app.querySelector('#toast-region')?.textContent?.trim() })}`);
+  assert(app.querySelector('.prototype-interaction-row')?.textContent.includes('Reverse opening transition'),
+    'the Close overlay route should explain that it uses the opened overlay’s saved transition');
   actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'back'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
@@ -1279,9 +1322,56 @@ try {
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'prototype destination frame');
   dispatchClick(app.querySelector('#present-back'));
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id, 'scrollable On press returns to source on tap');
+  const smartOverlayPoint = { x: presentCenterX, y: presentCenterY };
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', smartOverlayPoint.x, smartOverlayPoint.y, 92);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating === 'true'
+    && app.querySelector('#present-dialog')?.dataset.smartTarget === 'frame', 'frame Smart Animate before overlay entrance');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating !== 'true', 'frame Smart Animate before overlay entrance completion');
+  assert(app.querySelector('#present-dialog').dataset.frameId === destinationFrame.id, 'Smart Animate did not enter the destination frame before opening its overlay');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', smartOverlayPoint.x, smartOverlayPoint.y, 93, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', smartOverlayPoint.x, smartOverlayPoint.y, 93, 'touch', -1);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'ordinary overlay entrance');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating === 'true', 'ordinary overlay entrance animation');
+  assert(app.querySelector('#present-dialog').dataset.overlayTransition === 'move-in-left',
+    'Open overlay should use its authored directional transition instead of Smart Animate');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'ordinary overlay entrance completion');
+
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', smartOverlayPoint.x, smartOverlayPoint.y, 94, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', smartOverlayPoint.x, smartOverlayPoint.y, 94, 'touch', -1);
+  await waitFor(() => {
+    const dialog = app.querySelector('#present-dialog');
+    const progress = Number(dialog?.dataset.smartProgress);
+    return dialog?.dataset.smartAnimating === 'true' && dialog?.dataset.smartTarget === 'overlay'
+      && dialog?.dataset.overlayDepth === '1' && progress > 0 && progress < 1;
+  }, 'Smart Animate overlay swap');
+  const smartOverlaySwapProgress = Number(app.querySelector('#present-dialog').dataset.smartProgress);
+  assert(smartOverlaySwapProgress > 0 && smartOverlaySwapProgress < 1,
+    `Smart Animate overlay swap should render an intermediate frame, received ${smartOverlaySwapProgress}`);
+  assert(app.querySelector('#present-dialog').dataset.smartOverlayCompositor === 'single-pass'
+    && Number(app.querySelector('#present-dialog').dataset.smartOverlayTransitionRoots) > 0
+    && !app.querySelector('#present-dialog').hasAttribute('data-smart-overlay-masked-roots'),
+  'matched overlay swaps should render one ordered transition pass without legacy duplicate-root masks');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating !== 'true', 'Smart Animate overlay swap completion');
+
+  dispatchClick(app.querySelector('#present-back'));
+  await waitFor(() => {
+    const dialog = app.querySelector('#present-dialog');
+    return dialog?.dataset.overlayDepth === '0' && dialog?.dataset.overlayAnimating === 'true';
+  }, 'Back closes a swapped overlay using its saved Open overlay transition');
+  assert(app.querySelector('#present-dialog').dataset.overlayTransition === 'move-out-right',
+    'Back after Swap overlay returns to the prior screen using the saved opener transition');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'Back after overlay swap completes');
+  dispatchClick(app.querySelector('#present-back'));
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id,
+    'Back after the swapped overlay returns to the previous main frame');
+
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY, 89);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'tap fires the On click route');
-  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating === 'true', 'Smart animate interpolation start');
+  await waitFor(() => {
+    const dialog = app.querySelector('#present-dialog');
+    const progress = Number(dialog?.dataset.smartProgress);
+    return dialog?.dataset.smartAnimating === 'true' && progress > 0 && progress < 1;
+  }, 'Smart animate interpolation start');
   const smartProgress = Number(app.querySelector('#present-dialog').dataset.smartProgress);
   assert(smartProgress > 0 && smartProgress < 1, `Smart animate should render an intermediate scene, received ${smartProgress}`);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating !== 'true', 'Smart animate completion');
@@ -1299,9 +1389,13 @@ try {
     && overlayEntrance.overlayProgress < 1,
   `the overlay entrance should animate its own surface without navigating the underlay (${JSON.stringify({ transition: overlayEntrance.overlayTransition, progress: overlayEntrance.overlayProgress, frameId: overlayEntrance.frameId, overlayDepth: overlayEntrance.overlayDepth })})`);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'directional overlay entrance completion');
-  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 87);
+  const overlayClosePoint = worldToScreen({ x: 12, y: 16 }, presentCanvas, presentTransform);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', overlayClosePoint.x, overlayClosePoint.y, 87);
   assert(!app.querySelector('#present-back').disabled, 'opening an overlay disabled presentation history');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '0', 'close overlay interaction');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating === 'true', 'authored close reverses its overlay transition');
+  assert(app.querySelector('#present-dialog').dataset.overlayTransition === 'move-out-right',
+    'authored Close overlay should reverse the saved entrance direction');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayAnimating !== 'true', 'close overlay transition completion');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 89);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'overlay reopen for outside dismissal');

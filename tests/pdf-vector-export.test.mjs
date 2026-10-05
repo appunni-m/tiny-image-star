@@ -600,6 +600,70 @@ test('editor-generated positioned lines preserve WinAnsi characters and alignmen
   assertValidXref(pdf);
 });
 
+test('editor-generated bullet and numbered list markers remain positioned editable PDF text', () => {
+  const measureText = pdfTextMeasurer();
+  const bullet = createNode('text', {
+    text: 'First item\nSecond item', fontFamily: 'Arial, sans-serif', fontSize: 16,
+    width: 160, height: 48, lineHeight: 1.25,
+    paragraphStyles: [
+      { listStyle: 'bulleted', listLevel: 0 },
+      { listStyle: 'bulleted', listLevel: 0 },
+    ],
+  });
+  const bulletSvg = exportNodeToSvg(bullet, { measureText });
+  assert.match(bulletSvg, /data-tiny-image-star-list-marker="bulleted"[^>]*>•<\/tspan>/,
+    'SVG supplies a positioned WinAnsi bullet with a measured text width');
+  const bulletPdf = createVectorPdf(bulletSvg);
+  const bulletContent = pdfPageContent(bulletPdf);
+  assert.match(bulletContent, /BT\n\/F\d+ 16 Tf\n142\.857142857 Tz\n1 0 0 1 0 12 Tm\n<95> Tj\nET/,
+    'the PDF uses the WinAnsi bullet glyph and scales it to the editor-measured marker width');
+  assertValidXref(bulletPdf);
+
+  const numbered = createNode('text', {
+    text: 'Twelfth item\nThirteenth item', fontFamily: 'Arial, sans-serif', fontSize: 16,
+    width: 180, height: 48, lineHeight: 1.25,
+    paragraphStyles: [
+      { listStyle: 'numbered', listLevel: 0, listStart: 12 },
+      { listStyle: 'numbered', listLevel: 0 },
+    ],
+  });
+  const numberedSvg = exportNodeToSvg(numbered, { measureText });
+  assert.match(numberedSvg, /data-tiny-image-star-list-marker="numbered"[^>]*>12\.<\/tspan>/);
+  const numberedPdf = createVectorPdf(numberedSvg);
+  const numberedContent = pdfPageContent(numberedPdf);
+  assert.match(numberedContent, /BT\n\/F\d+ 16 Tf\n107\.913669065 Tz\n1 0 0 1 0 12 Tm\n\(12\.\) Tj\nET/,
+    'the PDF preserves numbered list marker text and aligns it using standard Helvetica widths');
+  assert.match(numberedContent, /1 0 0 1 0 32 Tm\n\(13\.\) Tj/,
+    'subsequent numbered markers retain their authored line baseline');
+  assertValidXref(numberedPdf);
+});
+
+test('PDF list markers still fail closed for custom fonts and unsupported glyphs', () => {
+  const measureText = pdfRichTextMeasurer();
+  const customFont = createNode('text', {
+    text: 'Custom marker', fontFamily: 'Arial, sans-serif', fontSize: 16, width: 150, height: 24,
+    paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }],
+    textRuns: [{ text: 'Custom marker', fontFamily: 'Inter' }],
+  });
+  assert.throws(() => createVectorPdf(exportNodeToSvg(customFont, { measureText })), error =>
+    error instanceof PdfVectorExportError && error.feature === 'custom text fonts'
+      && /raster PDF/.test(error.message),
+  'custom marker fonts are not silently substituted with Helvetica');
+
+  const unsupportedGlyph = '<svg width="80px" height="30px" viewBox="0 0 80 30">'
+    + '<text x="0" y="0" font-family="Arial" font-size="16" fill="#000000"'
+    + ' dominant-baseline="text-before-edge" data-tiny-image-star-pdf-ascent="12">'
+    + '<tspan data-tiny-image-star-list-marker="bulleted" x="8" y="0" text-anchor="end"'
+    + ' font-family="Arial" font-size="16" font-weight="400" font-style="normal"'
+    + ' letter-spacing="0" fill="#000000" textLength="16" lengthAdjust="spacingAndGlyphs">漢</tspan>'
+    + '<tspan x="16" y="0" textLength="32" lengthAdjust="spacingAndGlyphs"'
+    + ' data-tiny-image-star-pdf-width="32">Text</tspan></text></svg>';
+  assert.throws(() => createVectorPdf(unsupportedGlyph), error =>
+    error instanceof PdfVectorExportError && error.feature === 'text glyph coverage'
+      && /use raster PDF/.test(error.message),
+  'markers outside the built-in PDF font repertoire remain a clear raster-PDF error');
+});
+
 test('editor-generated inline rich text preserves measured WinAnsi run positions and standard Helvetica variants', () => {
   const measureText = pdfRichTextMeasurer();
   const node = createNode('text', {

@@ -110,20 +110,58 @@ function activePrototypeFrame(document, session) {
   return findNode(document, overlay?.frameId || session.frameId, overlay?.pageId || session.pageId)?.node || null;
 }
 
-function runPrototypeActionSteps(document, session, interaction, steps, results, sourceNodeId = null) {
+function prototypeActionFromStep(interaction, step) {
+  const action = { ...interaction, ...step, id: step.actionId, trigger: interaction.trigger };
+  delete action.type;
+  delete action.actionId;
+  delete action.actionProgram;
+  delete action.condition;
+  return action;
+}
+
+/** Return the possible effective actions in an ordered program, including both condition branches. */
+export function prototypeActionProgramCandidates(interaction) {
+  const actions = [];
+  const visit = steps => {
+    for (const step of steps || []) {
+      if (step?.type === 'action') actions.push(prototypeActionFromStep(interaction, step));
+      else if (step?.type === 'if') {
+        visit(step.then);
+        visit(step.else);
+      }
+    }
+  };
+  visit(prototypeActionProgram(interaction).steps);
+  return actions;
+}
+
+const presentationActions = new Set([
+  'navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'scroll-to', 'open-link'
+]);
+
+/** Pick the final executed action that changes presentation navigation. */
+export function lastPrototypePresentationAction(execution) {
+  const actions = execution?.executedActions || [];
+  const results = execution?.actionResults || [];
+  for (let index = Math.min(actions.length, results.length) - 1; index >= 0; index -= 1) {
+    if (presentationActions.has(actions[index]?.action) && results[index] !== false) {
+      return { interaction: actions[index], result: results[index] };
+    }
+  }
+  return null;
+}
+
+function runPrototypeActionSteps(document, session, interaction, steps, results, executedActions, sourceNodeId = null) {
   for (const step of steps) {
     if (step.type === 'if') {
       const frame = activePrototypeFrame(document, session);
       const branch = prototypeConditionMatches(document, step.condition, session, frame) ? step.then : step.else;
-      const result = runPrototypeActionSteps(document, session, interaction, branch, results, sourceNodeId);
+      const result = runPrototypeActionSteps(document, session, interaction, branch, results, executedActions, sourceNodeId);
       if (result === false) return false;
       continue;
     }
-    const action = { ...interaction, ...step, id: step.actionId, trigger: interaction.trigger };
-    delete action.type;
-    delete action.actionId;
-    delete action.actionProgram;
-    delete action.condition;
+    const action = prototypeActionFromStep(interaction, step);
+    executedActions.push(action);
     const result = applySinglePrototypeInteraction(document, session, action, sourceNodeId);
     results.push(result);
     if (result === false) return false;
@@ -133,11 +171,12 @@ function runPrototypeActionSteps(document, session, interaction, steps, results,
 
 /** Execute a v2 ordered action program (or its virtual legacy one-step migration). */
 export function executePrototypeActionProgram(document, session, interaction, { sourceNodeId = null } = {}) {
-  if (!session || !interaction) return { result: false, actionResults: [] };
+  if (!session || !interaction) return { result: false, actionResults: [], executedActions: [] };
   const results = [];
+  const executedActions = [];
   const program = prototypeActionProgram(interaction);
-  const result = runPrototypeActionSteps(document, session, interaction, program.steps, results, sourceNodeId);
-  return { result, actionResults: results };
+  const result = runPrototypeActionSteps(document, session, interaction, program.steps, results, executedActions, sourceNodeId);
+  return { result, actionResults: results, executedActions };
 }
 
 export function listPrototypeFrames(document) {
