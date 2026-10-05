@@ -218,14 +218,26 @@ function loadFont({ fontId, bytes }) {
   const record = { binary, face, byteLength: bytes.byteLength };
   fonts.set(fontId, record);
   totalFontBytes += bytes.byteLength;
+  const metricFont = new hb.Font(face); metricFont.setScale(face.upem, face.upem);
   return {
     axes: face.getAxisInfos(),
     gsubFeatures: face.getTableFeatureTags('GSUB'),
     gposFeatures: face.getTableFeatureTags('GPOS'),
     upem: face.upem,
+    fontMetrics: { upem: face.upem, extents: metricFont.hExtents(), leadingTrimMetrics: leadingTrimMetricsForFont(metricFont) },
     coverage,
     evictedFontIds
   };
+}
+
+function leadingTrimMetricsForFont(font) {
+  let capHeight = font.getMetricPosition(hb.MetricsTag.CAP_HEIGHT);
+  let source = 'font-metric';
+  if (!(Number.isFinite(capHeight) && capHeight > 0)) {
+    const glyph = font.nominalGlyph(0x48);
+    capHeight = glyph ? font.glyphExtents(glyph)?.yBearing : undefined; source = 'glyph-H';
+  }
+  return Number.isFinite(capHeight) && capHeight > 0 ? { capHeight, source } : {};
 }
 
 function shapeText({ fontId, text, variations, features, script, language, direction }) {
@@ -243,15 +255,7 @@ function shapeText({ fontId, text, variations, features, script, language, direc
       .map(([key, suffix]) => [key, font.getMetricPosition(hb.MetricsTag[`${prefix}_EM_${suffix}`])])
       .filter(([, value]) => Number.isFinite(value)))];
   }));
-  let capHeight = font.getMetricPosition(hb.MetricsTag.CAP_HEIGHT);
-  let capHeightSource = 'font-metric';
-  if (!(Number.isFinite(capHeight) && capHeight > 0)) {
-    const capGlyph = font.nominalGlyph(0x48);
-    const capExtents = capGlyph ? font.glyphExtents(capGlyph) : null;
-    capHeight = capExtents?.yBearing;
-    capHeightSource = 'glyph-H';
-  }
-  const leadingTrimMetrics = Number.isFinite(capHeight) && capHeight > 0 ? { capHeight, source: capHeightSource } : {};
+  const leadingTrimMetrics = leadingTrimMetricsForFont(font);
   const buffer = new hb.Buffer();
   buffer.addText(text);
   // Guess complete Unicode segment properties first, then apply explicit

@@ -2,6 +2,7 @@ export const MAX_LOCAL_SHAPING_FONT_BYTES = 20 * 1024 * 1024;
 export const MAX_LOCAL_SHAPING_TEXT_CODE_UNITS = 32_768;
 export const MAX_LOCAL_SHAPING_CACHE_BYTES = 8 * 1024 * 1024;
 export const MAX_LOCAL_SHAPING_CACHE_ENTRIES = 256;
+export const MAX_LOCAL_SHAPING_METRIC_ENTRIES = 256;
 
 function bytesOf(value) {
   if (value instanceof Uint8Array) return value;
@@ -29,6 +30,9 @@ function copyResult(result) {
     glyphs: Array.isArray(result.glyphs) ? result.glyphs.map(glyph => ({ ...glyph })) : []
   };
 }
+const fontMetricKey = (fontId, variations) => JSON.stringify([fontId, stableMap(variations)]);
+const copyFontMetrics = value => value && { upem: value.upem, extents: value.extents ? { ...value.extents } : null,
+  ...(value.leadingTrimMetrics ? { leadingTrimMetrics: { ...value.leadingTrimMetrics } } : {}) };
 
 export class LocalFontShapingClient {
   #workerFactory;
@@ -40,6 +44,7 @@ export class LocalFontShapingClient {
   #loadedFonts = new Map();
   #fontLoads = new Map();
   #cache = new Map();
+  #fontMetrics = new Map();
   #cacheBytes = 0;
   #fontGenerations = new Map();
   #closed = false;
@@ -72,6 +77,19 @@ export class LocalFontShapingClient {
   hasFont(fontId) { return this.#loadedFonts.has(fontId); }
   fontInfo(fontId) { return this.#loadedFonts.get(fontId) || null; }
 
+  /** Actual variation-specific metadata remains independent of preview glyph LRU eviction. */
+  getFontMetrics(fontId, { variations } = {}) {
+    return copyFontMetrics(this.#fontMetrics.get(fontMetricKey(fontId, variations)) || null);
+  }
+
+  #rememberFontMetrics(fontId, variations, result) {
+    if (!(result?.upem > 0) || !['ascender', 'descender', 'lineGap'].every(key => Number.isFinite(result.extents?.[key]))) return;
+    const key = fontMetricKey(fontId, variations);
+    this.#fontMetrics.delete(key);
+    while (this.#fontMetrics.size >= MAX_LOCAL_SHAPING_METRIC_ENTRIES) this.#fontMetrics.delete(this.#fontMetrics.keys().next().value);
+    this.#fontMetrics.set(key, copyFontMetrics(result));
+  }
+
   async loadFont(fontId, sourceBytes) {
     this.#ensureOpen();
     const bytes = bytesOf(sourceBytes);
@@ -86,8 +104,12 @@ export class LocalFontShapingClient {
       fontId, bytes: bytes.slice().buffer
     }, ['bytes']).then(value => {
       if ((this.#fontGenerations.get(fontId) || 0) !== generation) throw new Error('The local font was released during loading.');
-      for (const evictedFontId of value.evictedFontIds || []) this.#loadedFonts.delete(evictedFontId);
+      for (const evictedFontId of value.evictedFontIds || []) {
+        this.#loadedFonts.delete(evictedFontId);
+        for (const key of this.#fontMetrics.keys()) if (key.startsWith(`[${JSON.stringify(evictedFontId)},`)) this.#fontMetrics.delete(key);
+      }
       this.#loadedFonts.set(fontId, value);
+      this.#rememberFontMetrics(fontId, undefined, value.fontMetrics);
       return value;
     }).finally(() => this.#fontLoads.delete(fontId));
     this.#fontLoads.set(fontId, promise);
@@ -111,6 +133,7 @@ export class LocalFontShapingClient {
       .then(result => {
         if ((this.#fontGenerations.get(fontId) || 0) !== generation) throw new Error('The local font was released during shaping.');
         const value = copyResult(result);
+        this.#rememberFontMetrics(fontId, request.variations, value);
         const size = value.glyphs.reduce((total, glyph) => total + (glyph.path?.length || 0) * 2 + 32, 64);
         if (size <= this.maxCacheBytes && this.maxCacheEntries > 0) {
           while (this.#cache.size >= this.maxCacheEntries || this.#cacheBytes + size > this.maxCacheBytes) {
@@ -140,6 +163,7 @@ export class LocalFontShapingClient {
     this.#fontGenerations.set(fontId, (this.#fontGenerations.get(fontId) || 0) + 1);
     this.#loadedFonts.delete(fontId);
     this.#fontLoads.delete(fontId);
+    for (const key of this.#fontMetrics.keys()) if (key.startsWith(`[${JSON.stringify(fontId)},`)) this.#fontMetrics.delete(key);
     for (const [key, item] of this.#cache) {
       if (!key.startsWith(`[${JSON.stringify(fontId)},`)) continue;
       this.#cache.delete(key);
@@ -161,6 +185,7 @@ export class LocalFontShapingClient {
     this.#fontLoads.clear();
     this.#loadedFonts.clear();
     this.#cache.clear();
+    this.#fontMetrics.clear();
     this.#cacheBytes = 0;
     this.#fontGenerations.clear();
   }
@@ -191,6 +216,7 @@ export class LocalFontShapingClient {
       this.#worker?.terminate?.();
       this.#worker = null;
       this.#loadedFonts.clear();
+      this.#fontMetrics.clear();
     });
     this.#worker = worker;
     return worker;

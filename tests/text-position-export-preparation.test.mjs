@@ -5,7 +5,7 @@ import { createNode } from '../src/model.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 
 const style = { fontFamily: 'Local', fontSize: 20, fontWeight: 400 };
-const shape = (text, options = {}) => ({ upem: 1000, extents: { ascender: 800 },
+const shape = (text, options = {}) => ({ upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 },
   glyphs: [...text].map((character, cluster) => ({ id: character.codePointAt(0) + (options.fontFeatures?.sups ? 1000 : 0), cluster,
     xAdvance: 600, yAdvance: 0, xOffset: 0, yOffset: 0, path: 'M0 0L500 0L500 700L0 700Z' })) });
 
@@ -155,4 +155,73 @@ test('asynchronous preparation failures and cancellation cannot publish an unfin
     await Promise.resolve(); controller.abort(); pinned('1', style); published = true;
   }, { shapeText: shape, signal: controller.signal }), error => error.name === 'AbortError');
   assert.equal(published, false);
+});
+
+test('font line metrics prepare independently of uncovered glyphs and remain pinned after eviction', async () => {
+  let warm = false; let reads = 0; let attempts = 0;
+  const fallback = () => null; fallback.fontStatus = () => 'none';
+  fallback.fontMetricsStatus = () => warm ? 'ready' : 'pending';
+  fallback.fontMetrics = () => {
+    reads++;
+    if (!warm) { setTimeout(() => { warm = true; }, 1); return null; }
+    return { upem: 1000, extents: { ascender: 950, descender: -240, lineGap: 25 } };
+  };
+  const result = await withPreparedTextPositionShapes(async pinned => {
+    attempts++;
+    assert.equal(pinned('uncovered emoji', style), null);
+    const metrics = pinned.fontMetrics(style, 'uncovered emoji');
+    metrics.extents.ascender = 0;
+    warm = false; // The worker can evict a font while other export work runs.
+    await Promise.resolve();
+    assert.equal(pinned.fontMetricsStatus(style), 'ready');
+    return pinned.fontMetrics(style, 'other uncovered characters');
+  }, { shapeText: fallback, pollMs: 1, deadlineMs: 1000 });
+  assert.ok(attempts > 1); assert.equal(reads, 2);
+  assert.equal(result.extents.ascender, 950);
+});
+
+test('native metadata keys retain automatic optical size without spending budgets on browser wrapping', async () => {
+  const fallback = () => { throw new Error('Uncovered text has no native glyph request.'); };
+  fallback.fontStatus = () => 'none';
+  let reads = 0;
+  fallback.fontMetricsStatus = () => 'ready';
+  fallback.fontMetrics = options => { reads++; return { upem: 1000, extents: {
+    ascender: 800 + options.fontSize, descender: -200, lineGap: 0
+  } }; };
+  await withPreparedTextPositionShapes(pinned => {
+    for (let index = 0; index < 5000; index++) assert.equal(pinned(String(index), style), null);
+    const small = pinned.fontMetrics({ ...style, fontAxes: { wdth: 90, wght: 400 } });
+    assert.deepEqual(pinned.fontMetrics({ ...style, fontAxes: { wght: 400, wdth: 90 }, baselineShift: 2 }), small);
+    assert.notEqual(pinned.fontMetrics({ ...style, fontSize: 40, fontAxes: { wdth: 90, wght: 400 } }).extents.ascender,
+      small.extents.ascender);
+  }, { shapeText: fallback, maxQueries: 2 });
+  assert.equal(reads, 2);
+});
+
+test('queued font metrics fail closed on disappearance, stale source, cancellation and snapshot limits', async () => {
+  let available = true; let metricReads = 0;
+  const cold = () => null; cold.fontStatus = () => 'none';
+  cold.fontMetricsStatus = () => available ? 'pending' : 'none';
+  cold.fontMetrics = () => { metricReads++; available = false; return null; };
+  await assert.rejects(withPreparedTextPositionShapes(pinned => pinned.fontMetrics(style), { shapeText: cold }), /became unavailable/u);
+  assert.equal(metricReads, 1);
+  available = true;
+  let current = true;
+  cold.fontMetrics = () => { current = false; return null; };
+  await assert.rejects(withPreparedTextPositionShapes(pinned => pinned.fontMetrics(style), {
+    shapeText: cold, assertCurrent: () => { if (!current) throw new Error('stale font source'); }, pollMs: 1
+  }), /stale font source/u);
+  const controller = new AbortController();
+  cold.fontMetrics = () => { controller.abort(); return null; };
+  await assert.rejects(withPreparedTextPositionShapes(pinned => pinned.fontMetrics(style), {
+    shapeText: cold, signal: controller.signal, pollMs: 1
+  }), error => error.name === 'AbortError');
+  cold.fontMetricsStatus = () => 'ready';
+  cold.fontMetrics = () => ({ upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 } });
+  await assert.rejects(withPreparedTextPositionShapes(pinned => {
+    pinned.fontMetrics(style); return pinned.fontMetrics({ ...style, fontSize: 40 });
+  }, { shapeText: cold, maxQueries: 1 }), /bounded shaping snapshot/u);
+  await assert.rejects(withPreparedTextPositionShapes(pinned => pinned.fontMetrics(style), {
+    shapeText: cold, maxBytes: 20
+  }), /bounded shaping snapshot/u);
 });

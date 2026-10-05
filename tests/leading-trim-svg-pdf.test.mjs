@@ -13,6 +13,7 @@ import { createTextPathGeometry } from '../src/text-on-path.js';
 const text = properties => createNode('text', { text: 'Hg\nHp', fontFamily: 'Arial', fontSize: 20, width: 160, height: 60, stroke: null, strokeWidth: 0, leadingTrim: { type: 'CAP_HEIGHT' }, ...properties });
 const measure = (value, style) => [...value].length * style.fontSize * .5;
 measure.leadingTrimMetrics = style => ({ capHeight: style.fontSize * .7, ascender: style.fontSize * .8 });
+measure.textLineMetrics = style => ({ ascent: style.fontSize * .8, descent: style.fontSize * .2, lineGap: style.fontSize * .25, topBaseline: style.fontSize * .8 });
 const all = nodes => nodes.flatMap(node => [node, ...all(node.children || [])]);
 const decode = value => value.replace(/&quot;/gu, '"').replace(/&amp;/gu, '&').replace(/&lt;/gu, '<').replace(/&gt;/gu, '>');
 function alterMetadata(svg, mutate) {
@@ -22,13 +23,13 @@ function alterMetadata(svg, mutate) {
   });
 }
 const hasTrim = svg => all(importSvgToLayers(svg).nodes).some(node => node.leadingTrim?.type === 'CAP_HEIGHT');
-function pdfMeasure() { const result = (...args) => measure(...args); result.leadingTrimMetrics = measure.leadingTrimMetrics;
+function pdfMeasure() { const result = (...args) => measure(...args); result.leadingTrimMetrics = measure.leadingTrimMetrics; result.textLineMetrics = measure.textLineMetrics;
   result.pdfNaturalWidth = result; result.pdfBaselineOffset = style => style.fontSize * .8; return result; }
 const pdfText = bytes => new TextDecoder('latin1').decode(bytes);
 
 test('cap trim moves block edges with measured metrics, preserves internal baseline distances and descenders', () => {
   const node = text(); const snapshot = structuredClone(node); const svg = exportNodeToSvg(node, { measureText: measure });
-  assert.match(svg, /<tspan x="0" y="-2"[^>]*>Hg<\/tspan><tspan x="0" y="23"/u);
+  assert.match(svg, /<tspan x="0" y="14"[^>]*>Hg<\/tspan><tspan x="0" y="39"/u);
   assert.doesNotMatch(svg, /clipPath/u, 'trim is layout rather than glyph clipping');
   assert.match(svg, /font-size="20"/u); assert.deepEqual(node, snapshot);
   const restored = all(importSvgToLayers(svg).nodes).find(node => node.type === 'text');
@@ -39,7 +40,7 @@ test('cap trim moves block edges with measured metrics, preserves internal basel
 test('trimmed content height determines middle/bottom alignment without changing authored line height', () => {
   const middle = exportNodeToSvg(text({ verticalAlign: 'middle' }), { measureText: measure });
   const bottom = exportNodeToSvg(text({ verticalAlign: 'bottom' }), { measureText: measure });
-  assert.match(middle, /<tspan x="0" y="8.5"/u); assert.match(bottom, /<tspan x="0" y="19"/u);
+  assert.match(middle, /<tspan x="0" y="24.5"/u); assert.match(bottom, /<tspan x="0" y="35"/u);
 });
 
 test('native fallback trim recovery is bound to visible placement and rejects metric/reference smuggling', () => {
@@ -49,7 +50,7 @@ test('native fallback trim recovery is bound to visible placement and rejects me
     alterMetadata(svg, payload => { payload.leadingTrimMetrics[0][1].assetId = 'private-font'; }),
     alterMetadata(svg, payload => { payload.source.leadingTrim = { type: 'NONE' }; }),
     alterMetadata(svg, payload => { payload.source.textRuns = [{ text: payload.source.text, leadingTrim: { type: 'CAP_HEIGHT', fontId: 'private' } }]; }),
-    svg.replace('y="-2"', 'y="-3"'), svg.replace('font-size="20"', 'font-size="21"')
+    svg.replace('y="14"', 'y="15"'), svg.replace('font-size="20"', 'font-size="21"')
   ]) {
     try { assert.equal(hasTrim(altered), false); } catch (error) { assert.notEqual(error.name, 'AssertionError'); }
   }
@@ -100,7 +101,7 @@ test('standard-font PDF trims use actual per-run baselines and preserve differen
   assert.equal(assertVectorPdfTextSupported(createDocument(), node), true);
   const svg = exportNodeToSvg(node, { measureText: pdfMeasure() }); const pdf = pdfText(createVectorPdf(svg));
   assert.match(svg, /data-tiny-image-star-pdf-leading-trim="CAP_HEIGHT"/u);
-  assert.match(pdf, /\/F\d+ 24 Tf/u); assert.match(pdf, /1 0 0 1 0 14 Tm/u); assert.match(pdf, /1 0 0 1 0 40.2 Tm/u);
+  assert.match(pdf, /\/F\d+ 24 Tf/u); assert.match(pdf, /1 0 0 1 0 14 Tm/u); assert.match(pdf, /1 0 0 1 0 41.2 Tm/u);
   assert.doesNotMatch(pdf, /\/Subtype \/Image/u);
   assert.throws(() => createVectorPdf(svg.replace('data-tiny-image-star-pdf-leading-trim="CAP_HEIGHT"', 'data-tiny-image-star-pdf-leading-trim="bogus"')), PdfVectorExportError);
   assert.throws(() => assertVectorPdfTextSupported(createDocument(), text({ fontFamily: 'Private Local' })), /custom text fonts/u);

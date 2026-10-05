@@ -91,6 +91,8 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
     const sfnt = await decompress(source);
     const loaded = await harness.client.loadFont('inter-variable', sfnt);
     assert.equal(loaded.upem, 2048);
+    assert.deepEqual(harness.client.getFontMetrics('inter-variable'), loaded.fontMetrics);
+    assert.ok(['ascender', 'descender', 'lineGap'].every(key => Number.isFinite(loaded.fontMetrics.extents[key])));
     assert.deepEqual(Object.keys(loaded.axes).sort(), ['opsz', 'wght']);
     assert.ok(loaded.coverage instanceof Uint32Array);
     assert.ok(loaded.coverage.includes('A'.codePointAt(0)), 'the worker reports local cmap coverage for fallback itemization');
@@ -107,6 +109,13 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
       text: 'ToWa', variations: { opsz: 14, wght: 400 }, features: { kern: 0 }
     });
     const missingGlyph = await harness.client.shape('inter-variable', { text: 'مرحبا' });
+    const actualMetrics = harness.client.getFontMetrics('inter-variable', { variations: { wght: 400, opsz: 14 } });
+    assert.deepEqual(actualMetrics.extents, base.extents);
+    actualMetrics.extents.ascender = -1;
+    assert.equal(harness.client.getFontMetrics('inter-variable', { variations: { opsz: 14, wght: 400 } }).extents.ascender, base.extents.ascender,
+      'variation-specific primary font metrics are independently cloned');
+    assert.deepEqual(harness.client.getFontMetrics('inter-variable').extents, missingGlyph.extents,
+      'metadata survives a missing display glyph and does not need cmap coverage');
     const advance = result => result.glyphs.reduce((sum, glyph) => sum + glyph.xAdvance, 0);
     assert.notEqual(advance(base), advance(largerOpticalSize), 'opsz must change real font outline advances');
     assert.notEqual(advance(base), advance(kerningDisabled), 'OpenType kern=0 must affect real glyph placement');
@@ -142,6 +151,8 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
       'the main-thread cache key must be independent of axis-property order');
     assert.deepEqual(source, sourceCopy, 'local shaping must not mutate the retained WOFF2 source bytes');
     assert.equal(await harness.client.releaseFont('inter-variable'), true);
+    assert.equal(harness.client.getFontMetrics('inter-variable'), null);
+    assert.equal(harness.client.getFontMetrics('inter-variable', { variations: { wght: 400, opsz: 14 } }), null);
     assert.equal(harness.client.get('inter-variable', { text: 'ToWa', variations: { wght: 400, opsz: 14 } }), null);
     await assert.rejects(harness.client.shape('inter-variable', { text: 'ToWa' }), /no longer available/i);
   } finally { await harness.restore(); }

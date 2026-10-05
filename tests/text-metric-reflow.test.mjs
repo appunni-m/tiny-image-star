@@ -9,24 +9,27 @@ const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8'
 const start = source.indexOf('const pendingTextMetricReflows =');
 const end = source.indexOf('function resizeTextLayers(', start);
 assert.ok(start >= 0 && end > start);
-function harness() {
+function harness({ trim = true } = {}) {
   const document = createDocument(); const frames = []; const timers = []; let warm = false; let saves = 0;
   const context = { font: '20px Arial', textBaseline: 'top', textAlign: 'left', measureText: text => ({
     width: text.length * 10, actualBoundingBoxAscent: context.textBaseline === 'top' ? -5 : 12,
-    actualBoundingBoxDescent: context.textBaseline === 'top' ? 21 : 4
+    actualBoundingBoxDescent: context.textBaseline === 'top' ? 21 : 4,
+    fontBoundingBoxAscent: 17, fontBoundingBoxDescent: 4
   }) };
-  const shaper = text => warm ? { upem: 1000, extents: { ascender: 800 }, leadingTrimMetrics: { capHeight: 700 },
+  const shaper = text => warm ? { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, leadingTrimMetrics: { capHeight: 700 },
     glyphs: [...text].map((_, index) => ({ cluster: index, xAdvance: 600 })) } : null;
   shaper.fontStatus = () => 'ready';
+  shaper.fontMetrics = () => warm ? { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 } } : null;
+  shaper.fontMetricsStatus = () => warm ? 'ready' : 'pending';
   const state = { document, ready: true, documentGeneration: 1, fontAssetEpoch: 1, shapeLocalTextRun: shaper };
   const api = new Function('state', 'requestAnimationFrame', 'setTimeout', 'findNode', 'applyAutoLayout', 'renderInspector',
     'renderer', 'queueSave', 'resolvedGeometry', 'calculateTextBox', 'getNodePropertyValue', 'preserveAutoWidthTextAnchor', 'hasTextMetricEdits',
     `let textMeasureContext = arguments[13];\n${source.slice(start, end)}\nreturn { resizeTextNode, queueTextMetricReflow, pending: pendingTextMetricReflows };`
   )(state, fn => { frames.push(fn); return frames.length; }, fn => timers.push(fn), findNode, () => {}, () => {},
     { invalidate() {} }, () => saves++, node => getNodeGeometry(state.document, node), calculateTextBox, getNodePropertyValue,
-    preserveAutoWidthTextAnchor, roots => roots.some(node => node.leadingTrim?.type === 'CAP_HEIGHT'), context);
+    preserveAutoWidthTextAnchor, roots => roots.some(node => node.type === 'text'), context);
   const node = createNode('text', { text: 'Hg', textFit: 'auto-height', fontSize: 20, width: 100,
-    leadingTrim: { type: 'CAP_HEIGHT' } }); addNode(document, node);
+    lineHeight: 1, lineHeightUnit: 'auto', ...(trim ? { leadingTrim: { type: 'CAP_HEIGHT' } } : {}) }); addNode(document, node);
   return { api, node, state, frames, timers, warm: () => { warm = true; }, saves: () => saves,
     flush: () => { assert.ok(frames.length); frames.shift()(); } };
 }
@@ -63,4 +66,16 @@ test('metric reconciliation defers through an active editing gesture', () => {
   const h = harness(); h.api.resizeTextNode(h.node); h.warm(); h.state.interaction = { kind: 'move' };
   h.api.queueTextMetricReflow(); h.flush(); assert.equal(h.saves(), 0); assert.equal(h.timers.length, 1);
   h.state.interaction = null; h.timers.shift()(); h.flush(); assert.equal(h.node.height, 14); assert.equal(h.saves(), 1);
+});
+
+test('ordinary Auto text reconciles to actual native font height after metadata arrives', () => {
+  const h = harness({ trim: false }); const authored = { text: h.node.text, fontSize: h.node.fontSize,
+    lineHeight: h.node.lineHeight, lineHeightUnit: h.node.lineHeightUnit };
+  h.api.resizeTextNode(h.node); const provisional = h.node.height;
+  assert.equal(h.api.pending.size, 1);
+  h.warm(); h.api.queueTextMetricReflow(); h.flush();
+  assert.equal(h.node.height, 20); assert.notEqual(h.node.height, provisional);
+  assert.deepEqual({ text: h.node.text, fontSize: h.node.fontSize,
+    lineHeight: h.node.lineHeight, lineHeightUnit: h.node.lineHeightUnit }, authored);
+  assert.equal(h.saves(), 1); assert.equal(h.api.pending.size, 0);
 });

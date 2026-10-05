@@ -1,5 +1,6 @@
 import { canvasFontWeight } from './font-variation.js';
 import { TextPositionPendingError } from './text-position.js';
+import { TextLineMetricsPendingError } from './text-line-metrics.js';
 
 export const TEXT_POSITION_EXPORT_LIMITS = Object.freeze({ maxQueries: 2048, maxBytes: 8 * 1024 * 1024, deadlineMs: 15000 });
 const sorted = value => Object.entries(value || {}).sort(([a], [b]) => a.localeCompare(b));
@@ -55,16 +56,17 @@ export async function withPreparedTextPositionShapes(generate, {
   }
   abort(signal); assertCurrent();
   if (!enabled || typeof shapeText !== 'function') return generate(shapeText);
-  const queries = new Map(); const statuses = new Map(); let bytes = 0;
+  const queries = new Map(); const metrics = new Map(); const statuses = new Map(); let bytes = 0;
   const reserve = (map, key, value) => {
     if (map.has(key)) return;
-    if (map.size >= maxQueries || bytes + key.length * 2 > maxBytes) {
+    const queryCount = queries.size + metrics.size;
+    if ((map === statuses ? map.size : queryCount) >= maxQueries || bytes + key.length * 2 > maxBytes) {
       throw new RangeError('Text export exceeds the bounded shaping snapshot budget.');
     }
     bytes += key.length * 2; map.set(key, value);
   };
   const fontStatus = (style, text) => {
-    const key = keyFor(text, style, false);
+    const key = `glyph:${keyFor(text, style, false)}`;
     if (statuses.get(key) === 'ready') return 'ready';
     const status = shapeText.fontStatus?.(style, text) ?? 'ready';
     if (status === 'none' && statuses.get(key) === 'pending') throw new Error('The local font became unavailable while preparing this export. Check its font file and retry.');
@@ -74,9 +76,12 @@ export async function withPreparedTextPositionShapes(generate, {
   const pinned = (text, style) => {
     abort(signal);
     const key = keyFor(text, style);
-    reserve(queries, key, null);
     const cached = queries.get(key);
     if (cached) return structuredClone(cached);
+    // Browser-only text has no local answer to retain. Large fallback documents
+    // must not spend the native shaping budget on every wrapping measurement.
+    if (fontStatus(style, text) === 'none') return null;
+    reserve(queries, key, null);
     const result = shapeText(text, style);
     if (!result) {
       if (fontStatus(style, text) !== 'none') throw new TextPositionPendingError();
@@ -84,11 +89,40 @@ export async function withPreparedTextPositionShapes(generate, {
     }
     const size = boundedShapeBytes(result, maxBytes - bytes);
     bytes += size; queries.set(key, structuredClone(result));
-    const statusKey = keyFor(text, style, false);
+    const statusKey = `glyph:${keyFor(text, style, false)}`;
     reserve(statuses, statusKey, 'ready'); statuses.set(statusKey, 'ready');
     return structuredClone(result);
   };
   pinned.fontStatus = fontStatus;
+  if (typeof shapeText.fontMetrics === 'function') {
+    const metricKey = style => `metric:${keyFor(undefined, style, false)}`;
+    const fontMetricsStatus = style => {
+      const key = metricKey(style);
+      if (metrics.get(key) || statuses.get(key) === 'ready') return 'ready';
+      const status = shapeText.fontMetricsStatus?.(style) ?? shapeText.fontStatus?.(style) ?? 'ready';
+      if (status === 'none' && statuses.get(key) === 'pending') throw new Error('The local font became unavailable while preparing this export. Check its font file and retry.');
+      if (status !== 'none') { reserve(statuses, key, status); statuses.set(key, status); }
+      return status;
+    };
+    pinned.fontMetricsStatus = fontMetricsStatus;
+    pinned.fontMetrics = (style, text) => {
+      abort(signal);
+      const key = metricKey(style);
+      const cached = metrics.get(key);
+      if (cached) return structuredClone(cached);
+      if (fontMetricsStatus(style) === 'none') return null;
+      reserve(metrics, key, null);
+      const result = shapeText.fontMetrics(style, text);
+      if (!result) {
+        if (fontMetricsStatus(style) !== 'none') throw new TextLineMetricsPendingError();
+        return null;
+      }
+      const size = boundedShapeBytes(result, maxBytes - bytes);
+      bytes += size; metrics.set(key, structuredClone(result));
+      reserve(statuses, key, 'ready'); statuses.set(key, 'ready');
+      return structuredClone(result);
+    };
+  }
   Object.defineProperty(pinned, 'isPreparedTextExport', { value: true });
   const expires = Date.now() + deadlineMs;
   try {
@@ -99,10 +133,10 @@ export async function withPreparedTextPositionShapes(generate, {
         abort(signal); assertCurrent();
         return result;
       } catch (error) {
-        if (!['TEXT_POSITION_PENDING', 'TEXT_LEADING_TRIM_PENDING'].includes(error?.code)) throw error;
+        if (!['TEXT_POSITION_PENDING', 'TEXT_LEADING_TRIM_PENDING', 'TEXT_LINE_METRICS_PENDING'].includes(error?.code)) throw error;
         if (Date.now() >= expires) throw new Error('The local font could not finish preparing this export. Check its font file and retry.');
         await pause(Math.min(pollMs, Math.max(1, expires - Date.now())), signal);
       }
     }
-  } finally { queries.clear(); statuses.clear(); }
+  } finally { queries.clear(); metrics.clear(); statuses.clear(); }
 }

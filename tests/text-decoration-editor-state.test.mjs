@@ -122,3 +122,17 @@ test('external text CSS imports only the supported cap-height to alphabetic-base
   assert.deepEqual(textRunStyleForElement(element({ style: { textBoxTrim: 'none' } }), {}).leadingTrim, { type: 'NONE' });
   assert.equal(textRunStyleForElement(element({ style: { textBoxTrim: 'trim-both', textBoxEdge: 'text text' } }), {}).leadingTrim, undefined);
 });
+
+test('measured editor line-height CSS never changes authored Auto, px, percent or ratio settings', () => {
+  for (const [lineHeightUnit, lineHeight] of [['auto', 1], ['pixels', 32], ['percent', 150], ['ratio', 1.5]]) {
+    const authored = { lineHeightUnit, lineHeight, fontSize: 20 };
+    let reopened = authored;
+    for (let index = 0; index < 5; index++) reopened = textRunStyleForElement(element({ preview: true,
+      style: { lineHeight: '47px', lineHeightUnit: 'pixels' }
+    }), reopened);
+    assert.deepEqual(reopened, authored);
+    assert.deepEqual(textRunStyleForElement(element({ preview: true, encoded: {
+      lineHeightUnit, lineHeight: String(lineHeight), fontSize: '20'
+    }, style: { lineHeight: '47px' } }), {}), authored);
+  }
+});

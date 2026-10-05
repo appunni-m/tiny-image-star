@@ -32,7 +32,7 @@ const pdfText = bytes => new TextDecoder('latin1').decode(bytes);
 const metrics = { superscript: { xSize: 650, ySize: 600, xOffset: 20, yOffset: 350 }, subscript: { xSize: 650, ySize: 600, xOffset: -20, yOffset: 150 } };
 function shape(text, style) {
   const active = style.fontFeatures?.sups || style.fontFeatures?.subs;
-  return { upem: 1000, extents: { ascender: 800 }, positionMetrics: metrics, glyphs: [...text].map((character, cluster) => ({
+  return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, positionMetrics: metrics, glyphs: [...text].map((character, cluster) => ({
     id: character.codePointAt(0) + (active && /\d/u.test(character) ? 1000 : 0), cluster,
     xAdvance: active && /\d/u.test(character) ? 400 : 600, yAdvance: 0, xOffset: 0, yOffset: 0,
     path: /\s/u.test(character) ? '' : active && /\d/u.test(character)
@@ -48,7 +48,7 @@ test('fontless synthesis emits measured editable sizes/offsets while preserving 
   const node = text({ textPosition: 'superscript', text: 'AB\nCD' }); const original = structuredClone(node);
   const svg = exportNodeToSvg(node, { measureText: measure });
   assert.match(svg, /font-size="13"[^>]*x="0" y="0"/u);
-  assert.match(svg, /<tspan x="0" y="25"/u, 'logical line height uses authored20px rather than synthesized13px');
+  assert.match(svg, /<tspan x="0" y="24"/u, 'logical Auto fallback line height uses authored20px rather than synthesized13px');
   assert.doesNotMatch(svg, /font-feature-settings/u);
   assert.deepEqual(node, original);
   const restored = all(importSvgToLayers(svg).nodes).find(node => node.type === 'text');

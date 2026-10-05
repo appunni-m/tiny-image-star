@@ -3196,12 +3196,14 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
     && (value.leadingTrim === undefined || isValidLeadingTrim(value.leadingTrim))
     && (value.fontAxes == null || isValidFontVariationValues(value.fontAxes))
     && (value.fontFeatures == null || isValidFontFeatureValues(value.fontFeatures));
-  if (!record(payload, ['version', 'source', 'measurements', 'leadingTrimMetrics']) || payload.version !== 1
+  if (!record(payload, ['version', 'source', 'measurements', 'leadingTrimMetrics', 'textLineMetrics']) || payload.version !== 1
     || !record(source, SVG_TEXT_DECORATION_SOURCE_FIELDS) || !safeStyle(source)
     || typeof source.text !== 'string' || source.text.length > MAX_TEXT_LENGTH || source.textDecorationSkipInk
     || source.textRuns != null && (!Array.isArray(source.textRuns) || source.textRuns.length > 4096
       || source.textRuns.some(run => !record(run, runFields) || !safeStyle(run) || run.textDecorationSkipInk
         || typeof run.text !== 'string'))
+    || source.paragraphStyles != null && (!Array.isArray(source.paragraphStyles) || source.paragraphStyles.length > 4096
+      || source.paragraphStyles.some(paragraph => !record(paragraph, ['align', 'textWrapStyle', 'listStyle', 'listLevel', 'listStart'])))
     || !Array.isArray(payload.measurements) || payload.measurements.length > 4096
     || payload.measurements.some(entry => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
       || entry[0].length > MAX_TEXT_LENGTH + 4096 || !Number.isFinite(entry[1]) || entry[1] < 0 || entry[1] > 10_000_000)
@@ -3211,13 +3213,20 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
         || typeof entry[0] !== 'string' || entry[0].length > 4096
         || !record(entry[1], ['capHeight', 'ascender'])
         || !['capHeight', 'ascender'].every(key => Number.isFinite(entry[1][key]) && Math.abs(entry[1][key]) <= 10_000_000) || !(entry[1].capHeight > 0))
-      || new Set(payload.leadingTrimMetrics.map(entry => entry[0])).size !== payload.leadingTrimMetrics.length)) return null;
+      || new Set(payload.leadingTrimMetrics.map(entry => entry[0])).size !== payload.leadingTrimMetrics.length)
+    || payload.textLineMetrics != null && (!Array.isArray(payload.textLineMetrics) || payload.textLineMetrics.length > 4096
+      || payload.textLineMetrics.some(entry => !Array.isArray(entry) || entry.length !== 2
+        || typeof entry[0] !== 'string' || entry[0].length > 32768 * 6 + 4096
+        || !record(entry[1], ['ascent', 'descent', 'lineGap', 'topBaseline'])
+        || !['ascent', 'descent', 'lineGap', 'topBaseline'].every(key => Number.isFinite(entry[1][key]) && Math.abs(entry[1][key]) <= 10_000_000)
+        || entry[1].ascent < 0 || entry[1].descent < 0 || !(entry[1].ascent + entry[1].descent > 0))
+      || new Set(payload.textLineMetrics.map(entry => entry[0])).size !== payload.textLineMetrics.length)) return null;
   let sourceNode; let expectedRoot;
   const document = createDocument();
   try {
     sourceNode = createNode('text', { ...source, x: 0, y: 0, rotation: 0, stroke: null, strokeWidth: 0, children: [] });
     document.pages[0].children = [sourceNode]; validateDocument(document);
-    expectedRoot = parseXml(exportTextDecorationValidationSvg(sourceNode, payload.measurements, payload.leadingTrimMetrics));
+    expectedRoot = parseXml(exportTextDecorationValidationSvg(sourceNode, payload.measurements, payload.leadingTrimMetrics, payload.textLineMetrics));
     const expected = expectedRoot.children.find(child => child.tag === 'g');
     const actual = { ...node, attrs: { ...node.attrs } }; delete actual.attrs[SVG_TEXT_DECORATION_METADATA_ATTRIBUTE];
     if (JSON.stringify(canonicalAlignmentGraph(expected, svgDefinitionNodes(expectedRoot)))

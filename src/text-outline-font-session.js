@@ -8,6 +8,8 @@ export const TEXT_OUTLINE_FONT_LIMITS = Object.freeze({ maxBytes: 64 * 1024 * 10
 
 const abortError = () => new DOMException('Text conversion cancelled. Original layers kept.', 'AbortError');
 const staleError = () => new Error('The design or its fonts changed while outlining. Try Outline Stroke again.');
+const copyMetrics = value => value?.upem > 0 && ['ascender', 'descender', 'lineGap'].every(key => Number.isFinite(value.extents?.[key]))
+  ? { upem: value.upem, extents: { ...value.extents }, ...(value.leadingTrimMetrics ? { leadingTrimMetrics: { ...value.leadingTrimMetrics } } : {}) } : null;
 
 /** One conversion owns its font workers and immutable decoded font snapshots. */
 export class TextOutlineFontSession {
@@ -111,7 +113,7 @@ export class TextOutlineFontSession {
     const runs = itemizeLocalFontRuns(text, coverage);
     if (runs.some(run => !run.fontId)) throw new Error('Some characters need a browser fallback font. Add a local font covering those characters before outlining. Original layers kept.');
     const byId = new Map(candidates.map(font => [font.id, font]));
-    const mixedRuns = [];
+    const mixedRuns = []; let primaryFontMetrics = null;
     for (const run of runs) {
       const font = byId.get(run.fontId);
       await this.#font(font);
@@ -119,11 +121,23 @@ export class TextOutlineFontSession {
         text: run.text, variations: localFontAxisValues(font, style), features: style?.fontFeatures || undefined, script: run.script
       }), 'glyph shaping');
       if (shaped.missingGlyph) throw new Error(`The local font “${font.family}” cannot outline every character in this text. Original layers kept.`);
+      if (font.id === candidates[0].id) primaryFontMetrics ||= copyMetrics(shaped);
       mixedRuns.push({ text: run.text, shaped });
     }
+    // The declared font controls the logical line box, including text whose
+    // actual glyphs all come from a different retained fallback font.
+    if (!primaryFontMetrics) {
+      const primary = candidates[0]; await this.#font(primary);
+      const variations = localFontAxisValues(primary, style);
+      primaryFontMetrics = copyMetrics(this.#shaper.getFontMetrics?.(primary.id, { variations }));
+      if (!primaryFontMetrics) primaryFontMetrics = copyMetrics(await this.#wait(this.#shaper.shape(primary.id, {
+        text: ' ', variations
+      }), 'font line metrics'));
+      if (!primaryFontMetrics) throw new Error('The declared local font cannot provide actual line metrics. Original layers kept.');
+    }
     this.#check();
-    if (!mixedRuns.length) return { upem: 1, extents: { ascender: 0, descender: 0, lineGap: 0 }, glyphs: [] };
-    return mixedRuns.length === 1 ? mixedRuns[0].shaped : { mixedRuns };
+    if (!mixedRuns.length) return { ...primaryFontMetrics, primaryFontMetrics, glyphs: [] };
+    return { ...(mixedRuns.length === 1 ? mixedRuns[0].shaped : { mixedRuns }), primaryFontMetrics };
   }
 
   validateCurrent() { this.#check(); }

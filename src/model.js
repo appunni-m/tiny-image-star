@@ -256,7 +256,7 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: DEFAULT_SHAPE_FILL, points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1, lineHeightUnit: 'auto', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
@@ -629,6 +629,11 @@ export function createNode(type, overrides = {}) {
       inpaintStrokes: normalizeImageEraseStrokes(overrides.inpaintStrokes ?? [])
     } : {})
   };
+  // Before Auto became the default for newly-created text, an explicitly
+  // supplied bare lineHeight used the model's historical ratio semantics.
+  if (type === 'text' && Object.hasOwn(overrides, 'lineHeight') && !Object.hasOwn(overrides, 'lineHeightUnit')) {
+    node.lineHeightUnit = 'ratio';
+  }
   if (Array.isArray(node.strokes)) syncLegacyStrokeFields(node);
   return node;
 }
@@ -2492,6 +2497,10 @@ export function bindVariable(document, nodeId, variableId, property, pageId = do
     }
     return true;
   }
+  // A numeric line-height variable has the established ratio interpretation.
+  // Keep a new Auto text layer from accidentally treating that bound number as
+  // the Auto sentinel merely because Auto is now the creation default.
+  if (property === 'lineHeight' && node.lineHeightUnit === 'auto') node.lineHeightUnit = 'ratio';
   node.variableBindings ||= {};
   node.variableBindings[property] = variableId;
   return true;

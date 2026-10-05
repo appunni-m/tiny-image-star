@@ -289,7 +289,9 @@ function cssForEntry(document, entry) {
 
   if (node.type === 'text') {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize')) || 24;
-    const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
+    const lineHeightValue = getNodePropertyValue(document, node, 'lineHeight') || 1.25;
+    const lineHeightUnit = node.lineHeightUnit || 'ratio';
+    const lineHeight = lineHeightUnit === 'auto' ? null : resolvedLineHeight(lineHeightValue, fontSize, lineHeightUnit);
     const paragraphSpacing = Math.max(0, Number(node.paragraphSpacing) || 0);
     // Match canvas and SVG text layout: leave at least one pixel for text in
     // narrow boxes so a large indent cannot push the first line outside.
@@ -308,7 +310,7 @@ function cssForEntry(document, entry) {
       `font-weight: ${number(node.fontWeight || 400)};`,
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
       ...(fontFeatureSettings(node.fontFeatures) ? [`font-feature-settings: ${fontFeatureSettings(node.fontFeatures)};`] : []),
-      `line-height: ${number(lineHeight)}px;`,
+      `line-height: ${lineHeightUnit === 'auto' ? 'normal' : `${number(lineHeight)}px`};`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       'display: block;',
       `text-align: ${['left', 'center', 'right', 'justify'].includes(node.align) ? node.align : 'left'};`,
@@ -332,7 +334,7 @@ function cssForEntry(document, entry) {
     }
     const paragraphClass = `${cssClass(node)}__paragraph`;
     additionalRules.push(
-      `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
+      `.${paragraphClass} {\n  display: block;\n  margin: 0;\n${lineHeightUnit === 'auto' ? '' : `  min-height: ${number(lineHeight)}px;\n`}  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
       ...['balance', 'pretty'].map(style => `.${cssClass(node)} > .${paragraphClass}[data-text-wrap-style="${style}"] {\n  text-wrap: ${style};\n}`),
       `.${cssClass(node)} > .${paragraphClass} + .${paragraphClass} {\n  margin-block-start: ${number(paragraphSpacing)}px;\n}`
     );
@@ -647,6 +649,7 @@ function summaryForEntry(document, entry) {
       ...(node.fontAxes ? { fontAxes: structuredClone(node.fontAxes) } : {}),
       ...(node.fontFeatures ? { fontFeatures: structuredClone(node.fontFeatures) } : {}),
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
+      lineHeightUnit: node.lineHeightUnit || 'ratio',
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
       paragraphSpacing: Number(node.paragraphSpacing) || 0,
       firstLineIndent: Number(node.firstLineIndent) || 0,

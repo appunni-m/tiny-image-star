@@ -92,7 +92,7 @@ test('the whole conversion has one deadline and keeps originals when that deadli
 });
 
 function localGlyphs(text) {
-  return { upem: 1000, extents: { ascender: 800 }, missingGlyph: false,
+  return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, missingGlyph: false,
     glyphs: [...text].map((character, cluster) => ({ id: 1, cluster, xAdvance: 600,
       yAdvance: 0, xOffset: 0, yOffset: 0,
       path: character === ' ' ? '' : 'M0 0L600 0L600 700L0 700Z' })) };

@@ -14,7 +14,7 @@ import { SceneRenderer, localTextInkBounds } from '../src/renderer.js';
 const metrics = { superscript: { xSize: 650, ySize: 600, xOffset: 20, yOffset: 350 }, subscript: { xSize: 650, ySize: 600, xOffset: -20, yOffset: 150 } };
 function shape(text, style) {
   const active = style.fontFeatures?.sups || style.fontFeatures?.subs;
-  return { upem: 1000, extents: { ascender: 800 }, positionMetrics: metrics, glyphs: [...text].map((char, cluster) => ({
+  return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, positionMetrics: metrics, glyphs: [...text].map((char, cluster) => ({
     id: char.codePointAt(0) + (active && /\d/u.test(char) ? 1000 : 0), cluster, xAdvance: 600, yAdvance: 0, xOffset: 0, yOffset: 0,
     path: /\s/u.test(char) ? '' : 'M0 0 L500 0 L500 700 L0 700 Z' })) };
 }
@@ -148,7 +148,7 @@ test('native editable contour collection applies nonuniform glyph scale and top/
   assert.deepEqual(outlined.glyphs[0].strokeTransform, [1, 0, 0, 1, 0, 0], 'font metric X scaling remains baked into glyph geometry');
   assert.ok(Math.abs(glyph.start.x - .4) < 1e-10); assert.ok(Math.abs(glyph.start.y - 5) < 1e-10);
   assert.ok(Math.abs(glyph.commands[0].end.x - 6.9) < 1e-10);
-  assert.equal(outlined.layout.height, 25, 'logical line spacing keeps20px authored type');
+  assert.equal(outlined.layout.height, 20, 'Auto line spacing keeps the actual20px authored font envelope');
   node.textPath = createTextPathGeometry(createNode('line', { width: 100, height: 0 }));
   node.textPath.points[1].y = 0;
   const path = collectTextOutlineGeometry(document, node, { shapeText: shape });

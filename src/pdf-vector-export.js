@@ -745,7 +745,12 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     if (trimmed && !['NONE', 'CAP_HEIGHT'].includes(attrs['data-tiny-image-star-pdf-leading-trim'])) {
       fail('leading trim', 'the generated run uses an unknown vertical trim mode');
     }
-    const measuredPlacement = positioned || trimmed;
+    const alphabetic = attrs['data-tiny-image-star-pdf-baseline'] != null;
+    if (alphabetic && (attrs['data-tiny-image-star-pdf-baseline'] !== 'alphabetic'
+      || parentAttributes['data-tiny-image-star-pdf-baseline'] !== 'alphabetic')) {
+      fail('text baseline placement', 'the run baseline must match its generated alphabetic parent');
+    }
+    const measuredPlacement = positioned || trimmed || alphabetic;
     const shiftText = String(attrs['baseline-shift'] ?? 0);
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px)?$/iu.test(shiftText)) {
       fail('rich text baseline shifts', 'only bounded generated pixel offsets have a PDF mapping');
@@ -770,13 +775,13 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     if (!value) continue;
     const literal = pdfTextLiteral(value);
     const x = finite(attrs['data-tiny-image-star-pdf-x'], 'rich text run x');
-    const y = finite(attrs['data-tiny-image-star-pdf-y'], 'rich text run y') + runAscent - baselineShift;
+    const y = finite(attrs['data-tiny-image-star-pdf-y'], 'rich text run y') + (alphabetic ? 0 : runAscent) - baselineShift;
     const desiredWidth = finite(attrs['data-tiny-image-star-pdf-width'], 'rich text run width');
     const naturalWidth = finite(attrs['data-tiny-image-star-pdf-natural-width'], 'standard-font rich text run width');
     if (['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust'].some(name => attrs[name] != null)) {
       if (!measuredPlacement || attrs['text-anchor'] !== 'start' || attrs.lengthAdjust !== 'spacingAndGlyphs'
         || Math.abs(finite(attrs.x, 'positioned SVG run x') - x) > 1e-8
-        || Math.abs(finite(attrs.y, 'positioned SVG run y') - (y - runAscent + baselineShift)) > 1e-8
+        || Math.abs(finite(attrs.y, 'positioned SVG run y') - finite(attrs['data-tiny-image-star-pdf-y'], 'visible SVG run y')) > 1e-8
         || Math.abs(finite(attrs.textLength, 'positioned SVG run width') - desiredWidth) > 1e-8) {
         fail('text position metrics', 'the generated PDF position must match the visible SVG run position and width');
       }
@@ -852,7 +857,7 @@ function standardHelveticaMarkerWidth(value, attributes, size) {
   return units * size / 1000;
 }
 
-function paintPositionedListMarker(marker, parentSize, ascent, alpha, context) {
+function paintPositionedListMarker(marker, parentSize, ascent, alpha, context, alphabetic = false) {
   const attrs = marker.attributes;
   assertAttributes(marker, new Set([
     'x', 'y', 'text-anchor', 'text-transform', 'font-family', 'font-size',
@@ -868,7 +873,7 @@ function paintPositionedListMarker(marker, parentSize, ascent, alpha, context) {
   if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF list-marker subset requires zero letter spacing');
   const size = finite(attrs['font-size'] ?? parentSize, 'list marker font size');
   if (size <= 0) throw new TypeError('SVG list marker font sizes must be positive.');
-  if (size !== parentSize) {
+  if (size !== parentSize && !alphabetic) {
     fail('paragraph list marker metrics', 'list markers must use the text layer font size to preserve their measured baseline; use raster PDF');
   }
 
@@ -942,8 +947,10 @@ function paintText(node, inheritedOpacity, context) {
     fail('text line metrics', 'editor text metrics require positioned line spans');
   }
   if (hasPositionedLines && hasEditorTextMetrics) {
-    if (attrs['dominant-baseline'] !== 'text-before-edge') {
-      fail('text baseline placement', 'positioned editor text needs dominant-baseline="text-before-edge"');
+    const alphabetic = attrs['data-tiny-image-star-pdf-baseline'] != null;
+    if (alphabetic && attrs['data-tiny-image-star-pdf-baseline'] !== 'alphabetic'
+      || attrs['dominant-baseline'] !== (alphabetic ? 'alphabetic' : 'text-before-edge')) {
+      fail('text baseline placement', 'positioned editor text must bind its visible baseline to its measured placement');
     }
     const ascent = finite(attrs['data-tiny-image-star-pdf-ascent'], 'measured text ascent');
     if (ascent <= 0) fail('text baseline placement', 'the editor did not provide a positive standard-font ascent; use raster PDF');
@@ -957,7 +964,7 @@ function paintText(node, inheritedOpacity, context) {
     const commands = [];
     for (const line of node.children) {
       if (line.attributes['data-tiny-image-star-list-marker'] != null) {
-        const marker = paintPositionedListMarker(line, size, ascent, alpha, context);
+        const marker = paintPositionedListMarker(line, size, alphabetic ? 0 : ascent, alpha, context, alphabetic);
         if (marker) commands.push(marker);
         continue;
       }
@@ -988,7 +995,7 @@ function paintText(node, inheritedOpacity, context) {
       if (!value) continue;
       const literal = pdfTextLiteral(value);
       let x = finite(line.attributes.x, 'text line x');
-      const y = finite(line.attributes.y, 'text line y') + ascent;
+      const y = finite(line.attributes.y, 'text line y') + (alphabetic ? 0 : ascent);
       let horizontalScale = 100;
       if (line.attributes.textLength != null) {
         if (line.attributes.lengthAdjust !== 'spacingAndGlyphs') {

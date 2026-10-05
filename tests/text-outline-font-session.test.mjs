@@ -21,7 +21,9 @@ function harness(fonts, options = {}) {
     },
     shape: async (id, request) => {
       assert.ok(resident.has(id)); requests.push({ id, request });
-      return { upem: 1000, extents: { ascender: 800 }, glyphs: [{ id: resident.get(id)[4], path: 'M0,0L1,0L1,1Z', cluster: 0, xAdvance: 500 }], missingGlyph: options.missingGlyph === true };
+      return { upem: 1000, extents: options.extents?.get(id) || { ascender: 800, descender: -200, lineGap: 0 },
+        glyphs: [{ id: resident.get(id)[4], path: 'M0,0L1,0L1,1Z', cluster: 0, xAdvance: 500 }],
+        missingGlyph: options.missingGlyph === true || request.text === ' ' && options.metricSpaceMissingGlyph === true };
     },
     close: () => { closed += 1; resident.clear(); }
   };
@@ -65,6 +67,22 @@ test('mixed script fallback uses locally covered fonts and refuses a browser fal
   assert.deepEqual(h.requests.map(request => [request.id, request.request.script]), [['latin', 'Latn'], ['arabic', 'Arab']]);
   await assert.rejects(h.session.shapeText('A字', { fontFamily: 'Latin, Arabic' }), /browser fallback/);
   assert.equal(h.requests.length, 2, 'a partial result is never accepted for missing local glyphs');
+});
+
+test('outline sessions retain declared-font line metrics when every glyph comes from a different retained font', async t => {
+  const h = harness([font('latin', 'Latin'), font('arabic', 'Arabic')], {
+    coverage: new Map([['latin', [65]], ['arabic', [0x627]]]), metricSpaceMissingGlyph: true,
+    extents: new Map([['latin', { ascender: 800, descender: -200, lineGap: 50 }],
+      ['arabic', { ascender: 1100, descender: -400, lineGap: 80 }]])
+  }); t.after(() => h.session.close());
+  const result = await h.session.shapeText('ا', { fontFamily: 'Latin, Arabic' });
+  assert.equal(result.extents.ascender, 1100, 'display glyphs retain their own actual font metrics');
+  assert.deepEqual(result.primaryFontMetrics, { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 50 } });
+  assert.deepEqual(h.requests.map(({ id, request }) => [id, request.text]), [['arabic', 'ا'], ['latin', ' ']]);
+  result.primaryFontMetrics.extents.ascender = 0;
+  const next = await h.session.shapeText('A', { fontFamily: 'Latin, Arabic' });
+  assert.equal(next.primaryFontMetrics.extents.ascender, 800);
+  assert.deepEqual(h.reads, ['latin', 'arabic']);
 });
 
 test('evicted fonts reload pinned bytes without reading a changed source file', async t => {

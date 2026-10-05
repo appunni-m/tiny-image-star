@@ -119,9 +119,9 @@ test('preflight rejects unsupported base and active-run font, spacing, and paint
   const cases = [
     [{ ...base, fontFamily: 'Inter' }, 'custom text fonts'],
     [{ ...base, textRuns: [{ text: 'Text', fontFamily: 'Inter' }] }, 'custom text fonts'],
-    [{ ...base, textRuns: [{ text: 'Text', fontSize: 18 }] }, 'rich text font metrics'],
+    [{ ...base, textRuns: [{ text: 'Text', fontSize: 0 }] }, 'rich text font metrics'],
     [{ ...base, textRuns: [{ text: 'Text', letterSpacing: 1 }] }, 'letter spacing'],
-    [{ ...base, textRuns: [{ text: 'Text', baselineShift: 1 }] }, 'rich text baseline shifts'],
+    [{ ...base, textRuns: [{ text: 'Text', baselineShift: Infinity }] }, 'rich text baseline shifts'],
     [{ ...base, textRuns: [{ text: 'Text', fontAxes: { wght: 500 } }] }, 'variable-font axes or OpenType features'],
     [{ ...base, textRuns: [{ text: 'Text', fontFeatures: { kern: 0 } }] }, 'variable-font axes or OpenType features'],
     [{ ...base, letterSpacing: 1 }, 'letter spacing'],

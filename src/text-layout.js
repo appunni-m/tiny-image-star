@@ -2,6 +2,7 @@ import { canvasFontWeight } from './font-variation.js';
 import { TEXT_DECORATION_PROPERTIES, textDecorationDefaults } from './text-decoration-style.js';
 import { resolveTextPositionView } from './text-position.js';
 import { createTextLeadingTrimResolver, canvasLeadingTrimMetrics } from './text-leading-trim.js';
+import { resolveTextLineLayout, canvasTextLineMetrics } from './text-line-metrics.js';
 
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
@@ -86,7 +87,7 @@ function fallbackGraphemes(text) {
 
 export function textGraphemes(text, segmenter = graphemeSegmenter) {
   const value = String(text ?? '');
-  if (segmenter?.segment) return [...segmenter.segment(value)].map(part => part.segment);
+  if (segmenter?.segment) return Array.from(segmenter.segment(value), part => part.segment);
   return fallbackGraphemes(value);
 }
 
@@ -314,7 +315,7 @@ export function transformTextCase(text, mode = 'none') {
   if (mode === 'lowercase') return value.toLowerCase();
   if (mode !== 'capitalize') return value;
   if (wordSegmenter) {
-    return [...wordSegmenter.segment(value)].map(part => {
+    return Array.from(wordSegmenter.segment(value), part => {
       if (!part.isWordLike) return part.segment;
       const first = textGraphemes(part.segment)[0] || '';
       return first.toUpperCase() + part.segment.slice(first.length);
@@ -671,7 +672,7 @@ function applyTextTruncation(layout, {
     line.marker ? (Number(line.marker.x) || 0) + (Number(line.marker.width) || 0) : 0
   ]));
   const last = lines.at(-1);
-  return { lines, width: nextWidth, height: last ? Number(last.y || 0) + Number(last.lineHeight || 0) : 0 };
+  return { ...layout, lines, width: nextWidth, height: last ? Number(last.y || 0) + Number(last.lineHeight || 0) : 0 };
 }
 
 /** Lay out unstyled text while treating explicit newlines as paragraph breaks. */
@@ -691,7 +692,8 @@ export function layoutPlainText(text, maxWidth, measure, {
   wordSegmenter = thaiWordSegmenter,
   graphemeSegmenter: graphemes = graphemeSegmenter,
   leadingTrim, leadingTrimStyle = markerStyle || {}, shapeText = measure?.shapeText,
-  leadingTrimMetrics = measure?.leadingTrimMetrics, strictLeadingTrim = false
+  leadingTrimMetrics = measure?.leadingTrimMetrics, strictLeadingTrim = false,
+  textStyle = leadingTrimStyle, textLineMetrics = measure?.textLineMetrics, strictTextLineMetrics = false
 } = {}) {
   if (typeof measure !== 'function') throw new TypeError('Text layout requires a measurement function.');
   const limit = Number(maxWidth);
@@ -755,10 +757,12 @@ export function layoutPlainText(text, maxWidth, measure, {
   }
   const trim = createTextLeadingTrimResolver({ ...leadingTrimStyle, leadingTrim: leadingTrim ?? leadingTrimStyle.leadingTrim }, {
     shapeText, measureMetrics: leadingTrimMetrics, strict: strictLeadingTrim });
-  return trim.resolve(applyTextTruncation({ lines, width, height: y }, {
+  const metricLayout = resolveTextLineLayout({ lines, width, height: y }, { baseStyle: textStyle, shapeText, measureMetrics: textLineMetrics, strict: strictTextLineMetrics });
+  const truncated = applyTextTruncation(metricLayout, {
     textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, graphemes,
     ...(trim.active ? { heightForLines: trim.heightForLines } : {})
-  }));
+  });
+  return trim.resolve(truncated === metricLayout ? truncated : resolveTextLineLayout(truncated, { baseStyle: textStyle, shapeText, measureMetrics: textLineMetrics, strict: strictTextLineMetrics, preserveLineBoxes: true }));
 }
 
 export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
@@ -776,6 +780,7 @@ const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 
 function richTextStyle(base, run) {
   const style = {};
   for (const key of richTextStyleKeys) style[key] = run[key] ?? base[key];
+  if (run.lineHeight !== undefined && run.lineHeightUnit === undefined) style.lineHeightUnit = 'ratio';
   style.fontFamily ||= 'Arial, sans-serif';
   style.fontSize = Math.max(style.authoredFontSize ? .001 : 1, Number(style.fontSize) || 24);
   style.fontWeight = Number(style.fontWeight) || 400;
@@ -1076,7 +1081,7 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
   graphemeSegmenter: graphemes = graphemeSegmenter,
   textTruncation = 'disabled', maxLines = null, maxHeight = null, boxHeight = null,
   shapeText = baseStyle.shapeText || measure?.shapeText, leadingTrimMetrics = measure?.leadingTrimMetrics,
-  strictLeadingTrim = false
+  strictLeadingTrim = false, textLineMetrics = measure?.textLineMetrics, strictTextLineMetrics = false
 } = {}) {
   if (!Array.isArray(runs) || typeof measure !== 'function') throw new TypeError('Rich text layout requires runs and a measurement function.');
   const limit = Number(maxWidth);
@@ -1239,10 +1244,12 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
   };
   const trim = createTextLeadingTrimResolver({ ...baseStyle, textRuns: runs }, {
     shapeText, measureMetrics: leadingTrimMetrics, strict: strictLeadingTrim });
-  return trim.resolve(applyTextTruncation(layout, {
+  const metricLayout = resolveTextLineLayout(layout, { baseStyle, shapeText, measureMetrics: textLineMetrics, strict: strictTextLineMetrics });
+  const truncated = applyTextTruncation(metricLayout, {
     textTruncation, maxLines, maxHeight, boxHeight, width: limit, measure, rich: true, graphemes,
     fallbackStyle: fallback, ...(trim.active ? { heightForLines: trim.heightForLines } : {})
-  }));
+  });
+  return trim.resolve(truncated === metricLayout ? truncated : resolveTextLineLayout(truncated, { baseStyle, shapeText, measureMetrics: textLineMetrics, strict: strictTextLineMetrics, preserveLineBoxes: true }));
 }
 
 export function calculateTextBox(ctx, node, {
@@ -1316,20 +1323,21 @@ export function calculateTextBox(ctx, node, {
         textTruncation: node.textTruncation,
         maxLines: node.maxLines,
         maxHeight: node.maxHeight,
-        shapeText, leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle)
+        shapeText, leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle),
+        textLineMetrics: (textStyle, value) => canvasTextLineMetrics(ctx, textStyle, value)
       });
     } finally {
       ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
     }
     if (mode === 'auto-width') {
-      const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
+      const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
       return {
         width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
         height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
           ? Math.min(measuredHeight, node.maxHeight) : measuredHeight
       };
     }
-    const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
+    const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
     return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
       ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
   }
@@ -1341,11 +1349,12 @@ export function calculateTextBox(ctx, node, {
         textWrapStyle: node.textWrapStyle || 'auto',
         leadingTrim: node.leadingTrim, leadingTrimStyle: resolvedNode, shapeText,
         leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle),
+        textLineMetrics: (textStyle, value) => canvasTextLineMetrics(ctx, textStyle, value),
         textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
         fontFamily: family, fontSize: size, fontWeight: weight,
         fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
       } });
-    const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
+    const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
     return {
       width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
       height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
@@ -1359,11 +1368,12 @@ export function calculateTextBox(ctx, node, {
       textWrapStyle: node.textWrapStyle || 'auto',
       leadingTrim: node.leadingTrim, leadingTrimStyle: resolvedNode, shapeText,
       leadingTrimMetrics: textStyle => canvasLeadingTrimMetrics(ctx, textStyle),
+      textLineMetrics: (textStyle, value) => canvasTextLineMetrics(ctx, textStyle, value),
       textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
       fontFamily: family, fontSize: size, fontWeight: weight,
       fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
     } });
-  const measuredHeight = layout.leadingTrim ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
+  const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
   return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)
     ? Math.min(measuredHeight, node.maxHeight) : measuredHeight };
 }

@@ -22,7 +22,7 @@ function fakeShape(text, style = {}) {
       path: /\s/u.test(character) ? '' : ligature ? ligatureGlyph : mark ? 'M0 0 C100 150 200 150 300 0 Z' : rectangularGlyph });
     index += ligature ? 2 : character.length;
   }
-  return { upem, extents: { ascender: second ? 1500 : 800 }, missingGlyph: false, glyphs };
+  return { upem, extents: { ascender: second ? 1500 : 800, descender: second ? -500 : -200, lineGap: 0 }, missingGlyph: false, glyphs };
 }
 function scene(overrides = {}) {
   const document = createDocument(); const node = createNode('text', { x: 123, y: 234, width: 200, height: 80,
@@ -128,7 +128,7 @@ test('mixed local-font runs retain exact per-font baselines without allowing an 
   const result = collectTextOutlineGeometry(document, node, { shapeText: text => ({ mixedRuns: [...text].map(character => ({
     text: character, shaped: fakeShape(character, { fontFamily: character === 'B' ? 'Second' : 'First' }) })) }) });
   assert.equal(result.glyphs.length, 2);
-  assert.deepEqual(result.glyphs.map(glyph => glyph.geometry.strokeContours[0].start), [{ x: 0, y: 16 }, { x: 12, y: 15 }]);
+  assert.deepEqual(result.glyphs.map(glyph => glyph.geometry.strokeContours[0].start), [{ x: 0, y: 16 }, { x: 12, y: 16 }]);
 });
 
 test('RTL shaped glyph order and cluster labels survive without splitting or reordering the run', () => {

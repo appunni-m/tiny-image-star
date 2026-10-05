@@ -81,6 +81,7 @@ import { LocalFontShapingClient } from './font-shaping.js';
 import { isValidTextPosition } from './text-position-style.js';
 import { isValidLeadingTrim } from './text-leading-trim-style.js';
 import { canvasLeadingTrimMetrics } from './text-leading-trim.js';
+import { canvasTextLineMetrics } from './text-line-metrics.js';
 import { resolveTextPositionPlan } from './text-position.js';
 import { withPreparedTextPositionShapes } from './text-position-export-preparation.js';
 import { localFontsForStyle, localFontAxisValues as localFontVariations } from './local-font-style.js';
@@ -748,6 +749,23 @@ shapeLocalTextRun.fontStatus = (style, text) => {
   if (!fonts.length) return 'none';
   if (typeof text === 'string' && !itemizeLocalFontRuns(text, fonts).some(run => run.fontId)) return 'none';
   return 'ready';
+};
+
+// The declared font supplies the line box even when its displayed characters
+// need a different font. Glyph coverage and font metrics have separate readiness.
+shapeLocalTextRun.fontMetrics = style => {
+  const font = localFontsForTextStyle(style)[0];
+  if (!font || state.fontShapeFailures.has(font.id)) return null;
+  const variations = localFontVariations(font, style);
+  const cached = state.fontShaper.getFontMetrics(font.id, { variations });
+  if (cached) return cached;
+  requestLocalFontShape(font, { text: ' ', variations });
+  return null;
+};
+shapeLocalTextRun.fontMetricsStatus = style => {
+  const font = localFontsForTextStyle(style)[0];
+  if (!font || state.fontShapeFailures.has(font.id)) return 'none';
+  return state.fontShaper.getFontMetrics(font.id, { variations: localFontVariations(font, style) }) ? 'ready' : 'pending';
 };
 
 function createTextOutlinePreparation(sourceDocument, signal) {
@@ -8115,7 +8133,15 @@ function resizeTextNode(node, { settledOnly = false } = {}) {
     if (!shaped && state.shapeLocalTextRun.fontStatus?.(style, text) !== 'none') pendingMetrics = true;
     return shaped;
   } : state.shapeLocalTextRun;
-  if (metricEdits) shapeText.fontStatus = state.shapeLocalTextRun.fontStatus;
+  if (metricEdits) {
+    shapeText.fontStatus = state.shapeLocalTextRun.fontStatus;
+    shapeText.fontMetricsStatus = state.shapeLocalTextRun.fontMetricsStatus;
+    if (typeof state.shapeLocalTextRun.fontMetrics === 'function') shapeText.fontMetrics = (style, text) => {
+      const metrics = state.shapeLocalTextRun.fontMetrics(style, text);
+      if (!metrics && state.shapeLocalTextRun.fontMetricsStatus?.(style) !== 'none') pendingMetrics = true;
+      return metrics;
+    };
+  }
   const size = calculateTextBox(textMeasureContext, layoutNode, {
     fontFamily: getNodePropertyValue(state.document, node, 'fontFamily'),
     fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
@@ -8244,7 +8270,7 @@ function textRunStyleForElement(element, inherited) {
   for (const property of textRunStyleKeys) {
     const encoded = element.getAttribute(textRunDataAttribute(property));
     if (encoded == null && element.dataset?.runPreview === 'true'
-      && (['textDecoration', 'textPosition', 'leadingTrim', 'fontSize', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
+      && (['textDecoration', 'textPosition', 'leadingTrim', 'fontSize', 'lineHeight', 'lineHeightUnit', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
     let value = encoded != null ? encoded : property === 'textPosition'
       ? ({ normal: 'normal', super: 'superscript', sub: 'subscript' })[element.style?.fontVariantPosition] : property === 'leadingTrim'
       ? element.style?.textBoxTrim === 'none' ? { type: 'NONE' }
@@ -8393,12 +8419,14 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
         } else if (property === 'fontFeatures') {
           const settings = fontFeatureSettings(value);
           if (settings) span.style.fontFeatureSettings = settings;
-        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && !['textPosition', 'leadingTrim'].includes(property)) span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && !['textPosition', 'leadingTrim', 'lineHeight', 'lineHeightUnit'].includes(property)) span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
       }
       if (baseStyle) {
-        const effective = positionPlan.resolveStyle({ ...baseStyle, ...run });
+        const effective = positionPlan.resolveStyle({ ...baseStyle, ...run,
+          ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}) });
         applyTextEditorPositionPreview(span, effective);
         applyTextEditorTrimPreview(span, effective);
+        applyTextEditorLineHeightPreview(span, effective);
         span.style.textDecoration = effective.textDecoration;
         Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
       }
@@ -8422,6 +8450,24 @@ function applyTextEditorTrimPreview(element, style) {
   element.style.textBoxTrim = style.leadingTrim?.type === 'CAP_HEIGHT' ? 'trim-both' : 'none';
   element.style.textBoxEdge = 'cap alphabetic';
 }
+function textStyleLineHeight(style, { settledOnly = false } = {}) {
+  const fontSize = Number(style.authoredFontSize) || Number(style.fontSize) || 24;
+  if (style.lineHeightUnit !== 'auto') return resolvedLineHeight(style.lineHeight || 1.25, fontSize, style.lineHeightUnit || 'ratio');
+  const authoredStyle = { ...style, fontSize };
+  const native = state.shapeLocalTextRun.fontMetrics?.(authoredStyle);
+  if (native?.upem > 0 && ['ascender', 'descender', 'lineGap'].every(key => Number.isFinite(native.extents?.[key]))) {
+    const height = (native.extents.ascender - native.extents.descender + native.extents.lineGap) * fontSize / native.upem;
+    if (height > 0 && height <= fontSize * 48) return height;
+  }
+  if (settledOnly && state.shapeLocalTextRun.fontMetricsStatus?.(authoredStyle) === 'pending') return null;
+  textMeasureContext ||= document.createElement('canvas').getContext('2d');
+  const metrics = canvasTextLineMetrics(textMeasureContext, authoredStyle);
+  return metrics ? Math.max(.001, metrics.ascent + metrics.descent + metrics.lineGap) : null;
+}
+function applyTextEditorLineHeightPreview(element, style) {
+  const height = textStyleLineHeight(style);
+  element.style.lineHeight = height == null ? 'normal' : `${height * state.zoom}px`;
+}
 let textPositionPreviewFrame = 0;
 function queueTextEditorPositionPreview() {
   if (!state.textNodeId || textPositionPreviewFrame) return;
@@ -8432,14 +8478,18 @@ function queueTextEditorPositionPreview() {
     if (!node || !editor) return;
     const current = readTextEditorContent(editor);
     const baseStyle = textBaseStyle(node);
+    applyTextEditorLineHeightPreview(editor, baseStyle);
     let plan;
     try { plan = resolveTextPositionPlan({ ...node, ...baseStyle, text: current.text, textRuns: current.runs }, { shapeText: state.shapeLocalTextRun }); }
     catch { return; }
     // Change paint only: retain the live DOM, caret, composition and authored attributes.
     for (const span of editor.querySelectorAll('[data-run-preview="true"]')) {
-      const effective = plan.resolveStyle({ ...baseStyle, ...textRunStyleForElement(span, {}) });
+      const run = textRunStyleForElement(span, {});
+      const effective = plan.resolveStyle({ ...baseStyle, ...run,
+        ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}) });
       applyTextEditorPositionPreview(span, effective);
       applyTextEditorTrimPreview(span, effective);
+      applyTextEditorLineHeightPreview(span, effective);
       Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
     }
   });
@@ -8861,7 +8911,7 @@ function editTextNode(nodeId) {
   editor.style.fontVariationSettings = fontVariationSettings(entry.node.fontAxes) || 'normal';
   editor.style.fontFeatureSettings = fontFeatureSettings(entry.node.fontFeatures) || 'normal';
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
-  editor.style.lineHeight = `${resolvedLineHeight(getNodePropertyValue(state.document, entry.node, 'lineHeight') || 1.25, getNodePropertyValue(state.document, entry.node, 'fontSize') || 24, entry.node.lineHeightUnit || 'ratio') * state.zoom}px`;
+  applyTextEditorLineHeightPreview(editor, textBaseStyle(entry.node));
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
   editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'firstLineIndent')) || 0) * state.zoom}px`);
   editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'paragraphSpacing')) || 0) * state.zoom}px`);
@@ -12142,6 +12192,10 @@ function updateInspectorInput(event) {
     if (event.type === 'change') input.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
     return;
   }
+  if (prop === 'lineHeightUnit' && input.value !== 'auto' && selected.some(node => node.type === 'text'
+    && textStyleLineHeight(textBaseStyle(node), { settledOnly: true }) == null)) {
+    showToast('The font is still loading. Wait for it to finish, then change the line-height unit.'); renderInspector(); return;
+  }
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : expressionField ? expressionValue : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
   const propertyValue = prop === 'leadingTrim' ? { type: value } : ellipseArcMatch ? ellipseArcMatch[1] === 'innerRadius'
@@ -12285,7 +12339,7 @@ function updateInspectorInput(event) {
     }
     else if (prop === 'lineHeightUnit' && node.type === 'text') {
       const size = getNodePropertyValue(state.document, node, 'fontSize') || 24;
-      const currentPx = resolvedLineHeight(getNodePropertyValue(state.document, node, 'lineHeight') || 1.25, size, node.lineHeightUnit || 'ratio');
+      const currentPx = textStyleLineHeight(textBaseStyle(node), { settledOnly: true });
       node.lineHeightUnit = value;
       node.lineHeight = value === 'auto' ? 1 : value === 'pixels' ? currentPx : value === 'percent' ? currentPx / size * 100 : currentPx / size;
     }
@@ -14797,10 +14851,14 @@ function applyVariablePropertyToSelection(property, variableId) {
   if (!compatible.length) { renderUI(); showToast('That variable type is not compatible with the selected layer property.'); return; }
   checkpoint(variableId ? `Bind ${property} variable` : `Unbind ${property} variable`);
   for (const node of compatible) {
+    const oldLineHeightUnit = node.lineHeightUnit;
     bindVariable(state.document, node.id, variableId || null, property);
     if (node.type === 'text') resizeTextLayers([node]);
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'variableBindings');
+    if (instanceRoot) {
+      recordComponentOverride(instanceRoot, node, 'variableBindings');
+      if (oldLineHeightUnit !== node.lineHeightUnit) recordComponentOverride(instanceRoot, node, 'lineHeightUnit');
+    }
   }
   if (property.startsWith('autoLayout.')) relayoutVariableBoundFrames();
   renderUI(); queueSave(); renderer.invalidate();
@@ -20334,6 +20392,7 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
   };
   measure.shapeText = pdfMetrics ? undefined : shapeLocalTextRun;
   measure.leadingTrimMetrics = style => canvasLeadingTrimMetrics(context, pdfMetrics ? { ...style, fontFamily: 'Helvetica' } : style);
+  measure.textLineMetrics = (style, text) => canvasTextLineMetrics(context, pdfMetrics ? { ...style, fontFamily: 'Helvetica' } : style, text);
   measure.textInkBounds = (text, style, placement) => {
     context.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight || 400, style.fontAxes)} ${style.fontSize || 24}px ${pdfMetrics ? 'Helvetica' : style.fontFamily || 'Arial, sans-serif'}`;
     context.textBaseline = placement?.baseline ? 'alphabetic' : 'top';
@@ -20505,8 +20564,7 @@ async function exportActivePageSvg() {
 function hasTextMetricEdits(roots) {
   let active = false;
   walkBooleanPaintInputs(roots, ({ node }) => {
-    if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style =>
-      ['superscript', 'subscript'].includes(style.textPosition) || style.leadingTrim?.type === 'CAP_HEIGHT')) active = true;
+    if (node.type === 'text') active = true;
   });
   return active;
 }

@@ -9,7 +9,7 @@ export function hasTextLeadingTrim(node) {
 }
 const sorted = value => Object.entries(value || {}).sort(([a], [b]) => a.localeCompare(b));
 const metricStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-  'leadingTrim', 'baselineShift', 'authoredFontSize', 'textPositionTopOffset'];
+  'leadingTrim', 'baselineShift', 'authoredFontSize', 'textPositionTopOffset', 'textPositionBaselineOffset'];
 const metricStyle = (base, part) => Object.fromEntries(metricStyleProperties.filter(key => part?.[key] !== undefined || base?.[key] !== undefined)
   .map(key => [key, part?.[key] ?? base?.[key]]));
 const metricKey = (style, text) => JSON.stringify([text, style.fontFamily || 'Arial, sans-serif', Number(style.fontSize) || 24,
@@ -82,8 +82,14 @@ export function createTextLeadingTrimResolver(node, { shapeText, fontMetrics, me
       if (style.leadingTrim?.type !== 'CAP_HEIGHT') { include(side === 'top' ? 0 : line.lineHeight); continue; }
       const metrics = metricsFor(String(part.text ?? ''), style);
       if (!metrics.length) { include(side === 'top' ? 0 : line.lineHeight); continue; }
-      const offset = (Number(style.textPositionTopOffset) || 0) - (Number(style.baselineShift) || 0);
-      for (const metric of metrics) include(metric.ascender + offset - (side === 'top' ? metric.capHeight : 0));
+      if (Number.isFinite(line.baselineY)) {
+        const offset = Number.isFinite(part.baselineOffset) ? part.baselineOffset
+          : (Number(style.textPositionBaselineOffset) || 0) - (Number(style.baselineShift) || 0);
+        for (const metric of metrics) include(line.baselineY - line.y + offset - (side === 'top' ? metric.capHeight : 0));
+      } else {
+        const offset = (Number(style.textPositionTopOffset) || 0) - (Number(style.baselineShift) || 0);
+        for (const metric of metrics) include(metric.ascender + offset - (side === 'top' ? metric.capHeight : 0));
+      }
     }
     return value;
   };
@@ -98,7 +104,8 @@ export function createTextLeadingTrimResolver(node, { shapeText, fontMetrics, me
       if (!layout.lines?.length) return layout;
       const { topInset, bottomBaseline } = insets(layout.lines, layout.lines.length);
       if (![topInset, bottomBaseline, layout.height].every(Number.isFinite)) throw new RangeError('Vertical text trim requires finite block metrics.');
-      return { ...layout, lines: layout.lines.map(line => ({ ...line, y: line.y - topInset })), height: Math.max(0, bottomBaseline - topInset),
+      return { ...layout, lines: layout.lines.map(line => ({ ...line, y: line.y - topInset,
+        ...(Number.isFinite(line.baselineY) ? { baselineY: line.baselineY - topInset } : {}) })), height: Math.max(0, bottomBaseline - topInset),
         leadingTrim: Object.freeze({ topInset, bottomInset: layout.height - bottomBaseline, metricSource: pending ? 'provisional' : 'actual' }) };
     }
   });

@@ -2,6 +2,7 @@ import { drawTextLayerContent } from './renderer.js';
 import { findNode, getNodeGeometry, getNodeTextPath } from './model.js';
 import { resolveTextPositionView, TextPositionPendingError } from './text-position.js';
 import { hasTextLeadingTrim, TextLeadingTrimPendingError } from './text-leading-trim.js';
+import { TextLineMetricsPendingError } from './text-line-metrics.js';
 
 export const TEXT_OUTLINE_LIMITS = Object.freeze({
   maxTextCodeUnits: 32_768, maxGlyphs: 1_024, maxContours: 4_096, maxCommands: 20_000,
@@ -9,6 +10,9 @@ export const TEXT_OUTLINE_LIMITS = Object.freeze({
   maxShapeQueries: 2_048, maxShapeCacheBytes: 16 * 1024 * 1024,
   maxSourceCharacters: 2 * 1024 * 1024, timeoutMs: 30_000
 });
+export const TEXT_OUTLINE_SVG_LIMITS = Object.freeze({ ...TEXT_OUTLINE_LIMITS,
+  maxGlyphs: 65_536, maxContours: 262_144, maxCommands: 1_000_000,
+  maxShapeQueries: 32_768, maxShapeCacheBytes: 64 * 1024 * 1024 });
 
 export class TextOutlineGeometryError extends Error {
   constructor(message, code = 'TEXT_OUTLINE_UNAVAILABLE') {
@@ -25,6 +29,7 @@ function positionShapeValue(node, shapeText, text, style) {
   if (value == null && hasTextLeadingTrim(node) && !node.textPath && typeof shapeText === 'function' && shapeText.fontStatus?.(style, text) !== 'none') {
     throw new TextLeadingTrimPendingError();
   }
+  if (value == null && typeof shapeText?.fontStatus === 'function' && shapeText.fontStatus(style, text) !== 'none') throw new TextLineMetricsPendingError();
   return value;
 }
 const coordinate = value => {
@@ -53,14 +58,14 @@ function colorPaint(value, opacity = 1) {
 }
 
 /** Font paths are geometry only: no SVG elements, attributes, assets or metadata. */
-function fontContours(data) {
+function fontContours(data, limits = TEXT_OUTLINE_LIMITS) {
   if (typeof data !== 'string' || data.length > TEXT_OUTLINE_LIMITS.maxGlyphPathCharacters) fail('A local glyph path exceeds the supported outline limit.');
   const tokens = []; const token = /[MLHVQCZmlhvqcz]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/gu;
   let cursor = 0;
   for (const match of data.matchAll(token)) {
     if (!/^[\s,]*$/u.test(data.slice(cursor, match.index))) fail('The local glyph path contains an unsupported command.');
     tokens.push(match[0]); cursor = match.index + match[0].length;
-    if (tokens.length > TEXT_OUTLINE_LIMITS.maxCommands * 7) fail('The local glyph path exceeds the bounded command limit.');
+    if (tokens.length > limits.maxCommands * 7) fail('The local glyph path exceeds the bounded command limit.');
   }
   if (!/^[\s,]*$/u.test(data.slice(cursor))) fail('The local glyph path contains malformed geometry.');
   const contours = []; let current = null; let position = point(0, 0); let index = 0; let command = null;
@@ -94,7 +99,7 @@ function fontContours(data) {
     else if (type === 'C') item = { type: 'cubic', start, control1: readPoint(relative), control2: readPoint(relative), end: readPoint(relative) };
     else fail('The local glyph path uses an unsupported curve command.');
     current.commands.push(item); position = item.end;
-    if (current.commands.length > TEXT_OUTLINE_LIMITS.maxCommands) fail('The local glyph path exceeds the bounded command limit.');
+    if (current.commands.length > limits.maxCommands) fail('The local glyph path exceeds the bounded command limit.');
   }
   if (current && !current.closed) fail('The local glyph path contains an open filled contour.');
   return contours.filter(contour => contour.commands.length);
@@ -115,13 +120,13 @@ const rectangleContours = (x, y, width, height, matrix) => {
     commands: points.slice(1).map((end, index) => ({ type: 'line', start: points[index], end })) }], matrix);
 };
 
-function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs: 0 }) {
+function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs: 0 }, limits = TEXT_OUTLINE_LIMITS) {
   if (state.depth > 16) fail('The local font fallback structure is too deep.');
   if (Array.isArray(shaped?.mixedRuns)) {
     if (shaped.mixedRuns.map(run => run.text).join('') !== text) fail('The local fallback runs do not match the requested text.');
-    if (shaped.mixedRuns.length > TEXT_OUTLINE_LIMITS.maxShapeQueries) fail('The local font fallback structure exceeds the supported run limit.');
+    if (shaped.mixedRuns.length > limits.maxShapeQueries) fail('The local font fallback structure exceeds the supported run limit.');
     state.depth++;
-    for (const run of shaped.mixedRuns) checkShaped(run.shaped, run.text, state);
+    for (const run of shaped.mixedRuns) checkShaped(run.shaped, run.text, state, limits);
     state.depth--;
     return shaped;
   }
@@ -135,14 +140,14 @@ function checkShaped(shaped, text, state = { depth: 0, pathCharacters: 0, glyphs
       fail('The local font shaper returned incomplete glyph geometry.');
     }
     state.pathCharacters += glyph.path.length;
-    if (state.pathCharacters * 2 > TEXT_OUTLINE_LIMITS.maxShapeCacheBytes) fail('The local shaped run exceeds the outline memory budget.');
+    if (state.pathCharacters * 2 > limits.maxShapeCacheBytes) fail('The local shaped run exceeds the outline memory budget.');
   }
   return shaped;
 }
 
 class TextGeometryContext {
-  constructor(signal) {
-    this.signal = signal; this.matrix = identity(); this.stack = []; this.path = null;
+  constructor(signal, limits = TEXT_OUTLINE_LIMITS) {
+    this.signal = signal; this.limits = limits; this.isTextGeometryContext = true; this.matrix = identity(); this.stack = []; this.path = null;
     this.fillStyle = '#000000'; this.strokeStyle = '#000000'; this.globalAlpha = 1; this.lineWidth = 1;
     this.font = ''; this.textAlign = 'left'; this.textBaseline = 'top';
     this.glyphs = []; this.decorations = []; this.clipGeometry = null; this.commands = 0; this.contours = 0;
@@ -166,14 +171,14 @@ class TextGeometryContext {
   fill() { fail('The text layout contains an unsupported vector fill.'); }
   addContours(contours) {
     abort(this.signal); this.contours += contours.length; this.commands += contours.reduce((sum, contour) => sum + contour.commands.length + 1, 0);
-    if (this.contours > TEXT_OUTLINE_LIMITS.maxContours || this.commands > TEXT_OUTLINE_LIMITS.maxCommands) fail('This text exceeds the local editable outline complexity budget. Outline fewer characters at a time.');
+    if (this.contours > this.limits.maxContours || this.commands > this.limits.maxCommands) fail('This text exceeds the bounded outline complexity budget. Export fewer characters at a time.');
   }
   drawLocalGlyphPath(data, metadata) {
     if (metadata.paintMode !== 'fill') fail('Glyph collection requires a fill geometry pass.');
     let contours = this.paths.get(data);
-    if (!contours) { contours = fontContours(data); this.paths.set(data, contours); }
+    if (!contours) { contours = fontContours(data, this.limits); this.paths.set(data, contours); }
     if (!contours.length) return;
-    if (this.glyphs.length >= TEXT_OUTLINE_LIMITS.maxGlyphs) fail('This text exceeds the 1,024-glyph editable outline limit. Outline fewer characters at a time.');
+    if (this.glyphs.length >= this.limits.maxGlyphs) fail(`This text exceeds the ${this.limits.maxGlyphs.toLocaleString('en-US')}-glyph outline limit. Export fewer characters at a time.`);
     const geometry = shapeFor(transformedContours(contours, this.matrix)); this.addContours(geometry.strokeContours);
     this.glyphs.push({ geometry, paint: colorPaint(this.fillStyle, this.globalAlpha), glyphId: metadata.glyphId,
       cluster: metadata.cluster, text: metadata.text, font: this.font,
@@ -203,7 +208,7 @@ class TextGeometryContext {
 /** Record decorations through the editor layout without pretending fallback text is editable glyph geometry. */
 export function collectTextDecorationGeometry(document, source, {
   measureText, shapeText = measureText?.shapeText, textInkBounds = measureText?.textInkBounds,
-  leadingTrimMetrics = measureText?.leadingTrimMetrics,
+  leadingTrimMetrics = measureText?.leadingTrimMetrics, textLineMetrics = measureText?.textLineMetrics,
   colorOverride, fillOpacity = source?.fillOpacity ?? 1, decorationMode = 'all', forceDecorationGeometry = false, signal
 } = {}) {
   abort(signal);
@@ -226,10 +231,11 @@ export function collectTextDecorationGeometry(document, source, {
   };
   const decorationShape = typeof shapeText === 'function' ? (text, style) => positionShapeValue(node, shapeText, text, style) : null;
   if (decorationShape && shapeText.fontStatus) decorationShape.fontStatus = (...args) => shapeText.fontStatus(...args);
+  for (const key of ['fontMetrics', 'fontMetricsStatus']) if (decorationShape && typeof shapeText[key] === 'function') decorationShape[key] = (...args) => shapeText[key](...args);
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
     shapeText: decorationShape,
     colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true,
-    leadingTrimMetrics, strictLeadingTrim: true
+    leadingTrimMetrics, strictLeadingTrim: true, textLineMetrics, strictTextLineMetrics: typeof textLineMetrics === 'function'
   });
   abort(signal); return { decorations: context.decorations, ...(context.clipGeometry ? { clipGeometry: context.clipGeometry } : {}), layout };
 }
@@ -243,26 +249,34 @@ export function collectTextDecorationGeometry(document, source, {
  * used to clip a glyph before stroking, which would invent box-edge strokes.
  */
 export function collectTextOutlineGeometry(document, source, {
-  shapeText, signal, includeDecorations = true, measureContext: _measureContext, leadingTrimMetrics
+  shapeText, signal, includeDecorations = true, measureContext: _measureContext, leadingTrimMetrics, textLineMetrics, exportMode
 } = {}) {
   abort(signal);
   if (source?.type !== 'text' || typeof shapeText !== 'function') fail('A text layer and a local font shaping resolver are required.');
   let node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
   if (!node.__textPositionResolved) node = resolveTextPositionView(node, { shapeText, strict: true }).node;
   if (![node.width, node.height].every(value => Number.isFinite(value) && value >= 0 && value <= TEXT_OUTLINE_LIMITS.maxCoordinate)) fail('The text box dimensions exceed the supported outline range.');
-  const context = new TextGeometryContext(signal);
+  const limits = exportMode === 'svg' ? TEXT_OUTLINE_SVG_LIMITS : TEXT_OUTLINE_LIMITS;
+  const context = new TextGeometryContext(signal, limits); const shapeCache = new Map(); let shapeBytes = 0;
   const checkedShape = (text, style) => {
     abort(signal); if (typeof text !== 'string' || text.length > TEXT_OUTLINE_LIMITS.maxTextCodeUnits) fail('This text exceeds the local font shaping limit.');
-    return checkShaped(positionShapeValue(node, shapeText, text, style), text);
+    const key = JSON.stringify([text, style]);
+    if (shapeCache.has(key)) return shapeCache.get(key);
+    if (shapeCache.size >= limits.maxShapeQueries) fail('This text exceeds the bounded shaping-query limit.');
+    const shaped = checkShaped(positionShapeValue(node, shapeText, text, style), text, undefined, limits);
+    shapeBytes += (key.length + JSON.stringify(shaped).length) * 2;
+    if (shapeBytes > limits.maxShapeCacheBytes) fail('This text exceeds the bounded shaping memory limit.');
+    shapeCache.set(key, shaped); return shaped;
   };
   if (shapeText.fontStatus) checkedShape.fontStatus = (...args) => shapeText.fontStatus(...args);
+  for (const key of ['fontMetrics', 'fontMetricsStatus']) if (typeof shapeText[key] === 'function') checkedShape[key] = (...args) => shapeText[key](...args);
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
-    shapeText: checkedShape, fillOpacity: 1, includeDecorations, leadingTrimMetrics, strictLeadingTrim: true
+    shapeText: checkedShape, fillOpacity: 1, includeDecorations, leadingTrimMetrics, strictLeadingTrim: true, textLineMetrics, strictTextLineMetrics: true
   });
   abort(signal);
   const glyphFillGroups = context.glyphs.flatMap(record => record.geometry.fillGroups);
   const fillGroups = [...glyphFillGroups, ...context.decorations.flatMap(record => record.geometry.fillGroups)];
-  if (fillGroups.length > 1_024) fail('This text exceeds the local vector fill-region limit. Outline fewer characters at a time.');
+  if (fillGroups.length > limits.maxGlyphs + limits.maxContours) fail('This text exceeds the bounded vector fill-region limit.');
   const glyphContours = context.glyphs.flatMap(record => record.geometry.strokeContours);
   return { width: node.width, height: node.height,
     placement: { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation,
@@ -303,7 +317,7 @@ async function awaitShape(value, signal, deadline) {
 
 /** Resolve only real shaping queries, then retry the same layout with immutable results. */
 export async function prepareTextOutlineGeometry(document, node, {
-  shapeText, signal, includeDecorations = true, measureContext, leadingTrimMetrics, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
+  shapeText, signal, includeDecorations = true, measureContext, leadingTrimMetrics, textLineMetrics, assertCurrent = () => {}, timeoutMs = TEXT_OUTLINE_LIMITS.timeoutMs
 } = {}) {
   if (typeof shapeText !== 'function' || typeof assertCurrent !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > TEXT_OUTLINE_LIMITS.timeoutMs) fail('The text outline preparation options are invalid.');
   abort(signal); assertCurrent(); const signature = sourceSignature(document, node);
@@ -322,7 +336,7 @@ export async function prepareTextOutlineGeometry(document, node, {
   };
   while (true) {
     current();
-    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext, leadingTrimMetrics }); }
+    try { return collectTextOutlineGeometry(document, node, { shapeText: readyShape, signal, includeDecorations, measureContext, leadingTrimMetrics, textLineMetrics }); }
     catch (pending) {
       if (!(pending instanceof PendingShape)) throw pending;
       const value = await awaitShape(shapeText(pending.text, pending.style, { signal }), signal, deadline);

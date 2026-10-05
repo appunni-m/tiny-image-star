@@ -2180,11 +2180,11 @@ test('viewBox includes stroke bleed, Bézier controls and text overflow but excl
 
   const overflowingText = createNode('text', { width: 20, height: 10, fontSize: 10, text: 'WIDE', textDecoration: 'underline', textFit: 'fixed' });
   const textSvg = exportNodeToSvg(overflowingText, { measureText: text => text.length * 10 });
-  assert.match(textSvg, /viewBox="0 -1\.5 20 26\.5"/);
-  assert.match(textSvg, /<tspan x="0" y="0" textLength="20" lengthAdjust="spacingAndGlyphs">WI<\/tspan><tspan x="0" y="12\.5" textLength="20" lengthAdjust="spacingAndGlyphs">DE<\/tspan>/,
+  assert.match(textSvg, /viewBox="0 -1\.5 20 26"/);
+  assert.match(textSvg, /<tspan x="0" y="0" textLength="20" lengthAdjust="spacingAndGlyphs">WI<\/tspan><tspan x="0" y="12" textLength="20" lengthAdjust="spacingAndGlyphs">DE<\/tspan>/,
     'long unbroken text wraps at grapheme-safe boundaries instead of compressing to one line');
   assert.match(textSvg, /<path d="M 0 10\.3 L 20 10\.3"/);
-  assert.match(textSvg, /<path d="M 0 22\.8 L 20 22\.8"/);
+  assert.match(textSvg, /<path d="M 0 22\.3 L 20 22\.3"/);
 
   const clippedFrame = createNode('frame', { width: 100, height: 100, fill: '#ffffff', clip: true, children: [
     createNode('rectangle', { x: 10_000, y: 0, width: 100, height: 100, fill: '#000000' })

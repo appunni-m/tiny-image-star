@@ -16,12 +16,12 @@ const extract = (start, end) => {
 const production = extract('let exportInkMeasureContext = null;', 'function exportDimensions(')
   + extract('function hasTextMetricEdits(', 'async function preparePositionedSvg(')
   + extract('async function renderExportBlob(', 'function downloadBlob(');
-function harness({ cold = false, onWait = () => {} } = {}) {
+function harness({ cold = false, trim = true, onWait = () => {} } = {}) {
   const doc = createDocument(); const node = createNode('text', { text: 'H', fontSize: 20,
-    width: 20, height: 5, leadingTrim: { type: 'CAP_HEIGHT' }, stroke: null }); addNode(doc, node);
+    width: 20, height: 5, ...(trim ? { leadingTrim: { type: 'CAP_HEIGHT' } } : {}), stroke: null }); addNode(doc, node);
   const ready = new Map(); const queued = new Set(); const surfaces = []; const renderShapers = [];
   const shaper = text => {
-    if (!cold || ready.has(text)) return { upem: 1000, extents: { ascender: 800 }, leadingTrimMetrics: { capHeight: 700 },
+    if (!cold || ready.has(text)) return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, leadingTrimMetrics: { capHeight: 700 },
       glyphs: [{ id: 1, cluster: 0, xAdvance: 600, path: 'M0 0L500 700Z' }] };
     if (!queued.has(text)) { queued.add(text); setTimeout(() => { onWait(state); ready.set(text, true); }, 1); }
     return null;
@@ -73,4 +73,14 @@ test('font epoch changes and cancellation stop cold raster export before downloa
   const controller = new AbortController(); const canceled = harness({ cold: true, onWait: () => controller.abort() });
   await assert.rejects(canceled.run({ signal: controller.signal }), error => error.name === 'AbortError');
   assert.ok(canceled.surfaces.slice(1).every(surface => surface.width === 0 && surface.height === 0));
+});
+
+test('ordinary text raster exports prepare cold local font queries before publishing', async () => {
+  const warm = harness({ trim: false }); const cold = harness({ trim: false, cold: true });
+  const source = structuredClone(cold.state.document);
+  const reference = await warm.run(); const output = await cold.run();
+  assert.deepEqual([output.width, output.height], [reference.width, reference.height]);
+  assert.equal(await output.blob.text(), await reference.blob.text());
+  assert.ok(cold.renderShapers.every(shaper => shaper.isPreparedTextExport));
+  assert.deepEqual(cold.state.document, source);
 });

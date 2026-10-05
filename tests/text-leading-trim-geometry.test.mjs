@@ -15,7 +15,7 @@ const measure = (text, style = { fontSize: 20 }) => text.length * style.fontSize
 const metrics = style => ({ capHeight: style.fontSize * .7, ascender: style.fontSize * .8 });
 const base = { fontFamily: 'Local', fontSize: 20, lineHeight: 1.5, leadingTrim: CAP };
 function shaped(text, style = base) {
-  return { upem: 1000, extents: { ascender: 800 }, leadingTrimMetrics: { capHeight: 700 },
+  return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, leadingTrimMetrics: { capHeight: 700 },
     glyphs: [...text].map((char, cluster) => ({ id: char.codePointAt(0), cluster, xAdvance: 500, yAdvance: 0, xOffset: 0, yOffset: 0,
       path: /\s/u.test(char) ? '' : char === 'g' ? 'M0 -200 L500 -200 L500 700 L0 700 Z' : 'M0 0 L500 0 L500 700 L0 700 Z' })) };
 }
@@ -114,13 +114,13 @@ test('active trim bounds native fallback complexity and query memory without bud
   assert.doesNotThrow(() => createTextLeadingTrimResolver(base, { measureMetrics: metrics }).resolve({ lines: [{ y: 0, lineHeight: 30, parts }], height: 30 }));
 });
 
-test('auto-fit uses cap-box height without old minimum or padding, while normal and fixed boxes keep their behavior', () => {
+test('auto-fit uses cap-box height without old minimum or padding, while actual normal metrics remove legacy padding and fixed boxes remain fixed', () => {
   const context = { font: '', measureText: value => ({ width: value.length * 10 }) };
   const { node } = scene({ text: 'H', textFit: 'auto-height', height: 200 });
   assert.equal(calculateTextBox(context, node, { shapeText: shaped }).height, 14);
   node.textFit = 'auto-width'; assert.equal(calculateTextBox(context, node, { shapeText: shaped }).height, 14);
   node.textFit = 'fixed'; assert.equal(calculateTextBox(context, node, { shapeText: shaped }).height, 200);
-  node.textFit = 'auto-height'; delete node.leadingTrim; assert.equal(calculateTextBox(context, node, { shapeText: shaped }).height, 36);
+  node.textFit = 'auto-height'; delete node.leadingTrim; assert.equal(calculateTextBox(context, node, { shapeText: shaped }).height, 30);
 });
 
 test('editable glyphs retain unclipped descenders beyond the trimmed cap box and decorations follow shared placement', async () => {

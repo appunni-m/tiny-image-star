@@ -13,8 +13,8 @@
     },
     "worker": {
       "bundle": "../src/workers/font-shaping-worker.bundle.js",
-      "sizeBytes": 45659,
-      "sha256": "d836ec424cb39ecfc4a4af2b4f1467709fd9ff6b2b2048ee20d78c54b5edf9a2"
+      "sizeBytes": 45801,
+      "sha256": "2b17d8bf8e05d9b5ccafc17af243fbf5e6cebb573c9bc0effa0194b471b6fa5b"
     },
     "limits": {
       "maxFontBytes": 20971520,

@@ -79,13 +79,13 @@ test('rich inherited styles keep per-run baseline offsets and horizontal compres
 });
 
 test('Skip ink uses actual placed glyph coverage and emits separated real paths without native recovery authority', () => {
-  const shaped = { upem: 1000, extents: { ascender: 800 }, glyphs: [{ cluster: 0, xAdvance: 1000, xOffset: 0, yOffset: 0,
+  const shaped = { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, glyphs: [{ id: 103, cluster: 0, xAdvance: 1000, yAdvance: 0, xOffset: 0, yOffset: 0,
     path: 'M200 -400 L400 -400 L400 0 L200 0 Z' }] };
   const measured = (value, style) => value.length * style.fontSize;
   measured.shapeText = () => shaped;
   const svg = exportNodeToSvg(text({ text: 'g', textDecorationSkipInk: true, textDecorationThickness: pixels(2) }), { measureText: measured });
-  assert.match(customPaths(svg)[0], /M 0 19.6 L 3 19.6/);
-  assert.match(customPaths(svg)[0], /M 9 19.6 L 20 19.6/);
+  assert.match(customPaths(svg)[0], /M 0 16.6 L 3 16.6/);
+  assert.match(customPaths(svg)[0], /M 9 16.6 L 20 16.6/);
   assert.doesNotMatch(svg, /data-tiny-image-star-text-decoration-v1=/);
   assert.ok(all(importSvgToLayers(svg).nodes).some(node => node.type === 'path'));
   assert.throws(() => exportNodeToSvg(text({ textDecorationSkipInk: true }), { measureText: measure }), error => error instanceof SvgExportError && /actual Canvas/.test(error.message));

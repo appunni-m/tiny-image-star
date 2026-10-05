@@ -12,7 +12,7 @@ import { textDecorationGeometry, parseLocalGlyphContours, nativeInkContoursForSh
 const pixels = value => ({ unit: 'pixels', value });
 const paint = { type: 'solid', color: '#00ff00', opacity: .4 };
 function shape(text) {
-  return { upem: 1000, extents: { ascender: 800 }, missingGlyph: false,
+  return { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, missingGlyph: false,
     glyphs: [...text].map((character, index) => ({ id: 1, cluster: index, xAdvance: 600, yAdvance: 0, xOffset: 0, yOffset: 0,
       path: /\s/u.test(character) ? '' : 'M0 0 L600 0 L600 700 L0 700 Z' })) };
 }
@@ -59,7 +59,7 @@ test('fallback skip ink uses actual per-grapheme bounds with measured prefix pos
 });
 
 test('native glyph projection preserves quadratic curves, tracking, offsets and cluster group holes', () => {
-  const shaped = { upem: 1000, extents: { ascender: 800 }, glyphs: [
+  const shaped = { upem: 1000, extents: { ascender: 800, descender: -200, lineGap: 0 }, glyphs: [
     { cluster: 0, xAdvance: 600, xOffset: 50, yOffset: 100, path: 'M0 0 Q200 600 400 0 Z' },
     { cluster: 1, xAdvance: 600, path: 'M0 0 L200 0 L200 200 Z' }
   ] };
@@ -158,8 +158,9 @@ test('real Inter glyphs drive skip ink and custom outlines while variable font c
   const { document, node } = scene({ text: 'qgy', fontSize: 48, width: 200, height: 100, textDecorationSkipInk: true,
     textDecorationThickness: pixels(2), textDecorationColor: paint, fontAxes: { wght: 400, opsz: 14 } });
   const outlined = collectTextOutlineGeometry(document, node, { shapeText: nativeShape });
-  const glyphs = nativeInkContoursForShapedText(nativeShape('qgy', node), { fontSize: 48 });
-  const geometry = textDecorationGeometry({ width: outlined.layout.lines[0].width, fontSize: 48, style: node, inkContours: glyphs });
+  const baseline = outlined.layout.lines[0].baselineY;
+  const glyphs = nativeInkContoursForShapedText(nativeShape('qgy', node), { fontSize: 48, baselineY: baseline });
+  const geometry = textDecorationGeometry({ y: baseline, baseline: true, width: outlined.layout.lines[0].width, fontSize: 48, style: node, inkContours: glyphs });
   assert.ok(geometry.segments.length > 1); assert.deepEqual(outlined.decorations[0].geometry.fillGroups[0].contours, geometry.contours);
   node.fontAxes.wght = 800; const changed = collectTextOutlineGeometry(document, node, { shapeText: nativeShape });
   assert.notDeepEqual(changed.glyphs[0].geometry, outlined.glyphs[0].geometry);

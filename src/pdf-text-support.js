@@ -61,12 +61,10 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   const activeRuns = Array.isArray(node.textRuns)
     && node.textRuns.map(run => run?.text ?? '').join('') === text
     ? node.textRuns : [];
-  const positioned = [node, ...activeRuns].some(style => ['superscript', 'subscript'].includes(style.textPosition));
   if ([node, ...activeRuns].some(style => style.textPosition !== undefined && !isValidTextPosition(style.textPosition))) {
     reject('text position', 'superscript/subscript settings must use the supported semantic enum.');
   }
 
-  const trimmed = [node, ...activeRuns].some(style => style.leadingTrim?.type === 'CAP_HEIGHT');
   if ([node, ...activeRuns].some(style => style.leadingTrim !== undefined && !isValidLeadingTrim(style.leadingTrim))) {
     reject('leading trim', 'trim settings must use NONE or CAP_HEIGHT.');
   }
@@ -108,11 +106,11 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
       if (!supportedWeights.has(runWeight) || !supportedStyles.has(runStyle)) {
         reject('text font variants', 'each active rich-text run must use a supported standard font variant.');
       }
-      if ((!Number.isFinite(Number(runSize)) || Number(runSize) <= 0) || !positioned && !trimmed && Number(runSize) !== fontSize) {
-        reject('rich text font metrics', 'inline runs must use the text layer font size.');
+      if (!Number.isFinite(Number(runSize)) || Number(runSize) <= 0 || Number(runSize) > 100_000) {
+        reject('rich text font metrics', 'inline run sizes must be positive, finite, and within the supported font range.');
       }
       if (runSpacing !== 0) reject('letter spacing', 'every active rich-text run must use zero letter spacing.');
-      if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > 100_000 || baselineShift !== 0 && !positioned && !trimmed) reject('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics.');
+      if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > 100_000) reject('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics.');
       if (hasSettings(runAxes) || hasSettings(runFeatures)) {
         reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce rich-text font settings.');
       }

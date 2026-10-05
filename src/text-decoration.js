@@ -60,7 +60,23 @@ export function parseLocalGlyphContours(data) {
 }
 
 /** Placed glyph contours in the same top/baseline coordinates used by Canvas. */
-export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize = 24, letterSpacing = 0, scaleX = 1 } = {}) {
+export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize = 24, letterSpacing = 0, scaleX = 1, baselineY } = {}) {
+  if (Array.isArray(shaped?.mixedRuns)) {
+    if (shaped.mixedRuns.length > TEXT_DECORATION_LIMITS.maxGlyphs) fail('The underline exceeds the bounded fallback run limit.');
+    const result = []; let offset = 0; let glyphs = 0; let commands = 0;
+    for (const [index, run] of shaped.mixedRuns.entries()) {
+      if (Array.isArray(run.shaped?.mixedRuns)) return null;
+      const contours = nativeInkContoursForShapedText(run.shaped, { x: x + offset, y, fontSize, letterSpacing, scaleX, baselineY });
+      if (!contours) return null;
+      glyphs += run.shaped.glyphs.length; commands += contours.reduce((sum, item) => sum + item.commands.length, 0);
+      if (glyphs > TEXT_DECORATION_LIMITS.maxGlyphs || commands > TEXT_DECORATION_LIMITS.maxCommands) fail('The underline exceeds the bounded fallback glyph limit.');
+      result.push(...contours.map(item => ({ ...item, group: `${index}:${item.group}` })));
+      const boundaries = run.shaped.glyphs.reduce((sum, glyph, i, values) => sum + (i > 0 && glyph.cluster !== values[i - 1].cluster ? 1 : 0), 0);
+      offset += run.shaped.glyphs.reduce((sum, glyph) => sum + Number(glyph.xAdvance || 0), 0) * fontSize / run.shaped.upem * scaleX + boundaries * letterSpacing;
+      if (index < shaped.mixedRuns.length - 1) offset += letterSpacing;
+    }
+    return result;
+  }
   if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !(shaped.upem > 0)
     || !Number.isFinite(shaped.extents?.ascender)) return null;
   if (shaped.glyphs.length > TEXT_DECORATION_LIMITS.maxGlyphs) fail('The underline exceeds the bounded glyph limit.');
@@ -71,7 +87,7 @@ export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize 
     if (glyph.path) {
       let raw = paths.get(glyph.path); if (!raw) { raw = parseLocalGlyphContours(glyph.path); paths.set(glyph.path, raw); }
       const project = value => point(x + (pen + Number(glyph.xOffset || 0)) * scale * scaleX + tracking + value.x * scale * scaleX,
-        y + (shaped.extents.ascender - Number(glyph.yOffset || 0) - value.y) * scale);
+        (Number.isFinite(baselineY) ? baselineY : y + shaped.extents.ascender * scale) - (Number(glyph.yOffset || 0) + value.y) * scale);
       for (const item of raw) {
         commands += item.commands.length;
         if (commands > TEXT_DECORATION_LIMITS.maxCommands) fail('The underline exceeds the bounded glyph command limit.');
