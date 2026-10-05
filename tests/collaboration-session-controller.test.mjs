@@ -1212,7 +1212,30 @@ test('guest refuses a room revision that references an image the host has not tr
   controller.close();
 });
 
-test('live sessions transfer referenced images before the snapshot and persist guest assets before accepting edits', async () => {
+test('live sessions transfer referenced images before the snapshot and persist guest assets before accepting edits', { timeout: 15_000 }, async t => {
+  function sessionEvent(label) {
+    let signal;
+    const promise = new Promise(resolve => { signal = resolve; });
+    return {
+      signal,
+      async wait() {
+        let timer;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 5_000);
+            })
+          ]);
+        } finally { clearTimeout(timer); }
+      }
+    };
+  }
+  const guestAssetSaveStarted = sessionEvent('guest image persistence to start');
+  const initialSnapshotAccepted = sessionEvent('the initial guest snapshot');
+  const hostAssetStoreStarted = sessionEvent('host image persistence to start');
+  const liveViewStateReceived = sessionEvent('the host view update during image persistence');
+  const editAcknowledged = sessionEvent('the persisted edit acknowledgement');
   const hostChannel = new FakeChannel();
   const hostAssetChannel = new FakeChannel();
   const guestChannel = new FakeChannel();
@@ -1227,11 +1250,22 @@ test('live sessions transfer referenced images before the snapshot and persist g
   addNode(source.document, createNode('image', { assetId: 'host-image', fileName: 'source.png' }));
   const transfers = [];
   const commits = [];
-  let markHostAssetStoreStarted;
-  const hostAssetStoreStarted = new Promise(resolve => { markHostAssetStoreStarted = resolve; });
   let finishHostAssetStore;
   const hostAssetStore = new Promise(resolve => { finishHostAssetStore = resolve; });
-  const host = await hostFixture({
+  let finishGuestAssetSave;
+  const guestAssetSave = new Promise(resolve => { finishGuestAssetSave = resolve; });
+  let host;
+  let guest;
+  let upload;
+  t.after(async () => {
+    finishGuestAssetSave();
+    finishHostAssetStore();
+    host?.controller.close();
+    guest?.close();
+    for (const channel of [hostChannel, hostAssetChannel, guestChannel, guestAssetChannel]) channel.close();
+    await upload?.catch(() => {});
+  }, { timeout: 5_000 });
+  host = await hostFixture({
     open: async () => source,
     createTransport: async () => ({
       offerCapsule: 'offer-a', dataChannel: hostChannel, assetDataChannel: hostAssetChannel, session: { sessionId: 'session-a' },
@@ -1241,7 +1275,7 @@ test('live sessions transfer referenced images before the snapshot and persist g
     readImage: async () => ({ metadata: { mimeType: 'image/png' }, bytes: imageBytes.slice() }),
     approveIncomingAsset: async () => true,
     acceptImage: async (_workspace, _designId, assetId, bytes, options) => {
-      markHostAssetStoreStarted();
+      hostAssetStoreStarted.signal();
       await hostAssetStore;
       transfers.push({ direction: 'guest-to-host', assetId, bytes: bytes.slice(), mimeType: options.mimeType });
     },
@@ -1253,9 +1287,7 @@ test('live sessions transfer referenced images before the snapshot and persist g
   });
   const received = [];
   const liveViewStates = [];
-  let finishGuestAssetSave;
-  const guestAssetSave = new Promise(resolve => { finishGuestAssetSave = resolve; });
-  const guest = await createGuestSessionController({
+  guest = await createGuestSessionController({
     expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
     createTransport: async () => ({
       answerCapsule: 'answer-a', dataChannel: guestChannel, assetDataChannel: guestAssetChannel, session: { sessionId: 'session-a' },
@@ -1264,33 +1296,46 @@ test('live sessions transfer referenced images before the snapshot and persist g
     }),
     onAsset: async asset => {
       received.push({ assetId: asset.assetId, assetKind: asset.assetKind, bytes: asset.bytes.slice() });
+      guestAssetSaveStarted.signal();
       await guestAssetSave;
     },
     approveIncomingAsset: async () => true,
-    onViewState: view => liveViewStates.push(view),
+    onSnapshot: (_snapshot, revision, _head, metadata) => {
+      if (metadata?.source === 'initial') initialSnapshotAccepted.signal();
+      if (metadata?.source === 'ack' && revision === 3) editAcknowledged.signal();
+    },
+    onViewState: view => {
+      liveViewStates.push(view);
+      if (view.zoom === 1.5) liveViewStateReceived.signal();
+    },
     persistFork: async () => true
   });
   await guest.ready;
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await guestAssetSaveStarted.wait();
   assert.deepEqual(received.map(asset => asset.assetId), ['host-image']);
   assert.equal(guest.snapshot, null, 'the initial control snapshot waits for durable asset storage acknowledgement');
   finishGuestAssetSave();
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await initialSnapshotAccepted.wait();
   assert.equal(guest.state, 'connected');
   assert.deepEqual(received.map(asset => asset.assetId), ['host-image']);
   assert.deepEqual(received[0].bytes, imageBytes);
 
-  const upload = guest.sendAsset({ assetId: 'guest-image', assetKind: 'image', mimeType: 'image/png', bytes: uploadedBytes });
-  await hostAssetStoreStarted;
+  upload = guest.sendAsset({ assetId: 'guest-image', assetKind: 'image', mimeType: 'image/png', bytes: uploadedBytes });
+  // Keep a failure handled while the persistence-start event is still pending.
+  // The awaited upload below still propagates that failure to this test.
+  upload.catch(() => {});
+  await hostAssetStoreStarted.wait();
   assert.equal(host.controller.publishViewState({ pageId: source.document.pages[0].id, zoom: 1.5, centerX: 80, centerY: 60 }), true);
-  await settle();
+  await liveViewStateReceived.wait();
   assert.equal(liveViewStates.at(-1)?.zoom, 1.5, 'control updates remain responsive while asset persistence is pending');
+  assert.equal(transfers.length, 0, 'the view update arrives while host asset persistence is still blocked');
+  assert.equal(commits.length, 0, 'no design edit is persisted before the incoming image');
   finishHostAssetStore();
   await upload;
   const changed = guest.snapshot;
   addNode(changed, createNode('image', { assetId: 'guest-image', fileName: 'guest.png' }));
   guest.proposeSnapshot(changed);
-  await new Promise(resolve => setTimeout(resolve, 40));
+  await editAcknowledged.wait();
   assert.deepEqual(transfers, [{ direction: 'guest-to-host', assetId: 'guest-image', bytes: uploadedBytes, mimeType: 'image/png' }]);
   assert.equal(commits.length, 1, 'the design operation follows durable host asset registration acknowledged across channels');
   assert.equal(guest.revision, 3);
@@ -1300,6 +1345,4 @@ test('live sessions transfer referenced images before the snapshot and persist g
   );
   assert.ok(hostChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }))
     .some(message => message.kind === 'ASSET_BARRIER_ACK'));
-  host.controller.close();
-  guest.close();
 });

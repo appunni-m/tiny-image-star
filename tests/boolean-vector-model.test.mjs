@@ -16,6 +16,27 @@ const require = createRequire(import.meta.url);
 const kit = await require('canvaskit-wasm')({ wasmBinary: await readFile(new URL('../node_modules/canvaskit-wasm/bin/canvaskit.wasm', import.meta.url)) });
 const nativeBoolean = request => booleanGeometryWithKit(kit, request);
 
+test('resolving an unbound Boolean source does not scan the page tree', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { x: 17, y: 23, width: 49, height: 31, fill: '#224466' });
+  const other = createNode('rectangle', { x: 40, y: 28, width: 25, height: 19 });
+  addNode(document, source); addNode(document, other);
+  const group = combineBoolean(document, [source.id, other.id], 'union');
+  let pageReads = 0;
+  const observedDocument = new Proxy(document, {
+    get(target, property, receiver) {
+      if (property === 'pages') pageReads += 1;
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const resolved = resolveBooleanSourceNode(observedDocument, source);
+  assert.equal(resolved.x, 0); assert.equal(resolved.y, 0);
+  assert.equal(resolved.width, 49); assert.equal(resolved.height, 31);
+  assert.equal(resolved.fill, '#224466');
+  assert.equal(group.children[0], source);
+  assert.equal(pageReads, 0, 'unbound source coordinates already use the Boolean local frame');
+});
+
 test('Boolean output inherits full ordered appearance from front source, except subtract inherits its base', () => {
   const makeSource = (name, x, color) => createNode('rectangle', { name, x, width: 50, height: 40,
     fills: [createFillLayer('solid', { color }), createFillLayer('linear', { gradient: createGradientFill('linear', color) })],

@@ -1703,7 +1703,8 @@ function requiresVectorBoolean(node) {
 /** Resolve a Boolean source with its current frame modes and paint bindings. */
 export function resolveBooleanSourceNode(document, source) {
   const geometry = getNodeGeometry(document, source);
-  const parentEntry = source?.id ? findNode(document, source.id) : null;
+  const needsParentFrame = source?.variableBindings?.x || source?.variableBindings?.y;
+  const parentEntry = needsParentFrame && source?.id ? findNode(document, source.id) : null;
   const booleanFrame = parentEntry?.parent?.type === 'boolean' ? parentEntry.parent.booleanSourceFrame : null;
   // Child x/y variables store their original parent-space coordinates. Once
   // wrapped, convert those resolved values to the Boolean group's local frame.
