@@ -26,10 +26,10 @@ test('live sharing reveals one clear next step for each person', () => {
   assert.match(html, /id="live-start-host"[^>]*>Start sharing<\/button>/);
   assert.match(html, /id="live-share-capsules"[^>]*>Share link<\/button>/);
   assert.match(html, /id="live-invite-share-url"/);
-  assert.match(html, /<form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-collaboration-close" type="submit" data-dialog-dismiss aria-label="Close live collaboration">×<\/button><\/form>/,
-    'the header close control should close natively and through the explicit dismissal handler');
-  assert.match(html, /<div class="dialog-actions live-collaboration-dismiss-actions"><form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-collaboration-close-action" type="submit" data-dialog-dismiss>Close sharing<\/button><\/form><\/div>/,
-    'a native close action should remain available after scrolling through sharing options');
+  assert.match(html, /<button class="icon-button" id="live-collaboration-close" type="button" data-dialog-dismiss aria-label="Close live collaboration">×<\/button>/,
+    'the header close control should be a plain button handled by the explicit dismissal logic');
+  assert.match(html, /<div class="dialog-actions live-collaboration-dismiss-actions"><button class="secondary-button" id="live-collaboration-close-action" type="button" data-dialog-dismiss>Close sharing<\/button><\/div>/,
+    'a plain close button should remain available after scrolling through sharing options');
   assert.match(html, /id="live-host-reply-step"[^>]*hidden/);
   assert.match(html, /2 · Paste their reply link/);
   assert.match(html, /id="live-answer-value"[^>]*placeholder="Paste the guest’s reply link here"/);
@@ -118,10 +118,10 @@ test('live sharing offers a bundled QR handoff and a local answer scanner withou
     'visible sharing close buttons should use a captured explicit dismissal action');
   assert.match(dismissal, /dialog\.addEventListener\('click', dismissOnControlClick, true\)/,
     'dialog dismissal should run before app-level click handlers can suppress it');
-  assert.match(qrUi, /<form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-qr-close" type="submit" value="close" data-dialog-dismiss aria-label="Close sharing">×<\/button><\/form>/,
-    'the QR panel close icon should work natively and through the explicit dismissal handler');
-  assert.match(qrUi, /<form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-qr-close-action" type="submit" value="close" data-dialog-dismiss>Close sharing<\/button><\/form>/,
-    'the QR panel should offer a native action that exits the sharing flow');
+  assert.match(qrUi, /<button class="icon-button" id="live-qr-close" type="button" value="close" data-dialog-dismiss aria-label="Close sharing">×<\/button>/,
+    'the QR panel close icon should be a plain button handled by the shared dismissal logic');
+  assert.match(qrUi, /<div class="dialog-actions"><button class="secondary-button" id="live-qr-close-action" type="button" value="close" data-dialog-dismiss>Close sharing<\/button><\/div>/,
+    'the QR panel should offer a plain button that exits the sharing flow');
   assert.match(qrUi, /bindDialogDismissal\(dialog, \[\], \{ onDismiss:/,
     'QR dismissal should use shared keyboard, backdrop, and explicit close handling');
   assert.match(qrUi, /bindDialogDismissal\(dialog, \[\], \{ onDismiss: \(\) => \{\s*void stopActivities\(\);\s*closeSharing\(\);\s*\} \}\)/,

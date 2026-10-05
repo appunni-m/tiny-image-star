@@ -373,11 +373,15 @@ test('sharing panels use the compatible open and close helpers', async () => {
   const qrSource = await readFile(new URL('../src/collaboration/qr-handoff-ui.js', import.meta.url), 'utf8');
   assert.match(source, /function openLiveDialog\(role\) \{[\s\S]*?openDialog\(dialog\);/);
   assert.match(source, /closeDialog\(\$\('#live-collaboration-dialog'\), 'revoked'\)/);
-  assert.match(html, /<form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-collaboration-close" type="submit" data-dialog-dismiss/);
-  assert.match(html, /<form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-collaboration-close-action" type="submit" data-dialog-dismiss/);
+  assert.match(html, /<button class="icon-button" id="live-collaboration-close" type="button" data-dialog-dismiss/);
+  assert.match(html, /<button class="secondary-button" id="live-collaboration-close-action" type="button" data-dialog-dismiss/);
+  assert.doesNotMatch(html.match(/<dialog class="modal live-collaboration-dialog"[\s\S]*?<\/dialog>/)?.[0] || '', /method="dialog"/,
+    'live sharing controls should not rely on native dialog form submission');
   assert.match(qrSource, /dismissDialog\(dialog, 'close'\)/);
-  assert.match(qrSource, /<form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-qr-close" type="submit" value="close" data-dialog-dismiss/);
-  assert.match(qrSource, /<form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-qr-close-action" type="submit" value="close" data-dialog-dismiss/);
+  assert.match(qrSource, /<button class="icon-button" id="live-qr-close" type="button" value="close" data-dialog-dismiss/);
+  assert.match(qrSource, /<button class="secondary-button" id="live-qr-close-action" type="button" value="close" data-dialog-dismiss/);
+  assert.doesNotMatch(qrSource.match(/function installDialog\(\) \{[\s\S]*?document\.body\.append\(dialog\)/)?.[0] || '', /method="dialog"/,
+    'QR sharing controls should not rely on native dialog form submission');
   assert.match(qrSource, /dialog\.returnValue === 'close'\) closeSharing\(\)/,
     'native fallback dismissal should close the parent sharing window too');
   assert.match(qrSource, /bindDialogDismissal\(dialog, \[\], \{ onDismiss: \(\) => \{\s*void stopActivities\(\);\s*closeSharing\(\);\s*\} \}\)/);

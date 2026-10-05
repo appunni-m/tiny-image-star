@@ -27,7 +27,7 @@ function installDialog() {
     <section class="live-qr-content">
       <div class="modal-title-row">
         <div><span class="modal-eyebrow">SHARE BY QR CODE</span><h2 id="live-qr-title">Share live design</h2></div>
-        <form class="dialog-dismiss-form" method="dialog"><button class="icon-button" id="live-qr-close" type="submit" value="close" data-dialog-dismiss aria-label="Close sharing">×</button></form>
+        <button class="icon-button" id="live-qr-close" type="button" value="close" data-dialog-dismiss aria-label="Close sharing">×</button>
       </div>
       <p class="modal-copy" id="live-qr-note"></p>
       <div id="live-qr-display" hidden>
@@ -44,7 +44,7 @@ function installDialog() {
           <button class="secondary-button" id="live-qr-reset-scan" type="button">Start over</button>
         </div>
       </div>
-      <div class="dialog-actions"><form class="dialog-dismiss-form" method="dialog"><button class="secondary-button" id="live-qr-close-action" type="submit" value="close" data-dialog-dismiss>Close sharing</button></form></div>
+      <div class="dialog-actions"><button class="secondary-button" id="live-qr-close-action" type="button" value="close" data-dialog-dismiss>Close sharing</button></div>
     </section>`;
   document.body.append(dialog);
   return dialog;
