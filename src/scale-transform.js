@@ -22,8 +22,10 @@ function scaleNumber(value, factor) {
 function scaleTextRuns(runs, factor) {
   return Array.isArray(runs) ? runs.map(run => ({
     ...run,
-    ...Object.fromEntries(['fontSize', 'letterSpacing', 'baselineShift'].filter(key => Number.isFinite(run?.[key]) && run[key] !== 0)
+    ...Object.fromEntries(['fontSize', 'baselineShift'].filter(key => Number.isFinite(run?.[key]) && run[key] !== 0)
       .map(key => [key, scaleNumber(run[key], factor)])),
+    ...(Number.isFinite(run?.letterSpacing) && run.letterSpacing !== 0 && (run.letterSpacingUnit || 'pixels') === 'pixels'
+      ? { letterSpacing: scaleNumber(run.letterSpacing, factor) } : {}),
     ...scaleTextDecorationMetrics(run, factor),
     ...(run?.lineHeightUnit === 'pixels' && Number.isFinite(run.lineHeight)
       ? { lineHeight: scaleNumber(run.lineHeight, factor) } : {})
@@ -47,8 +49,11 @@ function scaleParagraphStyles(styles, factor) {
 
 function scaledAppearance(node, factor) {
   const patch = scaleTextDecorationMetrics(node, factor);
-  for (const key of ['strokeWidth', 'radius', 'fontSize', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing']) {
+  for (const key of ['strokeWidth', 'radius', 'fontSize', 'paragraphSpacing', 'firstLineIndent', 'listSpacing']) {
     if (Number.isFinite(node[key]) && node[key] !== 0) patch[key] = scaleNumber(node[key], factor);
+  }
+  if (Number.isFinite(node.letterSpacing) && node.letterSpacing !== 0 && (node.letterSpacingUnit || 'pixels') === 'pixels') {
+    patch.letterSpacing = scaleNumber(node.letterSpacing, factor);
   }
   if (node.lineHeightUnit === 'pixels' && Number.isFinite(node.lineHeight)) patch.lineHeight = scaleNumber(node.lineHeight, factor);
   if (Array.isArray(node.strokeDashArray)) patch.strokeDashArray = node.strokeDashArray.map(value => scaleNumber(value, factor));
@@ -79,7 +84,7 @@ function scaledAppearance(node, factor) {
 }
 
 const SCALE_GEOMETRY_PROPERTIES = ['x', 'y', 'width', 'height'];
-const SCALE_APPEARANCE_PROPERTIES = ['strokeWidth', 'radius', 'fontSize', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing'];
+const SCALE_APPEARANCE_PROPERTIES = ['strokeWidth', 'radius', 'fontSize', 'paragraphSpacing', 'firstLineIndent', 'listSpacing'];
 
 function resolveNumericBinding(node, property, resolveBoundProperty) {
   if (!node.variableBindings?.[property]) return node[property];
@@ -112,6 +117,10 @@ function resolveScaleNode(node, resolveBoundProperty) {
       resolved[property] = resolveNumericBinding(node, property, resolveBoundProperty);
       detach.push(property);
     }
+  }
+  if ((node.letterSpacingUnit || 'pixels') === 'pixels' && node.variableBindings?.letterSpacing) {
+    resolved.letterSpacing = resolveNumericBinding(node, 'letterSpacing', resolveBoundProperty);
+    detach.push('letterSpacing');
   }
   if (node.lineHeightUnit === 'pixels' && node.variableBindings?.lineHeight) {
     resolved.lineHeight = resolveNumericBinding(node, 'lineHeight', resolveBoundProperty);

@@ -2578,7 +2578,7 @@ test('imports supported mixed character styles as editable rich-text runs', () =
           characters,
           style: {
             fontFamily: 'Inter', fontSize: 24, fontWeight: 400,
-            lineHeight: { unit: 'PIXELS', value: 30 }, letterSpacing: { unit: 'PIXELS', value: 0 }
+            lineHeight: { unit: 'PIXELS', value: 30 }, letterSpacing: { unit: 'PERCENT', value: 5 }
           },
           // The rocket occupies two UTF-16 positions; both reference one style.
           characterStyleOverrides: [0, 1, 1, 2],
@@ -2601,11 +2601,12 @@ test('imports supported mixed character styles as editable rich-text runs', () =
   assert.equal(text.textRuns.map(run => run.text).join(''), characters);
   assert.deepEqual(text.textRuns, [
     { text: 'A' },
-    { text: '🚀', fontSize: 32, fontWeight: 700, fontStyle: 'italic', lineHeight: 48, lineHeightUnit: 'pixels', letterSpacing: 3.2, color: '#ff0000' },
+    { text: '🚀', fontSize: 32, fontWeight: 700, fontStyle: 'italic', lineHeight: 48, lineHeightUnit: 'pixels', letterSpacing: 10, letterSpacingUnit: 'percent', color: '#ff0000' },
     { text: 'B', fontWeight: 500, textDecoration: 'underline' }
   ]);
   assert.equal(text.lineHeight, 30);
   assert.equal(text.lineHeightUnit, 'pixels');
+  assert.deepEqual([text.letterSpacing,text.letterSpacingUnit],[5,'percent']);
   assert.equal(imported.report.flattenedTypes.TEXT_STYLE, undefined);
 });
 

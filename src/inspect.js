@@ -311,7 +311,7 @@ function cssForEntry(document, entry) {
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
       ...(fontFeatureSettings(node.fontFeatures) ? [`font-feature-settings: ${fontFeatureSettings(node.fontFeatures)};`] : []),
       `line-height: ${lineHeightUnit === 'auto' ? 'normal' : `${number(lineHeight)}px`};`,
-      `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
+      `letter-spacing: ${node.letterSpacingUnit === 'percent' ? `${number((getNodePropertyValue(document, node, 'letterSpacing') || 0) / 100)}em` : `${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px`};`,
       'display: block;',
       `text-align: ${['left', 'center', 'right', 'justify'].includes(node.align) ? node.align : 'left'};`,
       ...(['middle', 'bottom'].includes(node.verticalAlign) ? [
@@ -651,6 +651,7 @@ function summaryForEntry(document, entry) {
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       lineHeightUnit: node.lineHeightUnit || 'ratio',
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
+      letterSpacingUnit: node.letterSpacingUnit || 'pixels',
       paragraphSpacing: Number(node.paragraphSpacing) || 0,
       firstLineIndent: Number(node.firstLineIndent) || 0,
       listSpacing: Number(node.listSpacing) || 0,

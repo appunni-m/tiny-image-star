@@ -4,6 +4,7 @@ import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './tex
 import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
 import { isValidTextPosition } from './text-position-style.js';
 import { isValidLeadingTrim } from './text-leading-trim-style.js';
+import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
 
 const standardFontFamilies = new Set(['arial', 'helvetica', 'sans-serif']);
 const supportedWeights = new Set([400, 700, '400', '700']);
@@ -61,6 +62,9 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   const activeRuns = Array.isArray(node.textRuns)
     && node.textRuns.map(run => run?.text ?? '').join('') === text
     ? node.textRuns : [];
+  if ([node, ...activeRuns].some(style => style.letterSpacingUnit !== undefined && !['pixels', 'percent'].includes(style.letterSpacingUnit))) {
+    reject('letter spacing units', 'letter spacing must use pixels or a percentage of the font size.');
+  }
   if ([node, ...activeRuns].some(style => style.textPosition !== undefined && !isValidTextPosition(style.textPosition))) {
     reject('text position', 'superscript/subscript settings must use the supported semantic enum.');
   }
@@ -75,7 +79,7 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   if (!supportedWeights.has(fontWeight) || !supportedStyles.has(fontStyle)) {
     reject('text font variants', 'only regular, bold, italic, and bold italic standard fonts are supported.');
   }
-  if (letterSpacing !== 0) reject('letter spacing', 'the vector text writer requires zero letter spacing.');
+  if (!Number.isFinite(letterSpacing) || letterSpacing !== 0) reject('letter spacing', 'the vector text writer requires zero resolved letter spacing.');
   if (hasSettings(fontAxes) || hasSettings(fontFeatures)) {
     reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce these font settings.');
   }
@@ -96,7 +100,7 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
       const runWeight = run.fontWeight ?? fontWeight;
       const runStyle = run.fontStyle ?? fontStyle;
       const runSize = run.fontSize ?? fontSize;
-      const runSpacing = Number(run.letterSpacing ?? letterSpacing);
+      const runSpacing = resolvedTextLetterSpacing({ fontSize: runSize, ...inheritedTextLetterSpacing({ ...node, letterSpacing }, run) });
       const runAxes = run.fontAxes ?? fontAxes;
       const runFeatures = run.fontFeatures ?? fontFeatures;
       const baselineShift = Number(run.baselineShift ?? 0);

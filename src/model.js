@@ -148,7 +148,8 @@ function isValidFontWeight(value) {
   return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
 }
 
-const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'baselineShift']);
+const letterSpacingUnits = new Set(['pixels', 'percent']);
+const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'baselineShift']);
 const lineHeightUnits = new Set(['ratio', 'auto', 'pixels', 'percent']);
 
 function isValidLineHeight(value, unit = 'ratio') {
@@ -169,6 +170,7 @@ function isValidTextRun(run) {
   if (run.lineHeightUnit != null && (!lineHeightUnits.has(run.lineHeightUnit) || run.lineHeight == null)) return false;
   if (run.lineHeight != null && !isValidLineHeight(run.lineHeight, run.lineHeightUnit || 'ratio')) return false;
   if (run.letterSpacing != null && (typeof run.letterSpacing !== 'number' || !Number.isFinite(run.letterSpacing) || Math.abs(run.letterSpacing) > 10_000)) return false;
+  if (run.letterSpacingUnit != null && (!letterSpacingUnits.has(run.letterSpacingUnit) || run.letterSpacing == null)) return false;
   if (run.color != null && (typeof run.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(run.color))) return false;
   if (run.textDecoration != null && !textDecorations.has(run.textDecoration)) return false;
   if (run.textPosition != null && !isValidTextPosition(run.textPosition)) return false;
@@ -256,7 +258,7 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: DEFAULT_SHAPE_FILL, points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1, lineHeightUnit: 'auto', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1, lineHeightUnit: 'auto', letterSpacing: 0, letterSpacingUnit: 'pixels', paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
@@ -552,7 +554,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -2801,7 +2803,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'textWrapStyle'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'textWrapStyle'];
 const legacyTypographyStyleProperties = ['color', 'align', 'verticalAlign'];
 
 function typographyStyleValues(document, node) {
@@ -2815,6 +2817,7 @@ function typographyStyleValues(document, node) {
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+    letterSpacingUnit: node.letterSpacingUnit || 'pixels',
     paragraphSpacing: Number(node.paragraphSpacing) || 0,
     firstLineIndent: Number(node.firstLineIndent) || 0,
     listSpacing: Number(node.listSpacing) || 0,
@@ -3317,7 +3320,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -4555,6 +4558,8 @@ export function validateDocument(document) {
       if (node.textPath != null && (node.type !== 'text' || !isValidTextPathGeometry(node.textPath))) throw new TypeError(`Invalid text path on layer ${node.name || node.id}.`);
       if (node.lineHeightUnit != null && (node.type !== 'text' || !lineHeightUnits.has(node.lineHeightUnit) || node.lineHeight == null)) throw new TypeError(`Invalid line-height unit on layer ${node.name || node.id}.`);
       if (node.lineHeight != null && (node.type !== 'text' || !isValidLineHeight(node.lineHeight, node.lineHeightUnit || 'ratio'))) throw new TypeError(`Invalid line height on layer ${node.name || node.id}.`);
+      if (node.letterSpacingUnit != null && (node.type !== 'text' || !letterSpacingUnits.has(node.letterSpacingUnit) || node.letterSpacing == null)) throw new TypeError(`Invalid letter-spacing unit on layer ${node.name || node.id}.`);
+      if (node.letterSpacing != null && (node.type !== 'text' || typeof node.letterSpacing !== 'number' || !Number.isFinite(node.letterSpacing) || Math.abs(node.letterSpacing) > 10_000)) throw new TypeError(`Invalid letter spacing on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
       for (const property of TEXT_DECORATION_PROPERTIES) if (node[property] != null && (node.type !== 'text' || !isValidTextDecorationProperty(property, node[property]))) throw new TypeError(`Invalid ${property} on layer ${node.name || node.id}.`);
@@ -4884,6 +4889,9 @@ export function validateDocument(document) {
           if (overrides.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(overrides.fontStyle))) throw new TypeError(`Invalid component font style override on ${node.name || node.id}.`);
           if (overrides.fontAxes != null && (sourceNode?.type !== 'text' || !isValidFontVariationValues(overrides.fontAxes))) throw new TypeError(`Invalid component font axes override on ${node.name || node.id}.`);
           if (overrides.fontFeatures != null && (sourceNode?.type !== 'text' || !isValidFontFeatureValues(overrides.fontFeatures))) throw new TypeError(`Invalid component OpenType features override on ${node.name || node.id}.`);
+          if (overrides.letterSpacingUnit != null && (sourceNode?.type !== 'text' || !letterSpacingUnits.has(overrides.letterSpacingUnit)
+            || !Number.isFinite(overrides.letterSpacing ?? sourceNode.letterSpacing))) throw new TypeError(`Invalid component letter-spacing unit override on ${node.name || node.id}.`);
+          if (overrides.letterSpacing != null && (sourceNode?.type !== 'text' || typeof overrides.letterSpacing !== 'number' || !Number.isFinite(overrides.letterSpacing) || Math.abs(overrides.letterSpacing) > 10_000)) throw new TypeError(`Invalid component letter-spacing override on ${node.name || node.id}.`);
           if (overrides.textCase != null && (node.type !== 'text' || !textCases.has(overrides.textCase))) throw new TypeError(`Invalid component text case override on ${node.name || node.id}.`);
           if (overrides.textDecoration != null && (node.type !== 'text' || !textDecorations.has(overrides.textDecoration))) throw new TypeError(`Invalid component text decoration override on ${node.name || node.id}.`);
           for (const property of TEXT_DECORATION_PROPERTIES) if (overrides[property] != null && (sourceNode?.type !== 'text' || !isValidTextDecorationProperty(property, overrides[property]))) throw new TypeError(`Invalid component ${property} override on ${node.name || node.id}.`);
@@ -5260,6 +5268,7 @@ export function validateDocument(document) {
         || (style.fontFeatures != null && !isValidFontFeatureValues(style.fontFeatures))
         || !isValidLineHeight(style.lineHeight, style.lineHeightUnit || 'ratio')
         || !Number.isFinite(style.letterSpacing)
+        || (style.letterSpacingUnit != null && !letterSpacingUnits.has(style.letterSpacingUnit))
         || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))
         || (style.firstLineIndent != null && (!Number.isFinite(style.firstLineIndent) || style.firstLineIndent < 0 || style.firstLineIndent > 10_000))
         || (style.listSpacing != null && (!Number.isFinite(style.listSpacing) || style.listSpacing < 0 || style.listSpacing > 10_000))

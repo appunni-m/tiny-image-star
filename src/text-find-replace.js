@@ -1,6 +1,6 @@
 const textRunStyleKeys = new Set([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'color', 'textDecoration', 'baselineShift'
+  'letterSpacing', 'letterSpacingUnit', 'color', 'textDecoration', 'baselineShift'
 ]);
 
 function walkPage(nodes, visitor, parents = []) {

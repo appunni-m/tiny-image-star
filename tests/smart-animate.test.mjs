@@ -1795,8 +1795,8 @@ test('smart animation interpolates compatible rich-text run metrics and solid co
 
   const middleRuns = interpolateSmartFrame(from, to, 0.5).children[0].textRuns;
   assert.deepEqual(middleRuns, [
-    { text: 'Hello ', fontSize: 22, fontWeight: 550, lineHeight: 1.5, letterSpacing: 1, baselineShift: 2, color: '#808080' },
-    { text: 'world', fontSize: 30, fontWeight: 650, lineHeight: 1.5, letterSpacing: 3, baselineShift: -2, color: '#807070' }
+    { text: 'Hello ', fontSize: 22, fontWeight: 550, lineHeight: 1.5, letterSpacing: 1, letterSpacingUnit: 'pixels', baselineShift: 2, color: '#808080' },
+    { text: 'world', fontSize: 30, fontWeight: 650, lineHeight: 1.5, letterSpacing: 3, letterSpacingUnit: 'pixels', baselineShift: -2, color: '#807070' }
   ]);
 
   assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].textRuns, fromRuns, 'the starting endpoint keeps its original run values');

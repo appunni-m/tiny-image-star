@@ -31,6 +31,7 @@ import { resolveTextPositionView, TextPositionPendingError } from './text-positi
 import { isValidTextPosition } from './text-position-style.js';
 import { isValidLeadingTrim } from './text-leading-trim-style.js';
 import { hasTextLeadingTrim } from './text-leading-trim.js';
+import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -726,6 +727,9 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
   if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.leadingTrim !== undefined && !isValidLeadingTrim(style.leadingTrim))) {
     throw new TypeError(`SVG export requires a valid leading trim on layer ${node.name || node.id || '(unnamed)'}.`);
   }
+  if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.letterSpacingUnit !== undefined && !['pixels', 'percent'].includes(style.letterSpacingUnit))) {
+    throw new TypeError(`SVG export requires a valid letter spacing unit on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
   const fillValidationNode = node.type === 'text' ? { ...node, type: 'rectangle' } : node;
   if (Array.isArray(node.fills)) {
     for (const fill of node.fills) {
@@ -1319,7 +1323,8 @@ function textLines(node, document, measureText) {
     fontWeight: getNodePropertyValue(document, node, 'fontWeight'),
     fontStyle: getNodePropertyValue(document, node, 'fontStyle'),
     paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing'),
-    firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent')
+    firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent'),
+    letterSpacing: getNodePropertyValue(document, node, 'letterSpacing')
   };
   resolvedNode = resolveTextPositionView(resolvedNode, { shapeText: measureText?.shapeText, strict: true }).node;
   const hasListMarker = Array.isArray(node.paragraphStyles) && node.paragraphStyles.some(paragraph => paragraph?.listStyle === 'bulleted' || paragraph?.listStyle === 'numbered');
@@ -1342,6 +1347,7 @@ function textLines(node, document, measureText) {
       lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
       lineHeightUnit: node.lineHeightUnit || 'ratio',
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+      letterSpacingUnit: node.letterSpacingUnit,
       paragraphSpacing: resolvedNode.paragraphSpacing || 0,
       firstLineIndent: resolvedNode.firstLineIndent || 0,
       listSpacing: node.listSpacing || 0,
@@ -1359,7 +1365,7 @@ function textLines(node, document, measureText) {
     const layout = layoutTextRuns(runs, Math.max(1, Number(node.width)), baseStyle, (value, style) => {
       const measureNode = { ...resolvedNode, ...style, variableBindings: {} };
       const scaleX = style.textPositionScaleX || 1;
-      return Number(measureText(value, { ...measureNode, letterSpacing: measureNode.letterSpacing / scaleX })) * scaleX;
+      return Number(measureText(value, { ...measureNode, letterSpacing: resolvedTextLetterSpacing(measureNode) / scaleX, letterSpacingUnit: 'pixels' })) * scaleX;
     }, {
       textTruncation: node.textTruncation,
       maxLines: node.maxLines,
@@ -1381,7 +1387,7 @@ function textLines(node, document, measureText) {
 
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
-  const measure = line => Number(measureText(line, resolvedNode));
+  const measure = line => Number(measureText(line, { ...resolvedNode, letterSpacing: resolvedTextLetterSpacing(resolvedNode), letterSpacingUnit: 'pixels' }));
   const layout = layoutPlainText(text, Math.max(1, Number(node.width)), measure, {
     lineHeight,
     paragraphSpacing: resolvedNode.paragraphSpacing,
@@ -1460,6 +1466,7 @@ function textListMarkerTspan(line, node, document, verticalOffset, fillOverride 
     fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
     fontStyle: getNodePropertyValue(document, node, 'fontStyle') === 'italic' ? 'italic' : 'normal',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+    letterSpacingUnit: node.letterSpacingUnit,
     color: color(document, node, 'text')
   };
   const rawMarkerColor = fillOverride === undefined ? style.color || color(document, node, 'text') : fillOverride;
@@ -1468,7 +1475,7 @@ function textListMarkerTspan(line, node, document, verticalOffset, fillOverride 
     throw new TypeError(`SVG export supports solid hexadecimal list marker colors only on layer ${node.name || node.id || '(unnamed)'}.`);
   }
   const textLength = marker.width > 0 ? ` textLength="${number(marker.width)}" lengthAdjust="spacingAndGlyphs"` : '';
-  return `<tspan data-tiny-image-star-list-marker="${marker.listStyle || line.listStyle}" data-list-level="${line.listLevel}" x="${number(marker.anchorX)}" y="${number((Number.isFinite(line.baselineY) ? line.baselineY + (marker.baselineOffset || 0) : line.y) + verticalOffset)}" text-anchor="end" text-transform="none" font-family="${escapeXml(style.fontFamily || getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif')}" font-size="${number(style.fontSize || getNodePropertyValue(document, node, 'fontSize') || 24)}" font-weight="${escapeXml(style.fontWeight || getNodePropertyValue(document, node, 'fontWeight') || 400)}" font-style="${style.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(style.letterSpacing ?? getNodePropertyValue(document, node, 'letterSpacing') ?? 0)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)} fill="${escapeXml(markerColor)}"${textLength}>${escapeXml(marker.text)}</tspan>`;
+  return `<tspan data-tiny-image-star-list-marker="${marker.listStyle || line.listStyle}" data-list-level="${line.listLevel}" x="${number(marker.anchorX)}" y="${number((Number.isFinite(line.baselineY) ? line.baselineY + (marker.baselineOffset || 0) : line.y) + verticalOffset)}" text-anchor="end" text-transform="none" font-family="${escapeXml(style.fontFamily || getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif')}" font-size="${number(style.fontSize || getNodePropertyValue(document, node, 'fontSize') || 24)}" font-weight="${escapeXml(style.fontWeight || getNodePropertyValue(document, node, 'fontWeight') || 400)}" font-style="${style.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(resolvedTextLetterSpacing(style))}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)} fill="${escapeXml(markerColor)}"${textLength}>${escapeXml(marker.text)}</tspan>`;
 }
 
 function isSvgPaintValue(value) {
@@ -1504,7 +1511,7 @@ function richLineJustificationOffsets(line) {
 export const SVG_TEXT_DECORATION_METADATA_ATTRIBUTE = 'data-tiny-image-star-text-decoration-v1';
 export const SVG_TEXT_DECORATION_SOURCE_FIELDS = Object.freeze([
   'text', 'width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'align', 'verticalAlign', 'textCase', 'textDecoration',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'align', 'verticalAlign', 'textCase', 'textDecoration',
   'color', 'fillOpacity', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textRuns', 'textPosition', 'leadingTrim', ...TEXT_DECORATION_PROPERTIES
 ]);
@@ -1527,7 +1534,7 @@ function textDecorationRecoveryMeasurer(node, document, measureText, options) {
     || strokeStackForNode(node).some(stroke => stroke.visible !== false && stroke.width > 0 && stroke.opacity > 0)
     || options.fillValue !== undefined || options.strokeItem || typeof measureText !== 'function'
     || measureText.pdfNaturalWidth || measureText.pdfBaselineOffset
-    || ![node, ...(node.textRuns || [])].some(style => customTextDecoration(style) || positionedTextStyle(style) || style.leadingTrim?.type === 'CAP_HEIGHT') && typeof measureText.textLineMetrics !== 'function'
+    || ![node, ...(node.textRuns || [])].some(style => customTextDecoration(style) || positionedTextStyle(style) || style.leadingTrim?.type === 'CAP_HEIGHT' || style.letterSpacingUnit != null) && typeof measureText.textLineMetrics !== 'function'
     || localTextUsesGlyphGeometry(node, document, measureText)
     || [node, ...(node.textRuns || [])].some(style => style.textDecorationSkipInk)) return null;
   const source = Object.fromEntries(SVG_TEXT_DECORATION_SOURCE_FIELDS.filter(key => node[key] !== undefined)
@@ -1824,7 +1831,7 @@ function textMarkup(node, document, measureText, {
   const decorationMarkup = () => customDecorationMarkup(node, document, measureText, fillValue, fillOpacity, decorationsMode);
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
-  const letterSpacing = Number(getNodePropertyValue(document, node, 'letterSpacing') ?? 0);
+  const letterSpacing = resolvedTextLetterSpacing({ ...node, fontSize, letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0 });
   const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;
   const fontFamily = getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif';
   const fontStyle = getNodePropertyValue(document, node, 'fontStyle') || 'normal';
@@ -1851,16 +1858,17 @@ function textMarkup(node, document, measureText, {
     const pathRuns = position.node.textRuns || node.textRuns;
     const currentRuns = Array.isArray(pathRuns)
       && pathRuns.map(run => run.text).join('') === sourceText;
-    const measuredSpans = textPathSpans(sourceText, { ...resolvedNode, ...position.node, fontSize, fontWeight, letterSpacing });
+    const measuredSpans = textPathSpans(sourceText, { ...resolvedNode, ...position.node, fontSize, fontWeight });
     const measured = measuredSpans.reduce((width, span, index) => {
       const naturalWidth = typeof measureText === 'function'
         ? Number(measureText(span.text, {
           ...resolvedNode,
-          textPathRunStyle: { ...span.style, letterSpacing: 0 }
+          textPathRunStyle: { ...span.style, letterSpacing: 0, letterSpacingUnit: 'pixels' }
         }))
         : span.graphemeCount * span.style.fontSize * .6;
-      const tracking = Math.max(0, span.graphemeCount - 1) * span.style.letterSpacing
-        + (index < measuredSpans.length - 1 ? span.style.letterSpacing : 0);
+      const spanSpacing = resolvedTextLetterSpacing(span.style);
+      const tracking = Math.max(0, span.graphemeCount - 1) * spanSpacing
+        + (index < measuredSpans.length - 1 ? spanSpacing : 0);
       return width + naturalWidth * (span.style.textPositionScaleX || 1) + tracking;
     }, 0);
     const alignmentOffset = node.align === 'center' ? (length - measured) / 2 : node.align === 'right' ? length - measured : 0;
@@ -1870,7 +1878,7 @@ function textMarkup(node, document, measureText, {
       const runSize = Number(run.fontSize ?? fontSize);
       const runWeight = run.fontWeight ?? fontWeight;
       const runStyle = run.fontStyle === 'italic' || (!Object.hasOwn(run, 'fontStyle') && fontStyle === 'italic') ? 'italic' : 'normal';
-      const runSpacing = Number(run.letterSpacing ?? letterSpacing);
+      const runSpacing = resolvedTextLetterSpacing({ ...node, ...run, ...inheritedTextLetterSpacing(node, run), fontSize: runSize });
       const rawColor = fillValue === undefined ? (run.color || getNodeColor(document, node, 'text')) : fillValue;
       const runColor = rawColor === 'transparent' ? 'none' : rawColor;
       if (runColor !== 'none' && !isSvgPaintValue(runColor)) {
@@ -1949,7 +1957,7 @@ function textMarkup(node, document, measureText, {
           : '';
         const positionAttributes = individuallyPlaced ? ` x="${number(positionX)}" y="${number(positionY)}" text-anchor="start"${!line.justify && pdfWidth > 0 ? ` textLength="${number(pdfWidth)}" lengthAdjust="spacingAndGlyphs"` : ''}` : baselineShiftAttribute;
         const features = positioned ? positionedFontFeatures(style, node) : style.fontFeatures || node.fontFeatures;
-        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(features)}${positionAttributes} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(resolvedTextLetterSpacing(style))}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(features)}${positionAttributes} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
         if (customDecorations || !['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);

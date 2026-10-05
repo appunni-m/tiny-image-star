@@ -5,18 +5,20 @@ import { isValidStrokeStack, strokeSideNames, strokeSideWidths } from './strokes
 import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { defaultImageAdjustments, isValidImageFill } from './image-fills.js';
 import { invertAffine, multiplyAffine, nodeToParentTransform } from './transform-geometry.js';
+import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
+import { resolveTextPositionPlan } from './text-position.js';
 
-const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'cornerSmoothing', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'cornerSmoothing', 'fontSize', 'fontWeight', 'lineHeight'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent', 'listSpacing'];
-const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'baselineShift'];
+const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'baselineShift'];
 const textRunInheritanceDefaults = { fontSize: 24, fontWeight: 400, lineHeight: 1.25, letterSpacing: 0, baselineShift: 0 };
-const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing'];
+const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing', 'letterSpacingUnit'];
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'affineTransform', 'points', 'innerRadius', 'vertexRadii', 'arcData',
-  'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
+  'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeDashArray', 'strokeCap', 'strokeJoin', 'strokeAlignment', 'fillRule', 'clip', 'mask', 'maskMode', 'maskSourceId',
   'overflowBehavior', 'fixedPositionWhenScrolling', 'scrollPosition'
 ];
@@ -525,18 +527,18 @@ function canMatch(from, to) {
 
 const implicitTextStyleProperties = [
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent',
   'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle'
 ];
 const implicitTextStyleDefaults = {
   fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal',
-  lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, paragraphSpacing: 0,
+  lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, letterSpacingUnit: 'pixels', paragraphSpacing: 0,
   firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top',
   textCase: 'none', textDecoration: 'none'
 };
 const implicitTextRunStyleProperties = [
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'baselineShift', 'color', 'textCase', 'textDecoration'
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'baselineShift', 'color', 'textCase', 'textDecoration'
 ];
 
 function stableSerialize(value) {
@@ -557,11 +559,11 @@ function implicitTextStyleSignature(node) {
   const baseStyle = Object.fromEntries(implicitTextStyleProperties.map(property => [
     property, node[property] ?? implicitTextStyleDefaults[property] ?? null
   ]));
-  const runs = node.textRuns == null ? null : node.textRuns.map(run => Object.fromEntries(
+  const runs = node.textRuns == null ? null : node.textRuns.map(run => ({ ...Object.fromEntries(
     implicitTextRunStyleProperties.map(property => [
       property, run[property] ?? node[property] ?? implicitTextStyleDefaults[property] ?? textRunInheritanceDefaults[property] ?? null
     ])
-  ));
+  ), ...inheritedTextLetterSpacing(node, run) }));
   const typographyBindings = Object.fromEntries(textVariableBindingProperties
     .filter(property => node.variableBindings?.[property])
     .map(property => [property, node.variableBindings[property]]));
@@ -933,7 +935,7 @@ function fadeLayer(node, progress, entering) {
   return copy;
 }
 
-function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false) {
+function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false, shapeText = null) {
   // Figma keeps fixed-position layers anchored to their source position for
   // the duration of Smart Animate Matching Layers. The destination snapshot
   // takes over only at the exact endpoint, including when the fixed flag
@@ -970,7 +972,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   if (effects) copy.effects = effects;
   for (const property of numericProperties) {
     if (from.type === 'text' && to.type === 'text'
-      && ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'].includes(property)
+      && ['fontSize', 'fontWeight', 'lineHeight'].includes(property)
       && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {
       snapProperty(copy, from, to, property, progress);
       continue;
@@ -1024,6 +1026,13 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   }
   if (from.type === 'text' && to.type === 'text') {
     snapTextVariableBindings(copy, from, to, progress);
+    const bound = hasTextTypographyBinding(from) || hasTextTypographyBinding(to);
+    const fromPlan = bound ? null : resolveTextPositionPlan(from, { shapeText });
+    const toPlan = bound ? null : resolveTextPositionPlan(to, { shapeText });
+    if (!bound && progress > 0 && progress < 1) {
+      const start = endpointTextSpacing(from, null, fromPlan); const end = endpointTextSpacing(to, null, toPlan);
+      if (start !== null && end !== null) { copy.letterSpacing = interpolateFiniteNumber(start, end, progress); copy.letterSpacingUnit = 'pixels'; }
+    }
     for (const property of textNodeNumericProperties) {
       const hasStart = Object.prototype.hasOwnProperty.call(from, property);
       const hasEnd = Object.prototype.hasOwnProperty.call(to, property);
@@ -1038,11 +1047,18 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
         else delete copy[property];
       } else copy[property] = start + (end - start) * progress;
     }
-    const textRuns = hasTextTypographyBinding(from) || hasTextTypographyBinding(to)
+    const textRuns = bound
       ? null
-      : interpolateTextRuns(from.textRuns, to.textRuns, progress, from, to);
+      : interpolateTextRuns(from.textRuns, to.textRuns, progress, from, to, fromPlan, toPlan);
     if (textRuns) copy.textRuns = textRuns;
-    else snapProperty(copy, from, to, 'textRuns', progress);
+    else {
+      snapProperty(copy, from, to, 'textRuns', progress);
+      if (!bound && progress > 0 && progress < 1 && Array.isArray(copy.textRuns)) {
+        const endpoint = progress < .5 ? from : to;
+        const plan = progress < .5 ? fromPlan : toPlan;
+        copy.textRuns = snapshotTextRunSpacing(copy.textRuns, endpoint, plan);
+      }
+    }
   }
   if (from.type === 'path' && to.type === 'path') {
     copy.points = interpolatePathPoints(from.points, to.points, geometryProgress);
@@ -1064,7 +1080,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   const fromChildren = from.children || [];
   const toChildren = to.children || [];
   const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
-  copy.children = blendChildren(fromChildren, toChildren, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers, siblingMatches);
+  copy.children = blendChildren(fromChildren, toChildren, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers, siblingMatches, shapeText);
   if (copy.maskSourceId) {
     const endpointChildren = progress < .5 ? fromChildren : toChildren;
     const maskIndex = endpointChildren.findIndex(child => child.id === copy.maskSourceId);
@@ -1117,7 +1133,29 @@ function interpolateRotation(from, to, progress) {
   return start + shortestRotationDelta(start, end) * progress;
 }
 
-function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
+function endpointTextSpacing(node, run, plan) {
+  const style = { ...node, ...run, ...inheritedTextLetterSpacing(node, run || {}) };
+  try { return resolvedTextLetterSpacing(plan?.resolveStyle(style) || style); } catch { return null; }
+}
+
+function snapshotTextRunSpacing(runs, node, plan) {
+  const baseSpacing = endpointTextSpacing(node, null, plan);
+  return runs.map(run => {
+    const spacing = inheritedTextLetterSpacing(node, run);
+    const pixels = endpointTextSpacing(node, run, plan);
+    // Incompatible text/range boundaries keep categorical run styles. Convert
+    // their tracking snapshot when the animated pixel-valued parent would
+    // otherwise reinterpret a percentage or an explicit unit-only override.
+    if (pixels !== null && (run.letterSpacingUnit !== undefined
+      || (spacing.letterSpacingUnit === 'percent'
+        && (run.letterSpacing !== undefined || pixels !== baseSpacing)))) {
+      return { ...run, letterSpacing: pixels, letterSpacingUnit: 'pixels' };
+    }
+    return run;
+  });
+}
+
+function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode, fromPlan, toPlan) {
   if (!Array.isArray(fromRuns) || !Array.isArray(toRuns) || fromRuns.length !== toRuns.length
     || typeof fromNode?.text !== 'string' || fromNode.text !== toNode?.text
     || fromRuns.map(run => run?.text).join('') !== fromNode.text
@@ -1135,6 +1173,13 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
       if (start === null || end === null) continue;
       run[property] = start + (end - start) * progress;
     }
+    const fromSpacing = inheritedTextLetterSpacing(fromNode, fromRun); const toSpacing = inheritedTextLetterSpacing(toNode, toRun);
+    if (fromRun.letterSpacing != null || toRun.letterSpacing != null
+      || fromRun.letterSpacingUnit !== undefined || toRun.letterSpacingUnit !== undefined
+      || fromSpacing.letterSpacingUnit === 'percent' || toSpacing.letterSpacingUnit === 'percent') {
+      const start = endpointTextSpacing(fromNode, fromRun, fromPlan); const end = endpointTextSpacing(toNode, toRun, toPlan);
+      if (start !== null && end !== null) { run.letterSpacing = interpolateFiniteNumber(start, end, progress); run.letterSpacingUnit = 'pixels'; }
+    }
     if (fromRun.color != null || toRun.color != null) {
       const start = fromRun.color ?? fromNode.color ?? '#1e1e1e';
       const end = toRun.color ?? toNode.color ?? '#1e1e1e';
@@ -1145,7 +1190,7 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false, siblingMatches = matchSiblingNodes(fromChildren, toChildren)) {
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null, preserveFixedLayers = false, siblingMatches = matchSiblingNodes(fromChildren, toChildren), shapeText = null) {
 
   // Back and spring easings can briefly leave [0, 1]. Keep layer presence and
   // order on the corresponding endpoint while matched geometry anticipates or
@@ -1157,7 +1202,7 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
         ? siblingMatches.matchesBySourceIndex.get(index)
         : siblingMatches.matchesByDestinationIndex.get(index);
       return match
-        ? interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers)
+        ? interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers, shapeText)
         : structuredClone(node);
     });
   }
@@ -1165,7 +1210,7 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
   const destination = toChildren.map((node, index) => {
     const match = siblingMatches.matchesByDestinationIndex.get(index);
     if (match) {
-      return { node: interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers), sourceIndex: match.sourceIndex };
+      return { node: interpolateLayer(match.source, match.destination, progress, resolveRadius, geometryProgress, resolveImageTransition, preserveFixedLayers, shapeText), sourceIndex: match.sourceIndex };
     }
     return { node: fadeLayer(node, progress, true), sourceIndex: null };
   });
@@ -1320,12 +1365,13 @@ export function splitSmartFrameMatches(fromFrame, toFrame, progress, options = {
   const siblingMatches = matchSiblingNodes(fromChildren, toChildren);
   const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
   const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
+  const shapeText = typeof options?.shapeText === 'function' ? options.shapeText : null;
   const sourceEndpoint = allowOvershoot ? requestedProgress === 0 : amount === 0;
   const destinationEndpoint = allowOvershoot ? requestedProgress === 1 : amount === 1;
   const matches = [...siblingMatches.matchesByDestinationIndex.values()].map(match => {
     const node = sourceEndpoint ? structuredClone(match.source)
       : destinationEndpoint ? structuredClone(match.destination)
-        : interpolateLayer(match.source, match.destination, amount, resolveRadius, geometryProgress, resolveImageTransition, true);
+        : interpolateLayer(match.source, match.destination, amount, resolveRadius, geometryProgress, resolveImageTransition, true, shapeText);
     return {
       sourceIndex: match.sourceIndex,
       destinationIndex: match.destinationIndex,
@@ -1368,7 +1414,7 @@ export function splitSmartFrameMatches(fromFrame, toFrame, progress, options = {
   const fixedDestinationIds = new Set([...fixedDestinationIndexes].map(index => toChildren[index].id));
   const matchedLayerIds = new Set([...siblingMatches.matchesByDestinationIndex.values()]
     .flatMap(match => [match.source.id, match.destination.id]));
-  const animatedChildren = blendChildren(fromChildren, toChildren, amount, resolveRadius, geometryProgress, resolveImageTransition, true);
+  const animatedChildren = blendChildren(fromChildren, toChildren, amount, resolveRadius, geometryProgress, resolveImageTransition, true, siblingMatches, shapeText);
   const sourceIndexById = new Map(fromChildren.map((node, index) => [node.id, index]));
   const destinationIndexById = new Map(toChildren.map((node, index) => [node.id, index]));
   const matchedIndexesById = new Map();
@@ -1585,7 +1631,8 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   if (allowOvershoot ? requestedProgress === 1 : amount === 1) return structuredClone(toFrame);
   const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
   const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
+  const shapeText = typeof options?.shapeText === 'function' ? options.shapeText : null;
   const frame = interpolateFrameProperties(fromFrame, toFrame, amount, geometryProgress, resolveRadius, resolveImageTransition);
-  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress, resolveImageTransition);
+  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress, resolveImageTransition, false, undefined, shapeText);
   return frame;
 }

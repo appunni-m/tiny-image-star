@@ -3,6 +3,7 @@ import { TEXT_DECORATION_PROPERTIES, textDecorationDefaults } from './text-decor
 import { resolveTextPositionView } from './text-position.js';
 import { createTextLeadingTrimResolver, canvasLeadingTrimMetrics } from './text-leading-trim.js';
 import { resolveTextLineLayout, canvasTextLineMetrics } from './text-line-metrics.js';
+import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
 
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
@@ -775,7 +776,7 @@ export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
   return size * amount;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift', 'textPosition', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset', 'leadingTrim'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift', 'textPosition', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset', 'leadingTrim'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -787,6 +788,7 @@ function richTextStyle(base, run) {
   style.fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal';
   style.lineHeight = Math.max(.1, Number(style.lineHeight) || 1.25);
   style.lineHeightUnit = ['auto', 'pixels', 'percent'].includes(style.lineHeightUnit) ? style.lineHeightUnit : 'ratio';
+  Object.assign(style, inheritedTextLetterSpacing(base, run));
   style.letterSpacing = Number(style.letterSpacing) || 0;
   style.color ||= '#1e1e1e';
   style.textDecoration ||= 'none';
@@ -1260,6 +1262,7 @@ export function calculateTextBox(ctx, node, {
   lineHeight = node.lineHeight,
   lineHeightUnit = node.lineHeightUnit || 'ratio',
   letterSpacing = node.letterSpacing,
+  letterSpacingUnit = node.letterSpacingUnit,
   paragraphSpacing = node.paragraphSpacing,
   firstLineIndent = node.firstLineIndent,
   listSpacing = node.listSpacing,
@@ -1274,12 +1277,12 @@ export function calculateTextBox(ctx, node, {
 
   const size = Math.max(1, Number(fontSize) || 24);
   const lineHeightPx = resolvedLineHeight(lineHeight, size, lineHeightUnit);
-  const spacing = Number(letterSpacing) || 0;
+  const authoredSpacing = Number(letterSpacing) || 0;
   const textValue = transformTextCase(text, node.textCase || 'none');
   const family = fontFamily || 'Arial, sans-serif';
   const weight = Number(fontWeight) || 400;
   const style = fontStyle || 'normal';
-  let resolvedNode = { ...node, fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: size, letterSpacing: spacing };
+  let resolvedNode = { ...node, fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: size, letterSpacing: authoredSpacing, letterSpacingUnit };
   if (!node.__textPositionResolved) resolvedNode = resolveTextPositionView(resolvedNode, { shapeText }).node;
   ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
   const measure = (value, textStyle = resolvedNode) => {
@@ -1291,10 +1294,10 @@ export function calculateTextBox(ctx, node, {
         advance += Number(shaped.glyphs[index].xAdvance) || 0;
         if (index > 0 && shaped.glyphs[index].cluster !== shaped.glyphs[index - 1].cluster) boundaries += 1;
       }
-        return Math.max(0, advance * (Number(textStyle.fontSize) || size) / shaped.upem * (textStyle.textPositionScaleX || 1) + boundaries * (Number(textStyle.letterSpacing) || 0));
+        return Math.max(0, advance * (Number(textStyle.fontSize) || size) / shaped.upem * (textStyle.textPositionScaleX || 1) + boundaries * resolvedTextLetterSpacing(textStyle));
     }
     const scaleX = textStyle.textPositionScaleX || 1;
-    return measureTrackedText(ctx, value, (textStyle.letterSpacing ?? spacing) / scaleX) * scaleX;
+    return measureTrackedText(ctx, value, resolvedTextLetterSpacing(textStyle) / scaleX) * scaleX;
   };
 
   const richRuns = resolvedNode.textRuns;
@@ -1302,7 +1305,7 @@ export function calculateTextBox(ctx, node, {
     const baseStyle = {
       fontFamily: family, fontSize: size,
       fontWeight: weight, fontStyle: style, fontAxes: node.fontAxes, fontFeatures: node.fontFeatures,
-      lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
+      lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: authoredSpacing, letterSpacingUnit,
       lineHeightUnit,
       paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
       firstLineIndent: nonNegativeTextMetric(firstLineIndent),
@@ -1352,7 +1355,7 @@ export function calculateTextBox(ctx, node, {
         textLineMetrics: (textStyle, value) => canvasTextLineMetrics(ctx, textStyle, value),
         textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
         fontFamily: family, fontSize: size, fontWeight: weight,
-        fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
+        fontStyle: style, letterSpacing: authoredSpacing, letterSpacingUnit, color: node.color || '#1e1e1e'
       } });
     const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
     return {
@@ -1371,7 +1374,7 @@ export function calculateTextBox(ctx, node, {
       textLineMetrics: (textStyle, value) => canvasTextLineMetrics(ctx, textStyle, value),
       textTruncation: node.textTruncation, maxLines: node.maxLines, maxHeight: node.maxHeight, markerStyle: {
       fontFamily: family, fontSize: size, fontWeight: weight,
-      fontStyle: style, letterSpacing: spacing, color: node.color || '#1e1e1e'
+      fontStyle: style, letterSpacing: authoredSpacing, letterSpacingUnit, color: node.color || '#1e1e1e'
     } });
   const measuredHeight = layout.leadingTrim || layout.textLineMetrics ? Math.max(.001, layout.height) : Math.max(36, Math.ceil(layout.height + 4));
   return { width, height: node.textTruncation === 'ending' && Number.isFinite(node.maxHeight)

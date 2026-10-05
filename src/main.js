@@ -40,6 +40,7 @@ import { updateEllipseArcData } from './ellipse-arc.js';
 import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, presentationNodePageOrigin, scrollableFramePathAtPagePoint, localTextInkBounds, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
+import { resolvedTextLetterSpacing } from './text-letter-spacing.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { imagePreviewDimensions, imagePreviewResolutionMatches } from './image-processing.js';
@@ -176,7 +177,7 @@ import { toolbarNavigationTarget } from './toolbar-keyboard.js';
 import { toolbarOverflowDestination, toolbarOverflowState } from './toolbar-overflow.js';
 import { formatImageRecipeWorkerReadout, imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { defaultImageRecipeConcurrency } from './bulk-recipe-concurrency.js';
-import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
+import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange, convertTextRunLetterSpacingUnit, convertTextLayerLetterSpacingUnit } from './text-run-editing.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textDecorationDefaults } from './text-decoration-style.js';
 import { applyTextDecorationControlRange, textDecorationControlPatch, textDecorationCss, textStyleValuesEqual } from './text-decoration-controls.js';
 import { canvasTextInkBounds } from './text-decoration.js';
@@ -210,7 +211,7 @@ const MIB = 1024 * 1024;
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textPosition', 'leadingTrim', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES
 ]);
 const state = {
@@ -3590,6 +3591,7 @@ function textSection(node) {
   const fontStyle = getNodePropertyValue(state.document, node, 'fontStyle') || 'normal';
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
+  const letterSpacingUnit = node.letterSpacingUnit || 'pixels';
   const paragraphSpacing = getNodePropertyValue(state.document, node, 'paragraphSpacing') || 0;
   const listSpacing = node.listSpacing || 0;
   const firstLineIndent = getNodePropertyValue(state.document, node, 'firstLineIndent') || 0;
@@ -3617,7 +3619,7 @@ function textSection(node) {
     ? `<div class="image-properties-note">Linked to ${escapeHtml(pathSource?.name || 'source path')}. Geometry edits update this text path.</div><button class="add-fill" type="button" data-action="detach-text-path">Detach from source path</button>`
     : '<div class="image-properties-note">This text keeps its own path snapshot.</div>';
   const pathControls = currentTextPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(currentTextPath.width) * 4 + Number(currentTextPath.height) * 4)}" step="1" value="${Number(currentTextPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${currentTextPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>${pathLinkStatus}` : '';
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(fontFamily)}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select><label class="property-label">Wrap style<select class="prop-input select-field" data-prop="textWrapStyle" aria-label="Text wrap style"><option value="auto"${textWrapStyle === 'auto' ? ' selected' : ''}>Auto</option><option value="balance"${textWrapStyle === 'balance' ? ' selected' : ''}>Balance</option><option value="pretty"${textWrapStyle === 'pretty' ? ' selected' : ''}>Pretty</option></select></label>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width. Balance evens short copy; Pretty reduces a one-word final line. Auto width measures the text without wrapping.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontFamily', 'Font family')}${variablePropertyBindingControl(node, 'fontWeight', 'Font weight')}${variablePropertyBindingControl(node, 'fontStyle', 'Font style')}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}${variablePropertyBindingControl(node, 'paragraphSpacing', 'Paragraph spacing')}${variablePropertyBindingControl(node, 'firstLineIndent', 'First-line indent')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(fontFamily)}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select><label class="property-label">Wrap style<select class="prop-input select-field" data-prop="textWrapStyle" aria-label="Text wrap style"><option value="auto"${textWrapStyle === 'auto' ? ' selected' : ''}>Auto</option><option value="balance"${textWrapStyle === 'balance' ? ' selected' : ''}>Balance</option><option value="pretty"${textWrapStyle === 'pretty' ? ' selected' : ''}>Pretty</option></select></label>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01, -10000, 10000, false, 'Letter spacing')}<select class="prop-input select-field" data-prop="letterSpacingUnit" aria-label="Letter spacing unit"><option value="pixels"${letterSpacingUnit === 'pixels' ? ' selected' : ''}>px</option><option value="percent"${letterSpacingUnit === 'percent' ? ' selected' : ''}>%</option></select>${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width. Balance evens short copy; Pretty reduces a one-word final line. Auto width measures the text without wrapping.</div>${fontVariationAxisControls(node)}${fontFeatureControls(node)}${variablePropertyBindingControl(node, 'fontFamily', 'Font family')}${variablePropertyBindingControl(node, 'fontWeight', 'Font weight')}${variablePropertyBindingControl(node, 'fontStyle', 'Font style')}${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}${variablePropertyBindingControl(node, 'paragraphSpacing', 'Paragraph spacing')}${variablePropertyBindingControl(node, 'firstLineIndent', 'First-line indent')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const textPosition = isValidTextPosition(node.textPosition) ? node.textPosition : 'normal';
@@ -8149,6 +8151,7 @@ function resizeTextNode(node, { settledOnly = false } = {}) {
     fontStyle: getNodePropertyValue(state.document, node, 'fontStyle'),
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight'),
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
+    letterSpacingUnit: node.letterSpacingUnit || 'pixels',
     paragraphSpacing: getNodePropertyValue(state.document, node, 'paragraphSpacing'),
     firstLineIndent: getNodePropertyValue(state.document, node, 'firstLineIndent'),
     listSpacing: node.listSpacing,
@@ -8180,7 +8183,7 @@ function resizeTextLayers(roots, variableId = null) {
   for (const parent of layoutParents) applyAutoLayout(parent);
 }
 
-const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'textPosition', 'leadingTrim', 'baselineShift', ...TEXT_DECORATION_PROPERTIES];
+const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'color', 'textDecoration', 'textPosition', 'leadingTrim', 'baselineShift', ...TEXT_DECORATION_PROPERTIES];
 const textBlockTags = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE']);
 function textRunDataAttribute(property) { return `data-run-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`; }
 function normalizeTextRunStyle(source = {}) {
@@ -8200,6 +8203,9 @@ function normalizeTextRunStyle(source = {}) {
     } else if (property === 'lineHeightUnit') {
       value = String(value);
       if (!['ratio', 'auto', 'pixels', 'percent'].includes(value)) continue;
+    } else if (property === 'letterSpacingUnit') {
+      value = String(value);
+      if (!['pixels', 'percent'].includes(value)) continue;
     } else if (['fontSize', 'lineHeight'].includes(property)) {
       value = Number(value);
       if (!Number.isFinite(value) || value <= 0 || value > (property === 'lineHeight' ? 100_000 : 100_000)) continue;
@@ -8258,7 +8264,34 @@ function parseTextRunColor(value) {
   if (parts.some(part => part < 0 || part > 255)) return null;
   return `#${parts.map(part => part.toString(16).padStart(2, '0')).join('')}`;
 }
-function textRunStyleForElement(element, inherited) {
+function textRunLetterSpacingForElement(element) {
+  const encoded = element.getAttribute(textRunDataAttribute('letterSpacing'));
+  const encodedUnit = element.getAttribute(textRunDataAttribute('letterSpacingUnit'));
+  if (encoded != null || encodedUnit != null) {
+    if (encoded == null) return null;
+    const source = {};
+    if (encodedUnit != null) source.letterSpacingUnit = encodedUnit;
+    if (encoded != null) {
+      if (!encoded.trim()) return null;
+      source.letterSpacing = Number(encoded);
+      if (encodedUnit == null) source.letterSpacingUnit = 'pixels';
+    }
+    const normalized = normalizeTextRunStyle(source);
+    return Object.keys(normalized).length === Object.keys(source).length ? normalized : null;
+  }
+  // Derived preview CSS is never promoted to an authored run override.
+  if (element.dataset?.runPreview === 'true') return null;
+  const css = String(element.style?.letterSpacing || '').trim();
+  if (!css) return null;
+  if (css === 'normal') return { letterSpacing: 0, letterSpacingUnit: 'pixels' };
+  const match = /^(-?(?:\d+\.?\d*|\.\d+))(px|em)?$/i.exec(css);
+  if (!match) return null;
+  const source = { letterSpacing: Number(match[1]) * (match[2]?.toLowerCase() === 'em' ? 100 : 1),
+    letterSpacingUnit: match[2]?.toLowerCase() === 'em' ? 'percent' : 'pixels' };
+  const normalized = normalizeTextRunStyle(source);
+  return normalized.letterSpacing != null ? normalized : null;
+}
+function textRunStyleForElement(element, inherited, baseFontSize = 24) {
   const style = { ...inherited };
   const tag = element.tagName;
   if (tag === 'B' || tag === 'STRONG') style.fontWeight = 700;
@@ -8267,10 +8300,17 @@ function textRunStyleForElement(element, inherited) {
   if (tag === 'S' || tag === 'DEL') style.textDecoration = 'line-through';
   if (tag === 'SUP') style.textPosition = 'superscript';
   if (tag === 'SUB') style.textPosition = 'subscript';
+  const spacing = textRunLetterSpacingForElement(element);
+  const foreignEm = spacing && element.getAttribute(textRunDataAttribute('letterSpacing')) == null
+    && element.dataset?.runPreview !== 'true' && /em$/i.test(String(element.style?.letterSpacing || '').trim());
   for (const property of textRunStyleKeys) {
+    if (property === 'letterSpacing' || property === 'letterSpacingUnit') {
+      if (spacing?.[property] != null) style[property] = spacing[property];
+      continue;
+    }
     const encoded = element.getAttribute(textRunDataAttribute(property));
     if (encoded == null && element.dataset?.runPreview === 'true'
-      && (['textDecoration', 'textPosition', 'leadingTrim', 'fontSize', 'lineHeight', 'lineHeightUnit', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
+      && (['textDecoration', 'textPosition', 'leadingTrim', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'baselineShift', 'fontFeatures'].includes(property) || TEXT_DECORATION_PROPERTIES.includes(property))) continue;
     let value = encoded != null ? encoded : property === 'textPosition'
       ? ({ normal: 'normal', super: 'superscript', sub: 'subscript' })[element.style?.fontVariantPosition] : property === 'leadingTrim'
       ? element.style?.textBoxTrim === 'none' ? { type: 'NONE' }
@@ -8294,9 +8334,16 @@ function textRunStyleForElement(element, inherited) {
       if (normalized[property] != null) style[property] = normalized[property];
     }
   }
+  if (foreignEm) {
+    // Foreign CSS inherits the parent's computed length. Authored editor
+    // percentage metadata instead retains its font-relative model semantics.
+    style.letterSpacing = resolvedTextLetterSpacing({ ...style, fontSize: style.fontSize ?? baseFontSize });
+    style.letterSpacingUnit = 'pixels';
+  }
   return style;
 }
 function readTextEditorContent(root) {
+  const baseFontSize = Number(root.dataset?.authoredFontSize) || 24;
   const runs = [];
   let text = '';
   const paragraphStyles = [];
@@ -8311,7 +8358,7 @@ function readTextEditorContent(root) {
     if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
     if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR') { append('\n', inherited); return; }
     if (node.nodeType === Node.ELEMENT_NODE && !rootNode && textBlockTags.has(node.tagName) && text && !text.endsWith('\n')) append('\n', inherited);
-    const style = node.nodeType === Node.ELEMENT_NODE ? textRunStyleForElement(node, inherited) : inherited;
+    const style = node.nodeType === Node.ELEMENT_NODE ? textRunStyleForElement(node, inherited, baseFontSize) : inherited;
     for (const child of node.childNodes) visit(child, style, false);
   };
   const children = [...root.childNodes];
@@ -8319,7 +8366,8 @@ function readTextEditorContent(root) {
     && (child.dataset.editorParagraph === 'true' || textBlockTags.has(child.tagName)));
   if (paragraphBlocks) {
     children.forEach((paragraph, index) => {
-      for (const child of paragraph.childNodes) visit(child, {}, false);
+      const inherited = textRunStyleForElement(paragraph, {}, baseFontSize);
+      for (const child of paragraph.childNodes) visit(child, inherited, false);
       const listStyle = ['bulleted', 'numbered'].includes(paragraph.dataset.editorListStyle) ? paragraph.dataset.editorListStyle : 'none';
       const listLevel = Number(paragraph.dataset.editorListLevel);
       const listStart = Number(paragraph.dataset.editorListStart);
@@ -8419,14 +8467,16 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
         } else if (property === 'fontFeatures') {
           const settings = fontFeatureSettings(value);
           if (settings) span.style.fontFeatureSettings = settings;
-        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && !['textPosition', 'leadingTrim', 'lineHeight', 'lineHeightUnit'].includes(property)) span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+        } else if (!TEXT_DECORATION_PROPERTIES.includes(property) && !['textPosition', 'leadingTrim', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit'].includes(property)) span.style[property] = property === 'fontSize' ? `${value * state.zoom}px` : String(value);
       }
       if (baseStyle) {
         const effective = positionPlan.resolveStyle({ ...baseStyle, ...run,
-          ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}) });
+          ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}),
+          ...(run.letterSpacing != null && run.letterSpacingUnit == null ? { letterSpacingUnit: 'pixels' } : {}) });
         applyTextEditorPositionPreview(span, effective);
         applyTextEditorTrimPreview(span, effective);
         applyTextEditorLineHeightPreview(span, effective);
+        applyTextEditorLetterSpacingPreview(span, effective);
         span.style.textDecoration = effective.textDecoration;
         Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
       }
@@ -8449,6 +8499,9 @@ function applyTextEditorPositionPreview(span, style) {
 function applyTextEditorTrimPreview(element, style) {
   element.style.textBoxTrim = style.leadingTrim?.type === 'CAP_HEIGHT' ? 'trim-both' : 'none';
   element.style.textBoxEdge = 'cap alphabetic';
+}
+function applyTextEditorLetterSpacingPreview(element, style) {
+  element.style.letterSpacing = `${resolvedTextLetterSpacing(style) * state.zoom}px`;
 }
 function textStyleLineHeight(style, { settledOnly = false } = {}) {
   const fontSize = Number(style.authoredFontSize) || Number(style.fontSize) || 24;
@@ -8479,6 +8532,7 @@ function queueTextEditorPositionPreview() {
     const current = readTextEditorContent(editor);
     const baseStyle = textBaseStyle(node);
     applyTextEditorLineHeightPreview(editor, baseStyle);
+    applyTextEditorLetterSpacingPreview(editor, baseStyle);
     let plan;
     try { plan = resolveTextPositionPlan({ ...node, ...baseStyle, text: current.text, textRuns: current.runs }, { shapeText: state.shapeLocalTextRun }); }
     catch { return; }
@@ -8486,10 +8540,12 @@ function queueTextEditorPositionPreview() {
     for (const span of editor.querySelectorAll('[data-run-preview="true"]')) {
       const run = textRunStyleForElement(span, {});
       const effective = plan.resolveStyle({ ...baseStyle, ...run,
-        ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}) });
+        ...(run.lineHeight != null && run.lineHeightUnit == null ? { lineHeightUnit: 'ratio' } : {}),
+          ...(run.letterSpacing != null && run.letterSpacingUnit == null ? { letterSpacingUnit: 'pixels' } : {}) });
       applyTextEditorPositionPreview(span, effective);
       applyTextEditorTrimPreview(span, effective);
       applyTextEditorLineHeightPreview(span, effective);
+      applyTextEditorLetterSpacingPreview(span, effective);
       Object.assign(span.style, textDecorationCss(effective, { zoom: state.zoom }));
     }
   });
@@ -8577,6 +8633,7 @@ function textBaseStyle(node) {
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight') || 1.25,
     lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
+    letterSpacingUnit: node.letterSpacingUnit || 'pixels',
     baselineShift: 0,
     textPosition: isValidTextPosition(node.textPosition) ? node.textPosition : 'normal',
     leadingTrim: isValidLeadingTrim(node.leadingTrim) ? structuredClone(node.leadingTrim) : { type: 'NONE' },
@@ -8748,18 +8805,20 @@ function updateTextFormatToolbar() {
   }
   const size = $('#text-format-size'); const lineHeight = $('#text-format-line-height'); const color = $('#text-format-color');
   const family = $('#text-format-family'); const weight = $('#text-format-weight');
-  const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration'); const baselineShift = $('#text-format-baseline-shift'); const position = $('#text-format-position'); const trim = $('#text-format-trim');
-  for (const control of [size, lineHeight, color, family, weight, spacing, decoration, baselineShift, position, trim]) control.disabled = !selected;
+  const spacing = $('#text-format-spacing'); const spacingUnit = $('#text-format-spacing-unit'); const decoration = $('#text-format-decoration'); const baselineShift = $('#text-format-baseline-shift'); const position = $('#text-format-position'); const trim = $('#text-format-trim');
+  for (const control of [size, lineHeight, color, family, weight, spacing, spacingUnit, decoration, baselineShift, position, trim]) control.disabled = !selected;
   const base = textBaseStyle(node);
   const summarize = (property, normalize = value => value) => selected
     ? summarizeTextRunRange(current.runs, range.start, range.end,
-      run => run[property] ?? base[property], normalize)
+      run => property === 'letterSpacingUnit' && run.letterSpacing != null
+        ? run.letterSpacingUnit || 'pixels' : run[property] ?? base[property], normalize)
     : { selected: false, mixed: false, value: null };
   const familyState = summarize('fontFamily', value => String(value).trim());
   const weightState = summarize('fontWeight', value => Number(value));
   const sizeState = summarize('fontSize', value => Number(value));
   const lineHeightState = summarize('lineHeight', value => Number(value));
   const spacingState = summarize('letterSpacing', value => Number(value));
+  const spacingUnitState = summarize('letterSpacingUnit');
   const baselineShiftState = summarize('baselineShift', value => Number(value));
   const positionState = summarize('textPosition', value => isValidTextPosition(value) ? value : 'normal');
   const trimState = summarize('leadingTrim', value => value?.type === 'CAP_HEIGHT' ? 'CAP_HEIGHT' : 'NONE');
@@ -8769,7 +8828,9 @@ function updateTextFormatToolbar() {
   setTextFormatControlValue(weight, weightState.selected ? weightState.value : base.fontWeight, weightState.mixed);
   setTextFormatControlValue(size, sizeState.selected ? Math.max(1, Math.min(512, Math.round(sizeState.value))) : base.fontSize, sizeState.mixed);
   setTextFormatControlValue(lineHeight, lineHeightState.selected ? lineHeightState.value : base.lineHeight, lineHeightState.mixed);
-  setTextFormatControlValue(spacing, spacingState.selected ? spacingState.value : base.letterSpacing, spacingState.mixed);
+  setTextFormatControlValue(spacing, spacingState.selected ? spacingState.value : base.letterSpacing, spacingState.mixed || spacingUnitState.mixed);
+  setTextFormatControlValue(spacingUnit, spacingUnitState.selected ? spacingUnitState.value : base.letterSpacingUnit, spacingUnitState.mixed);
+  spacing.disabled = !selected || spacingUnitState.mixed;
   setTextFormatControlValue(baselineShift, baselineShiftState.selected ? baselineShiftState.value : 0, baselineShiftState.mixed);
   setTextFormatControlValue(position, positionState.selected ? positionState.value : base.textPosition, positionState.mixed);
   setTextFormatControlValue(trim, trimState.selected ? trimState.value : base.leadingTrim.type, trimState.mixed);
@@ -8826,6 +8887,30 @@ function applyTextUnderlineRangeControl(input) {
   renderTextEditorRuns(editor, runs, current.paragraphStyles);
   state.textSelection = range; setTextEditorSelection(editor, range.start, range.end);
   editor.focus({ preventScroll: true }); updateTextFormatToolbar();
+}
+function applyTextSpacingFormat(value, { convertUnit = false } = {}) {
+  const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
+  const current = readTextEditorContent(editor); const range = rememberTextSelection();
+  const unit = convertUnit ? value : $('#text-format-spacing-unit').value;
+  if (!node || node.locked || !range || range.end <= range.start || range.end > current.text.length
+    || !['pixels', 'percent'].includes(unit)) { updateTextFormatToolbar(); return; }
+  try {
+    const base = textBaseStyle(node);
+    let nextRuns;
+    if (convertUnit) {
+      const plan = resolveTextPositionPlan({ ...node, ...base, text: current.text, textRuns: current.runs }, { shapeText: state.shapeLocalTextRun });
+      if (plan.mode === 'pending') throw new Error('The font is still loading. Wait for it to finish, then change the letter-spacing unit.');
+      nextRuns = convertTextRunLetterSpacingUnit(current.runs, range.start, range.end, base, unit, { resolveStyle: plan.resolveStyle });
+    } else {
+      if (!Number.isFinite(value) || Math.abs(value) > 10_000) return;
+      nextRuns = transformTextRunsInRange(current.runs, range.start, range.end, 'letterSpacing', value);
+      nextRuns = transformTextRunsInRange(nextRuns, range.start, range.end, 'letterSpacingUnit', unit);
+    }
+    if (nextRuns.length > 10_000) throw new Error('This text has reached the 10,000 style-run limit.');
+    renderTextEditorRuns(editor, nextRuns, current.paragraphStyles);
+    state.textSelection = range; setTextEditorSelection(editor, range.start, range.end);
+    editor.focus({ preventScroll: true }); updateTextFormatToolbar();
+  } catch (error) { showToast(error.message || 'Could not change letter spacing.'); updateTextFormatToolbar(); }
 }
 function applyTextFormat(property, value) {
   const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
@@ -8910,9 +8995,10 @@ function editTextNode(nodeId) {
   editor.style.fontStyle = getNodePropertyValue(state.document, entry.node, 'fontStyle') === 'italic' ? 'italic' : 'normal';
   editor.style.fontVariationSettings = fontVariationSettings(entry.node.fontAxes) || 'normal';
   editor.style.fontFeatureSettings = fontFeatureSettings(entry.node.fontFeatures) || 'normal';
+  editor.dataset.authoredFontSize = String(getNodePropertyValue(state.document, entry.node, 'fontSize') || 24);
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
   applyTextEditorLineHeightPreview(editor, textBaseStyle(entry.node));
-  editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
+  applyTextEditorLetterSpacingPreview(editor, textBaseStyle(entry.node));
   editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'firstLineIndent')) || 0) * state.zoom}px`);
   editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(getNodePropertyValue(state.document, entry.node, 'paragraphSpacing')) || 0) * state.zoom}px`);
   editor.style.setProperty('--text-list-spacing', `${Math.max(0, Number(entry.node.listSpacing) || 0) * state.zoom}px`);
@@ -9051,8 +9137,10 @@ function initRichTextEditorEvents() {
     } else if (event.target.id === 'text-format-spacing') {
       if (!event.target.value.trim()) { updateTextFormatToolbar(); return; }
       const value = Number(event.target.value);
-      if (Number.isFinite(value) && Math.abs(value) <= 10_000) applyTextFormat('letterSpacing', value);
+      if (Number.isFinite(value) && Math.abs(value) <= 10_000) applyTextSpacingFormat(value);
       else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-spacing-unit') {
+      applyTextSpacingFormat(event.target.value, { convertUnit: true });
     } else if (event.target.id === 'text-format-baseline-shift') {
       if (!event.target.value.trim()) { updateTextFormatToolbar(); return; }
       const value = Number(event.target.value);
@@ -12152,6 +12240,40 @@ function commitNumericFieldExpression(input) {
   finishInspectorInput();
 }
 
+function applyTextLetterSpacingUnitToSelection(unit) {
+  const nodes = selectedNodes();
+  if (!['pixels', 'percent'].includes(unit) || !nodes.length || nodes.some(node => node.type !== 'text'
+    || node.locked || findNode(state.document, node.id)?.parents.some(parent => parent.locked))) return;
+  let plans;
+  try {
+    plans = nodes.filter(node => (node.letterSpacingUnit || 'pixels') !== unit).map(node => {
+      const base = textBaseStyle(node);
+      const resolved = { ...node, ...base, text: getNodePropertyValue(state.document, node, 'text') };
+      const position = resolveTextPositionPlan(resolved, { shapeText: state.shapeLocalTextRun });
+      if (position.mode === 'pending') throw new Error('The font is still loading. Wait for it to finish, then change the letter-spacing unit.');
+      return { node, patch: convertTextLayerLetterSpacingUnit(node, base, unit, { resolveStyle: position.resolveStyle }) };
+    });
+  } catch (error) { showToast(error.message || 'Could not change the letter-spacing unit.'); renderInspector(); return; }
+  const changed = plans.filter(({ node, patch }) => (node.letterSpacingUnit || 'pixels') !== patch.letterSpacingUnit
+    || node.letterSpacing !== patch.letterSpacing || !textStyleValuesEqual(node.textRuns, patch.textRuns));
+  if (!changed.length) return;
+  if (!state.controlEdit) { checkpoint('Change letter spacing unit'); state.controlEdit = true; }
+  for (const { node, patch } of changed) {
+    const oldWidth = node.width; const oldHeight = node.height;
+    Object.assign(node, patch);
+    const properties = ['letterSpacing', 'letterSpacingUnit'];
+    if (patch.textRuns) properties.push('textRuns');
+    if (node.variableBindings?.letterSpacing) { delete node.variableBindings.letterSpacing; properties.push('variableBindings'); }
+    if (node.typographyStyleId) { delete node.typographyStyleId; properties.push('typographyStyleId'); }
+    resizeTextNode(node);
+    if (node.width !== oldWidth) properties.push('width');
+    if (node.height !== oldHeight) properties.push('height');
+    recordNodeComponentOverrides(node, properties);
+    const parent = findNode(state.document, node.id)?.parent;
+    if (parent?.autoLayout) applyAutoLayout(parent);
+  }
+  renderer.invalidate();
+}
 function updateInspectorInput(event) {
   const decorationField = event.target.closest('[data-text-decoration-field]');
   if (decorationField) { updateTextDecorationInspectorInput(decorationField, { commit: event.type === 'change' }); return; }
@@ -12159,6 +12281,8 @@ function updateInspectorInput(event) {
   if (event.target.closest('[data-scale-field]') && updateScaleInspectorInput(event.target.closest('[data-scale-field]'))) return;
   const selected = selectedNodes();
   if (!input || !selected.length) return;
+  if (input.dataset.prop === 'letterSpacingUnit') { applyTextLetterSpacingUnitToSelection(input.value); return; }
+  if (input.dataset.prop === 'letterSpacing' && (!input.value.trim() || !Number.isFinite(Number(input.value)) || Math.abs(Number(input.value)) > 10_000)) return;
   const expressionField = input.matches('[data-numeric-expression]');
   const expressionValue = expressionField ? numericFieldExpressionValue(input) : null;
   if (expressionField && !Number.isFinite(expressionValue)) return;
@@ -12365,7 +12489,7 @@ function updateInspectorInput(event) {
     } else if (node.type === 'text' && prop === 'maxHeight' && propertyValue != null) {
       node.maxLines = null;
     }
-    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'textPosition', 'leadingTrim', 'text', 'width'].includes(prop))) {
+    if (node.type === 'text' && (fontAxisMatch || fontFeatureMatch || ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight', 'textCase', 'textPosition', 'leadingTrim', 'text', 'width'].includes(prop))) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent'].includes(prop)) {
@@ -17231,7 +17355,7 @@ function pasteAppearanceToSelection() {
         componentProperties.add('radius'); componentProperties.add('cornerRadii'); componentProperties.add('vertexRadii');
       }
       if (changed.has('textStyle')) {
-        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textPosition', 'leadingTrim', ...TEXT_DECORATION_PROPERTIES, 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textWrapStyle', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textPosition', 'leadingTrim', ...TEXT_DECORATION_PROPERTIES, 'textStyleId', 'textVariableId']) componentProperties.add(property);
         if (resizeTextNode(result.node)) {
           componentProperties.add('width'); componentProperties.add('height');
           if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
@@ -17992,6 +18116,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     ? resolveVariableValueWithModeOverrides(runtimeDocument, node.variableBindings.radius, state.presenting.variableModes || {}, node)
     : node.radius;
   const interpolationOptions = {
+    shapeText: state.shapeLocalTextRun,
     resolveRadius: resolveTransitionRadius,
     resolveImageTransition: resolveSmartAnimateImageTransition,
     allowOvershoot: true
@@ -20384,7 +20509,9 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
     const fontSize = run?.fontSize ?? getNodePropertyValue(state.document, node, 'fontSize') ?? 24;
     const fontWeight = run?.fontWeight ?? getNodePropertyValue(state.document, node, 'fontWeight') ?? 400;
     const fontAxes = run?.fontAxes || node.fontAxes;
-    const letterSpacing = run?.letterSpacing ?? getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
+    const letterSpacing = resolvedTextLetterSpacing({ fontSize,
+      letterSpacing: run?.letterSpacing ?? getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0,
+      letterSpacingUnit: run?.letterSpacingUnit ?? (run?.letterSpacing != null ? 'pixels' : node.letterSpacingUnit || 'pixels') });
     const fontStyle = run?.fontStyle ?? getNodePropertyValue(state.document, node, 'fontStyle');
     const fontFamily = run?.fontFamily ?? getNodePropertyValue(state.document, node, 'fontFamily');
     context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, fontAxes)} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
@@ -20396,7 +20523,7 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
   measure.textInkBounds = (text, style, placement) => {
     context.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight || 400, style.fontAxes)} ${style.fontSize || 24}px ${pdfMetrics ? 'Helvetica' : style.fontFamily || 'Arial, sans-serif'}`;
     context.textBaseline = placement?.baseline ? 'alphabetic' : 'top';
-    return canvasTextInkBounds(context, text, style, placement);
+    return canvasTextInkBounds(context, text, { ...style, letterSpacing: resolvedTextLetterSpacing(style), letterSpacingUnit: 'pixels' }, placement);
   };
   if (pdfMetrics) {
     const configurePdfFont = node => {

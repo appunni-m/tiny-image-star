@@ -644,7 +644,7 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1, lineHeightUnit: 'auto', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, paragraphStyles: [], align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none', textWrapStyle: 'auto'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1, lineHeightUnit: 'auto', letterSpacing: 0, letterSpacingUnit: 'pixels', paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, paragraphStyles: [], align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none', textWrapStyle: 'auto'
   });
 });
 

@@ -16,7 +16,7 @@ const roots = new Set([
   'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides',
   'interactions', 'fixedPositionWhenScrolling', 'scrollPosition', 'overflowBehavior', 'text',
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
+  'letterSpacing', 'letterSpacingUnit', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles',
   'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit',
   'textTruncation', 'maxLines', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'fit', 'scalingFactor',
   'adjustments', 'transforms', 'fileName', 'sourceWidth', 'sourceHeight'

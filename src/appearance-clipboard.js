@@ -17,7 +17,7 @@ const vertexRadiusNodeTypes = new Set(['star', 'polygon']);
 const networkVertexRadiusNodeTypes = new Set(['network']);
 const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textStyleProperties = Object.freeze([
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
   'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim'
 ]);
@@ -74,6 +74,7 @@ export function snapshotAppearance(sourceNode) {
         && (property !== 'leadingTrim' || isValidLeadingTrim(sourceNode[property])))
       .map(property => [property, clone(sourceNode[property])]));
     Object.assign(textStyle, textDecorationDefaults(sourceNode));
+    textStyle.letterSpacingUnit = sourceNode.letterSpacingUnit || 'pixels';
     textStyle.textPosition = isValidTextPosition(sourceNode.textPosition) ? sourceNode.textPosition : 'normal';
     textStyle.leadingTrim = isValidLeadingTrim(sourceNode.leadingTrim) ? clone(sourceNode.leadingTrim) : { type:'NONE' };
     if (Object.keys(textStyle).length) snapshot.textStyle = textStyle;

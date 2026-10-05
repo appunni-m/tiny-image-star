@@ -3,6 +3,7 @@ import { requiresComplexTextShaping, textGraphemes } from './text-layout.js';
 import { canvasFontWeight } from './font-variation.js';
 import { ellipseArcParameters, isValidEllipseArcData } from './ellipse-arc.js';
 import { decorationStyleForRun, canvasTextInkBounds, nativeInkContoursForShapedText, textDecorationGeometry, traceTextDecorationContours } from './text-decoration.js';
+import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const MAX_TEXT_PATH_SAMPLES = 65_536;
@@ -233,7 +234,7 @@ function pathRunStyle(node, run, baseColor) {
     fontStyle: (run?.fontStyle ?? node.fontStyle) === 'italic' ? 'italic' : 'normal',
     fontAxes,
     fontFeatures: run?.fontFeatures || node.fontFeatures,
-    letterSpacing: Number(run?.letterSpacing ?? node.letterSpacing) || 0,
+    ...inheritedTextLetterSpacing(node, run),
     color: run?.color || baseColor || node.color || '#1e1e1e',
     textDecoration: run?.textDecoration || node.textDecoration || 'none',
     ...decorationStyleForRun(node, run),
@@ -325,7 +326,7 @@ export function textPathSvgData(path) {
 /** Draw editable graphemes along the vector path using the active canvas text style. */
 export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   fillOpacity = 1, paintMode = 'fill', fontSize: fontSizeOverride,
-  letterSpacing: letterSpacingOverride, fontWeight, fontStyle, fontFamily,
+  letterSpacing: letterSpacingOverride, letterSpacingUnit, fontWeight, fontStyle, fontFamily,
   color, overrideRunColors = false, includeDecorations = true, shapeText = null, drawShaped = null,
   decorationsOnly = false, decorate = null
 } = {}) {
@@ -340,6 +341,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     fontFeatures: node.fontFeatures,
     fontFamily: fontFamily ?? node.fontFamily,
     letterSpacing: letterSpacingOverride ?? node.letterSpacing,
+    letterSpacingUnit: letterSpacingUnit ?? (letterSpacingOverride !== undefined ? 'pixels' : node.letterSpacingUnit),
     color: color ?? node.color
   };
   const spans = textPathSpans(text, { ...node, ...baseStyle }, { color, overrideRunColors });
@@ -347,12 +349,12 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   const appendCanvasFallback = span => {
     if (requiresComplexTextShaping(span.text)) {
       const advance = Math.max(0, Number(measure(span.text, span.style)) || 0);
-      segments.push({ text: span.text, style: span.style, advance, letterSpacing: span.style.letterSpacing, shaped: null });
+      segments.push({ text: span.text, style: span.style, advance, letterSpacing: resolvedTextLetterSpacing(span.style), shaped: null });
       return;
     }
     for (const grapheme of textGraphemes(span.text)) {
       const advance = Math.max(0, Number(measure(grapheme, span.style)) || 0);
-      segments.push({ text: grapheme, style: span.style, advance, letterSpacing: span.style.letterSpacing, shaped: null });
+      segments.push({ text: grapheme, style: span.style, advance, letterSpacing: resolvedTextLetterSpacing(span.style), shaped: null });
     }
   };
   const appendShapedRun = (textValue, style, shaped) => {
@@ -387,7 +389,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
       const advance = Math.abs(advanceUnits * scale);
       const groupText = clusterText.get(group.cluster) || '';
       segments.push({
-        text: groupText, style, advance, letterSpacing: style.letterSpacing,
+        text: groupText, style, advance, letterSpacing: resolvedTextLetterSpacing(style),
         shaped: { ...shaped, glyphs: group.glyphs },
         shapedStartX: advanceUnits < 0 ? advance / 2 : -advance / 2
       });

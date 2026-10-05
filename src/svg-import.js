@@ -1025,6 +1025,7 @@ function parseMaskReference(value, element) {
 
 function parseStyle(node, parentStyle, gradients = new Map()) {
   const values = { ...parentStyle, opacity: 1, display: parentStyle.display, visibility: parentStyle.visibility, filterRef: null, clipPathRef: null, maskRef: null };
+  let letterSpacingEm = null;
   const declarations = Object.create(null);
   for (const [name, value] of Object.entries(node.attrs)) {
     if (inheritedProperties.has(name) || ['opacity', 'display', 'visibility', 'filter', 'clip-path', 'clip-rule', 'mask'].includes(name)) declarations[name] = value;
@@ -1125,8 +1126,12 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
         }
         values.baselineShift = shift; break;
       }
-      case 'letter-spacing':
-        values.letterSpacing = value === 'normal' ? 0 : coordinateLength(value, key, node.tag); break;
+      case 'letter-spacing': {
+        const em = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)em$/iu.exec(value);
+        if (em) letterSpacingEm = finiteNumber(em[1], key, node.tag);
+        else values.letterSpacing = value === 'normal' ? 0 : coordinateLength(value, key, node.tag);
+        break;
+      }
       case 'line-height': values.lineHeight = value; break;
       case 'text-decoration':
         if (!['none', 'underline', 'line-through', 'overline', 'blink'].includes(value)) fail('invalid-text-decoration', 'SVG text-decoration is not a recognized value.', node.tag);
@@ -1203,6 +1208,9 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['baseline-shift', 'baselineShift'], ['letter-spacing', 'letterSpacing'],
     ['line-height', 'lineHeight'], ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
   ]) if (!Object.hasOwn(declarations, property)) values[styleKey] = parentStyle[styleKey];
+  // Relative CSS lengths compute against this element's font size before
+  // children inherit the absolute value, independent of declaration order.
+  if (letterSpacingEm != null) values.letterSpacing = finiteNumber(letterSpacingEm * values.fontSize, 'letter-spacing', node.tag);
   if (Object.hasOwn(node.attrs, 'xml:space')) {
     if (!['default', 'preserve'].includes(node.attrs['xml:space'])) fail('invalid-xml-space', 'SVG xml:space must be default or preserve.', node.tag);
     values.xmlSpace = node.attrs['xml:space'];
@@ -3189,11 +3197,12 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
   const record = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => keys.includes(key));
   const runFields = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift', 'textPosition', 'leadingTrim',
+    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'textDecoration', 'textCase', 'color', 'baselineShift', 'textPosition', 'leadingTrim',
     ...TEXT_DECORATION_PROPERTIES];
   const safeStyle = value => TEXT_DECORATION_PROPERTIES.every(key => value[key] === undefined || isValidTextDecorationProperty(key, value[key]))
     && (value.textPosition === undefined || isValidTextPosition(value.textPosition))
     && (value.leadingTrim === undefined || isValidLeadingTrim(value.leadingTrim))
+    && (value.letterSpacingUnit === undefined || ['pixels', 'percent'].includes(value.letterSpacingUnit))
     && (value.fontAxes == null || isValidFontVariationValues(value.fontAxes))
     && (value.fontFeatures == null || isValidFontFeatureValues(value.fontFeatures));
   if (!record(payload, ['version', 'source', 'measurements', 'leadingTrimMetrics', 'textLineMetrics']) || payload.version !== 1
@@ -3237,7 +3246,7 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
   const metric = value => value?.unit === 'pixels' ? { unit: 'pixels', value: value.value * scale } : value;
   const scaledStyle = value => ({ ...value,
     ...(value.fontSize != null ? { fontSize: value.fontSize * scale } : {}),
-    ...(value.letterSpacing != null ? { letterSpacing: value.letterSpacing * scale } : {}),
+    ...(value.letterSpacing != null && value.letterSpacingUnit !== 'percent' ? { letterSpacing: value.letterSpacing * scale } : {}),
     ...(value.baselineShift != null ? { baselineShift: value.baselineShift * scale } : {}),
     ...(value.lineHeightUnit === 'pixels' ? { lineHeight: value.lineHeight * scale } : {}),
     ...(value.textDecorationThickness ? { textDecorationThickness: metric(value.textDecorationThickness) } : {}),

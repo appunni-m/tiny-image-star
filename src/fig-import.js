@@ -910,15 +910,15 @@ function figTextLineHeight(value, fallbackValue = 1.25, fallbackUnit = 'ratio') 
   return { value: finite(number, fallbackValue, 0.01, 100), unit: 'ratio' };
 }
 
-function figTextLetterSpacing(value, fontSize, fallback = 0) {
-  if (value == null) return fallback;
+function figTextLetterSpacing(value, fallbackValue = 0, fallbackUnit = 'pixels') {
+  if (value == null) return { value: fallbackValue, unit: fallbackUnit, valid: true };
   const metric = value && typeof value === 'object' ? value : { value };
   const number = Number(metric.value);
-  if (!Number.isFinite(number)) return fallback;
   const unit = String(metric.unit || '').toUpperCase();
-  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return finite(number * fontSize / 100, fallback, -10_000, 10_000);
-  if (unit && !['PIXELS', 'PX'].includes(unit)) return fallback;
-  return finite(number, fallback, -10_000, 10_000);
+  if (!Number.isFinite(number)) return { value: fallbackValue, unit: fallbackUnit, valid: false };
+  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return { value: finite(number, fallbackValue, -10_000, 10_000), unit: 'percent', valid: true };
+  if (unit && !['PIXELS', 'PX'].includes(unit)) return { value: fallbackValue, unit: fallbackUnit, valid: false };
+  return { value: finite(number, fallbackValue, -10_000, 10_000), unit: 'pixels', valid: true };
 }
 
 function figEnumValueFromEmbeddedSchema(schema, fieldName, numericValue) {
@@ -1338,7 +1338,6 @@ function textRunStyleOverrides(style, base, context, name) {
   const normalStyle = style.italic === false || ['NORMAL', 'REGULAR'].includes(String(style.fontStyle || '').toUpperCase());
   if ((italic || normalStyle) && (italic ? 'italic' : 'normal') !== base.fontStyle) result.fontStyle = italic ? 'italic' : 'normal';
 
-  const sizeForMetrics = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : base.fontSize;
   if (style.lineHeight != null) {
     const metric = figTextLineHeight(style.lineHeight, base.lineHeight, base.lineHeightUnit || 'ratio');
     if (metric.value !== base.lineHeight || metric.unit !== (base.lineHeightUnit || 'ratio')) {
@@ -1347,8 +1346,12 @@ function textRunStyleOverrides(style, base, context, name) {
     }
   }
   if (style.letterSpacing != null) {
-    const value = figTextLetterSpacing(style.letterSpacing, sizeForMetrics, base.letterSpacing);
-    if (value !== base.letterSpacing) result.letterSpacing = value;
+    const metric = figTextLetterSpacing(style.letterSpacing, base.letterSpacing, base.letterSpacingUnit || 'pixels');
+    if (!metric.valid) warn(context.report, 'unsupported', 'TEXT_LETTER_SPACING', name, 'The letter-spacing unit could not be represented; the base value was used.');
+    else if (metric.value !== base.letterSpacing || metric.unit !== (base.letterSpacingUnit || 'pixels')) {
+      result.letterSpacing = metric.value;
+      result.letterSpacingUnit = metric.unit;
+    }
   }
   const decoration = String(style.textDecoration || '').toUpperCase();
   const textDecoration = ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[decoration];
@@ -1470,7 +1473,10 @@ function textProperties(source, context) {
   const fontSize = finite(style.fontSize ?? source.fontSize, 24, 1, 100_000);
   const fontWeight = finite(style.fontWeight ?? source.fontWeight, inferredTextWeight(namedStyle), 1, 1000);
   const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight);
-  const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
+  const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing);
+  if (!letterSpacing.valid && (style.letterSpacing ?? source.letterSpacing) != null) {
+    warn(context.report, 'unsupported', 'TEXT_LETTER_SPACING', source.name, 'The letter-spacing unit could not be represented; the base pixel value was used.');
+  }
   const paragraphStyles = mapFigParagraphStyles(source, characters, context);
   const rawTextWrapStyle = source.textWrapStyle ?? style.textWrapStyle;
   const textWrapStyle = paragraphStyles && String(rawTextWrapStyle || '').toUpperCase() === 'MIXED'
@@ -1534,7 +1540,8 @@ function textProperties(source, context) {
     fontStyle: style.italic === true || source.italic === true || String(style.fontStyle || '').toUpperCase() === 'ITALIC' || /italic/iu.test(String(style.italic || source.italic || namedStyle)) ? 'italic' : 'normal',
     lineHeight: lineHeight.value,
     lineHeightUnit: lineHeight.unit,
-    letterSpacing,
+    letterSpacing: letterSpacing.value,
+    letterSpacingUnit: letterSpacing.valid ? letterSpacing.unit : 'pixels',
     color,
     align: ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(source.textAlignHorizontal || '').toUpperCase()] || 'left',
     verticalAlign,
@@ -2180,7 +2187,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
 const componentOverrideProperties = [
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius',
-  'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'textWrapStyle', 'fontStyle', 'color', 'textRuns', 'textStyleId',
   'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'textCase', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'textPosition', 'leadingTrim', 'fit', 'adjustments', 'transforms',
   'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',

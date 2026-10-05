@@ -1,5 +1,6 @@
 import { transformTextCase, textCaseStyleRuns } from './text-layout.js';
 import { canvasFontWeight } from './font-variation.js';
+import { inheritedTextLetterSpacing } from './text-letter-spacing.js';
 
 export const TEXT_POSITION_LIMITS = Object.freeze({ maxRuns: 1024, maxText: 32768, maxGlyphs: 65536, maxQueries: 2048 });
 export const TEXT_POSITION_FALLBACK = Object.freeze({ scale: .65, superscriptOffset: .35, subscriptOffset: .15, ascender: 1 });
@@ -9,7 +10,7 @@ export class TextPositionPendingError extends Error {
   }
 }
 const positions = new Set(['normal', 'superscript', 'subscript']);
-const keys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'baselineShift', 'textPosition'];
+const keys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'color', 'baselineShift', 'textPosition'];
 const fields = ['fontSize', 'fontFeatures', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset'];
 const positionFor = value => positions.has(value) ? value : 'normal';
 const featuresFor = (style, position, enabled) => ({ ...style.fontFeatures, sups: enabled && position === 'superscript' ? 1 : 0, subs: enabled && position === 'subscript' ? 1 : 0 });
@@ -17,7 +18,8 @@ const canonicalMap = value => Object.fromEntries(Object.entries(value || {}).sor
 const styleKey = style => JSON.stringify([positionFor(style.textPosition), style.fontFamily || 'Arial, sans-serif', Number(style.fontSize) || 24,
   canvasFontWeight(style.fontWeight, style.fontAxes), style.fontStyle || 'normal', canonicalMap(style.fontAxes), canonicalMap(style.fontFeatures)]);
 function inheritedStyle(node, run = {}) {
-  return Object.fromEntries(keys.filter(key => run[key] !== undefined || node[key] !== undefined).map(key => [key, run[key] ?? node[key]]));
+  return { ...Object.fromEntries(keys.filter(key => run[key] !== undefined || node[key] !== undefined).map(key => [key, run[key] ?? node[key]])),
+    ...inheritedTextLetterSpacing(node, run) };
 }
 function leafShape(shaped, depth = 0) {
   if (depth > 16) return null;

@@ -23,6 +23,7 @@ import { hasVisibleRenderedPaint, paintHasVisibleAlpha, renderNodeInkBounds, tra
 import { collectTextOutlineGeometry } from './text-outline-geometry.js';
 import { canvasTextInkBounds, decorationStyleForRun, nativeInkContoursForShapedText, parseLocalGlyphContours, textDecorationGeometry, traceTextDecorationContours } from './text-decoration.js';
 import { canvasTextLineMetrics } from './text-line-metrics.js';
+import { resolvedTextLetterSpacing } from './text-letter-spacing.js';
 import { getTransformHandles, multiplyAffine, nodeLocalToPage, nodeLocalToPageTransform, nodeToParentTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { isScrollableFrame, isStickyScrollFrame, presentationChildrenInPaintOrder, scrollOffsetForPresentationChild } from './prototype-scroll-position.js';
 import { selectionBounds } from './group-transform.js';
@@ -345,7 +346,8 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;
   const fontStyle = getNodePropertyValue(document, node, 'fontStyle') || 'normal';
   const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
-  const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
+  const authoredLetterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
+  const letterSpacing = resolvedTextLetterSpacing({ ...node, letterSpacing: authoredLetterSpacing, fontSize: fontSize || 24 });
   const paragraphSpacing = getNodePropertyValue(document, node, 'paragraphSpacing');
   const firstLineIndent = getNodePropertyValue(document, node, 'firstLineIndent');
   ctx.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, node.fontAxes)} ${fontSize || 24}px ${fontFamily}`;
@@ -357,7 +359,8 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
     fontStyle,
     fontAxes: node.fontAxes,
     fontFeatures: node.fontFeatures, leadingTrim: node.leadingTrim, baselineShift: node.baselineShift,
-    lineHeight: lineHeightScale || 1.25, lineHeightUnit: node.lineHeightUnit || 'ratio'
+    lineHeight: lineHeightScale || 1.25, lineHeightUnit: node.lineHeightUnit || 'ratio',
+    letterSpacing: authoredLetterSpacing || 0, letterSpacingUnit: node.letterSpacingUnit
   };
   const shapedWidth = value => {
     const shaped = options.shapeText?.(value, shapeStyle);
@@ -371,7 +374,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
     paragraphStyles: node.paragraphStyles, markerStyle: {
       fontFamily, fontSize: fontSize || 24,
       fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
-      fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: letterSpacing || 0, color: textColor,
+      fontAxes: node.fontAxes, fontFeatures: node.fontFeatures, letterSpacing: authoredLetterSpacing || 0, letterSpacingUnit: node.letterSpacingUnit, color: textColor,
       leadingTrim: node.leadingTrim, baselineShift: node.leadingTrim?.type === 'CAP_HEIGHT' ? node.baselineShift : 0
     },
     firstLineIndent, align: node.align,
@@ -391,7 +394,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
     if (line.marker && !options.decorationsOnly) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
       fontFamily, fontSize: fontSize || 24,
       fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
-      letterSpacing: letterSpacing || 0, color: textColor,
+      letterSpacing: authoredLetterSpacing || 0, letterSpacingUnit: node.letterSpacingUnit, color: textColor,
       baselineShift: node.leadingTrim?.type === 'CAP_HEIGHT' ? node.baselineShift : 0
     }, fillOpacity, paintMode, options.shapeText);
     const availableWidth = Math.max(1, width - line.indent);
@@ -443,9 +446,9 @@ export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
       return drawTextAlongPath(ctx, text, node, x, y,
         (value, style) => {
           ctx.font = richFont(style);
-          return measureTrackedText(ctx, value, style.letterSpacing / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
+          return measureTrackedText(ctx, value, resolvedTextLetterSpacing(style) / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
         }, {
-          fillOpacity, paintMode, fontSize, letterSpacing,
+          fillOpacity, paintMode, fontSize, letterSpacing, letterSpacingUnit: node.letterSpacingUnit,
           fontWeight: canvasFontWeight(fontWeight, node.fontAxes), fontStyle,
           fontFamily, color, fontFeatures: node.fontFeatures,
           overrideRunColors: overrideRunColors || colorOverride !== undefined,
@@ -484,6 +487,7 @@ export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
       lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
       lineHeightUnit: node.lineHeightUnit || 'ratio',
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
+      letterSpacingUnit: node.letterSpacingUnit,
       color,
       textCase: node.textCase || 'none',
       textDecoration: node.textDecoration || 'none',
@@ -1695,14 +1699,14 @@ function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1, 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const shaped = shapeText?.(marker.text, style);
-  const markerWidth = shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx, style.textPositionScaleX || 1)
-    ?? measureTrackedText(ctx, marker.text, style.letterSpacing / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
+  const markerWidth = shapedTextWidth(shaped, style.fontSize, resolvedTextLetterSpacing(style), ctx, style.textPositionScaleX || 1)
+    ?? measureTrackedText(ctx, marker.text, resolvedTextLetterSpacing(style) / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
   // Right-align within the marker column. Keeping this draw independent from
   // the text-line transform preserves a stable gutter for center/right text.
   const top = y + (Number.isFinite(marker.topOffset) ? marker.topOffset : (style.textPositionTopOffset || 0) - (style.baselineShift || 0));
   const placement = { ...style, ...(Number.isFinite(marker.topOffset) ? { textLineBaseline: top + marker.textLineMetrics.topBaseline } : {}) };
-  if (!drawShapedText(ctx, shaped, marker.text, x + marker.anchorX - markerWidth, top, style.fontSize, style.letterSpacing, paintMode, null, placement)) {
-    drawTrackedTextPaint(ctx, marker.text, x + marker.anchorX - markerWidth, top, style.letterSpacing, undefined, paintMode, style);
+  if (!drawShapedText(ctx, shaped, marker.text, x + marker.anchorX - markerWidth, top, style.fontSize, resolvedTextLetterSpacing(style), paintMode, null, placement)) {
+    drawTrackedTextPaint(ctx, marker.text, x + marker.anchorX - markerWidth, top, resolvedTextLetterSpacing(style), undefined, paintMode, style);
   }
   ctx.restore();
 }
@@ -1717,8 +1721,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     layout = layoutTextRuns(runs, Math.max(1, width), baseStyle, (text, style) => {
       ctx.font = richFont(style);
       const shaped = baseStyle.shapeText?.(text, style);
-      return shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx, style.textPositionScaleX || 1)
-        ?? measureTrackedText(ctx, text, style.letterSpacing / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
+      return shapedTextWidth(shaped, style.fontSize, resolvedTextLetterSpacing(style), ctx, style.textPositionScaleX || 1)
+        ?? measureTrackedText(ctx, text, resolvedTextLetterSpacing(style) / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
     }, {
       textTruncation: baseStyle.textTruncation,
       maxLines: baseStyle.maxLines,
@@ -1768,18 +1772,18 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         const top = Number.isFinite(part.topOffset) ? part.topOffset : (style.textPositionTopOffset || 0) - Number(style.baselineShift || 0);
         const baselineY = Number.isFinite(line.baselineY) ? line.baselineY - line.y + (part.baselineOffset || 0) : undefined;
         const placement = { ...style, ...(Number.isFinite(baselineY) ? { textLineBaseline: baselineY } : {}) };
-        if (!baseStyle.decorationsOnly && !drawShapedText(ctx, shaped, text, start, top, style.fontSize, style.letterSpacing, paintMode, null, placement)) {
-          drawTrackedTextPaint(ctx, text, start, top, style.letterSpacing, undefined, paintMode, style);
+        if (!baseStyle.decorationsOnly && !drawShapedText(ctx, shaped, text, start, top, style.fontSize, resolvedTextLetterSpacing(style), paintMode, null, placement)) {
+          drawTrackedTextPaint(ctx, text, start, top, resolvedTextLetterSpacing(style), undefined, paintMode, style);
         }
-        offset += shapedTextWidth(shaped, style.fontSize, style.letterSpacing, ctx, style.textPositionScaleX || 1)
-          ?? measureTrackedText(ctx, text, style.letterSpacing / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
-        if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
+        offset += shapedTextWidth(shaped, style.fontSize, resolvedTextLetterSpacing(style), ctx, style.textPositionScaleX || 1)
+          ?? measureTrackedText(ctx, text, resolvedTextLetterSpacing(style) / (style.textPositionScaleX || 1)) * (style.textPositionScaleX || 1);
+        if (segments[index + 1]?.part === part) offset += resolvedTextLetterSpacing(style);
         const bounds = partBounds.get(part) || { start, end: offset, inkContours: [], fallbackInkBounds: [] };
         if (style.textDecorationSkipInk) {
-          const contours = nativeInkContoursForShapedText(shaped, { x: start + (style.textPositionOffsetX || 0), y: top, baselineY, fontSize: style.fontSize, letterSpacing: style.letterSpacing, scaleX: style.textPositionScaleX || 1 });
+          const contours = nativeInkContoursForShapedText(shaped, { x: start + (style.textPositionOffsetX || 0), y: top, baselineY, fontSize: style.fontSize, letterSpacing: resolvedTextLetterSpacing(style), scaleX: style.textPositionScaleX || 1 });
           if (contours) bounds.inkContours.push(...contours.map(contour => ({ ...contour, group: `${index}:${contour.group}` })));
           else bounds.fallbackInkBounds.push(...canvasTextInkBounds(ctx, text, {
-            x: start + (style.textPositionOffsetX || 0), y: top, letterSpacing: style.letterSpacing, scaleX: style.textPositionScaleX || 1 }));
+            x: start + (style.textPositionOffsetX || 0), y: top, letterSpacing: resolvedTextLetterSpacing(style), scaleX: style.textPositionScaleX || 1 }));
         }
         bounds.end = offset;
         partBounds.set(part, bounds);
@@ -1812,11 +1816,11 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
       const baselineY = Number.isFinite(line.baselineY) ? line.baselineY - line.y + (part.baselineOffset || 0) : undefined;
       const placement = { ...part.style, ...(Number.isFinite(baselineY) ? { textLineBaseline: baselineY } : {}) };
       if (!baseStyle.decorationsOnly && !drawShapedText(ctx, shaped, part.text, part.offsetX, top,
-        part.style.fontSize, part.style.letterSpacing, paintMode, null, placement)) {
-        drawTrackedTextPaint(ctx, part.text, part.offsetX, top, part.style.letterSpacing, undefined, paintMode, part.style);
+        part.style.fontSize, resolvedTextLetterSpacing(part.style), paintMode, null, placement)) {
+        drawTrackedTextPaint(ctx, part.text, part.offsetX, top, resolvedTextLetterSpacing(part.style), undefined, paintMode, part.style);
       }
       if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, part.offsetX, baselineY ?? top, part.width, part.style.fontSize, part.style.textDecoration, {
-        style: part.style, shaped, text: part.text, letterSpacing: part.style.letterSpacing,
+        style: part.style, shaped, text: part.text, letterSpacing: resolvedTextLetterSpacing(part.style),
         baseline: Number.isFinite(baselineY), inkTop: top, glyphBaselineY: baselineY,
         mode: baseStyle.decorationMode, forceGeometryColor: baseStyle.forceDecorationGeometry
       });
@@ -1835,7 +1839,7 @@ function richTextStyleForMarker(baseStyle) {
     fontStyle: baseStyle.fontStyle || 'normal',
     fontAxes: baseStyle.fontAxes,
     fontFeatures: baseStyle.fontFeatures,
-    letterSpacing: Number(baseStyle.letterSpacing) || 0,
+    letterSpacing: Number(baseStyle.letterSpacing) || 0, letterSpacingUnit: baseStyle.letterSpacingUnit,
     color: baseStyle.color || '#000000'
   };
 }
