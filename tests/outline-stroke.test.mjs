@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, bindColorVariable, cloneDocument, createColorStyle, createColorVariable, createDocument, createFillLayer, createGradientFill, createNode, createVariableCollection, findNode, validateDocument } from '../src/model.js';
+import { addNode, bindColorVariable, cloneDocument, createColorStyle, createColorVariable, createDocument, createFillLayer, createGradientFill, createNode, createVariableCollection, findNode, getNodeColor, updateColorStyle, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createStroke } from '../src/strokes.js';
 import { resolveGradientGeometry } from '../src/fills.js';
 import { nodeToParentTransform } from '../src/transform-geometry.js';
 import { applyOutlineStroke, outlineStrokeUnavailableReason, prepareOutlineStroke } from '../src/outline-stroke.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
+import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
 
 function design(...nodes) {
   const document = createDocument(); document.pages[0].children = [];
@@ -193,3 +194,172 @@ test('aggregate selection input and output budgets prevent oversized undoable ed
   await assert.rejects(prepareOutlineStroke(outputDesign, [node.id], { outline: async () => ({ commands,fillRule:'nonzero',bounds:{left:0,top:0,right:79,bottom:224} }) }), /100,000-point/);
   assert.deepEqual(outputDesign, before);
 });
+
+function nativeRect(left, top, right, bottom) {
+  const start = { x:left, y:top };
+  const line = (x, y, from) => ({ type:'line', start:from, end:{ x, y } });
+  return { fillGroups:[{ fillRule:'nonzero', contours:[{ closed:true, start,
+    commands:[line(right,top,start),line(right,bottom,{x:right,y:top}),line(left,bottom,{x:right,y:bottom}),line(left,top,{x:left,y:bottom})] }] }] };
+}
+function textOutlineFixture(node, glyphs, extra = {}) {
+  return { width:node.width, height:node.height, geometry:nativeRect(0,0,node.width,node.height),
+    glyphGeometry:{fillGroups:glyphs.flatMap(shape=>shape.fillGroups||[]),strokeContours:glyphs.flatMap(shape=>shape.strokeContours||[]),alignedStrokeContours:glyphs.flatMap(shape=>shape.alignedStrokeContours||[])},
+    glyphs:glyphs.map((geometry,index) => ({ geometry, paint:{ color:'#112233',opacity:1 }, glyphId:65+index,cluster:index,text:'A' })),
+    decorations:[], ...extra };
+}
+
+test('text outlines retain separate editable glyph masks while each translucent fill plane is applied once', async () => {
+  const node = createNode('text', { name:'Overlap', text:'HH', width:20, height:20, fillOpacity:.7,
+    opacity:.6, fills:[createFillLayer('solid',{color:'#ff0000',opacity:.3}),createFillLayer('solid',{color:'#0000ff',opacity:.5})] });
+  const document = design(node); const overlapping = nativeRect(2,2,14,18);
+  const outline = textOutlineFixture(node,[overlapping,overlapping]);
+  const plan = await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>outline});
+  applyOutlineStroke(document,plan);
+  assert.equal(node.type,'group'); assert.equal(node.opacity,.6); assert.deepEqual(node.fills,[]);
+  assert.equal(node.children.length,2);
+  for (const plane of node.children) {
+    assert.equal(plane.mask,true); assert.equal(plane.maskMode,'alpha');
+    assert.equal(plane.children[0].children.length,2,'both overlapping glyphs remain editable mask paths');
+    assert.equal(plane.children[1].fills[0].opacity < 1,true);
+  }
+  const ids=[]; walkNodesForTest(node,child=>ids.push(child.id));
+  assert.equal(new Set(ids).size,ids.length,'duplicated per-fill glyph paths get distinct layer IDs');
+  validateDocument(document);
+});
+
+test('text aligned stroke geometry preserves its outside ink and an explicit empty fill stack stays empty', async () => {
+  const node = createNode('text',{name:'Short box',text:'H',width:12,height:15,fills:[],fill:'transparent',
+    strokes:[createStroke({width:8,color:'#0088cc',alignment:'inside'})]});
+  const document=design(node); const glyph=nativeRect(1,1,11,14);
+  const plan=await prepareOutlineStroke(document,[node.id],{
+    getTextOutline:async()=>textOutlineFixture(node,[glyph]),
+    outline:async()=>({commands:new Float32Array([0,-4.8,-6,1,16.8,-6,1,16.8,21,1,-4.8,21,5]),fillRule:'nonzero',bounds:{left:-4.8,top:-6,right:16.8,bottom:21}})
+  });
+  applyOutlineStroke(document,plan);
+  assert.equal(node.children.length,1,'there is no glyph fill paint for fills: []');
+  const path=node.children[0]; assert.equal(path.type,'path');
+  assert.ok(Math.min(...path.points.map(point=>point.x))<0);
+  assert.ok(Math.max(...path.points.map(point=>point.x))>1,'the editable stroke contour extends beyond the text frame');
+  validateDocument(document);
+});
+
+test('aligned text strokes outline the aggregate glyph silhouette once; centered strokes remain per-glyph paints', async () => {
+  const glyphA=nativeRect(1,1,12,19), glyphB=nativeRect(10,1,19,19);
+  const node=createNode('text',{text:'HH',width:20,height:20,fillOpacity:0,
+    strokes:[createStroke({width:4,opacity:.35,alignment:'inside'})]});
+  const document=design(node); const aggregate=nativeRect(1,1,19,19); const calls=[];
+  const result=textOutlineFixture(node,[glyphA,glyphB],{glyphGeometry:aggregate,decorations:[{geometry:nativeRect(0,0,20,1),paint:{color:'#000000',opacity:1}}]});
+  const plan=await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>result,outline:async(shape,stroke)=>{calls.push({shape,alignment:stroke.alignment});return outlineFixture();}});
+  applyOutlineStroke(document,plan);
+  assert.equal(calls.length,1,JSON.stringify(calls.map(call=>call.alignment))); assert.equal(calls[0].shape,aggregate); assert.equal(calls[0].alignment,'inside');
+  assert.equal(node.children.at(-1).fills[0].opacity,.35);
+
+  const centered=createNode('text',{text:'HH',width:20,height:20,fillOpacity:0,
+    strokes:[createStroke({width:4,opacity:.35,alignment:'center'})]});
+  const centeredDesign=design(centered); const centeredCalls=[];
+  const centeredPlan=await prepareOutlineStroke(centeredDesign,[centered.id],{getTextOutline:async()=>textOutlineFixture(centered,[glyphA,glyphB]),
+    outline:async(shape,stroke)=>{centeredCalls.push({shape,alignment:stroke.alignment});return outlineFixture();}});
+  applyOutlineStroke(centeredDesign,centeredPlan);
+  assert.equal(centeredCalls.length,2); assert.deepEqual(centeredCalls.map(call=>call.shape),[glyphA,glyphB]);
+  assert.deepEqual(centered.children.slice(-2).map(path=>path.fills[0].opacity),[.35,.35]);
+  validateDocument(document); validateDocument(centeredDesign);
+});
+
+test('text conversion rejects effect-bearing and isolated-blend layers before starting geometry work', async () => {
+  for (const mutate of [node=>{node.effects=[{id:'shadow',type:'inner-shadow',visible:true,opacity:1}];},node=>{node.blendMode='multiply';}]) {
+    const node=createNode('text',{text:'H',width:20,height:24}); mutate(node);
+    const document=design(node); let calls=0;
+    assert.match(outlineStrokeUnavailableReason(document,[node.id]),/effects|Normal blending/);
+    await assert.rejects(prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>{calls++;return textOutlineFixture(node,[nativeRect(1,1,18,22)]);}}),/effects|Normal blending/);
+    assert.equal(calls,0); assert.equal(node.type,'text');
+  }
+});
+
+test('flow text keeps its logical layout frame and current linked-path placement when converted', async () => {
+  const flowText=createNode('text',{name:'Flow',text:'Flow',width:38,height:22,textFit:'auto-width',layoutSizingMain:'fixed',layoutSizingCross:'fixed'});
+  const sibling=createNode('rectangle',{width:12,height:16});
+  const frame=createNode('frame',{width:10,height:10,autoLayout:createAutoLayout({axis:'horizontal',mainSizing:'hug',crossSizing:'hug',padding:0}),children:[flowText,sibling]});
+  const flow=frame.children[0];
+  const linkedPath=createNode('path',{name:'Text baseline',x:70,y:30,width:50,height:24,rotation:17,affineTransform:{a:-1,b:.2,c:.4,d:1.1},closed:true,points:[{x:0,y:.5},{x:1,y:.5}]});
+  const linked=createNode('text',{name:'Linked text',text:'Path',width:50,height:24,textPath:{sourceId:linkedPath.id}});
+  const document=design(frame,linkedPath,linked); applyAutoLayout(frame);
+  const beforeFrame={x:flow.x,y:flow.y,width:flow.width,height:flow.height};
+  const beforeSibling={x:frame.children[1].x,y:frame.children[1].y};
+  const sourceBefore=cloneDocument(document).pages[0].children[1];
+  const getTextOutline=async(_document,node)=>node.id===linked.id
+    ? textOutlineFixture(node,[nativeRect(1,2,node.width-1,node.height-2)],{placement:{x:linkedPath.x,y:linkedPath.y,width:linkedPath.width,height:linkedPath.height,rotation:linkedPath.rotation,affineTransform:linkedPath.affineTransform}})
+    : textOutlineFixture(node,[nativeRect(1,2,node.width-1,node.height-2)]);
+  const plan=await prepareOutlineStroke(document,[flow.id,linked.id],{getTextOutline});
+  applyOutlineStroke(document,plan); applyAutoLayout(frame);
+  assert.deepEqual({x:flow.x,y:flow.y,width:flow.width,height:flow.height},beforeFrame);
+  assert.equal(flow.type,'group'); assert.equal(flow.layoutSizingMain,'fixed');
+  assert.equal(flow.layoutSizingCross,'fixed');
+  assert.deepEqual({x:frame.children[1].x,y:frame.children[1].y},beforeSibling);
+  assert.equal(linked.type,'group'); assert.equal(linked.textPath,undefined);
+  assert.deepEqual({x:linked.x,y:linked.y,width:linked.width,height:linked.height,rotation:linked.rotation},
+    {x:70,y:30,width:50,height:24,rotation:17});
+  assert.deepEqual(linked.affineTransform,linkedPath.affineTransform);
+  assert.deepEqual(document.pages[0].children[1],sourceBefore,'the linked baseline remains unchanged');
+  validateDocument(document);
+});
+
+test('text color variables follow glyphs and decorations; text color styles materialize as editable path paint', async () => {
+  const variableNode=createNode('text',{name:'Variable color',text:'A',width:20,height:20,fillOpacity:.4});
+  const variableDesign=design(variableNode); const collection=createVariableCollection(variableDesign,'Text colors');
+  const colorVariable=createColorVariable(variableDesign,collection.id,'Ink','#cc2244');
+  bindColorVariable(variableDesign,variableNode.id,colorVariable.id,'text');
+  const glyph=nativeRect(1,2,10,18); const decoration=nativeRect(1,19,10,20);
+  const variablePlan=await prepareOutlineStroke(variableDesign,[variableNode.id],{getTextOutline:async()=>textOutlineFixture(variableNode,[glyph],{
+    glyphs:[{geometry:glyph,paint:{color:'#cc2244',opacity:1},glyphId:65,cluster:0,text:'A'}],
+    decorations:[{geometry:decoration,paint:{color:'#cc2244',opacity:1}}]
+  })});
+  applyOutlineStroke(variableDesign,variablePlan);
+  assert.equal(variableNode.children[0].fillVariableId,colorVariable.id);
+  assert.equal(variableNode.children[1].fillVariableId,colorVariable.id);
+  assert.equal(variableNode.children[0].fills[0].opacity,.4);
+  validateDocument(variableDesign);
+
+  const styled=createNode('text',{name:'Styled',text:'S',width:20,height:20,color:'#126789'});
+  const styledDesign=design(styled); const style=createColorStyle(styledDesign,styled.id,'Text ink');
+  const stylePlan=await prepareOutlineStroke(styledDesign,[styled.id],{getTextOutline:async()=>textOutlineFixture(styled,[nativeRect(1,2,10,18)],{
+    glyphs:[{geometry:nativeRect(1,2,10,18),paint:{color:style.value,opacity:1},glyphId:83,cluster:0,text:'S'}]
+  })});
+  applyOutlineStroke(styledDesign,stylePlan);
+  assert.equal(styled.textStyleId,undefined); assert.equal(styled.children[0].fills[0].color,style.value);
+  validateDocument(styledDesign);
+});
+
+test('an explicit text fill retains its primary fill style on the paint plane and leaves glyph masks unstyled', async () => {
+  const source=createNode('rectangle',{fill:'#226699',fills:[createFillLayer('solid',{color:'#226699'})]});
+  const text=createNode('text',{text:'A',width:20,height:20,fills:[createFillLayer('solid',{color:'#aa0000'})]});
+  const document=design(source,text); const style=createColorStyle(document,source.id,'Shared fill');
+  text.fillStyleId=style.id;
+  validateDocument(document);
+  const plan=await prepareOutlineStroke(document,[text.id],{getTextOutline:async()=>textOutlineFixture(text,[nativeRect(1,1,18,18)])});
+  applyOutlineStroke(document,plan);
+  const [maskSource,paint]=text.children[0].children;
+  assert.equal(paint.fillStyleId,style.id); assert.equal(getNodeColor(document,paint,'fill'),'#226699');
+  assert.ok(maskSource.children.every(path=>!path.fillStyleId));
+  source.fill='#55aa77'; source.fills[0].color='#55aa77'; delete source.fillStyleId;
+  assert.equal(updateColorStyle(document,style.id,source.id),true);
+  assert.equal(getNodeColor(document,paint,'fill'),'#55aa77');
+  validateDocument(document);
+});
+
+test('text-outline selection failure, cancellation, stale variables and multiplicative fill budgets are atomic', async () => {
+  const first=createNode('text',{text:'A',width:20,height:20,fills:[createFillLayer('solid',{color:'#123456'}),createFillLayer('solid',{color:'#654321'})]});
+  const second=createNode('text',{text:'B',width:20,height:20}); const document=design(first,second); const before=cloneDocument(document);
+  let calls=0;
+  await assert.rejects(prepareOutlineStroke(document,[first.id,second.id],{getTextOutline:async(_doc,node)=>{calls++;if(node.id===second.id)throw new Error('font missing');return textOutlineFixture(node,[nativeRect(1,1,18,18)]);}}),/font missing/);
+  assert.deepEqual(document,before);
+  const stalePlan=await prepareOutlineStroke(document,[first.id],{getTextOutline:async(_doc,node)=>{document.variables.push({id:'changed',name:'Changed',type:'color',value:'#000000'});return textOutlineFixture(node,[nativeRect(1,1,18,18)]);}}).catch(error=>error);
+  assert.match(stalePlan.message,/changed while outlining/); assert.deepEqual(first.fills,before.pages[0].children[0].fills);
+  assert.ok(calls>=2);
+  const big=createNode('text',{text:'A',width:20,height:20,fills:Array.from({length:32},(_,i)=>createFillLayer('solid',{color:i%2?'#112233':'#445566'}))});
+  const many=design(big); const hugeOutline=textOutlineFixture(big,Array.from({length:640},()=>nativeRect(1,1,18,18)));
+  await assert.rejects(prepareOutlineStroke(many,[big.id],{getTextOutline:async()=>hugeOutline}),/4,096-glyph|100,000-point|20,000 editable-outline/);
+  assert.equal(big.type,'text');
+  await assert.rejects(prepareOutlineStroke(document,[first.id],{getTextOutline:async()=>{throw new DOMException('cancel','AbortError');}}),{name:'AbortError'});
+});
+
+function walkNodesForTest(node,visit) { visit(node); for(const child of node.children||[]) walkNodesForTest(child,visit); }

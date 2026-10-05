@@ -78,6 +78,9 @@ import { canvasFontWeight, fontVariationInspectionStatus, fontVariationSettings,
 import { fontFeatureSettings, isValidFontFeatureValues, parseFontFeatureSettings, setFontFeatureValue } from './font-features.js';
 import { LocalWoff2Decoder } from './woff2-decoder.js';
 import { LocalFontShapingClient } from './font-shaping.js';
+import { localFontsForStyle, localFontAxisValues as localFontVariations } from './local-font-style.js';
+import { TextOutlineFontSession } from './text-outline-font-session.js';
+import { prepareTextOutlineGeometry } from './text-outline-geometry.js';
 import { fontFamilyStack, itemizeLocalFontRuns } from './font-fallback.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -634,41 +637,7 @@ function familyStackUses(fontFamily, family) {
 }
 
 function localFontsForTextStyle(style) {
-  const requestedWeight = Number(style?.fontWeight) || 400;
-  const score = font => {
-    const weightAxis = font.axes?.find(axis => axis.tag === 'wght');
-    const weightDistance = weightAxis && requestedWeight >= weightAxis.min && requestedWeight <= weightAxis.max
-      ? 0 : Math.abs(Number(font.weight) - requestedWeight);
-    const styleDistance = font.style === (style?.fontStyle || 'normal') ? 0 : 10_000;
-    return styleDistance + weightDistance;
-  };
-  const available = [...state.fontAssets.values()];
-  const ordered = [];
-  const seen = new Set();
-  for (const family of fontFamilyStack(style?.fontFamily)) {
-    const matches = available.filter(font => font.family.toLocaleLowerCase() === family.toLocaleLowerCase())
-      .sort((left, right) => score(left) - score(right) || left.id.localeCompare(right.id));
-    const font = matches[0];
-    if (font && !seen.has(font.id)) { seen.add(font.id); ordered.push(font); }
-  }
-  return ordered.slice(0, 4);
-}
-
-function localFontVariations(font, style) {
-  const requested = style?.fontAxes && typeof style.fontAxes === 'object' && !Array.isArray(style.fontAxes)
-    ? style.fontAxes : {};
-  const values = {};
-  for (const axis of font.axes || []) {
-    let value = Number.isFinite(requested[axis.tag]) ? requested[axis.tag] : axis.defaultValue;
-    if (!Number.isFinite(requested[axis.tag])) {
-      if (axis.tag === 'wght') value = Number(style?.fontWeight) || Number(font.weight) || axis.defaultValue;
-      else if (axis.tag === 'opsz') value = Number(style?.fontSize) || axis.defaultValue;
-      else if (axis.tag === 'ital' && style?.fontStyle === 'italic') value = 1;
-      else if (axis.tag === 'slnt' && style?.fontStyle === 'italic') value = -12;
-    }
-    values[axis.tag] = Math.min(axis.max, Math.max(axis.min, value));
-  }
-  return values;
+  return localFontsForStyle(style, state.fontAssets.values());
 }
 
 async function ensureLocalFontShapingLoaded(font, epoch) {
@@ -759,6 +728,36 @@ function shapeLocalTextRun(text, style) {
   }
   if (!hasLocalShape) return null;
   return mixedRuns.length === 1 && mixedRuns[0].shaped ? mixedRuns[0].shaped : { mixedRuns };
+}
+
+function createTextOutlinePreparation(sourceDocument, signal) {
+  const epoch = state.fontAssetEpoch; const generation = state.documentGeneration;
+  const workspace = state.workspace;
+  const fontRecords = [...state.fontAssets.values()];
+  const metadata = JSON.stringify(fontRecords);
+  const assertCurrent = () => sourceDocument === state.document && generation === state.documentGeneration
+    && workspace === state.workspace && epoch === state.fontAssetEpoch && metadata === JSON.stringify([...state.fontAssets.values()]);
+  const readFont = async fontId => {
+    if (!assertCurrent() || signal?.aborted) throw new DOMException('Text conversion cancelled.', 'AbortError');
+    if (!workspace) return loadFontAsset(fontId);
+    const saved = await readWorkspaceFontAssetOrRestore(workspace, sourceDocument.id, fontId, { loadFallback: loadFontAsset });
+    return validateLocalFontAsset({ ...saved.metadata, bytes: saved.bytes });
+  };
+  const session = new TextOutlineFontSession({ fonts: fontRecords, readFont, signal, assertCurrent });
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) { session.close(); throw new Error('This browser cannot prepare local text outlines. Original layers kept.'); }
+  return {
+    getTextOutline: (design, node, options) => {
+      if (design !== sourceDocument) throw new Error('Prepare text outlines in the active design.');
+      session.validateCurrent();
+      return prepareTextOutlineGeometry(design, node, {
+        ...options, measureContext: context, assertCurrent: () => session.validateCurrent(),
+        shapeText: (text, style) => session.shapeText(text, style)
+      });
+    },
+    validateCurrent: () => session.validateCurrent(),
+    close: () => session.close()
+  };
 }
 
 function documentUsesFontFamily(design, family) {
@@ -2902,14 +2901,14 @@ function appearanceSection(node) {
     : node.type === 'text'
         ? `<div class="style-actions">${addStrokeAction}</div>`
         : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
-  const body = `${fills}${fillBinding}${stroke}${outlineNote}${retryGeometry}${paintBlendWarning}${styleActions}${strokeCount ? outlineStrokeControls() : ''}${radius}`;
+  const body = `${fills}${fillBinding}${stroke}${outlineNote}${retryGeometry}${paintBlendWarning}${styleActions}${strokeCount || node.type === 'text' ? outlineStrokeControls() : ''}${radius}`;
   return section('Appearance', body);
 }
 function strokeSection(node) {
   if (booleanSourceAncestor(node)) return appearanceSection(node);
   const strokeCount = strokeStackForNode(node).length;
   const addStroke = `<button class="add-fill" type="button" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>`;
-  return section('Stroke', `${strokeStackControls(node)}<div class="style-actions">${addStroke}</div>${strokeCount ? outlineStrokeControls() : ''}`);
+  return section('Stroke', `${strokeStackControls(node)}<div class="style-actions">${addStroke}</div>${strokeCount || node.type === 'text' ? outlineStrokeControls() : ''}`);
 }
 
 function outlineStrokeReason(ids = rootSelectedIds()) {
@@ -2921,7 +2920,7 @@ function outlineStrokeReason(ids = rootSelectedIds()) {
 function outlineStrokeControls() {
   if (state.outlineStrokeController) return '';
   const reason = outlineStrokeReason();
-  return `<button class="add-fill" type="button" data-action="outline-stroke"${reason ? ' disabled' : ''}>Outline Stroke</button><div class="image-properties-note">${escapeHtml(reason || 'Turn strokes into filled vector paths, then edit their points with the Vector tool. Undo restores the original strokes.')}</div>`;
+  return `<button class="add-fill" type="button" data-action="outline-stroke"${reason ? ' disabled' : ''}>Outline Stroke</button><div class="image-properties-note">${escapeHtml(reason || 'Turn text glyphs or strokes into editable vector paths. Text needs its font files in Assets → Fonts. Undo restores the original layers.')}</div>`;
 }
 function imageAdjustmentsSection(node) {
   const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
@@ -4722,7 +4721,7 @@ function renderInspector() {
   const outlining = Boolean(state.outlineStrokeController);
   $('#outline-stroke-progress').hidden = !outlining;
   $('#boolean-operation-progress').hidden = !state.booleanController;
-  const outlineStatus = outlining ? 'Converting strokes… Original layers stay intact until the conversion finishes.' : '';
+  const outlineStatus = outlining ? 'Converting to vector paths… Original layers stay intact until the conversion finishes.' : '';
   if ($('#outline-stroke-status').textContent !== outlineStatus) $('#outline-stroke-status').textContent = outlineStatus;
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
@@ -15165,15 +15164,15 @@ function quickActionCatalog() {
       run: () => state.booleanController?.abort(),
     }] : []),
     ...(state.outlineStrokeController ? [{
-      id: 'cancel-outline-stroke', label: 'Cancel stroke conversion',
+      id: 'cancel-outline-stroke', label: 'Cancel vector conversion',
       description: 'Stop the conversion and keep the original layers.',
       keywords: ['stop outlining', 'cancel outline stroke', 'stop stroke conversion'],
       run: () => state.outlineStrokeController?.abort(),
     }] : []),
     {
       id: 'outline-stroke', label: 'Outline Stroke',
-      description: 'Turn strokes into filled vector paths. Edit their points with the Vector tool; Undo restores the original strokes.',
-      keywords: ['convert stroke', 'expand stroke', 'stroke to path', 'vector outline', 'outline strokes'],
+      description: 'Turn text glyphs or strokes into editable vector paths. Text needs local font files; Undo restores the original layers.',
+      keywords: ['convert stroke', 'expand stroke', 'stroke to path', 'vector outline', 'outline strokes', 'outline text', 'text to vector', 'convert text to paths'],
       shortcut: '⌘⇧O / Ctrl+Shift+O', disabled: Boolean(outlineStrokeReason(rootIds)), unavailableReason: outlineStrokeReason(rootIds),
       run: outlineSelectedStrokes,
     },
@@ -20946,27 +20945,37 @@ async function outlineSelectedStrokes() {
   if (reason) { showToast(reason); return; }
   const sourceDocument = state.document; const pageId = sourceDocument.activePageId;
   const controller = new AbortController();
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, 60_000);
   const geometryClient = new LocalVectorGeometryClient();
+  let textPreparation;
   state.outlineStrokeController = controller;
   renderInspector();
-  showToast('Converting strokes… Press Escape or choose Cancel conversion to stop.');
+  showToast('Converting to vector paths… Press Escape or choose Cancel vector conversion to stop.');
   try {
+    if (ids.some(id => findNode(sourceDocument, id)?.node.type === 'text')) textPreparation = createTextOutlinePreparation(sourceDocument, controller.signal);
     const plan = await prepareOutlineStroke(sourceDocument, ids, { pageId, signal: controller.signal,
-      outline: (geometry, stroke, options) => geometryClient.outlineStroke(geometry, stroke, options) });
+      getTextOutline: textPreparation?.getTextOutline,
+      outline: (geometry, stroke, options) => geometryClient.outlineStroke(geometry, stroke, options),
+      booleanGeometry: (request, options) => geometryClient.booleanGeometry(request, options) });
     if (controller.signal.aborted || sourceDocument !== state.document || pageId !== state.document.activePageId
       || state.documentTransitioning || isLiveHostViewOnly()) throw new DOMException('Outline Stroke cancelled.', 'AbortError');
     if (isImageRecipeBatchActive(state.bulk)) throw new Error('The image batch started while outlining. Finish it, then try Outline Stroke again.');
+    textPreparation?.validateCurrent();
     validateOutlineStrokePlan(sourceDocument, plan);
     checkpoint('Outline Stroke');
     const nodes = applyOutlineStroke(sourceDocument, plan);
     clearVectorAnchorSelection();
     setSelection(nodes.map(node => node.id));
     renderUI(); queueSave(); renderer.invalidate();
-    showToast(`${nodes.length === 1 ? 'Stroke outlined' : `${nodes.length} layers outlined`}. ${nodes.some(node => node.type === 'group') ? 'Expand the group in Layers, select a stroke path, and use the Vector tool to edit its points.' : 'Use the Vector tool to edit its points.'} Undo restores the original strokes.`);
+    showToast(`${nodes.length === 1 ? 'Layer outlined' : `${nodes.length} layers outlined`}. ${nodes.some(node => node.type === 'group') ? 'Expand the group in Layers, select a vector path, and use the Vector tool to edit its points.' : 'Use the Vector tool to edit its points.'} Undo restores the original layers.`);
   } catch (error) {
-    showToast(error.name === 'AbortError' ? 'Stroke conversion cancelled. Original layers kept.' : error.message || 'Could not outline these strokes. Original layers kept.');
+    showToast(timedOut ? 'Vector conversion took too long. Outline fewer layers at a time. Original layers kept.'
+      : error.name === 'AbortError' ? 'Vector conversion cancelled. Original layers kept.' : error.message || 'Could not outline these layers. Original layers kept.');
   } finally {
+    clearTimeout(deadline);
     geometryClient.close();
+    textPreparation?.close();
     if (state.outlineStrokeController === controller) state.outlineStrokeController = null;
     renderInspector();
   }

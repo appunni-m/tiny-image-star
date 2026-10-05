@@ -164,7 +164,7 @@ function shapedTextWidth(shaped, fontSize, letterSpacing = 0, context = null) {
   return Math.max(0, advances * scale + Math.max(0, clusterBoundaries) * (Number(letterSpacing) || 0));
 }
 
-function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0, paintMode = 'fill') {
+function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0, paintMode = 'fill', clusterText = null) {
   if (Array.isArray(shaped?.mixedRuns)) {
     let offset = 0;
     for (const [index, run] of shaped.mixedRuns.entries()) {
@@ -178,35 +178,54 @@ function drawShapedText(ctx, shaped, text, x, topY, fontSize, letterSpacing = 0,
     }
     return true;
   }
-  if (typeof globalThis.Path2D !== 'function' || !shaped || !Array.isArray(shaped.glyphs)
+  const collectGlyph = typeof ctx.drawLocalGlyphPath === 'function';
+  if ((!collectGlyph && typeof globalThis.Path2D !== 'function') || !shaped || !Array.isArray(shaped.glyphs)
     || shaped.missingGlyph || !shaped.extents || !(shaped.upem > 0)
     || typeof ctx[paintMode === 'stroke' ? 'stroke' : 'fill'] !== 'function') return false;
   const size = Math.max(1, Number(fontSize) || 24);
   const scale = size / shaped.upem;
   const ascender = Number(shaped.extents.ascender);
   if (!Number.isFinite(ascender)) return false;
-  const paths = shaped.glyphs.map(glyph => glyph.path ? cachedFontOutlinePath(glyph.path) : null);
-  if (shaped.glyphs.some((glyph, index) => glyph.path && !paths[index])) return false;
-  ctx.save();
-  ctx.translate(x, topY + ascender * scale);
-  ctx.scale(scale, -scale);
+  const paths = collectGlyph ? null : shaped.glyphs.map(glyph => glyph.path ? cachedFontOutlinePath(glyph.path) : null);
+  if (!collectGlyph && shaped.glyphs.some((glyph, index) => glyph.path && !paths[index])) return false;
+  // Authored text strokes use pixel widths and dash lengths. Transform glyph
+  // paths rather than the context, which otherwise scales those stroke styles
+  // down by fontSize / unitsPerEm along with the font's coordinates.
+  const pixelStroke = paintMode === 'stroke' && !collectGlyph;
+  if (pixelStroke && typeof globalThis.Path2D.prototype?.addPath !== 'function') return false;
+  if (!pixelStroke) {
+    ctx.save();
+    ctx.translate(x, topY + ascender * scale);
+    ctx.scale(scale, -scale);
+  }
+  const clusterStarts = collectGlyph ? [...new Set(shaped.glyphs.map(glyph => glyph.cluster))].sort((left, right) => left - right) : null;
+  const clusterEnds = collectGlyph ? new Map(clusterStarts.map((start, index) => [start, clusterStarts[index + 1] ?? text.length])) : null;
   let penX = 0;
   let tracking = 0;
   let previousCluster = null;
   for (const [index, glyph] of shaped.glyphs.entries()) {
     if (previousCluster !== null && glyph.cluster !== previousCluster) tracking += Number(letterSpacing) / scale || 0;
-    const path = paths[index];
+    const path = collectGlyph ? glyph.path : paths[index];
     if (path) {
-      ctx.save();
-      ctx.translate(penX + (Number(glyph.xOffset) || 0) + tracking, Number(glyph.yOffset) || 0);
-      if (paintMode === 'stroke') ctx.stroke(path);
-      else ctx.fill(path);
-      ctx.restore();
+      const offsetX = penX + (Number(glyph.xOffset) || 0) + tracking;
+      const offsetY = Number(glyph.yOffset) || 0;
+      if (pixelStroke) {
+        const pixelPath = new globalThis.Path2D();
+        pixelPath.addPath(path, { a: scale, b: 0, c: 0, d: -scale,
+          e: x + offsetX * scale, f: topY + (ascender - offsetY) * scale });
+        ctx.stroke(pixelPath);
+      } else {
+        ctx.save(); ctx.translate(offsetX, offsetY);
+        if (collectGlyph) ctx.drawLocalGlyphPath(glyph.path, { paintMode, glyphId: glyph.id, cluster: glyph.cluster,
+          text: clusterText ?? text.slice(glyph.cluster, clusterEnds.get(glyph.cluster)) });
+        else ctx.fill(path);
+        ctx.restore();
+      }
     }
     penX += Number(glyph.xAdvance) || 0;
     previousCluster = glyph.cluster;
   }
-  ctx.restore();
+  if (!pixelStroke) ctx.restore();
   return true;
 }
 
@@ -391,7 +410,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   return layout;
 }
 
-function drawTextLayerContent(ctx, node, document, x, y, width, height, {
+export function drawTextLayerContent(ctx, node, document, x, y, width, height, {
   colorOverride = undefined, fillOpacity = node.fillOpacity ?? 1,
   paintMode = 'fill', includeDecorations = true, overrideRunColors = false, shapeText = null
 } = {}) {
@@ -407,7 +426,6 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     if (node.textPath) {
       const color = colorOverride ?? getNodeColor(document, node, 'text');
       if (paintMode !== 'stroke') ctx.fillStyle = rgba(color, fillOpacity);
-      else ctx.strokeStyle = rgba(color, fillOpacity);
       const fontSize = getNodePropertyValue(document, node, 'fontSize') || 24;
       const fontFamily = getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif';
       const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { canvasLocalOffsetForScreenTranslation, deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { canvasLocalOffsetForScreenTranslation, deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawFittedImage, drawImageWithTransforms, drawTextDecoration, drawTextLayerContent, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { imagePreviewKey, imagePreviewSettingsForNode, imagePreviewSettingsSignature } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
@@ -3101,6 +3101,7 @@ test('locally shaped rich text paints glyph outlines and falls back when an outl
       if (data === 'invalid-path') throw new TypeError('invalid test outline');
       this.data = data;
     }
+    addPath(path, transform) { this.data = path.data; this.transform = transform; }
   }
   Object.defineProperty(globalThis, 'Path2D', { configurable: true, value: TestPath2D });
   try {
@@ -3155,6 +3156,49 @@ test('locally shaped rich text paints glyph outlines and falls back when an outl
     });
     assert.equal(strokeOnly.calls.filter(call => call.kind === 'strokeGlyphPath').length, 1,
       'stroke-only Canvas contexts can paint HarfBuzz outlines without a fill method');
+  } finally {
+    if (previousPath2D) Object.defineProperty(globalThis, 'Path2D', previousPath2D);
+    else delete globalThis.Path2D;
+  }
+});
+
+test('local glyph strokes retain pixel widths and dashes, including authored paints on text paths', () => {
+  const previousPath2D = Object.getOwnPropertyDescriptor(globalThis, 'Path2D');
+  class TestPath2D {
+    constructor(data) { this.data = data; }
+    addPath(path, transform) { this.data = path.data; this.transform = transform; }
+  }
+  Object.defineProperty(globalThis, 'Path2D', { configurable: true, value: TestPath2D });
+  try {
+    const document = createDocument();
+    const text = createNode('text', { text: 'H', width: 200, height: 100, fontSize: 48, color: '#00ff00' });
+    addNode(document, text);
+    const gradient = { paint: 'authored gradient' };
+    const context = textPaintContext(); context.rotate = () => {};
+    context.lineWidth = 8; context.lineDashOffset = 3; context.strokeStyle = gradient;
+    context.setLineDash([11, 7]);
+    context.stroke = path => context.calls.push({ kind: 'glyphStroke', transform: path.transform,
+      width: context.lineWidth, dashOffset: context.lineDashOffset, paint: context.strokeStyle });
+    const shapeText = value => ({ upem: 1000, extents: { ascender: 800 },
+      glyphs: [...value].map((_, cluster) => ({ path: 'pixel-stroke-glyph', cluster, xAdvance: 700, xOffset: 100, yOffset: 250 })) });
+    drawTextLayerContent(context, text, document, 10, 20, 200, 100, { paintMode: 'stroke', shapeText });
+    const plain = context.calls.find(call => call.kind === 'glyphStroke');
+    for (const [key, expected] of Object.entries({ a: .048, b: 0, c: 0, d: -.048, e: 14.8, f: 46.4 })) {
+      assert.ok(Math.abs(plain.transform[key] - expected) < 1e-12, `${key} keeps the exact local glyph transform`);
+    }
+    assert.equal(plain.width, 8); assert.equal(plain.dashOffset, 3); assert.equal(plain.paint, gradient);
+    assert.deepEqual(context.calls.filter(call => call.kind === 'setLineDash').map(call => call.values), [[11, 7]]);
+    assert.equal(context.calls.some(call => call.kind === 'scale'), false, 'font-unit scaling must not scale the authored Canvas stroke style');
+
+    text.textRuns = [{ text: 'H', color: '#ff0000' }];
+    text.textPath = { width: 200, height: 50, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }],
+      closed: false, startOffset: 20, flipped: false };
+    context.calls.length = 0;
+    drawTextLayerContent(context, text, document, 10, 20, 200, 100, { paintMode: 'stroke', shapeText });
+    const alongPath = context.calls.find(call => call.kind === 'glyphStroke');
+    assert.ok(alongPath); assert.equal(alongPath.width, 8); assert.equal(alongPath.paint, gradient,
+      'text-path layout must preserve the authored stroke rather than replacing it with a rich-run fill color');
+    assert.equal(context.calls.some(call => call.kind === 'scale'), false);
   } finally {
     if (previousPath2D) Object.defineProperty(globalThis, 'Path2D', previousPath2D);
     else delete globalThis.Path2D;

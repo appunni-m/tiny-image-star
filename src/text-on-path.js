@@ -422,14 +422,14 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     ctx.textAlign = 'center';
     const baseline = -style.baselineShift;
     ctx.fillStyle = style.color;
-    ctx.strokeStyle = style.color;
+    if (paintMode !== 'stroke') ctx.strokeStyle = style.color;
     if (paintMode !== 'stroke') ctx.globalAlpha *= fillOpacity;
     const shapedTop = segment.shaped
       ? baseline - Number(segment.shaped.extents.ascender) / segment.shaped.upem * style.fontSize
       : baseline;
     const paintedByShaper = segment.shaped && typeof drawShaped === 'function'
       ? drawShaped(ctx, segment.shaped, segment.text, segment.shapedStartX ?? -segment.advance / 2,
-        shapedTop, style.fontSize, 0, paintMode)
+        shapedTop, style.fontSize, 0, paintMode, segment.text)
       : false;
     if (!paintedByShaper) {
       if (paintMode === 'stroke') ctx.strokeText(segment.text, 0, baseline);
