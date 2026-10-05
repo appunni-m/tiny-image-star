@@ -25,6 +25,7 @@ const MAX_VECTOR_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_VECTOR_PATH_CHARS = 512 * 1024;
 const MAX_VECTOR_PATH_SOURCE_CHARS = 4 * 1024 * 1024;
 const MAX_VECTOR_GEOMETRY_ENTRIES = 2_048;
+const MAX_FIG_TEXT_PARAGRAPHS = 100_000;
 
 function finite(value, fallback = 0, minimum = -1_000_000_000, maximum = 1_000_000_000) {
   const number = Number(value);
@@ -920,38 +921,308 @@ function figTextAlignment(value, schema) {
   return ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(raw || '').toUpperCase()] || null;
 }
 
+function figTextListStyle(value, schema, fieldName = 'bulletType') {
+  if (value == null) return null;
+  const candidate = value && typeof value === 'object' && !Array.isArray(value)
+    ? value.listStyle ?? value.type ?? value.bulletType ?? value.lineType
+    : value;
+  const raw = typeof candidate === 'string'
+    ? candidate
+    : figEnumValueFromEmbeddedSchema(schema, fieldName, candidate);
+  const names = ({
+    ORDERED: 'numbered', ORDERED_LIST: 'numbered', NUMBERED: 'numbered',
+    UNORDERED: 'bulleted', UNORDERED_LIST: 'bulleted', BULLETED: 'bulleted',
+    NONE: 'none', NO_LIST: 'none', PLAIN: 'none', INDENT: 'none'
+  })[String(raw ?? '').toUpperCase()];
+  if (names) return names;
+  if (!Number.isSafeInteger(candidate)) return null;
+  const numericFallback = fieldName === 'lineType'
+    ? { 0: 'none', 1: 'numbered', 2: 'bulleted', 3: 'none', 4: 'none' }
+    : { 0: 'numbered', 1: 'bulleted', 2: 'none', 3: 'none' };
+  return numericFallback[candidate] ?? null;
+}
+
+function mappedFigListParagraph(data, context, name, { enumField = 'bulletType', fallbackStyle = null } = {}) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const schema = context.parsed?.schema;
+  const nested = data.textListData && typeof data.textListData === 'object' && !Array.isArray(data.textListData)
+    ? data.textListData : null;
+  const rawStyle = data.listStyle ?? data.listOptions ?? data.textListOptions
+    ?? nested?.bulletType ?? data.lineType ?? data.bulletType;
+  const listStyle = rawStyle == null ? fallbackStyle : figTextListStyle(rawStyle, schema, enumField);
+  if (rawStyle != null && listStyle == null) {
+    warn(context.report, 'flattened', 'TEXT_LIST_STYLE', name,
+      'This paragraph uses an unknown list style; its text was kept and the marker was omitted.');
+    return null;
+  }
+  if (listStyle == null) return null;
+
+  const rawLevel = data.listLevel ?? data.indentationLevel ?? data.indentation ?? nested?.indentationLevel;
+  let listLevel = 0;
+  if (rawLevel != null) {
+    if (!Number.isSafeInteger(rawLevel) || rawLevel < 0 || rawLevel > 4) {
+      warn(context.report, 'flattened', 'TEXT_LIST_INDENT', name,
+        'This list indentation is outside the five supported levels; the closest supported level was used.');
+      listLevel = Number.isFinite(Number(rawLevel)) ? Math.min(4, Math.max(0, Math.round(Number(rawLevel)))) : 0;
+    } else listLevel = rawLevel;
+  }
+  const style = { listStyle, listLevel: listStyle === 'none' ? 0 : listLevel };
+  const listStart = data.listStart ?? data.lineNumber ?? nested?.lineNumber;
+  if (listStyle === 'numbered' && Number.isSafeInteger(listStart) && listStart >= 1 && listStart <= 999_999) {
+    style.listStart = listStart;
+  }
+  if (listStyle === 'none' && listLevel > 0) {
+    warn(context.report, 'flattened', 'TEXT_LIST_INDENT', name,
+      'This indentation has no bullet or number style and cannot be represented independently.');
+    return null;
+  }
+  if (listStyle === 'none' && listLevel === 0) return null;
+  return style;
+}
+
+function figParagraphRanges(text) {
+  const ranges = [];
+  const paragraphBreak = /\r\n|\r|\n/gu;
+  let start = 0;
+  for (const match of text.matchAll(paragraphBreak)) {
+    ranges.push({ start, end: match.index });
+    if (ranges.length >= MAX_FIG_TEXT_PARAGRAPHS) return null;
+    start = match.index + match[0].length;
+  }
+  ranges.push({ start, end: text.length });
+  return ranges.length <= MAX_FIG_TEXT_PARAGRAPHS ? ranges : null;
+}
+
+function figTextStyleIds(textData) {
+  if (Array.isArray(textData?.characterStyleIDs)) return textData.characterStyleIDs;
+  if (Array.isArray(textData?.characterStyleOverrides)) return textData.characterStyleOverrides;
+  return null;
+}
+
+function figStyleOverrideTableEntry(table, id) {
+  if (table instanceof Map) return table.get(id) ?? table.get(String(id));
+  if (Array.isArray(table)) return table[id];
+  return table && typeof table === 'object' ? table[String(id)] : null;
+}
+
+function figParagraphOverrideStyles(source, characters, ranges) {
+  const textData = source.textData || {};
+  const styleIds = figTextStyleIds(textData);
+  const table = textData.styleOverrideTable || source.styleOverrideTable;
+  if (!ranges || !styleIds || styleIds.length > characters.length || !table) return ranges?.map(() => []) || [];
+  return ranges.map(range => {
+    const styles = [];
+    const seen = new Set();
+    const end = range.end > range.start ? range.end : Math.min(characters.length, range.start + 1);
+    for (let offset = range.start; offset < end; offset += 1) {
+      const styleId = styleIds[offset] || 0;
+      if (!Number.isSafeInteger(styleId) || styleId <= 0 || seen.has(styleId)) continue;
+      seen.add(styleId);
+      const style = figStyleOverrideTableEntry(table, styleId);
+      if (style && typeof style === 'object' && !Array.isArray(style)) styles.push(style);
+    }
+    return styles;
+  });
+}
+
+function uniqueFigParagraphOverride(styles, property) {
+  let value;
+  let found = false;
+  for (const style of styles) {
+    if (!Object.hasOwn(style, property) || style[property] == null) continue;
+    if (!found) {
+      value = style[property];
+      found = true;
+    } else if (!Object.is(value, style[property])) return { found: true, conflict: true };
+  }
+  return { found, value, conflict: false };
+}
+
+function figListLineTypeName(value, schema) {
+  const raw = typeof value === 'string'
+    ? value
+    : figEnumValueFromEmbeddedSchema(schema, 'lineType', value)
+      || ({ 3: 'BLOCKQUOTE', 4: 'HEADER' })[value];
+  return String(raw || '').toUpperCase();
+}
+
+function mapFigStoredListParagraphs(source, characters, context, ranges, paragraphOverrides) {
+  if (!ranges) return null;
+  const textData = source.textData || {};
+  const lines = Array.isArray(textData.lines) && textData.lines.length === ranges.length ? textData.lines : null;
+  const nodeList = source.textListData;
+  const styles = ranges.map((range, index) => {
+    const rangeListData = paragraphOverrides[index].find(style => style?.textListData || style?.listOptions || style?.textListOptions);
+    if (rangeListData) return mappedFigListParagraph(rangeListData, context, source.name);
+    if (lines) {
+      const lineType = figListLineTypeName(lines[index]?.lineType, context.parsed?.schema);
+      if (lineType === 'BLOCKQUOTE' || lineType === 'HEADER') {
+        warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+          `The ${lineType === 'BLOCKQUOTE' ? 'blockquote' : 'heading'} line style is not represented by the local text model; its text was preserved without that paragraph styling.`);
+        return null;
+      }
+      const lineStyle = mappedFigListParagraph(lines[index], context, source.name, { enumField: 'lineType' });
+      if (lineStyle) return lineStyle;
+    }
+    if (ranges.length === 1 && nodeList) return mappedFigListParagraph(nodeList, context, source.name);
+    return null;
+  });
+  const hasMapped = styles.some(Boolean);
+  if (!hasMapped && nodeList && ranges.length > 1) {
+    warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+      'List settings were present, but this text has multiple paragraphs and no safe per-paragraph list boundaries; list styling was omitted.');
+  }
+  return hasMapped ? styles : null;
+}
+
 function mapFigParagraphStyles(source, characters, context) {
   const sourceStyles = source.textData?.paragraphStyle;
-  if (!Array.isArray(sourceStyles) || sourceStyles.length !== characters.split(/\r\n|\r|\n/u).length
-    || sourceStyles.length > 100_000) return null;
+  const ranges = figParagraphRanges(characters);
+  if (!ranges) {
+    warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+      'This text has too many paragraphs to preserve its individual formatting safely.');
+    return null;
+  }
+  if (Array.isArray(sourceStyles) && (sourceStyles.length !== ranges.length || sourceStyles.length > MAX_FIG_TEXT_PARAGRAPHS)) return null;
+  const paragraphOverrides = figParagraphOverrideStyles(source, characters, ranges);
+  const rawLists = mapFigStoredListParagraphs(source, characters, context, ranges, paragraphOverrides);
   const styles = [];
-  let hasSupportedStyle = false;
-  for (const paragraph of sourceStyles) {
-    if (!paragraph || typeof paragraph !== 'object' || Array.isArray(paragraph)) return null;
+  let hasSupportedStyle = Boolean(rawLists);
+  for (let index = 0; index < ranges.length; index += 1) {
+    const paragraph = Array.isArray(sourceStyles) ? sourceStyles[index] : null;
+    if (Array.isArray(sourceStyles) && (!paragraph || typeof paragraph !== 'object' || Array.isArray(paragraph))) return null;
     const style = {};
-    if (paragraph.textWrapStyle != null) {
+    if (paragraph?.textWrapStyle != null) {
       hasSupportedStyle = true;
       const mapped = figTextWrapStyle(paragraph.textWrapStyle, context, source.name);
       style.textWrapStyle = mapped;
     }
-    if (paragraph.textAlignHorizontal != null) {
+    if (paragraph?.textAlignHorizontal != null) {
       const mapped = figTextAlignment(paragraph.textAlignHorizontal, context.parsed?.schema);
       if (mapped) {
         hasSupportedStyle = true;
         style.align = mapped;
       }
     }
+    if (paragraph?.textWrapStyle == null) {
+      const rawWrap = uniqueFigParagraphOverride(paragraphOverrides[index], 'textWrapStyle');
+      if (rawWrap.conflict) {
+        warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+          'Text wrapping changes within a paragraph and cannot be represented as one paragraph style.');
+      } else if (rawWrap.found) {
+        style.textWrapStyle = figTextWrapStyle(rawWrap.value, context, source.name);
+        hasSupportedStyle = true;
+      }
+    }
+    if (paragraph?.textAlignHorizontal == null) {
+      const rawAlign = uniqueFigParagraphOverride(paragraphOverrides[index], 'textAlignHorizontal');
+      if (rawAlign.conflict) {
+        warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+          'Text alignment changes within a paragraph and cannot be represented as one paragraph style.');
+      } else if (rawAlign.found) {
+        const mapped = figTextAlignment(rawAlign.value, context.parsed?.schema);
+        if (mapped) {
+          style.align = mapped;
+          hasSupportedStyle = true;
+        } else {
+          warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+            'An unknown paragraph alignment was omitted; the imported text uses its base alignment.');
+        }
+      }
+    }
+    const paragraphList = paragraph
+      ? mappedFigListParagraph(paragraph, context, source.name)
+      : null;
+    const listStyle = paragraphList || rawLists?.[index];
+    if (listStyle) {
+      hasSupportedStyle = true;
+      Object.assign(style, listStyle);
+    }
     styles.push(style);
   }
   return hasSupportedStyle ? styles : null;
 }
 
-function hasOnlySupportedFigParagraphStyles(source, text, schema) {
+function hasOnlySupportedFigParagraphStyles(source, text, context) {
   const paragraphs = source.textData?.paragraphStyle;
-  return Array.isArray(paragraphs) && paragraphs.length === String(text ?? '').split(/\r\n|\r|\n/u).length
-    && paragraphs.length <= 100_000 && paragraphs.every(paragraph => paragraph && typeof paragraph === 'object'
-    && !Array.isArray(paragraph) && Object.keys(paragraph).every(key => key === 'textWrapStyle' || key === 'textAlignHorizontal')
-    && (paragraph.textAlignHorizontal == null || figTextAlignment(paragraph.textAlignHorizontal, schema)));
+  const schema = context.parsed?.schema;
+  const ranges = figParagraphRanges(String(text ?? ''));
+  return Array.isArray(paragraphs) && ranges && paragraphs.length === ranges.length
+    && paragraphs.length <= MAX_FIG_TEXT_PARAGRAPHS && paragraphs.every(paragraph => paragraph && typeof paragraph === 'object'
+    && !Array.isArray(paragraph) && Object.keys(paragraph).every(key => [
+      'textWrapStyle', 'textAlignHorizontal', 'listStyle', 'listLevel', 'listStart', 'listOptions',
+      'textListOptions', 'textListData', 'indentation', 'indentationLevel', 'lineNumber',
+      'paragraphIndent', 'paragraphSpacing', 'listSpacing'
+    ].includes(key))
+    && (paragraph.textAlignHorizontal == null || figTextAlignment(paragraph.textAlignHorizontal, schema))
+    && ['paragraphIndent', 'paragraphSpacing', 'listSpacing'].every(property => {
+      const values = paragraphs.map(item => item[property]);
+      if (!values.some(value => value != null)) return true;
+      return values.every(value => Number.isFinite(value) && value >= 0 && value <= 10_000)
+        && values.every(value => value === values[0]);
+    }));
+}
+
+function figParagraphMetric(source, property, ranges, paragraphOverrides, fallback = 0) {
+  const nodeValues = property === 'paragraphIndent'
+    ? [source.paragraphIndent, source.firstLineIndent]
+    : [source[property]];
+  let base = fallback;
+  for (const value of nodeValues) {
+    if (Number.isFinite(value) && value >= 0 && value <= 10_000) { base = value; break; }
+  }
+  const paragraphs = source.textData?.paragraphStyle;
+  const values = ranges?.map((_, index) => {
+    const normalizedValue = paragraphs?.[index]?.[property];
+    if (normalizedValue != null) return { found: true, value: normalizedValue, conflict: false };
+    const rawValues = paragraphOverrides?.[index] || [];
+    const override = uniqueFigParagraphOverride(rawValues, property);
+    return override;
+  }) || [];
+  if (!values.some(item => item.found)) return { value: base, varied: false, invalid: false };
+  let invalid = false;
+  const effective = values.map(item => {
+    if (!item.found) return base;
+    if (item.conflict || !Number.isFinite(item.value) || item.value < 0 || item.value > 10_000) {
+      invalid = true;
+      return base;
+    }
+    return item.value;
+  });
+  const varied = invalid || effective.some(value => value !== effective[0]);
+  return { value: varied ? base : effective[0], varied, invalid };
+}
+
+function figParagraphMetrics(source, characters, context) {
+  const ranges = figParagraphRanges(characters) || [];
+  const paragraphOverrides = figParagraphOverrideStyles(source, characters, ranges);
+  const metrics = {
+    paragraphIndent: figParagraphMetric(source, 'paragraphIndent', ranges, paragraphOverrides),
+    paragraphSpacing: figParagraphMetric(source, 'paragraphSpacing', ranges, paragraphOverrides),
+    listSpacing: figParagraphMetric(source, 'listSpacing', ranges, paragraphOverrides)
+  };
+  const paragraphs = source.textData?.paragraphStyle;
+  const varied = Object.entries(metrics).filter(([property, item]) => item.varied
+    && !paragraphs?.some(paragraph => paragraph?.[property] != null)).map(([property]) => ({
+    paragraphIndent: 'indentation', paragraphSpacing: 'paragraph spacing', listSpacing: 'list spacing'
+  })[property]);
+  if (varied.length) {
+    warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+      `Per-paragraph ${varied.join(', ')} values differ or are invalid; the local text model stores one value per text layer, so the base value was kept.`);
+  }
+  for (const property of ['hangingList', 'hangingPunctuation']) {
+    if (source[property] === true || paragraphOverrides.some(styles => styles.some(style => style[property] === true))) {
+      warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+        property === 'hangingList'
+          ? 'Hanging list markers are not represented by the local text layout.'
+          : 'Hanging punctuation is not represented by the local text layout.');
+    }
+  }
+  return {
+    paragraphSpacing: metrics.paragraphSpacing.value,
+    firstLineIndent: metrics.paragraphIndent.value,
+    listSpacing: metrics.listSpacing.value
+  };
 }
 
 function inferredTextWeight(styleName) {
@@ -1025,7 +1296,10 @@ function textRunStyleOverrides(style, base, context, name) {
 
   const supported = new Set([
     'fontFamily', 'fontName', 'fontSize', 'fontWeight', 'fontStyle', 'fontStyleName', 'italic',
-    'lineHeight', 'letterSpacing', 'textDecoration', 'color', 'fills', 'fillPaints'
+    'lineHeight', 'letterSpacing', 'textDecoration', 'color', 'fills', 'fillPaints',
+    'textListData', 'listOptions', 'textListOptions', 'indentation', 'indentationLevel',
+    'paragraphIndent', 'paragraphSpacing', 'listSpacing', 'textWrapStyle', 'textAlignHorizontal',
+    'hangingList', 'hangingPunctuation'
   ]);
   if (Object.keys(style).some(key => !supported.has(key))) {
     warn(context.report, 'flattened', 'TEXT_STYLE_PROPERTIES', name, 'Some per-range text properties are not represented by editable local text runs.');
@@ -1036,9 +1310,7 @@ function textRunStyleOverrides(style, base, context, name) {
 function textRunsFromFigOverrides(source, characters, base, context) {
   if (!characters.length) return null;
   const textData = source.textData || {};
-  const styleIds = Array.isArray(textData.characterStyleOverrides)
-    ? textData.characterStyleOverrides
-    : Array.isArray(textData.characterStyleIDs) ? textData.characterStyleIDs : null;
+  const styleIds = figTextStyleIds(textData);
   if (!styleIds || !styleIds.some(id => id !== 0)) return null;
   const name = safeName(source.name, 'Text');
   const flatten = detail => {
@@ -1050,7 +1322,7 @@ function textRunsFromFigOverrides(source, characters, base, context) {
   }
   const table = textData.styleOverrideTable || source.styleOverrideTable;
   if (!table || typeof table !== 'object') return flatten('Character style references had no style override table; the base text style was used.');
-  const getStyle = id => table instanceof Map ? table.get(id) ?? table.get(String(id)) : table[String(id)];
+  const getStyle = id => figStyleOverrideTableEntry(table, id);
   const warnMissing = () => warn(context.report, 'flattened', 'TEXT_STYLE', name, 'A character style reference was missing or malformed; the affected characters use the base style.');
   const runs = [];
   const styleCache = new Map();
@@ -1091,6 +1363,8 @@ function textRunsFromFigOverrides(source, characters, base, context) {
 
 function textProperties(source, context) {
   const characters = typeof source.textData?.characters === 'string' ? source.textData.characters : '';
+  if (/\u2028|\u2029/u.test(characters)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', source.name,
+    'This text uses a Unicode line or paragraph separator that the local text editor does not preserve as an editable line break.');
   const style = source.textData?.style || source.style || {};
   const visiblePaints = Array.isArray(source.fillPaints)
     ? source.fillPaints.filter(item => item && item.visible !== false && paintOpacity(item) > 0)
@@ -1111,6 +1385,7 @@ function textProperties(source, context) {
     ? 'auto' : figTextWrapStyle(rawTextWrapStyle, context, source.name);
   const verticalAlign = ({ TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' })[String(source.textAlignVertical || '').toUpperCase()] || 'top';
   const textAutoResize = String(source.textAutoResize || '').toUpperCase();
+  const paragraphMetrics = figParagraphMetrics(source, characters, context);
   const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[textAutoResize] || 'fixed';
   if (source.textAutoResize && !['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE', 'TRUNCATE'].includes(textAutoResize)) {
     warn(context.report, 'flattened', 'TEXT_FIT', source.name, 'This text resizing mode was reduced to a fixed text box.');
@@ -1153,9 +1428,7 @@ function textProperties(source, context) {
     ...(textTruncation ? { textTruncation } : {}),
     ...(maxLines !== undefined ? { maxLines } : {}),
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
-    paragraphSpacing: finite(source.paragraphSpacing, 0, 0, 10_000),
-    firstLineIndent: finite(source.firstLineIndent, 0, 0, 10_000),
-    listSpacing: finite(source.listSpacing, 0, 0, 10_000)
+    ...paragraphMetrics
   };
   const textRuns = textRunsFromFigOverrides(source, characters, properties, context);
   return textRuns ? { ...properties, textRuns } : properties;
@@ -1752,8 +2025,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       delete overrides.maxLines;
       warn(context.report, 'flattened', 'TEXT_MAX_LINES', name, 'The imported text has both a maximum line count and an auto-layout maximum height; the generic auto-layout size limit was preserved and the maximum line count was omitted.');
     }
-    if (source.textData?.paragraphStyle && !hasOnlySupportedFigParagraphStyles(source, overrides.text, context.parsed?.schema)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name,
-      'Per-paragraph indentation, list, unsupported alignment, or other paragraph layout settings were simplified.');
+    if (source.textData?.paragraphStyle && !hasOnlySupportedFigParagraphStyles(source, overrides.text, context)) warn(context.report, 'flattened', 'TEXT_PARAGRAPH', name,
+      'Per-paragraph indentation, unsupported alignment, or other paragraph layout settings were simplified.');
   }
   if (source.type === 'LINE') overrides.fill = 'transparent';
   if (type === 'boolean' && !isValidBooleanChildren(overrides.children)) {

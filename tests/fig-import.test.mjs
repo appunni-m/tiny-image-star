@@ -1711,10 +1711,228 @@ test('imports documented Figma text wrap styles and warns for values the embedde
     { align: 'center', textWrapStyle: 'pretty' }
   ]);
   assert.ok(imported.report.warnings.some(warning => warning.type === 'TEXT_PARAGRAPH'
-    && warning.name === 'Mixed paragraph extras' && /indentation, list, unsupported alignment/u.test(warning.detail)));
+    && warning.name === 'Mixed paragraph extras' && /indentation, unsupported alignment/u.test(warning.detail)));
   const restored = parseDocument(serializeDocument(imported.document));
   assert.deepEqual(restored.pages[0].children.map(text => text.textWrapStyle), ['auto', 'balance', 'pretty', 'balance', 'auto', 'auto', 'auto']);
   assert.deepEqual(restored.pages[0].children[5].paragraphStyles, texts[5].paragraphStyles);
+});
+
+test('imports ordered and unordered Figma list paragraphs with level and counter metadata', () => {
+  const page = { sessionID: 91, localID: 1 };
+  const characters = 'First item\nNested item\nBullet item\nPlain item';
+  const characterStyleIDs = Array(characters.length).fill(0);
+  for (let index = 0; index < characters.length; index += 1) {
+    if (index < 10) characterStyleIDs[index] = 1;
+    else if (index > 10 && index < 21) characterStyleIDs[index] = 2;
+    else if (index > 21 && index < 33) characterStyleIDs[index] = 3;
+  }
+  const parsed = {
+    header: { version: 106 },
+    schema: { definitions: [
+      { kind: 'MESSAGE', name: 'NodeChange', fields: [{ name: 'textListData', type: 'TextListData' }] },
+      { kind: 'MESSAGE', name: 'TextListData', fields: [
+        { name: 'bulletType', type: 'BulletType' }, { name: 'indentationLevel', type: 'int' }, { name: 'lineNumber', type: 'int' }
+      ] },
+      { kind: 'ENUM', name: 'BulletType', fields: [
+        { name: 'ORDERED', value: 0 }, { name: 'UNORDERED', value: 1 }, { name: 'INDENT', value: 2 }, { name: 'NO_LIST', value: 3 }
+      ] }
+    ] },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Lists' }),
+      node('TEXT', 2, page, 'a', {
+        name: 'Imported list', paragraphIndent: 12, listSpacing: 4,
+        textData: {
+          characters, characterStyleIDs,
+          styleOverrideTable: [null,
+            { textListData: { listID: 7, bulletType: 0, indentationLevel: 0, lineNumber: 3 } },
+            { textListData: { listID: 7, bulletType: 0, indentationLevel: 1, lineNumber: 4 } },
+            { textListData: { listID: 8, bulletType: 1, indentationLevel: 2 } }
+          ]
+        }
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'text-lists.fig' });
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.firstLineIndent, 12, 'Figma paragraphIndent maps to the editable first-line indent');
+  assert.equal(text.listSpacing, 4);
+  assert.deepEqual(text.paragraphStyles, [
+    { listStyle: 'numbered', listLevel: 0, listStart: 3 },
+    { listStyle: 'numbered', listLevel: 1, listStart: 4 },
+    { listStyle: 'bulleted', listLevel: 2 },
+    {}
+  ]);
+  assert.ok(!imported.report.warnings.some(warning => warning.name === 'Imported list'
+    && ['TEXT_PARAGRAPH', 'TEXT_STYLE_PROPERTIES'].includes(warning.type)),
+  'recognized paragraph list metadata should not be reported as lost text styling');
+  const reloaded = parseDocument(serializeDocument(imported.document)).pages[0].children[0];
+  assert.deepEqual(reloaded.paragraphStyles, text.paragraphStyles, 'list paragraphs survive local save and reload');
+  assert.equal(reloaded.firstLineIndent, 12);
+});
+
+test('imports schema-backed line list metadata and reports unsupported hanging-list layout', () => {
+  const page = { sessionID: 92, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    schema: { definitions: [
+      { kind: 'MESSAGE', name: 'NodeChange', fields: [{ name: 'lineType', type: 'LineType' }] },
+      { kind: 'ENUM', name: 'LineType', fields: [
+        { name: 'PLAIN', value: 0 }, { name: 'ORDERED_LIST', value: 1 }, { name: 'UNORDERED_LIST', value: 2 },
+        { name: 'BLOCKQUOTE', value: 3 }, { name: 'HEADER', value: 4 }
+      ] }
+    ] },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Line lists' }),
+      node('TEXT', 2, page, 'a', {
+        name: 'Line metadata', hangingList: true,
+        textData: { characters: 'Top\nNested\nNormal', lines: [
+          { lineType: 1, indentationLevel: 0 },
+          { lineType: 1, indentationLevel: 2 },
+          { lineType: 0, indentationLevel: 0 }
+        ] }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const text = imported.document.pages[0].children[0];
+  assert.deepEqual(text.paragraphStyles, [
+    { listStyle: 'numbered', listLevel: 0 },
+    { listStyle: 'numbered', listLevel: 2 },
+    {}
+  ]);
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Line metadata'
+    && warning.type === 'TEXT_PARAGRAPH' && /Hanging list markers/u.test(warning.detail)),
+  'unsupported hanging marker layout remains visible in the import review');
+});
+
+test('reports unsupported Figma blockquote and heading line types instead of silently dropping them', () => {
+  const page = { sessionID: 94, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    schema: { definitions: [
+      { kind: 'MESSAGE', name: 'NodeChange', fields: [{ name: 'lineType', type: 'LineType' }] },
+      { kind: 'ENUM', name: 'LineType', fields: [
+        { name: 'PLAIN', value: 0 }, { name: 'ORDERED_LIST', value: 1 }, { name: 'UNORDERED_LIST', value: 2 },
+        { name: 'BLOCKQUOTE', value: 3 }, { name: 'HEADER', value: 4 }
+      ] }
+    ] },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Line styles' }),
+      node('TEXT', 2, page, 'a', {
+        name: 'Unsupported line styles', textData: { characters: 'Quote\nHeading', lines: [
+          { lineType: 3, indentationLevel: 0 }, { lineType: 4, indentationLevel: 0 }
+        ] }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.paragraphStyles, undefined);
+  assert.equal(imported.report.warnings.filter(warning => warning.name === 'Unsupported line styles'
+    && warning.type === 'TEXT_PARAGRAPH').length, 2,
+  'each unsupported paragraph treatment should be visible in import review');
+});
+
+test('maps actual NodeChange array overrides for paragraph metrics and alignment, and reviews nonuniform values', () => {
+  const page = { sessionID: 95, localID: 1 };
+  const schema = { definitions: [
+    { kind: 'MESSAGE', name: 'NodeChange', fields: [
+      { name: 'paragraphIndent', type: 'float' }, { name: 'paragraphSpacing', type: 'float' },
+      { name: 'listSpacing', type: 'float' }, { name: 'textAlignHorizontal', type: 'TextAlignHorizontal' },
+      { name: 'hangingList', type: 'bool' }
+    ] },
+    { kind: 'ENUM', name: 'TextAlignHorizontal', fields: [
+      { name: 'LEFT', value: 0 }, { name: 'CENTER', value: 1 }, { name: 'RIGHT', value: 2 }, { name: 'JUSTIFIED', value: 3 }
+    ] }
+  ] };
+  const characters = 'First\nSecond';
+  const characterStyleIDs = [1, 1, 1, 1, 1, 0, 2, 2, 2, 2, 2, 2];
+  const imported = convertFigDocument({
+    header: { version: 106 }, schema,
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Stored paragraph overrides' }),
+      node('TEXT', 2, page, 'a', {
+        name: 'Uniform raw metrics', textAlignHorizontal: 'LEFT',
+        textData: { characters, characterStyleIDs, styleOverrideTable: [null,
+          { paragraphIndent: 8, paragraphSpacing: 6, listSpacing: 3, textAlignHorizontal: 1 },
+          { paragraphIndent: 8, paragraphSpacing: 6, listSpacing: 3, textAlignHorizontal: 1 }
+        ] }
+      }),
+      node('TEXT', 3, page, 'b', {
+        name: 'Mixed raw indentation', textData: { characters, characterStyleIDs, styleOverrideTable: [null,
+          { paragraphIndent: 8 }, { paragraphIndent: 16 }
+        ] }
+      }),
+      node('TEXT', 4, page, 'c', {
+        name: 'Raw hanging-list behavior', textData: { characters, characterStyleIDs, styleOverrideTable: [null,
+          { hangingList: true }, { hangingList: true }
+        ] }
+      }),
+      node('TEXT', 5, page, 'd', {
+        name: 'Mixed raw spacing with normalized paragraphs', textData: {
+          characters, characterStyleIDs, paragraphStyle: [{}, {}], styleOverrideTable: [null,
+            { paragraphSpacing: 4 }, { paragraphSpacing: 12 }
+          ]
+        }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const [uniform, mixed] = imported.document.pages[0].children;
+  assert.deepEqual([uniform.firstLineIndent, uniform.paragraphSpacing, uniform.listSpacing], [8, 6, 3]);
+  assert.deepEqual(uniform.paragraphStyles, [{ align: 'center' }, { align: 'center' }],
+    'per-paragraph alignment is read from the decoded NodeChange array');
+  assert.equal(mixed.firstLineIndent, 0, 'nonuniform indentation is not silently flattened to one paragraph');
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Mixed raw indentation'
+    && warning.type === 'TEXT_PARAGRAPH' && /Per-paragraph indentation/u.test(warning.detail)));
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Raw hanging-list behavior'
+    && warning.type === 'TEXT_PARAGRAPH' && /Hanging list markers/u.test(warning.detail)),
+  'unsupported hanging-list behavior stored in a raw NodeChange entry stays visible in import review');
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Mixed raw spacing with normalized paragraphs'
+    && warning.type === 'TEXT_PARAGRAPH' && /paragraph spacing/u.test(warning.detail)),
+  'mixed raw metrics are reported even when normalized paragraph records are also present');
+});
+
+test('reports unsupported Unicode line and paragraph separators in imported text', () => {
+  const page = { sessionID: 96, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Separator text' }),
+      node('TEXT', 2, page, 'a', { name: 'Unicode separator', textData: { characters: 'First\u2028Second\u2029Third' } })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Unicode separator'
+    && warning.type === 'TEXT_PARAGRAPH' && /Unicode line or paragraph separator/u.test(warning.detail)));
+});
+
+test('preserves uniform paragraph metrics and reviews per-paragraph values the local node model cannot express', () => {
+  const page = { sessionID: 93, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Paragraph metrics' }),
+      node('TEXT', 2, page, 'a', {
+        name: 'Uniform metrics', textData: { characters: 'First\nSecond', paragraphStyle: [
+          { paragraphIndent: 8, paragraphSpacing: 6, listSpacing: 3 },
+          { paragraphIndent: 8, paragraphSpacing: 6, listSpacing: 3 }
+        ] }
+      }),
+      node('TEXT', 3, page, 'b', {
+        name: 'Mixed indent', textData: { characters: 'First\nSecond', paragraphStyle: [
+          { paragraphIndent: 8 }, { paragraphIndent: 16 }
+        ] }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const [uniform, mixed] = imported.document.pages[0].children;
+  assert.deepEqual(
+    [uniform.firstLineIndent, uniform.paragraphSpacing, uniform.listSpacing],
+    [8, 6, 3],
+    'equal per-paragraph metrics reduce to equivalent node-wide properties'
+  );
+  assert.ok(!imported.report.warnings.some(warning => warning.name === 'Uniform metrics' && warning.type === 'TEXT_PARAGRAPH'));
+  assert.equal(mixed.firstLineIndent, 0, 'mixed paragraph indentation must not be silently flattened to one paragraph');
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Mixed indent'
+    && warning.type === 'TEXT_PARAGRAPH' && /Per-paragraph indentation/u.test(warning.detail)));
 });
 
 test('preserves Figma image-fill filters as editable local adjustments and reviews invalid filter values', () => {
@@ -1845,7 +2063,7 @@ test('imports text-node solid, gradient, image fills and solid/gradient strokes 
   assert.equal(imported.report.unsupportedTypes.IMAGE, 1, 'image strokes stay explicitly reported as unsupported');
 });
 
-test('text run solid fills stay editable without node paint stacks and unsupported non-solid run paints are reported', () => {
+test('decoded NodeChange array entries preserve solid text-run fills and report unsupported non-solid run paints', () => {
   const pageGuid = { sessionID: 92, localID: 1 };
   const imported = convertFigDocument({
     header: { version: 106 },
@@ -1853,14 +2071,14 @@ test('text run solid fills stay editable without node paint stacks and unsupport
       node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
       node('TEXT', 2, pageGuid, 'a', {
         name: 'Run paints', textData: {
-          characters: 'AB', characterStyleOverrides: [1, 2],
-          styleOverrideTable: {
-            1: { fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] },
-            2: { fills: [{ type: 'GRADIENT_LINEAR', stops: [
+          characters: 'AB', characterStyleIDs: [1, 2],
+          styleOverrideTable: [null,
+            { fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] },
+            { fills: [{ type: 'GRADIENT_LINEAR', stops: [
               { position: 0, color: { r: 0, g: 0, b: 0, a: 1 } },
               { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } }
             ] }] }
-          }
+          ]
         }
       })
     ], images: new Map(), message: { blobs: [] }
