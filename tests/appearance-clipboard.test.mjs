@@ -319,17 +319,23 @@ test('text targets accept complete fill stacks while still skipping incompatible
   assert.equal(shapeResult.node.opacity, 0.8);
 });
 
-test('boolean targets keep their stroke state when a non-empty source stroke stack is incompatible', () => {
+test('Boolean targets receive ordinary outline stacks but still refuse rectangle side weights', () => {
   const appearance = sourceAppearance({
     strokes: [{ id: 'source-stroke', color: '#112233', width: 2, opacity: 1, visible: true,
       cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }]
   });
   const target = { type: 'boolean', id: 'boolean-target', opacity: 1, blendMode: 'normal', stroke: null, strokeWidth: 0, children: [] };
   const result = applyAppearance(target, appearance, { idFactory: ids() });
-  assert.ok(result.skipped.some(item => item.startsWith('strokes:')));
-  assert.equal(Object.hasOwn(result.node, 'strokes'), false);
-  assert.equal(result.node.stroke, null);
-  assert.equal(result.node.strokeWidth, 0);
+  assert.ok(!result.skipped.some(item => item.startsWith('strokes:')));
+  assert.equal(result.node.strokes.length, 1);
+  assert.equal(result.node.stroke, '#112233');
+  assert.equal(result.node.strokeWidth, 2);
+  assert.notEqual(result.node.strokes[0].id, 'source-stroke');
+  const sidedAppearance = structuredClone(appearance);
+  sidedAppearance.strokes[0].sideMode = 'top';
+  const rejected = applyAppearance(result.node, sidedAppearance, { idFactory: ids() });
+  assert.ok(rejected.skipped.some(item => item.startsWith('strokes:')));
+  assert.deepEqual(rejected.node.strokes, result.node.strokes);
 });
 
 test('style and variable references are never copied across layers; replaced target bindings are detached selectively', () => {

@@ -1,7 +1,7 @@
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, roundedRectPathPoints } from './corner-radii.js';
 import { regularShapeVertices, roundedPolygonPathPoints } from './polygon-corners.js';
 import { fillStackForNode } from './fills.js';
-import { getNodeColor, getNodePropertyValue } from './model.js';
+import { getBooleanStrokePath, getNodeColor, getNodePropertyValue } from './model.js';
 import { strokeSideWidths, strokeStackForNode } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import {
@@ -11,6 +11,7 @@ import {
 import { vectorNetworkFacePathPoints } from './vector-network-corners.js';
 import { ellipseArcBoundaryPolylines, ellipseArcContainsPoint } from './ellipse-arc.js';
 import { effectiveStrokeAlignment, strokeGeometryBounds, strokePaintPadding } from './stroke-alignment.js';
+import { booleanStrokePath } from './boolean-stroke-geometry.js';
 
 const MAX_FLATTENED_PATH_POINTS = 12_000;
 const MAX_CUBIC_DEPTH = 8;
@@ -325,6 +326,10 @@ function inVisibleStroke(node, point, tolerance, document) {
 /** Hit-test a layer's painted geometry in its own local coordinate system. */
 export function hitTestVisibleGeometry(node, localPoint, { tolerance = 4, document = null } = {}) {
   if (!node || !Number.isFinite(localPoint?.x) || !Number.isFinite(localPoint?.y)) return false;
+  if (node.type === 'boolean') {
+    try { return hitTestVisibleGeometry(document ? getBooleanStrokePath(document, node) : booleanStrokePath(node), localPoint, { tolerance, document }); }
+    catch { return false; }
+  }
   if (node.type === 'slice') {
     // Keep the artwork underneath a slice directly selectable. Select the
     // region from its border or its Layers row instead of swallowing every
@@ -345,4 +350,11 @@ export function hitTestVisibleGeometry(node, localPoint, { tolerance = 4, docume
   if (localPoint.x < bounds.left - maximumStroke || localPoint.y < bounds.top - maximumStroke
     || localPoint.x > bounds.right + maximumStroke || localPoint.y > bounds.bottom + maximumStroke) return false;
   return inVisibleFill(node, localPoint, document) || inVisibleStroke(node, localPoint, Math.max(0, tolerance), document);
+}
+
+/** Result outlines extend beyond the live Boolean fill mask's layout bounds. */
+export function hitTestBooleanStrokeGeometry(node, localPoint, { tolerance = 4, document = null } = {}) {
+  if (!strokeStackForNode(node).length) return false;
+  try { return inVisibleStroke(document ? getBooleanStrokePath(document, node) : booleanStrokePath(node), localPoint, Math.max(0, tolerance), document); }
+  catch { return false; }
 }

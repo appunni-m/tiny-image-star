@@ -1,4 +1,4 @@
-import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
+import { findNode, getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
@@ -34,7 +34,7 @@ import { traceEllipseArc } from './ellipse-arc.js';
 import { starControlHandles } from './star-controls.js';
 import { ellipseArcControlHandles } from './ellipse-arc-controls.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
-import { hitTestVisibleGeometry } from './shape-hit-testing.js';
+import { hitTestBooleanStrokeGeometry, hitTestVisibleGeometry } from './shape-hit-testing.js';
 import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from './eyedropper.js';
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
 import { drawTextAlongPath } from './text-on-path.js';
@@ -42,7 +42,7 @@ export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
-const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path', 'network', 'text']);
+const EFFECT_PAINT_STAGEABLE_TYPES = new Set(['rectangle', 'ellipse', 'image', 'line', 'polygon', 'star', 'path', 'network', 'text', 'boolean']);
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
 
@@ -497,6 +497,10 @@ function createShadowSpreadSurface(source, spread) {
 }
 
 function createShadowGeometryMask(node, document, rasterScale, pixelWidth, pixelHeight, padX = 0, padY = 0, shapeText = null) {
+  if (node.type === 'boolean') {
+    try { return createShadowGeometryMask(getBooleanStrokePath(document, node), document, rasterScale, pixelWidth, pixelHeight, padX, padY, shapeText); }
+    catch { return null; }
+  }
   const mask = createTextSurface(pixelWidth, pixelHeight);
   const context = mask?.getContext?.('2d');
   if (!context) return null;
@@ -1579,19 +1583,21 @@ function richTextStyleForMarker(baseStyle) {
 }
 
 export class SceneRenderer {
-  constructor(canvas, getState, onDraw = null, { transparent = false, onMaskError = null } = {}) {
+  constructor(canvas, getState, onDraw = null, { transparent = false, onMaskError = null, onStrokeError = null } = {}) {
     this.canvas = canvas;
     this.transparent = Boolean(transparent);
     this.context = canvas.getContext('2d', { alpha: this.transparent, desynchronized: true });
     this.getState = getState;
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
     this.onMaskError = typeof onMaskError === 'function' ? onMaskError : null;
+    this.onStrokeError = typeof onStrokeError === 'function' ? onStrokeError : null;
     this.visiblePreviewKeys = new Set();
     this.frame = 0;
     this.workspacePattern = null;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
     this.luminanceMaskErrors = new Set();
+    this.booleanStrokeErrors = new Map();
     this.textPaintSurfaces = { glyph: null, paint: null };
     this.noiseCache = new Map();
     this.noiseCachePixels = 0;
@@ -3073,10 +3079,10 @@ export class SceneRenderer {
     // Plain paint layers use explicit fill, inner-shadow, and stroke phases.
     // Containers stay flattened, but their inner shadows sit below the top
     // effect stack (blur/noise/texture), matching the group effect order.
-    const stagePaints = !node.mask && !(node.children?.length)
+    const stagePaints = !node.mask && (!(node.children?.length) || node.type === 'boolean')
       && EFFECT_PAINT_STAGEABLE_TYPES.has(node.type);
     const containerEffectOrder = node.type === 'group' || node.type === 'frame' || node.type === 'section'
-      || Boolean(node.mask) || Boolean(node.children?.length);
+      || Boolean(node.mask) || (node.type !== 'boolean' && Boolean(node.children?.length));
     const hasInnerShadow = effects.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
     const hasVisibleStroke = stagePaints && strokeStackForNode(node).some(stroke => {
       if (stroke.visible === false || stroke.opacity <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return false;
@@ -3184,13 +3190,23 @@ export class SceneRenderer {
     const cx = x + width / 2; const cy = y + height / 2;
     const radius = node.cornerRadii || getNodePropertyValue(state.document, node, 'radius') || 0;
     const cornerSmoothing = node.cornerSmoothing || 0;
+    let booleanBoundary = false;
     ctx.beginPath();
     if (node.type === 'slice') {
       ctx.rect(x, y, width, height);
       ctx.setLineDash([4 / (state.zoom || 1), 3 / (state.zoom || 1)]);
-    } else if (node.type === 'boolean' || (node.type === 'group' && node.mask)) {
+    } else if (node.type === 'boolean') {
+      try {
+        traceVectorPath(ctx, getBooleanStrokePath(state.document, node), x, y);
+        ctx.setLineDash([]);
+        booleanBoundary = true;
+      } catch {
+        ctx.rect(x, y, width, height);
+        ctx.setLineDash([3 / (state.zoom || 1), 2 / (state.zoom || 1)]);
+      }
+    } else if (node.type === 'group' && node.mask) {
       ctx.rect(x, y, width, height);
-      ctx.setLineDash(node.type === 'boolean' ? [3 / (state.zoom || 1), 2 / (state.zoom || 1)] : []);
+      ctx.setLineDash([]);
     } else {
       switch (node.type) {
         case 'frame':
@@ -3230,6 +3246,7 @@ export class SceneRenderer {
     ctx.lineWidth = 1 / (state.zoom || 1);
     ctx.lineJoin = 'round';
     ctx.stroke();
+    if (booleanBoundary) return;
 
     if (node.children?.length) {
       ctx.save();
@@ -3345,6 +3362,7 @@ export class SceneRenderer {
   }
 
   reportLuminanceMaskError(node, error, renderOptions = {}) {
+    if (typeof renderOptions.onRenderError === 'function') renderOptions.onRenderError(node, error);
     if (!this.luminanceMaskErrors.has(node.id)) {
       // Keep diagnostics bounded when a renderer is reused across many files.
       if (this.luminanceMaskErrors.size >= 256) {
@@ -3381,17 +3399,46 @@ export class SceneRenderer {
 
   drawBooleanGroup(ctx, node, x, y, assets, maskMode = false, renderOptions = {}) {
     const state = this.getState();
-    const transform = ctx.getTransform?.();
-    const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
-    const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
-    if (!maskMode && hasBlendedFillPaint(node)) {
-      drawBooleanFillStack(this, ctx, node, surface, assets, state, x, y);
-      return;
+    if (renderOptions.effectPaintStage !== 'stroke') {
+      const transform = ctx.getTransform?.();
+      const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+      const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
+      if (!maskMode && hasBlendedFillPaint(node)) drawBooleanFillStack(this, ctx, node, surface, assets, state, x, y);
+      else {
+        ctx.save();
+        if (maskMode !== 'vector' && !Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
+        ctx.drawImage(surface, x, y, node.width, node.height);
+        ctx.restore();
+      }
     }
-    ctx.save();
-    if (maskMode !== 'vector' && !Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
-    ctx.drawImage(surface, x, y, node.width, node.height);
-    ctx.restore();
+    const hasDrawableStroke = strokeStackForNode(node).some((stroke, index) => {
+      if (stroke.visible === false || (maskMode !== 'vector' && Number(stroke.opacity ?? 1) <= 0)
+        || Math.max(...Object.values(strokeSideWidths(stroke))) <= 0) return false;
+      const color = index === 0 && node.strokeVariableId ? getNodeColor(state.document, node, 'stroke') : stroke.color;
+      if (maskMode === 'vector') return true;
+      if (stroke.gradient) return stroke.gradient.stops?.some(stop => Number(stop.opacity ?? 1) > 0);
+      return color && color !== 'transparent';
+    });
+    if (renderOptions.effectPaintStage === 'fill' || !hasDrawableStroke) return;
+    try {
+      const path = getBooleanStrokePath(state.document, node);
+      drawStrokeStack(ctx, path, state.document, x, y, node.width, node.height,
+        pathContext => traceVectorPath(pathContext, path, x, y), maskMode);
+      this.booleanStrokeErrors?.delete(node.id);
+    } catch (error) { this.reportBooleanStrokeError(node, error, renderOptions); }
+  }
+
+  reportBooleanStrokeError(node, error, renderOptions = {}) {
+    // Export collectors must hear every failure, even after the visible editor
+    // already reported this source state. Only repeated UI warnings are muted.
+    if (typeof renderOptions.onStrokeError === 'function') renderOptions.onStrokeError(node, error);
+    if (typeof renderOptions.onRenderError === 'function') renderOptions.onRenderError(node, error);
+    this.booleanStrokeErrors ||= new Map();
+    if (this.booleanStrokeErrors.get(node.id) === error.message) return;
+    if (this.booleanStrokeErrors.size >= 256) this.booleanStrokeErrors.delete(this.booleanStrokeErrors.keys().next().value);
+    this.booleanStrokeErrors.set(node.id, error.message);
+    console.warn(`Boolean outline “${node.name || node.id}” was omitted safely.`, error);
+    if (typeof this.onStrokeError === 'function') this.onStrokeError(node, error);
   }
 
   getBooleanSurface(node, assets, maskMode = false, contextScale = null, renderOptions = {}) {
@@ -3425,7 +3472,17 @@ export class SceneRenderer {
     if (entry) {
       this.booleanCache.delete(key);
       this.booleanCache.set(key, entry);
+      if (typeof renderOptions.onRenderError === 'function') {
+        for (const failure of entry.renderErrors || []) renderOptions.onRenderError(failure.node, failure.error);
+      }
     } else {
+      const renderErrors = [];
+      const sourceRenderOptions = { ...renderOptions, effectPaintStage: undefined, onRenderError: (sourceNode, error) => {
+        if (renderErrors.length < 256 && !renderErrors.some(failure => failure.node.id === sourceNode.id && failure.error.message === error.message)) {
+          renderErrors.push({ node: sourceNode, error });
+        }
+        if (typeof renderOptions.onRenderError === 'function') renderOptions.onRenderError(sourceNode, error);
+      } };
       const surface = typeof OffscreenCanvas === 'function'
         ? new OffscreenCanvas(width, height)
         : Object.assign(document.createElement('canvas'), { width, height });
@@ -3449,7 +3506,8 @@ export class SceneRenderer {
         else if (operation === 'subtract') mask.globalCompositeOperation = 'destination-out';
         else if (operation === 'intersect') mask.globalCompositeOperation = 'destination-in';
         else if (operation === 'exclude') mask.globalCompositeOperation = 'xor';
-        this.drawNode(mask, child, 0, 0, assets, false, maskMode === 'vector' ? 'vector' : true, renderOptions);
+        this.drawNode(mask, child, 0, 0, assets, false, maskMode === 'vector' ? 'vector' : true,
+          sourceRenderOptions);
         mask.restore();
         if (!visible && operation === 'intersect') {
           mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
@@ -3527,7 +3585,7 @@ export class SceneRenderer {
         }
         mask.restore();
       }
-      entry = { surface, pixels: width * height };
+      entry = { surface, pixels: width * height, renderErrors };
       this.booleanCache.set(key, entry);
       this.booleanCachePixels += entry.pixels;
       while (this.booleanCache.size > 6 || this.booleanCachePixels > 8_000_000) {
@@ -4370,6 +4428,7 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
           const booleanNode = { ...resolvedNode, rotation };
           contained = containsBoolean(booleanNode, point, center.x - geometry.width / 2, center.y - geometry.height / 2);
         }
+        contained ||= hitTestBooleanStrokeGeometry(resolvedNode, localPoint, { tolerance: hitTolerance, document });
       } else contained = hitTestVisibleGeometry(resolvedNode, localPoint, { tolerance: hitTolerance, document });
       if (contained && (insideAncestorClips || isClippedPickTarget || allowAnyClippedNodes)) hits.push(resolvedNode);
       if (node.type !== 'boolean') {

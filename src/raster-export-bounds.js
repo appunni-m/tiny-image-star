@@ -1,4 +1,4 @@
-import { getNodeGeometry } from './model.js';
+import { getBooleanStrokePath, getNodeGeometry } from './model.js';
 import { layerEffectPadding } from './layer-effects.js';
 import { strokeGeometryBounds, strokePaintPadding } from './stroke-alignment.js';
 import { strokeStackForNode } from './strokes.js';
@@ -8,9 +8,14 @@ import { nodeLocalToPage } from './transform-geometry.js';
 export function rasterExportBounds(document, node, ancestors = []) {
   const resolved = { ...node, ...getNodeGeometry(document, node) };
   const parents = ancestors.map(parent => ({ ...parent, ...getNodeGeometry(document, parent) }));
-  const strokePadding = strokePaintPadding(resolved, strokeStackForNode(resolved));
+  let outline = resolved;
+  if (resolved.type === 'boolean' && strokeStackForNode(resolved).length) {
+    try { outline = getBooleanStrokePath(document, resolved); }
+    catch { /* Bounds remain readable while the inspector explains an unavailable outline. */ }
+  }
+  const strokePadding = strokePaintPadding(outline, strokeStackForNode(outline));
   const effects = layerEffectPadding(resolved.effects);
-  const geometry = strokeGeometryBounds(resolved);
+  const geometry = strokeGeometryBounds(outline);
   const paint = [
     { x: geometry.left - strokePadding, y: geometry.top - strokePadding },
     { x: geometry.right + strokePadding, y: geometry.top - strokePadding },

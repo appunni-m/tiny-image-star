@@ -11,6 +11,7 @@ import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transf
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout, gridTrackLayout } from '../src/layout-engine.js';
 import { gradientFillToCSS } from '../src/fills.js';
+import { booleanStrokePath } from '../src/boolean-stroke-geometry.js';
 
 const fixture = name => new URL(`./fixtures/fig-import/${name}`, import.meta.url);
 const circlePath = fixture('circle-v101.fig');
@@ -23,6 +24,36 @@ function node(type, localID, parent, position, properties = {}) {
     size: { x: 120, y: 80 },
     transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 },
     visible: true, opacity: 1, ...properties
+  };
+}
+
+function booleanStrokeFixture({ translucentOperand = false, strokedOperand = false } = {}) {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const frameGuid = { sessionID: 1, localID: 2 };
+  const booleanGuid = { sessionID: 1, localID: 3 };
+  const solid = color => ({ type: 'SOLID', visible: true, color: { ...color, a: 1 } });
+  return {
+    header: { version: 106 }, message: { blobs: [] },
+    nodes: [
+      node('CANVAS', 1, null, '', { name: 'Boolean stroke page' }),
+      node('FRAME', 2, pageGuid, '!', { name: 'Boolean stroke frame', frameMaskDisabled: true }),
+      node('BOOLEAN_OPERATION', 3, frameGuid, '!', {
+        name: 'Boolean result outline', booleanOperation: 'UNION', size: { x: 100, y: 60 },
+        fillPaints: [solid({ r: 0.2, g: 0.3, b: 0.4 })], strokeWeight: 3,
+        strokeAlign: 'OUTSIDE', strokePaints: [solid({ r: 0.9, g: 0.4, b: 0.1 })]
+      }),
+      node('RECTANGLE', 4, booleanGuid, '!', {
+        name: 'First operand', size: { x: 55, y: 50 },
+        transform: { m00: 1, m01: 0, m02: 5, m10: 0, m11: 1, m12: 5 },
+        fillPaints: [{ ...solid({ r: 0.2, g: 0.7, b: 0.3 }), ...(translucentOperand ? { opacity: 0.5 } : {}) }],
+        ...(strokedOperand ? { strokeWeight: 2, strokePaints: [solid({ r: 0, g: 0, b: 0 })] } : {})
+      }),
+      node('RECTANGLE', 5, booleanGuid, 'a', {
+        name: 'Second operand', size: { x: 40, y: 35 },
+        transform: { m00: 1, m01: 0, m02: 35, m10: 0, m11: 1, m12: 10 },
+        fillPaints: [solid({ r: 0.1, g: 0.4, b: 0.8 })]
+      })
+    ]
   };
 }
 
@@ -90,6 +121,47 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.equal(frame.children[0].type, 'group');
   assert.ok(frame.children[0].children.length >= 2);
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
+});
+
+test('imports Boolean result strokes and warns when source geometry cannot produce an editable outline', () => {
+  const supported = convertFigDocument(booleanStrokeFixture());
+  const outline = supported.document.pages[0].children[0].children[0];
+  assert.equal(outline.type, 'boolean');
+  assert.equal(outline.strokes.length, 1);
+  assert.equal(outline.strokes[0].color, '#e6661a');
+  assert.equal(outline.strokes[0].width, 3);
+  assert.equal(outline.strokes[0].alignment, 'outside');
+  assert.equal(supported.report.warnings.some(warning => warning.type === 'BOOLEAN_STROKE'), false);
+  const resultPath = booleanStrokePath(outline);
+  assert.equal(resultPath.type, 'path');
+  assert.equal(resultPath.width, outline.width);
+  assert.equal(resultPath.height, outline.height);
+  assert.ok(resultPath.closed && resultPath.points.length > 0, 'the helper returns a nonempty closed primary contour');
+  assert.ok((resultPath.subpaths || []).every(contour => contour.closed && contour.points.length > 0),
+    'any additional Boolean result contours are closed');
+
+  for (const [options, reason] of [
+    [{ translucentOperand: true }, /opaque geometric fill/u],
+    [{ strokedOperand: true }, /source stroke/u]
+  ]) {
+    const imported = convertFigDocument(booleanStrokeFixture(options));
+    const boolean = imported.document.pages[0].children[0].children[0];
+    assert.equal(boolean.type, 'boolean');
+    assert.equal(boolean.strokes.length, 1, 'unsupported result stroke paint remains editable for repair');
+    const warning = imported.report.warnings.find(item => item.type === 'BOOLEAN_STROKE');
+    assert.ok(warning, 'unsupported geometry requires explicit review');
+    assert.match(warning.detail, reason);
+    assert.throws(() => booleanStrokePath(boolean), /Cannot outline this Boolean group/u,
+      'unsupported inputs do not substitute operand outlines or bounding boxes');
+    if (options.strokedOperand) {
+      assert.equal(boolean.strokes[0].alignment, 'outside', 'unsupported geometry keeps the authored stroke apron for later repair');
+      boolean.children[0].strokes = [];
+      boolean.children[0].stroke = null;
+      boolean.children[0].strokeWidth = 0;
+      assert.doesNotThrow(() => booleanStrokePath(boolean), 'removing the unsupported operand stroke restores exact result geometry');
+      assert.equal(boolean.strokes[0].alignment, 'outside', 'repair retains the authored result stroke position');
+    }
+  }
 });
 
 test('preserves explicit inside and outside FIG strokes and the raw embedded alignment enum', async () => {

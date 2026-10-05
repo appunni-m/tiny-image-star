@@ -18,7 +18,6 @@ function normalizedValue(value) {
 
 function signatureFor(node, kind, getPaintStack) {
   if (kind === 'fill' && !isFillStackSupported(node)) return null;
-  if (kind === 'stroke' && node.type === 'boolean') return null;
   const stack = getPaintStack(node, kind);
   if (!Array.isArray(stack)) return null;
   const visiblePaints = stack.filter(paint => paint?.visible !== false && (paint?.opacity ?? 1) > 0);

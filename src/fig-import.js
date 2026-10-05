@@ -16,6 +16,7 @@ import { isValidLayerBlendMode } from './layer-blend.js';
 import { normalizeStrokeDashArray } from './stroke-style.js';
 import { supportsStrokeAlignment } from './stroke-alignment.js';
 import { strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
+import { booleanStrokePath } from './boolean-stroke-geometry.js';
 import { DEFAULT_IMAGE_TILE_SCALE, isValidImageTileScale } from './image-tile.js';
 import { MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 
@@ -457,7 +458,7 @@ function applyImportedStrokeAlignment(source, target, context) {
       'The stroke position is unknown to the embedded schema; the stroke remains centered.');
     return target;
   }
-  if (alignment !== 'center' && !supportsStrokeAlignment(target)) {
+  if (alignment !== 'center' && target.type !== 'boolean' && !supportsStrokeAlignment(target)) {
     warn(context.report, 'flattened', 'STROKE_ALIGNMENT', source.name,
       'This open or unsupported geometry cannot retain an inside/outside stroke position; the stroke remains centered.');
     alignment = 'center';
@@ -1995,10 +1996,6 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     warn(context.report, 'unsupported', 'LINE_FILL', name, 'Fill paints on lines are not supported by the local editor.');
   }
   let strokes = mapStrokes(source.strokePaints, source, context.report);
-  if (type === 'boolean' && strokes.length) {
-    warn(context.report, 'unsupported', 'STROKE', name, 'Strokes on Boolean groups are not supported by the local editor.');
-    strokes = [];
-  }
   if (fills.length) overrides.fills = fills;
   else if (['frame', 'section', 'rectangle', 'ellipse', 'star', 'polygon', 'boolean'].includes(type)) overrides.fill = 'transparent';
   if (strokes.length) overrides.strokes = strokes;
@@ -2061,11 +2058,27 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   if (type === 'boolean' && !isValidBooleanChildren(overrides.children)) {
     warn(context.report, 'flattened', 'BOOLEAN_OPERATION', name, 'The Boolean operator could not be represented safely; its operands were kept in an editable group.');
     const { operation: _operation, ...groupOverrides } = overrides;
+    if (strokes.length) {
+      warn(context.report, 'unsupported', 'BOOLEAN_STROKE', name,
+        'The Boolean result stroke was kept out of the fallback group because that group cannot reproduce the Boolean result outline.');
+      delete groupOverrides.strokes;
+      groupOverrides.stroke = null;
+      groupOverrides.strokeWidth = 0;
+    }
     const node = createImportedNode(source, 'group', groupOverrides);
     context.report.importedNodes += 1;
     return node;
   }
   const node = createImportedNode(source, type, overrides);
+  if (type === 'boolean' && strokes.length) {
+    try {
+      booleanStrokePath(node, { resolveNode: value => value });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'its source geometry is not supported by the editable outline engine';
+      warn(context.report, 'unsupported', 'BOOLEAN_STROKE', name,
+        `The result stroke was retained for review, but its editable outline cannot be generated safely: ${detail}`);
+    }
+  }
   applyImportedStrokeAlignment(source, node, context);
   const sourceId = idOf(source);
   if (sourceId) {

@@ -303,7 +303,6 @@ export function isValidStroke(stroke) {
 
 export function isValidStrokeStack(strokes, node = null) {
   if (!Array.isArray(strokes) || strokes.length > MAX_STROKES_PER_NODE) return false;
-  if (node?.type === 'boolean' && strokes.length) return false;
   if (node && strokes.some(stroke => (Object.hasOwn(stroke || {}, 'sideMode') || Object.hasOwn(stroke || {}, 'sideWidths'))
     && !['rectangle', 'frame'].includes(node.type))) return false;
   const ids = new Set();

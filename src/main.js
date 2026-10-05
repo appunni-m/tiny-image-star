@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyTidyUpPlan, planTidyUpLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canTidyUpLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canFrameSelection, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   addComponentVariantFromMaster, applyLayoutGuideStyle, copyLayoutGuide, pasteLayoutGuide, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayoutGuideStyle, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteLayoutGuideStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, detachLayoutGuideStyle, detachNodeTextPath, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, recordComponentChildOrder, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, recordComponentChildOrder, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, frameSelection, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentNestedInstanceExposures, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -24,6 +24,7 @@ import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNo
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeSideMode, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { effectiveStrokeAlignment, supportsStrokeAlignment } from './stroke-alignment.js';
 import { rasterExportBounds } from './raster-export-bounds.js';
+import { prepareRasterExportMasks } from './raster-export-preflight.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
@@ -2720,11 +2721,23 @@ function blendingSection(node) {
 function strokeGradientStopOpacityField(stop, index, strokeId, name, node) {
   return `<label><span>Alpha %</span><input type="number" min="0" max="100" step="0.1" data-stroke-field="gradientStopOpacity" data-stroke-id="${strokeId}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${formatInspectorNumber((stop.opacity ?? 1) * 100)}" aria-label="${name} gradient stop ${index + 1} opacity percent"${node.locked ? ' disabled' : ''}/></label>`;
 }
+function booleanStrokeStatus(node) {
+  if (node.type !== 'boolean') return { available: true, reason: '' };
+  try {
+    getBooleanStrokePath(state.document, node);
+    return { available: true, reason: '' };
+  } catch (error) {
+    return { available: false, reason: error.message };
+  }
+}
+function inspectorSupportsStrokeAlignment(node) {
+  return node.type === 'boolean' ? booleanStrokeStatus(node).available : supportsStrokeAlignment(node);
+}
 function strokeStackControls(node) {
   const strokes = strokeStackForNode(node);
   if (!strokes.length) return '';
   const supportsIndividualSides = ['rectangle', 'frame'].includes(node.type);
-  const supportsAlignment = supportsStrokeAlignment(node);
+  const supportsAlignment = inspectorSupportsStrokeAlignment(node);
   const supportsEndpointDecorations = node.type === 'line' || node.type === 'network'
     || (node.type === 'path' && vectorPathContours(node).some(contour => !contour.closed && contour.points?.length >= 2));
   const rows = strokes.map((stroke, index) => {
@@ -2867,17 +2880,19 @@ function appearanceSection(node) {
   const fillStyleActions = canBindPrimaryFill
     ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
     : '';
-  const canAddStroke = node.type !== 'boolean';
+  const booleanStroke = booleanStrokeStatus(node);
   const strokeCount = strokeStackForNode(node).length;
-  const addStrokeAction = canAddStroke ? `<button class="add-fill" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>` : '';
+  const addStrokeAction = `<button class="add-fill" data-action="add-stroke"${node.locked || !booleanStroke.available || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>`;
+  const outlineNote = node.type === 'boolean'
+    ? `<div class="image-properties-note" role="status">${booleanStroke.available
+      ? 'Strokes follow the combined outline. Source layers stay editable inside this Boolean group.'
+      : `${strokeCount ? 'The saved outline is unavailable for these sources. ' : ''}${escapeHtml(booleanStroke.reason)}`}</div>` : '';
   const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill)
     ? `<div class="style-actions">${addStrokeAction}</div>`
-    : node.type === 'boolean'
-      ? fillStyleActions ? `<div class="style-actions">${fillStyleActions}</div>` : ''
-      : node.type === 'text'
+    : node.type === 'text'
         ? `<div class="style-actions">${addStrokeAction}</div>`
         : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
-  const body = `${fills}${fillBinding}${stroke}${paintBlendWarning}${styleActions}${radius}`;
+  const body = `${fills}${fillBinding}${stroke}${outlineNote}${paintBlendWarning}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function strokeSection(node) {
@@ -9222,7 +9237,7 @@ function updateStrokeInput(input) {
     } else return;
     renderInspector();
   } else if (field === 'blendMode') updateStroke(node, stroke.id, { blendMode: input.value });
-  else if (field === 'alignment' && supportsStrokeAlignment(node) && ['inside', 'center', 'outside'].includes(input.value)) {
+  else if (field === 'alignment' && inspectorSupportsStrokeAlignment(node) && ['inside', 'center', 'outside'].includes(input.value)) {
     updateStroke(node, stroke.id, { alignment: input.value });
   }
   else if (field === 'gradientAngle' && stroke.gradient && Number.isFinite(Number(input.value))) {
@@ -14521,7 +14536,7 @@ function applyVariablePropertyToSelection(property, variableId) {
 function createColorVariableFromSelection(kind = null) {
   const nodes = selectedNodes();
   if (!nodes.length) { showToast('Select a layer before creating a color variable.'); return; }
-  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
+  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
   if (!source) { showToast('Select a compatible color layer first.'); return; }
   const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !hasClosedPathContour(source)) || (source.type === 'network' && !source.faces?.length) ? 'stroke' : 'fill');
   const current = getNodeColor(state.document, source, variableKind);
@@ -19705,6 +19720,8 @@ async function renderExportBlob(ids, setting, baseName, {
   checkCurrent();
   await document.fonts?.ready;
   checkCurrent();
+  await prepareRasterExportMasks(state.document, renderIds);
+  checkCurrent();
   const output = document.createElement('canvas'); output.width = width; output.height = height;
   const outputContext = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
   if (!outputContext) throw new Error('This browser could not create an export surface.');
@@ -19717,12 +19734,19 @@ async function renderExportBlob(ids, setting, baseName, {
   }
   const samplerContext = backdropSampler?.getContext('2d', { alpha: true }) || null;
   if (backdropSampler && !samplerContext) throw new Error('This browser could not create a backdrop export surface.');
-  const baseRenderOptions = { showLayoutGuides: false, outlineMode: false, includeSlices: false, ignoreMotionPreview: true };
+  const exportRenderErrors = [];
+  const captureExportRenderError = (_node, error) => exportRenderErrors.push(error);
+  const baseRenderOptions = {
+    showLayoutGuides: false, outlineMode: false, includeSlices: false, ignoreMotionPreview: true,
+    onRenderError: captureExportRenderError
+  };
   const drawExportScene = (context, renderOptions = baseRenderOptions, sceneIds = renderIds) => {
+    exportRenderErrors.length = 0;
     for (const id of sceneIds) {
       const tree = exportRenderTree(id);
       if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, renderOptions);
     }
+    if (exportRenderErrors.length) throw exportRenderErrors[0];
   };
   if (slicePlan) {
     const { padding, sourceCrop } = slicePlan;
@@ -21485,6 +21509,10 @@ function applyInspectorAction(action, details = {}) {
   }
   if (['add-stroke', 'remove-stroke', 'move-stroke'].includes(action)) {
     if (!node || node.locked) return;
+    if (action === 'add-stroke') {
+      const availability = booleanStrokeStatus(node);
+      if (!availability.available) { showToast(availability.reason); return; }
+    }
     const strokes = ensureStrokeStack(node);
     const previousPrimary = strokes[0];
     const hadPrimaryBinding = Boolean(node.strokeVariableId || node.variableBindings?.stroke);
@@ -21492,7 +21520,7 @@ function applyInspectorAction(action, details = {}) {
     if (action === 'add-stroke') {
       if (strokes.length >= MAX_STROKES_PER_NODE) { showToast(`A layer can have up to ${MAX_STROKES_PER_NODE} strokes.`); return; }
       checkpoint('Add stroke');
-      addStroke(node, createStroke({ alignment: supportsStrokeAlignment(node) ? 'inside' : 'center' }));
+      addStroke(node, createStroke({ alignment: inspectorSupportsStrokeAlignment(node) ? 'inside' : 'center' }));
     } else {
       const index = strokes.findIndex(stroke => stroke.id === details.strokeId);
       if (index < 0) return;
@@ -24232,7 +24260,8 @@ async function boot() {
   try { await refreshLocalFontAssets({ showFailureToast: true }); }
   catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state, drawRulerScales, {
-    onMaskError: node => showToast(`“${node.name || 'Luminance mask'}” could not be rendered. Its masked content is hidden.`)
+    onMaskError: node => showToast(`“${node.name || 'Luminance mask'}” could not be rendered. Its masked content is hidden.`),
+    onStrokeError: (node, error) => showToast(error.message)
   });
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   previousCanvasViewportSize = { width: canvas.clientWidth, height: canvas.clientHeight };

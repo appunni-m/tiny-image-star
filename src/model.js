@@ -12,6 +12,7 @@ import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
 import { isValidStrokeDashArray } from './stroke-style.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
+import { booleanStrokePath } from './boolean-stroke-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
@@ -1579,6 +1580,27 @@ export function canCombineBoolean(document, nodeIds, pageId = document.activePag
   return entries.every(entry => entry.parent === parent);
 }
 
+/** Derive a live Boolean outline using the same inherited modes as its paints. */
+export function getBooleanStrokePath(document, node) {
+  return booleanStrokePath(node, { resolveNode: source => {
+    const resolvedFill = getNodeColor(document, source, 'fill');
+    const boundFill = source.fillVariableId || source.fillStyleId;
+    const fills = source.fills?.map((fill, index) => index === 0 && boundFill && fill.type === 'solid'
+      ? { ...fill, color: resolvedFill } : fill);
+    const strokes = source.strokes?.map((stroke, index) => index === 0 && source.strokeVariableId
+      ? { ...stroke, color: getNodeColor(document, source, 'stroke') } : stroke);
+    return {
+      ...source, ...getNodeGeometry(document, source),
+      opacity: getNodePropertyValue(document, source, 'opacity'),
+      visible: getNodePropertyValue(document, source, 'visible'),
+      radius: getNodePropertyValue(document, source, 'radius'),
+      fill: resolvedFill, fillOpacity: getNodePropertyValue(document, source, 'fillOpacity'),
+      ...(fills ? { fills } : {}), ...(strokes ? { strokes } : {}),
+      ...(source.strokeVariableId ? { stroke: getNodeColor(document, source, 'stroke') } : {})
+    };
+  } });
+}
+
 /** Combine supported sibling shapes and text without flattening their editable source layers. */
 export function combineBoolean(document, nodeIds, operation = 'union', pageId = document.activePageId) {
   if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
@@ -2360,7 +2382,7 @@ export function bindColorVariable(document, nodeId, variableId, kind = 'fill', p
   if (!node || !property || (variableId && !variable)) return false;
   const compatible = kind === 'text' ? node.type === 'text'
     : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
-      : !['text', 'image', 'group', 'boolean'].includes(node.type);
+      : !['text', 'image', 'group'].includes(node.type);
   if (!compatible) return false;
   if (variableId) {
     node[property] = variableId;
@@ -4799,7 +4821,7 @@ export function validateDocument(document) {
       if (!variable) continue;
       const compatible = kind === 'text' ? node.type === 'text'
         : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
-          : !['text', 'image', 'group', 'boolean'].includes(node.type);
+          : !['text', 'image', 'group'].includes(node.type);
       if (!compatible) throw new TypeError(`Incompatible ${kind} variable on layer ${node.name || node.id}.`);
     }
     if (node.variableModes != null) {

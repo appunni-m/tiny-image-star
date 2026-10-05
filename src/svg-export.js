@@ -1,4 +1,4 @@
-import { getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource } from './model.js';
+import { getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource } from './model.js';
 import { layoutPlainText, layoutTextRuns, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { fillStackForNode, gradientTypes, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
@@ -50,6 +50,19 @@ const alignmentMetadataFields = [
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeAlignment', 'strokeCap', 'strokeJoin',
   'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokes', 'effects'
 ];
+
+function visibleBooleanStrokePath(node, document) {
+  if (node.type !== 'boolean') return null;
+  const hasVisibleStroke = strokeStackForNode(node).some((stroke, index) => {
+    const strokeColor = index === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
+    return stroke.visible !== false && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
+      && (stroke.gradient ? stroke.gradient.stops?.some(stop => Number(stop.opacity ?? 1) > 0)
+        : strokeColor && strokeColor !== 'transparent');
+  });
+  if (!hasVisibleStroke) return null;
+  try { return getBooleanStrokePath(document, node); }
+  catch (error) { throw new SvgExportError(`Boolean result strokes (${error.message || 'the operands do not define exact closed contours'})`, node); }
+}
 
 function alignedStrokeRoundTripMetadata(node, document, context) {
   if (context?.alignmentMetadata === false || node.children?.length || node.mask
@@ -772,6 +785,11 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
       && (child.type !== 'path' || hasOnlyClosedPathContours(child))
       && (child.type !== 'network' || (child.faces || []).length > 0);
     if (node.children.some(child => !validOperand(child))) return 'unsupported Boolean operands';
+    const resultStrokePath = visibleBooleanStrokePath(node, document);
+    if (resultStrokePath?.points?.length && node.effects?.some(effect => effect.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0)
+      && !canExportPhasedLayerPaint(resultStrokePath, document)) {
+      return 'Boolean result strokes with incompatible inner-shadow fill/stroke phases';
+    }
     const hiddenIntersection = (node.operation || 'union') === 'intersect' && node.children.some(child => !isNodeVisible(document, child));
     if (!hiddenIntersection && node.children.some(child => isNodeVisible(document, child)
       && ((child.blendMode || 'normal') !== 'normal' || hasNonNormalPaintBlend(child)))) return 'blended Boolean operands';
@@ -2070,16 +2088,21 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
-    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}${alignedStrokeRoundTripMetadata(node, document, context)}`;
+    const booleanStrokePath = visibleBooleanStrokePath(node, document);
+    const emptyBooleanResult = booleanStrokePath && !booleanStrokePath.points?.length;
+    const metadata = ` data-tiny-image-star-type="${escapeXml(booleanStrokePath ? 'group' : node.type)}"${booleanStrokePath ? ' data-tiny-image-star-source-type="boolean"' : ''}${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}${ellipseArcRoundTripMetadata(node)}${roundedRegularShapeRoundTripMetadata(document, node)}${roundedRectangleRoundTripMetadata(document, node)}${alignedStrokeRoundTripMetadata(node, document, context)}`;
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
-    const phasedPaint = canExportPhasedLayerPaint(node, document);
-    const booleanMask = node.type === 'boolean' ? booleanMaskDefinition(node, `tis-boolean-${index}`, document, measureText) : null;
+    const phasedPaint = !emptyBooleanResult && canExportPhasedLayerPaint(booleanStrokePath || node, document);
+    const booleanMask = node.type === 'boolean' && !booleanStrokePath ? booleanMaskDefinition(node, `tis-boolean-${index}`, document, measureText) : null;
     if (booleanMask) context.defs.push(...booleanMask.markups);
-    // The canvas Boolean renderer paints the group's fill through the result
-    // mask and does not draw a group outline.
-    const paintNode = node.type === 'boolean' ? { ...node, stroke: null, strokeWidth: 0 } : node;
+    // Eligible opaque Boolean sources have an exact geometric result. Paint
+    // both its fill and ordered outline from that same path, preserving holes
+    // without filter-based subtraction/XOR and without clipping outside paint.
+    // Fill-only groups keep the broader alpha-mask representation below.
+    const paintNode = booleanStrokePath ? { ...booleanStrokePath, strokes: strokeStackForNode(booleanStrokePath) }
+      : node.type === 'boolean' ? { ...node, stroke: null, strokeWidth: 0, strokes: [] } : node;
     let phasedPaintMarkup = null;
     if (phasedPaint) {
       const fillMarkup = hasFillStack
@@ -2093,10 +2116,15 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
         : shapeMarkup(paintNode, document, measureText, gradient?.id || null, { fillValue: 'transparent', fillOpacity: 0 });
       phasedPaintMarkup = { fillMarkup, strokeMarkup };
     }
-    let ownShape = phasedPaint ? '' : node.mask ? ''
+    // Scalar image fills and image layers paint in the image branch below.
+    // Building a throwaway vector outline here would register alignment masks
+    // twice before that branch replaces the markup.
+    const deferredImagePaint = node.type === 'image' || (node.imageFill && !hasFillStack);
+    let ownShape = phasedPaint || emptyBooleanResult || deferredImagePaint ? '' : node.mask ? ''
       : hasFillStack && node.type === 'network' ? renderNetworkFillStack(paintNode, document, context, index)
         : hasFillStack ? renderShapeFillStack(paintNode, document, context, index, measureText)
-          : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null, { context, layerIndex: index })
+          : node.type === 'boolean' && !booleanStrokePath ? shapeMarkup(paintNode, document, measureText, gradient?.id || null)
+            : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null, { context, layerIndex: index })
             : Array.isArray(paintNode.strokes) ? shapeWithStrokeStackMarkup(paintNode, document, measureText, gradient?.id || null, context, index)
               : shapeMarkup(paintNode, document, measureText, gradient?.id || null);
     const maskSource = node.mask ? node.children.find(child => child?.id === node.maskSourceId) : null;
@@ -2104,7 +2132,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
       ? maskDefinition(node, maskSource, index, document, measureText, context)
       : null;
     if (alphaMask) context.defs.push(alphaMask.markup);
-    if (node.type === 'image' || (node.imageFill && !hasFillStack)) {
+    if (!emptyBooleanResult && (node.type === 'image' || (node.imageFill && !hasFillStack))) {
       const isLayer = node.type === 'image';
       const assetId = isLayer ? node.assetId : node.imageFill.assetId;
       const asset = resolveLocalImage(node, context.assets, assetId, context.imagePreviews);
@@ -2145,7 +2173,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
         if (Array.isArray(node.strokes)) ownShape += shapeStrokeStackMarkup(node, document, measureText, null, context, index);
         else if (node.stroke && Number(node.strokeWidth) > 0) ownShape += roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node)}`);
       } else {
-        const clipNode = { ...node, fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0, variableBindings: {} };
+        const clipNode = { ...paintNode, fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0, variableBindings: {} };
         context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${shapeMarkup(clipNode, emptyDocument, measureText)}</clipPath>`);
         const attributes = ` opacity="${number(node.fillOpacity ?? 1)}" clip-path="url(#${clipId})"`;
         ownShape = fit === 'tile'
@@ -2158,8 +2186,8 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
             image: asset, width: node.width, height: node.height, fit,
             transforms: asset.isPreview ? {} : node.imageFill.transforms, attributes
           });
-        const outlineNode = { ...node, fill: '#000000', fillOpacity: 0, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, variableBindings: {} };
-        const outline = Array.isArray(node.strokes)
+        const outlineNode = { ...paintNode, fill: '#000000', fillOpacity: 0, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, variableBindings: {} };
+        const outline = Array.isArray(outlineNode.strokes)
           ? shapeStrokeStackMarkup(outlineNode, document, measureText, null, context, index)
           : shapeMarkup(outlineNode, document, measureText).replace(/ fill="[^"]*" fill-opacity="[^"]*"/, ' fill="none"');
         ownShape += outline;
@@ -2168,7 +2196,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     if (node.type === 'line' && !node.stroke) ownShape = ownShape.replace(/ stroke="none" stroke-width="[^"]*"\/>$/, ' stroke="none"/>');
     const childClipId = node.clip && !node.mask ? `tis-clip-${index}` : null;
     if (childClipId) context.defs.push(clipDefinition(document, childClipId, node));
-    const visibleEffects = (node.effects || []).filter(effect => effect.visible !== false);
+    const visibleEffects = emptyBooleanResult ? [] : (node.effects || []).filter(effect => effect.visible !== false);
     const innerEffects = phasedPaint ? visibleEffects.filter(effect => effect.type === 'inner-shadow') : [];
     const effectOrder = phasedPaint ? [
       ...visibleEffects.filter(effect => effect.type === 'inner-shadow'),
@@ -2178,7 +2206,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const topEffects = phasedPaint ? visibleEffects.filter(effect => effect.type !== 'inner-shadow') : null;
     const filter = phasedPaint
       ? effectDefinition(node, index, document, measureText, { effects: topEffects, id: `tis-effect-${index}` })
-      : effectDefinition(node, index, document, measureText);
+      : effectDefinition(node, index, document, measureText, emptyBooleanResult ? { effects: [] } : {});
     if (filter) context.defs.push(filter.markup);
     if (phasedPaintMarkup) {
       const innerFilter = effectDefinition(node, index, document, measureText, {
@@ -2196,7 +2224,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
       ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(visibleChildren, document, context, true, measureText)}</g>`
       : '';
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
-    const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask ? ` mask="url(#${booleanMask.id})"` : '';
+    const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask && !booleanStrokePath ? ` mask="url(#${booleanMask.id})"` : '';
     const dropShadows = visibleEffects.filter(effect => effect.type === 'drop-shadow');
     const dropShadowMetadata = dropShadows.length
       ? ` data-tiny-image-star-drop-shadow-behind-v1="${escapeXml(JSON.stringify(dropShadows.map(effect => effect.showShadowBehindNode === true)))}"`
@@ -2233,7 +2261,8 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
     for (const sourceNode of list || []) {
       if (sourceNode?.type === 'slice') continue;
       if (!isNodeVisible(document, sourceNode)) continue;
-      const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
+      const resolvedNode = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
+      const node = visibleBooleanStrokePath(resolvedNode, document) || resolvedNode;
       const matrix = multiply(parentMatrix, nodeMatrix(node, { includePosition: !isRoot || includePosition }));
       const { width, height } = dimensions(node);
       const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -2351,9 +2380,13 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       if (!['rectangle', 'frame'].includes(node.type)) {
         const strokes = strokeStackForNode(node);
         const hasAlignment = strokes.some(stroke => effectiveStrokeAlignment(node, stroke) !== 'center');
-        const strokeWidth = hasAlignment ? strokePaintPadding(node, strokes)
+        const strokeWidth = hasAlignment || sourceNode.type === 'boolean' ? strokePaintPadding(node, strokes)
           : node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
-        if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
+        if (strokeWidth) {
+          const paddingX = sourceNode.type === 'boolean' ? strokeWidth * (Math.abs(matrix[0]) + Math.abs(matrix[2])) : strokeWidth;
+          const paddingY = sourceNode.type === 'boolean' ? strokeWidth * (Math.abs(matrix[1]) + Math.abs(matrix[3])) : strokeWidth;
+          bounds.minX -= paddingX; bounds.minY -= paddingY; bounds.maxX += paddingX; bounds.maxY += paddingY;
+        }
       }
       const regularStrokePadding = ['star', 'polygon'].includes(node.type) ? regularShapeStrokePadding(node) : 0;
       if (regularStrokePadding) {

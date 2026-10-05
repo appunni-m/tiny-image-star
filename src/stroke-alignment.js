@@ -1,5 +1,6 @@
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorPathContours } from './vector-path.js';
 import { strokeSideNames, strokeSideWidths } from './strokes.js';
+import { booleanStrokePath } from './boolean-stroke-geometry.js';
 
 const alignments = new Set(['inside', 'center', 'outside']);
 const closedPrimitives = new Set(['rectangle', 'frame', 'image', 'ellipse', 'star', 'polygon', 'text']);
@@ -12,6 +13,10 @@ export function strokeAlignment(stroke) {
 /** Alignment needs a filled geometric boundary, independently of its paints. */
 export function supportsStrokeAlignment(node) {
   if (!node) return false;
+  if (node.type === 'boolean') {
+    try { booleanStrokePath(node); return true; }
+    catch { return false; }
+  }
   if (closedPrimitives.has(node.type)) return true;
   if (node.type === 'path') {
     const contours = vectorPathContours(node).filter(contour => contour.points?.length);
@@ -35,6 +40,9 @@ export function supportsStrokeAlignment(node) {
 
 /** Open paths keep their authored position but render with centered semantics. */
 export function effectiveStrokeAlignment(node, stroke) {
+  // A saved Boolean outline keeps its authored apron even if a source becomes
+  // unsupported. Rendering still requires a resolved exact result path.
+  if (node?.type === 'boolean') return strokeAlignment(stroke);
   return supportsStrokeAlignment(node) ? strokeAlignment(stroke) : 'center';
 }
 
@@ -83,7 +91,7 @@ export function strokePaintPadding(node, strokes) {
         && (!stroke.color || stroke.color === 'transparent'))) return maximum;
     const outer = strokeOuterExtent(stroke, node);
     // Rectangular miter corners occupy the axis apron without multiplying it.
-    const miter = ['star', 'polygon', 'path', 'network', 'text'].includes(node?.type) && stroke.join === 'miter'
+    const miter = ['star', 'polygon', 'path', 'network', 'text', 'boolean'].includes(node?.type) && stroke.join === 'miter'
       ? Math.max(1, Number(stroke.miterLimit) || 10) : 1;
     return Math.max(maximum, outer * miter);
   }, 0);

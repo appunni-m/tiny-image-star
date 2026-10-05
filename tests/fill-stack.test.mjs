@@ -328,7 +328,6 @@ test('text Appearance exposes paint and stroke stacks while retaining legacy tex
     "if (node.type === 'text') body += textSection(node);",
     "else if (!['image', 'line'].includes(node.type)) body += appearanceSection(node);",
     "const canBindPrimaryFill = node.type !== 'text' && hasFill",
-    "const canAddStroke = node.type !== 'boolean';",
     "const textColorLabel = Array.isArray(node.fills) ? 'Legacy text color' : 'Text color';",
     "if (!hadExplicitStack && node?.type === 'text' && fills[0]?.type === 'solid')",
     "getNodeColor(state.document, node, 'text')",

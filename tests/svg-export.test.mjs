@@ -9,6 +9,8 @@ import { convertFigDocument } from '../src/fig-import.js';
 import { exportNodeToSvg, exportPageToSvg, getPageContentBounds, SvgExportError } from '../src/svg-export.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
+import { createStroke } from '../src/strokes.js';
+import { createVectorPdf } from '../src/pdf-vector-export.js';
 
 function findGradientLayer(nodes) {
   for (const node of nodes || []) {
@@ -1218,7 +1220,7 @@ test('SVG fails closed for regular-shape effects that cannot preserve paint phas
 test('exports Boolean unions with editable vector operands and an alpha mask', () => {
   const group = createNode('boolean', {
     id: 'union', operation: 'union', x: 5, y: 8, width: 120, height: 80,
-    fill: '#123456', fillOpacity: 0.65, radius: 12, stroke: '#000000', strokeWidth: 4,
+    fill: '#123456', fillOpacity: 0.65, radius: 12,
     children: [
       createNode('ellipse', { id: 'left', x: 0, y: 0, width: 60, height: 60, fill: '#ff0000', opacity: 0.5 }),
       createNode('rectangle', { id: 'right', x: 30, y: 20, width: 90, height: 60, fill: '#00ff00' })
@@ -1355,6 +1357,254 @@ test('exports Boolean subtract and intersect with editable alpha mask compositio
   const hiddenIntersectSvg = exportNodeToSvg(hiddenIntersect);
   assert.match(hiddenIntersectSvg, /<mask id="tis-boolean-0"[^>]*><\/mask>/,
     'a hidden intersection operand makes the result empty, matching the editor');
+});
+
+function outlinedBoolean(operation = 'union', overrides = {}) {
+  return createNode('boolean', {
+    id: `outlined-${operation}`, name: 'Outlined result', operation, width: 100, height: 60,
+    fill: '#abcdef', children: [
+      createNode('rectangle', { id: 'outline-base', width: 60, height: 60 }),
+      createNode('rectangle', { id: 'outline-other', x: 40, y: 20, width: 60, height: 40 })
+    ], strokes: [createStroke({ id: 'result-outline', color: '#123456', width: 4 })],
+    ...overrides
+  });
+}
+
+const outlinedBooleanSvgBody = svg => svg.replace(/^[\s\S]*?<svg\b[^>]*>/, '').replace(/^<defs>[\s\S]*?<\/defs>/, '');
+
+test('Boolean result strokes follow joined result contours instead of a bounding rectangle', () => {
+  const node = outlinedBoolean();
+  const snapshot = structuredClone(node);
+  const svg = exportNodeToSvg(node);
+  const body = outlinedBooleanSvgBody(svg);
+  const stroke = /<path[^>]*data-tiny-image-star-stroke-id="result-outline"[^>]*\/>/.exec(body)?.[0];
+  assert.ok(stroke, 'the authored result stroke is painted as a closed path');
+  assert.match(stroke, /d="M 0 0 C 0 0 60 0 60 0 C 60 0 60 20 60 20 C 60 20 100 20 100 20/,
+    'the concave union corner is part of the outline');
+  assert.match(stroke, / Z"[^>]*fill-rule="evenodd"[^>]*stroke="#123456" stroke-width="4"/);
+  assert.doesNotMatch(body, /<rect[^>]*stroke="#123456"/);
+  assert.match(body, /^<g opacity="1" data-tiny-image-star-type="group" data-tiny-image-star-source-type="boolean"/);
+  assert.match(body, /<path[^>]*fill="#abcdef" fill-opacity="1" fill-rule="evenodd"\/><path/,
+    'eligible Boolean fill and stroke share exact result geometry');
+  assert.doesNotMatch(svg, /tis-boolean-0|data-tiny-image-star-type="boolean"/,
+    'exact result geometry needs no Boolean filter graph or native source-graph claim');
+  assert.deepEqual(node, snapshot, 'export never bakes or changes editable source operands');
+  assert.equal(svg, exportNodeToSvg(node));
+});
+
+test('Boolean contour stacks preserve inside/center/outside widths, paint order, gradients and authored dashes', () => {
+  const gradient = createGradientFill('linear', '#102030');
+  gradient.angle = 23;
+  Object.assign(gradient.stops[1], { color: '#8090a0', opacity: 0.7 });
+  const node = outlinedBoolean('union', { strokes: [
+    createStroke({ id: 'inside-result', width: 2, alignment: 'inside', pattern: 'custom', dashArray: [7, 3], opacity: 0.4 }),
+    createStroke({ id: 'center-result', width: 3, alignment: 'center', gradient }),
+    createStroke({ id: 'outside-result', width: 5, alignment: 'outside', color: '#ff5500', join: 'round' })
+  ] });
+  const svg = exportNodeToSvg(node);
+  const body = outlinedBooleanSvgBody(svg);
+  assert.deepEqual([...body.matchAll(/data-tiny-image-star-stroke-id="([^"]+)"/g)].map(match => match[1]),
+    ['inside-result', 'center-result', 'outside-result']);
+  assert.match(body, /data-tiny-image-star-stroke-id="inside-result"[^>]*stroke-opacity="0\.4"[^>]*stroke-width="4"[^>]*stroke-dasharray="7 3"/,
+    'aligned geometry doubles width without doubling dash rhythm or opacity');
+  assert.match(body, /data-tiny-image-star-stroke-id="center-result"[^>]*stroke="url\(#tis-gradient-0-stroke-1\)" stroke-width="3"/);
+  assert.match(body, /data-tiny-image-star-stroke-alignment="outside" mask="url\(#tis-stroke-alignment-0-2\)"/);
+  assert.match(body, /data-tiny-image-star-stroke-id="outside-result"[^>]*stroke-width="10"[^>]*stroke-linejoin="round"/);
+  assert.match(svg, /<mask id="tis-stroke-alignment-0-0" mask-type="alpha"/);
+  assert.match(svg, /<mask id="tis-stroke-alignment-0-2" mask-type="luminance" color-interpolation="sRGB"/);
+  assert.doesNotMatch(svg, /tis-boolean-/);
+});
+
+test('Boolean holes and disjoint islands retain every closed contour in aligned result strokes', () => {
+  const hole = outlinedBoolean('subtract', { children: [
+    createNode('rectangle', { width: 100, height: 60 }),
+    createNode('rectangle', { x: 25, y: 15, width: 50, height: 30 })
+  ], strokes: [createStroke({ id: 'hole-outline', width: 3, alignment: 'outside' })] });
+  const svg = exportNodeToSvg(hole);
+  const path = /<path[^>]*data-tiny-image-star-stroke-id="hole-outline"[^>]*d="([^"]+)"[^>]*\/>/.exec(svg);
+  assert.ok(path);
+  assert.equal((path[1].match(/M /g) || []).length, 2, 'outer and cutout contours are both stroked');
+  assert.equal((path[1].match(/ Z/g) || []).length, 2, 'each boundary has a real closing join');
+  assert.match(svg, /<path[^>]*fill="#000000" fill-opacity="1" fill-rule="evenodd"/,
+    'outside stroke masking leaves stroke coverage visible inside the cutout');
+  const pdf = new TextDecoder('latin1').decode(createVectorPdf(svg));
+  assert.match(pdf, /\nf\*\n/, 'the vector fill preserves the evenodd cutout instead of filling its box');
+
+  const islands = outlinedBoolean('union', { children: [
+    createNode('rectangle', { width: 20, height: 20 }),
+    createNode('rectangle', { x: 80, y: 40, width: 20, height: 20 })
+  ] });
+  const islandPath = /<path[^>]*data-tiny-image-star-stroke-id="result-outline"[^>]*d="([^"]+)"/.exec(exportNodeToSvg(islands));
+  assert.equal((islandPath[1].match(/M /g) || []).length, 2);
+  assert.equal((islandPath[1].match(/ Z/g) || []).length, 2);
+});
+
+test('Boolean result strokes share one layer transform and opacity with the contour fill', () => {
+  const node = outlinedBoolean('union', { rotation: 17, opacity: 0.6, strokes: [
+    createStroke({ id: 'translucent-outline', width: 4, opacity: 0.4, alignment: 'outside' })
+  ] });
+  const svg = exportNodeToSvg(node);
+  const body = outlinedBooleanSvgBody(svg);
+  assert.equal((body.match(/transform="matrix\(/g) || []).length, 1);
+  assert.equal((body.match(/opacity="0\.6"/g) || []).length, 1);
+  assert.match(body, /^<g transform="matrix\([^"]+\)" opacity="0\.6"[^>]*data-tiny-image-star-type="group"/);
+  assert.match(body, /data-tiny-image-star-stroke-id="translucent-outline"[^>]*stroke-opacity="0\.4"/);
+  const bounds = getPageContentBounds({ children: [node] });
+  assert.ok(bounds.width > node.width && bounds.height > node.height,
+    'rotated outside miter coverage contributes to export bounds');
+  const scaled = outlinedBoolean('union', { affineTransform: { a: 20, b: 0, c: 0, d: 1 }, strokes: [
+    createStroke({ width: 4, alignment: 'outside', join: 'round' })
+  ] });
+  const scaledBounds = getPageContentBounds({ children: [scaled] });
+  assert.ok(scaledBounds.x <= -80 && scaledBounds.x + scaledBounds.width >= 2080,
+    'an affine-scaled four-pixel outside outline cannot be cropped at either vertical edge');
+});
+
+test('Boolean result strokes resolve bound primary colors before deciding paint visibility', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Outline colors');
+  const variable = createVariable(document, collection.id, 'Result color', 'color', '#987654');
+  const node = outlinedBoolean('union', { strokes: [createStroke({ color: 'transparent', width: 3 })] });
+  addNode(document, node);
+  node.strokeVariableId = variable.id;
+  const svg = exportNodeToSvg(node, { document });
+  assert.match(svg, /<path[^>]*stroke="#987654" stroke-width="3"/);
+  assert.match(svg, /data-tiny-image-star-source-type="boolean"/);
+});
+
+test('unsupported Boolean outlines fail explicitly while invisible strokes preserve broader alpha fills', () => {
+  for (const source of [
+    createNode('rectangle', { width: 60, height: 60, opacity: 0.5 }),
+    createNode('rectangle', { width: 60, height: 60, fillOpacity: 0.5 }),
+    createNode('rectangle', { width: 60, height: 60, visible: false }),
+    createNode('rectangle', { width: 60, height: 60, stroke: '#123456', strokeWidth: 2 }),
+    createNode('text', { width: 60, height: 60, text: 'Outlined text' })
+  ]) {
+    const node = outlinedBoolean('union', { children: [source, createNode('rectangle', { x: 40, width: 60, height: 60 })] });
+    assert.throws(() => exportNodeToSvg(node, { measureText: value => String(value).length * 10 }),
+      error => error instanceof SvgExportError && /Boolean result strokes/.test(error.feature),
+    `unsupported source ${source.type} must not silently lose its authored outline`);
+  }
+  for (const stroke of [
+    createStroke({ visible: false }), createStroke({ opacity: 0 }),
+    createStroke({ width: 0 }), createStroke({ color: 'transparent' }),
+    createStroke({ gradient: { ...createGradientFill('linear', '#123456'),
+      stops: createGradientFill('linear', '#123456').stops.map(stop => ({ ...stop, opacity: 0 })) } })
+  ]) {
+    const node = outlinedBoolean('union', { children: [
+      createNode('rectangle', { width: 60, height: 60, opacity: 0.5 }),
+      createNode('rectangle', { x: 40, width: 60, height: 60 })
+    ], strokes: [stroke] });
+    const svg = exportNodeToSvg(node);
+    assert.match(svg, /opacity="0\.5"><rect/);
+    assert.match(svg, /mask="url\(#tis-boolean-0\)" data-tiny-image-star-type="boolean"/);
+    assert.doesNotMatch(svg, /data-tiny-image-star-stroke-id=/);
+  }
+});
+
+test('Boolean outlines keep inner shadows on the fill phase and top effects on the full result', () => {
+  const node = outlinedBoolean('union', { strokes: [createStroke({ width: 3, alignment: 'outside' })], effects: [
+    createLayerEffect('inner-shadow', { color: '#112233', blur: 2, offsetX: 1, offsetY: 1 }),
+    createLayerEffect('drop-shadow', { color: '#334455', blur: 3, offsetX: 2, offsetY: 2, showShadowBehindNode: true })
+  ] });
+  const svg = exportNodeToSvg(node);
+  const body = outlinedBooleanSvgBody(svg);
+  assert.match(body, /^<g opacity="1" filter="url\(#tis-effect-0\)"[^>]*data-tiny-image-star-type="group"/);
+  assert.match(body, /data-tiny-image-star-paint-stage="fill" filter="url\(#tis-effect-0-inner\)"><path[^>]*fill="#abcdef"[^>]*fill-rule="evenodd"/);
+  assert.match(body, /<g data-tiny-image-star-paint-stage="stroke"><g data-tiny-image-star-stroke-alignment="outside"/);
+  node.strokes.push(createStroke({ color: '#ffffff', width: 1 }));
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && /Boolean result strokes with incompatible inner-shadow/.test(error.feature));
+});
+
+test('eligible Boolean fills retain ordered gradients and image clipping against the exact contour', () => {
+  const gradient = createGradientFill('linear', '#112233');
+  gradient.angle = 37;
+  const stacked = outlinedBoolean('subtract', { fills: [
+    createFillLayer('solid', { id: 'result-solid', color: '#aabbcc', opacity: 0.6 }),
+    createFillLayer('linear', { id: 'result-gradient', gradient, opacity: 0.4 })
+  ] });
+  const stackedSvg = exportNodeToSvg(stacked);
+  const body = outlinedBooleanSvgBody(stackedSvg);
+  assert.deepEqual([...body.matchAll(/data-tiny-image-star-fill-id="([^"]+)"/g)].map(match => match[1]),
+    ['result-solid', 'result-gradient']);
+  assert.equal((body.match(/fill-rule="evenodd"/g) || []).length, 3,
+    'each fill and the outline use the same derived contour');
+  assert.ok(body.indexOf('result-gradient') < body.indexOf('result-outline'));
+  assert.doesNotMatch(stackedSvg, /tis-boolean-/);
+  assert.doesNotThrow(() => createVectorPdf(stackedSvg));
+
+  // Actual red/green RGBA PNG, so the image/clip/outline graph also reaches PDF.
+  const assets = new Map([['result-photo', { type: 'image/png', width: 2, height: 1,
+    sourceBytes: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8DwHwQBEPgD/U6VwW8AAAAASUVORK5CYII=', 'base64') }]]);
+  for (const explicit of [false, true]) {
+    const imageFill = createImageFill('result-photo');
+    const image = outlinedBoolean('subtract', { children: [
+      createNode('rectangle', { width: 100, height: 60 }),
+      createNode('rectangle', { x: 25, y: 15, width: 50, height: 30 })
+    ], ...(explicit ? { fills: [createFillLayer('image', { imageFill, opacity: 0.7 })] }
+      : { imageFill, fillOpacity: 0.7 }),
+    strokes: [createStroke({ id: 'result-outline', color: '#123456', width: 3, alignment: 'outside' })] });
+    const imageSvg = exportNodeToSvg(image, { assets });
+    const clip = /<clipPath[^>]*><path[^>]*d="([^"]+)"[^>]*fill-rule="evenodd"[^>]*\/><\/clipPath>/.exec(imageSvg);
+    assert.ok(clip, 'scalar and explicit image fills clip to the actual Boolean cutout geometry');
+    assert.equal((clip[1].match(/M /g) || []).length, 2, 'image clipping retains the inner hole');
+    assert.match(imageSvg, /<path[^>]*data-tiny-image-star-stroke-id="result-outline"[^>]*stroke="#123456"/);
+    assert.equal((outlinedBooleanSvgBody(imageSvg).match(/data-tiny-image-star-stroke-id=/g) || []).length, 1);
+    assert.doesNotMatch(imageSvg, /<rect[^>]*stroke="#123456"|tis-boolean-/);
+    const pdf = new TextDecoder('latin1').decode(createVectorPdf(imageSvg));
+    assert.match(pdf, /\/Subtype \/Image/);
+    assert.match(pdf, /W\*\s+n/, 'PDF image clipping preserves the evenodd hole');
+    assert.match(pdf, /\/SMask << \/S \/Luminosity \/G \d+ 0 R >>/);
+    assert.match(pdf, /\nS\n/, 'the outside outline remains a separately painted vector path');
+  }
+});
+
+test('an empty eligible Boolean result exports no paint and becomes outlined again after a source move', () => {
+  for (const operation of ['intersect', 'subtract', 'exclude']) {
+    const children = operation === 'intersect' ? [
+      createNode('rectangle', { width: 20, height: 20 }),
+      createNode('rectangle', { x: 80, y: 40, width: 20, height: 20 })
+    ] : [createNode('rectangle', { width: 100, height: 60 }), createNode('rectangle', { width: 100, height: 60 })];
+    const node = outlinedBoolean(operation, { children, strokes: [createStroke({ alignment: 'outside', width: 4 })],
+      effects: [createLayerEffect('inner-shadow'), createLayerEffect('drop-shadow', { showShadowBehindNode: true })] });
+    const snapshot = structuredClone(node);
+    const svg = exportNodeToSvg(node);
+    assert.doesNotMatch(svg, /<path|<rect|<mask|<filter|<image/,
+      'empty contours never turn into a painted bounding rectangle or shadow');
+    assert.doesNotThrow(() => createVectorPdf(svg));
+    assert.deepEqual(node, snapshot, 'the saved Boolean and authored outline stay editable');
+    node.effects = [];
+    if (operation === 'intersect') { node.children[1].x = 10; node.children[1].y = 10; }
+    else node.children[1].x = 50;
+    assert.match(exportNodeToSvg(node), /data-tiny-image-star-stroke-id=/,
+      'current source geometry revives the original outline after a move');
+  }
+});
+
+test('all four eligible Boolean outline operations stay vector in PDF and import as flattened result paths', () => {
+  for (const operation of ['union', 'intersect', 'subtract', 'exclude']) for (const alignment of ['inside', 'center', 'outside']) {
+    const node = outlinedBoolean(operation, { opacity: 0.7, strokes: [
+      createStroke({ width: 3, alignment, pattern: 'custom', dashArray: [5, 2] })
+    ] });
+    const svg = exportNodeToSvg(node);
+    const pdf = new TextDecoder('latin1').decode(createVectorPdf(svg));
+    assert.match(pdf, /^%PDF-1\.4/);
+    if (alignment === 'inside') assert.match(pdf, /\/SMask << \/S \/Alpha \/G \d+ 0 R >>/);
+    if (alignment === 'outside') assert.match(pdf, /\/SMask << \/S \/Luminosity \/G \d+ 0 R >>/);
+    assert.match(pdf, /\[5 2\] 0 d/);
+    assert.match(pdf, /\nS\n/);
+    assert.doesNotMatch(pdf, /\/Subtype \/Image/);
+    const imported = importSvgToLayers(svg);
+    const flatten = nodes => nodes.flatMap(item => [item, ...flatten(item.children || [])]);
+    const nodes = flatten(imported.nodes);
+    assert.ok(!nodes.some(item => item.type === 'boolean'), 'native editable operand graphs are not claimed for a flattened SVG result');
+    assert.ok(nodes.some(item => item.type === 'path' && item.fill === '#abcdef'));
+    assert.ok(nodes.some(item => item.type === 'path' && item.strokeWidth > 0),
+      'the separately painted result contours survive generic graph import');
+    assert.ok(nodes.some(item => item.type === 'group'),
+      'SVG does not pretend the contour paint has native editable Boolean metadata');
+  }
 });
 
 test('exports Boolean exclude as editable vector operands with alpha-correct XOR composition', () => {
