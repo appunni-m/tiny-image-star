@@ -105,6 +105,31 @@ test('sharing dialog close button dismisses the panel while preserving a live se
   assert.equal(liveSession.status, 'waiting-answer');
 });
 
+test('sharing close control dismisses after pointer release if an embedded browser omits click', () => {
+  const dialog = new FakeElement();
+  const closeButton = new FakeElement();
+  const liveSession = { status: 'connected' };
+  bindDialogDismissal(dialog, closeButton);
+
+  closeButton.dispatch('pointerdown', { pointerId: 7, button: 0, isPrimary: true });
+  closeButton.dispatch('pointerup', { pointerId: 7, button: 0, isPrimary: true });
+
+  assert.equal(dialog.open, false);
+  assert.equal(dialog.closeCount, 1);
+  assert.equal(liveSession.status, 'connected');
+});
+
+test('pressing a sharing close control without releasing does not dismiss it', () => {
+  const dialog = new FakeElement();
+  const closeButton = new FakeElement();
+  bindDialogDismissal(dialog, closeButton);
+
+  closeButton.dispatch('pointerdown', { pointerId: 9, button: 0, isPrimary: true });
+
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.closeCount, 0);
+});
+
 test('every sharing dialog close control dismisses the same panel', () => {
   const dialog = new FakeElement();
   const headerClose = new FakeElement();

@@ -91,6 +91,33 @@ export function bindDialogDismissal(dialog, closeControls, { onDismiss = null } 
     event?.stopPropagation?.();
     onDismiss?.(event);
   };
+  const pointerDismissHandlers = controls.map(control => {
+    let pressedPointerId = null;
+    const onPointerDown = event => {
+      if (!Number.isSafeInteger(event.pointerId) || event.isPrimary === false
+        || (typeof event.button === 'number' && event.button !== 0)) return;
+      pressedPointerId = event.pointerId;
+    };
+    const onPointerUp = event => {
+      if (pressedPointerId === null || event.pointerId !== pressedPointerId) return;
+      pressedPointerId = null;
+      // A few embedded browsers deliver a touch pointer release but omit the
+      // synthesized click. Dismiss on a completed press/release of the same
+      // close control as a fallback; a press alone never closes the panel.
+      close(event);
+    };
+    const onPointerCancel = event => {
+      if (event.pointerId === pressedPointerId) pressedPointerId = null;
+    };
+    control.addEventListener('pointerdown', onPointerDown);
+    control.addEventListener('pointerup', onPointerUp);
+    control.addEventListener('pointercancel', onPointerCancel);
+    return () => {
+      control.removeEventListener('pointerdown', onPointerDown);
+      control.removeEventListener('pointerup', onPointerUp);
+      control.removeEventListener('pointercancel', onPointerCancel);
+    };
+  });
   const dismissOnControlClick = event => {
     const control = event.target?.closest?.('[data-dialog-dismiss]');
     if (!control || (typeof dialog.contains === 'function' && !dialog.contains(control))) return;
@@ -127,6 +154,7 @@ export function bindDialogDismissal(dialog, closeControls, { onDismiss = null } 
 
   return () => {
     for (const control of controls) control.removeEventListener('click', close);
+    for (const removePointerHandlers of pointerDismissHandlers) removePointerHandlers();
     dialog.removeEventListener('click', dismissOnBackdrop);
     dialog.removeEventListener('click', dismissOnControlClick, true);
     dialog.removeEventListener('submit', dismissOnDialogSubmit, true);
