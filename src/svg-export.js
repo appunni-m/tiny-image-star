@@ -2083,10 +2083,14 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
       : '';
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
     const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : booleanMask ? ` mask="url(#${booleanMask.id})"` : '';
-    const paintPhaseMetadata = phasedPaintMarkup
-      ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}" data-tiny-image-star-drop-shadow-behind-v1="${escapeXml(JSON.stringify(visibleEffects.filter(effect => effect.type === 'drop-shadow').map(effect => effect.showShadowBehindNode === true)))}"`
+    const dropShadows = visibleEffects.filter(effect => effect.type === 'drop-shadow');
+    const dropShadowMetadata = dropShadows.length
+      ? ` data-tiny-image-star-drop-shadow-behind-v1="${escapeXml(JSON.stringify(dropShadows.map(effect => effect.showShadowBehindNode === true)))}"`
       : '';
-    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}>${title}${ownShape}${childNodes}</g>`;
+    const paintPhaseMetadata = phasedPaintMarkup
+      ? ` data-tiny-image-star-paint-phases="layer-v1" data-tiny-image-star-effect-order="${escapeXml(JSON.stringify(effectOrder))}"`
+      : '';
+    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}${paintPhaseMetadata}${dropShadowMetadata}>${title}${ownShape}${childNodes}</g>`;
   }
   return markup;
 }

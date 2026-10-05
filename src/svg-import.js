@@ -1976,6 +1976,7 @@ function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element, 
           offsetX: offset.x,
           offsetY: offset.y,
           blur: mappedBlur,
+          ...(effect.type === 'drop-shadow' ? { showShadowBehindNode: true } : {}),
           ...(spread !== 0 ? { spread: spread * (effectScale ?? 1) } : {})
         };
       })();
@@ -3030,6 +3031,20 @@ function readEditorDropShadowBehindMetadata(node, dropShadowCount) {
   return values;
 }
 
+function restoreEditorDropShadowFlags(node, layer, effects) {
+  const flags = readEditorDropShadowBehindMetadata(node,
+    effects.filter(effect => effect.type === 'drop-shadow').length);
+  if (!flags) return null;
+  let index = 0;
+  const restored = effects.map(effect => effect.type === 'drop-shadow'
+    ? { ...effect, showShadowBehindNode: flags[index++] } : effect);
+  // Ordinary SVG shadows are unclipped. A false flag can only recover native
+  // controls when the opaque paint hides the portion the editor would clip.
+  if (flags.some(value => !value)
+    && !svgDropShadowClipIsRedundant({ ...layer, strokeWidth: layer.stroke ? layer.strokeWidth : 0, effects: restored })) return null;
+  return restored;
+}
+
 // Preserve native shape controls only when Tiny Image Star metadata and one
 // simple SVG primitive make the original rectangle, frame, ellipse, line, star, or polygon unambiguous.
 function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradients, filters, budget) {
@@ -3283,17 +3298,12 @@ function importEditorPrimitiveLayer(node, style, matrix, prefix, counter, gradie
       || outerEffects.some(effect => !['layer-blur', 'drop-shadow'].includes(effect.type))) return null;
     const ordered = reorderPaintStageEffects(node.attrs['data-tiny-image-star-effect-order'], [...innerEffects, ...outerEffects]);
     if (!ordered) return null;
-    const dropShadowBehind = readEditorDropShadowBehindMetadata(node,
-      ordered.filter(effect => effect.type === 'drop-shadow').length);
-    if (!dropShadowBehind) return null;
-    let dropShadowIndex = 0;
-    const effects = ordered.map(effect => effect.type === 'drop-shadow'
-      ? { ...effect, showShadowBehindNode: dropShadowBehind[dropShadowIndex++] }
-      : effect);
-    if (dropShadowBehind.some(value => !value)
-      && !svgDropShadowClipIsRedundant({ ...layer, strokeWidth: layer.stroke ? layer.strokeWidth : 0, effects })) return null;
-    layer.effects = effects;
-  } else layer.effects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node, localName(node), layer.rotation);
+    layer.effects = restoreEditorDropShadowFlags(node, layer, ordered);
+  } else {
+    const effects = resolveNodeFilter(style, filters, matrix, [layer], prefix, node, localName(node), layer.rotation);
+    layer.effects = restoreEditorDropShadowFlags(node, layer, effects);
+  }
+  if (!layer.effects) return null;
   return layer;
 }
 

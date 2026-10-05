@@ -537,12 +537,14 @@ test('imports faithful SVG layer-blur and drop-shadow chains as editable layer e
       </filter>
     </defs>
     <rect id="blurred" x="0" y="0" width="100" height="80" filter="url(#soft)" fill="#fff"/>
-    <rect id="shadowed" x="0" y="0" width="100" height="80" style="filter: url(#shadow)" fill="#fff"/>
+    <rect id="shadowed" x="0" y="0" width="100" height="80" style="filter: url(#shadow)" fill="#fff" fill-opacity=".5"/>
   </svg>`);
   const nodes = allNodes(result.nodes);
   const blur = nodes.find(node => node.name === 'blurred');
   assert.deepEqual(blur.effects.map(({ type, radius }) => ({ type, radius })), [{ type: 'layer-blur', radius: 4 }]);
   const shadow = nodes.find(node => node.name === 'shadowed');
+  assert.equal(shadow.effects[0].showShadowBehindNode, true,
+    'ordinary SVG shadows remain visible behind translucent geometry');
   assert.deepEqual(shadow.effects.map(({ type, color, opacity, offsetX, offsetY, blur: radius }) =>
     ({ type, color, opacity, offsetX, offsetY, blur: radius })), [{
     type: 'drop-shadow', color: '#336699', opacity: 128 / 255 * 0.5, offsetX: 5, offsetY: -4, blur: 2
@@ -583,6 +585,29 @@ test('round-trips the importer-supported layer blur and drop-shadow primitives f
   assert.equal(layer.effects[1].offsetX, 5);
   assert.equal(layer.effects[1].offsetY, -2);
   assert.equal(layer.effects[1].blur, 3);
+});
+
+test('round-trips unphased native shadows with their local offsets and clipping flags', () => {
+  for (const showShadowBehindNode of [false, true]) {
+    const original = createNode('rectangle', {
+      name: `Unphased shadow ${showShadowBehindNode}`, width: 100, height: 60, rotation: 17,
+      fill: '#ffffff', fillOpacity: showShadowBehindNode ? 0.5 : 1,
+      effects: [{ id: 'shadow', type: 'drop-shadow', visible: true, showShadowBehindNode,
+        color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 }]
+    });
+    const svg = exportNodeToSvg(original);
+    const copy = allNodes(importSvgToLayers(svg).nodes).find(node => node.name === original.name);
+    assert.equal(copy?.type, 'rectangle');
+    assert.ok(Math.abs(copy.rotation - original.rotation) < 1e-8);
+    assert.equal(copy.effects[0].showShadowBehindNode, showShadowBehindNode);
+    assert.ok(Math.abs(copy.effects[0].offsetX - 5) < 1e-8);
+    assert.ok(Math.abs(copy.effects[0].offsetY + 2) < 1e-8);
+    assert.doesNotThrow(() => exportNodeToSvg(copy), 'the imported shadow remains exportable');
+    const legacy = svg.replace(/ data-tiny-image-star-drop-shadow-behind-v1="[^"]+"/u, '');
+    const legacyCopy = allNodes(importSvgToLayers(legacy).nodes).find(node => node.name === original.name);
+    assert.equal(legacyCopy.effects[0].showShadowBehindNode, true,
+      'older exports retain their actual SVG unclipped-shadow appearance');
+  }
 });
 
 test('round-trips editor-exported inner-shadow filter chains as editable ordered effects', () => {
