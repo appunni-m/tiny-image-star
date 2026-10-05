@@ -24,10 +24,12 @@ const LIMITS = Object.freeze({
  * fonts. Measured, flat inline rich-text runs also use standard Helvetica
  * variants when the SVG contains the editor's PDF placement metadata. Custom
  * underline styles, thicknesses, offsets, colors and verified Skip ink gaps
- * arrive as ordinary self-contained filled paths and retain vector geometry. Custom
- * fonts, shaped rich text, text paths, gradient strokes, unsupported filter
- * graphs, colored/translucent luminance masks, and blend modes are rejected with feature-specific
- * errors. A single user-space feDropShadow on a simple vector fill keeps its
+ * arrive as ordinary self-contained filled paths and retain vector geometry.
+ * Retained local glyph contours arrive as self-contained paths from the
+ * bounded SVG export; they do not create searchable or copyable PDF text. Raw
+ * custom-font SVG text and textPath nodes,
+ * gradient strokes, unsupported filter graphs, colored/translucent luminance
+ * masks, and blend modes are rejected with feature-specific errors. A single user-space feDropShadow on a simple vector fill keeps its
  * geometry as vector paths and its bounded blur as a transparent image XObject.
  */
 export class PdfVectorExportError extends TypeError {
@@ -383,13 +385,21 @@ function maskRegion(node) {
 // Black/white vector masks encode geometric subtraction without depending on
 // SVG luminance coefficients or color-space conversion. Reject other graphs
 // rather than silently treating their colors or transparency as alpha.
-function assertBinaryLuminanceMask(node) {
+function assertBinaryLuminanceMask(node, clips) {
   let shapes = 0;
   const reject = () => fail('luminance masks', 'only opaque black/white vector geometry in an explicit user-space region is supported');
   const visit = child => {
     if (child.name === '#text' || child.name === 'title') return;
-    if (child.name === 'g') {
-      if (Object.keys(child.attributes).some(key => !['transform', 'opacity'].includes(key) && !key.startsWith('data-'))) reject();
+    if (child.name === 'defs') {
+      if (Object.keys(child.attributes).some(key => !key.startsWith('data-'))) reject();
+      if (child.children.some(item => item.name !== '#text' && item.name !== 'clipPath')) reject();
+      return;
+    } else if (child.name === 'g') {
+      if (Object.keys(child.attributes).some(key => !['transform', 'opacity', 'clip-path'].includes(key) && !key.startsWith('data-'))) reject();
+      if (child.attributes['clip-path']) {
+        const match = /^url\(#([^)]+)\)$/.exec(child.attributes['clip-path']);
+        if (!match || !clips.has(match[1])) reject();
+      }
     } else if (shapeAttributes[child.name]) {
       const allowed = new Set([...shapeAttributes[child.name], 'transform', 'opacity']);
       if (Object.keys(child.attributes).some(key => !allowed.has(key) && !key.startsWith('data-'))) reject();
@@ -490,7 +500,39 @@ function scanDefinitions(svgRoot) {
           if (definition.attributes['color-interpolation'] && definition.attributes['color-interpolation'] !== 'sRGB') {
             fail('mask color interpolation', 'only sRGB mask interpolation is supported');
           }
-          if (kind === 'luminance') assertBinaryLuminanceMask(definition);
+          if (kind === 'luminance') {
+            // The editor places text-stroke clipping definitions inside the
+            // mask that consumes them. Register only simple, local clip paths
+            // from that scope; renderTree still ignores the nested <defs>.
+            const registerNestedClips = node => {
+              if (node.name === 'defs') {
+                if (Object.keys(node.attributes).some(key => !key.startsWith('data-'))) {
+                  fail('luminance masks', 'nested definitions may contain only local clip paths');
+                }
+                for (const nested of node.children) {
+                  if (nested.name === '#text') continue;
+                  if (nested.name !== 'clipPath') fail('luminance masks', 'nested definitions may contain only local clip paths');
+                  assertAttributes(nested, new Set(['id', 'clipPathUnits']));
+                  const nestedId = nested.attributes.id;
+                  if (!nestedId || ids.has(nestedId)) throw new TypeError('SVG definitions require unique IDs.');
+                  ids.add(nestedId);
+                  if (nested.attributes.clipPathUnits && nested.attributes.clipPathUnits !== 'userSpaceOnUse') {
+                    fail('luminance masks', 'nested clip paths must use userSpaceOnUse coordinates');
+                  }
+                  const shapes = nested.children.filter(item => item.name !== '#text');
+                  if (shapes.length !== 1 || !shapeAttributes[shapes[0].name]
+                    || shapes[0].children.some(item => item.name !== '#text' && item.name !== 'title')) {
+                    fail('luminance masks', 'nested clip paths must contain one simple vector shape');
+                  }
+                  clips.set(nestedId, shapes[0]);
+                }
+                return;
+              }
+              node.children?.forEach(registerNestedClips);
+            };
+            registerNestedClips(definition);
+            assertBinaryLuminanceMask(definition, clips);
+          }
           masks.set(id, { node: definition, kind, region: maskRegion(definition) });
         } else {
           fail(`SVG definition <${definition.name}>`);

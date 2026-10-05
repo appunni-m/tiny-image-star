@@ -86,6 +86,7 @@ import { canvasLeadingTrimMetrics } from './text-leading-trim.js';
 import { canvasTextLineMetrics } from './text-line-metrics.js';
 import { resolveTextPositionPlan } from './text-position.js';
 import { withPreparedTextPositionShapes } from './text-position-export-preparation.js';
+import { withPreparedVectorPdfText } from './vector-pdf-text-preparation.js';
 import { localFontsForStyle, localFontAxisValues as localFontVariations } from './local-font-style.js';
 import { TextOutlineFontSession } from './text-outline-font-session.js';
 import { prepareTextOutlineGeometry } from './text-outline-geometry.js';
@@ -20566,7 +20567,7 @@ function downloadSvg(markup, filename) {
   anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
+function createSvgTextMeasurer({ pdfMetrics = false, shapeText } = {}) {
   const context = document.createElement('canvas').getContext('2d');
   if (!context) return undefined;
   const measure = (text, node) => {
@@ -20582,11 +20583,16 @@ function createSvgTextMeasurer({ pdfMetrics = false } = {}) {
     context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(fontWeight, fontAxes)} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
     return measureTrackedText(context, text, letterSpacing);
   };
-  measure.shapeText = pdfMetrics ? undefined : shapeLocalTextRun;
-  measure.leadingTrimMetrics = style => canvasLeadingTrimMetrics(context, pdfMetrics ? { ...style, fontFamily: 'Helvetica' } : style);
-  measure.textLineMetrics = (style, text) => canvasTextLineMetrics(context, pdfMetrics ? { ...style, fontFamily: 'Helvetica' } : style, text);
+  measure.shapeText = shapeText ?? (pdfMetrics ? undefined : shapeLocalTextRun);
+  // Retained glyphs use their actual native metrics. Only the built-in PDF
+  // text fallback uses Helvetica; a configured local font never falls back.
+  const metricStyle = style => pdfMetrics && (!measure.shapeText || measure.shapeText.fontStatus?.(style) === 'none')
+    ? { ...style, fontFamily: 'Helvetica' } : style;
+  measure.leadingTrimMetrics = style => canvasLeadingTrimMetrics(context, metricStyle(style));
+  measure.textLineMetrics = (style, text) => canvasTextLineMetrics(context, metricStyle(style), text);
   measure.textInkBounds = (text, style, placement) => {
-    context.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(style.fontWeight || 400, style.fontAxes)} ${style.fontSize || 24}px ${pdfMetrics ? 'Helvetica' : style.fontFamily || 'Arial, sans-serif'}`;
+    const metrics = metricStyle(style);
+    context.font = `${metrics.fontStyle === 'italic' ? 'italic ' : ''}${canvasFontWeight(metrics.fontWeight || 400, metrics.fontAxes)} ${metrics.fontSize || 24}px ${metrics.fontFamily || 'Arial, sans-serif'}`;
     context.textBaseline = placement?.baseline ? 'alphabetic' : 'top';
     return canvasTextInkBounds(context, text, { ...style, letterSpacing: resolvedTextLetterSpacing(style), letterSpacingUnit: 'pixels' }, placement);
   };
@@ -21036,7 +21042,7 @@ async function exportActivePagePdf(pagePlan) {
   }
 }
 
-function assertVectorPdfTreeSupported(documentSnapshot, frame, booleanGeometryPlan) {
+function assertVectorPdfTreeSupported(documentSnapshot, frame, booleanGeometryPlan, { measureText, skipText = false } = {}) {
   const assertRasterSource = (node, { assetId, adjustments, transforms, inpaintStrokes = [] }) => {
     const label = node.name || (node.type === 'image' ? 'Image' : 'Layer');
     const asset = state.assets.get(assetId);
@@ -21060,7 +21066,7 @@ function assertVectorPdfTreeSupported(documentSnapshot, frame, booleanGeometryPl
       || getNodePropertyValue(documentSnapshot, node, 'visible') === false) return;
     if (parents.some(parent => Number(getNodePropertyValue(documentSnapshot, parent, 'opacity') ?? 1) === 0)
       || Number(getNodePropertyValue(documentSnapshot, node, 'opacity') ?? 1) === 0) return;
-    if (node.type === 'text') assertVectorPdfTextSupported(documentSnapshot, node);
+    if (node.type === 'text' && !skipText) assertVectorPdfTextSupported(documentSnapshot, node, { measureText });
     if (node.type === 'image') assertRasterSource(node, node);
     const glassVectorBlock = glassVectorExportBlockReason(node);
     if (glassVectorBlock) throw new PdfVectorExportError('Glass effects', `layer “${node.name || 'Layer'}”: ${glassVectorBlock}`);
@@ -21208,6 +21214,14 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
   if (!uniqueIds.length) throw new Error('Choose at least one frame to export as a vector PDF.');
   const documentSnapshot = state.document;
   const generation = state.documentGeneration;
+  const sourceRevision = state.saveRevision;
+  const fontEpoch = state.fontAssetEpoch;
+  const workspace = state.workspace;
+  const fontRecords = [...state.fontAssets.values()].map(font => structuredClone(font));
+  const fontSignature = JSON.stringify(fontRecords);
+  const typographySignature = () => JSON.stringify([documentSnapshot.variables, documentSnapshot.variableCollections,
+    documentSnapshot.colorStyles, documentSnapshot.typographyStyles, documentSnapshot.effectStyles]);
+  const capturedTypography = typographySignature();
   const pageId = page?.id;
   if (!page || page !== activePage()) throw new Error('The active page changed before vector PDF export started.');
   const pageSignature = JSON.stringify(page);
@@ -21216,11 +21230,19 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
     if (found?.node?.type !== 'frame') throw new Error('Vector PDF export supports frames only.');
     return { id, node: found.node, signature: JSON.stringify(found.node) };
   });
-  const assertCurrent = () => {
+  const assertOperationLive = () => {
     abortIfExportCanceled(controller.signal);
     if (state.document !== documentSnapshot || state.documentGeneration !== generation || state.documentTransitioning
-      || state.document.activePageId !== pageId || activePage() !== page || JSON.stringify(page) !== pageSignature) {
-      throw new Error('The design changed while the vector PDF was being prepared. Retry the export.');
+      || state.saveRevision !== sourceRevision || state.fontAssetEpoch !== fontEpoch || state.workspace !== workspace
+      || state.document.activePageId !== pageId || activePage() !== page) {
+      throw new Error('The design or its fonts changed while the vector PDF was being prepared. Retry the export.');
+    }
+  };
+  const assertCurrent = () => {
+    assertOperationLive();
+    if (JSON.stringify(page) !== pageSignature || JSON.stringify([...state.fontAssets.values()]) !== fontSignature
+      || typographySignature() !== capturedTypography) {
+      throw new Error('The design or its fonts changed while the vector PDF was being prepared. Retry the export.');
     }
     for (const frame of frames) {
       const current = findNode(state.document, frame.id)?.node;
@@ -21243,26 +21265,45 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
     showToast(`Preparing ${frames.length} frame${frames.length === 1 ? '' : 's'} for vector PDF… Press Escape to cancel.`, 5000);
     const booleanGeometryPlan = await prepareEditorBooleanVectorExport(documentSnapshot, frames.map(frame => frame.id), { signal: controller.signal });
     assertCurrent();
-    const measureText = createSvgTextMeasurer({ pdfMetrics: true });
     for (const { node } of frames) {
       assertCurrent();
-      assertVectorPdfTreeSupported(documentSnapshot, node, booleanGeometryPlan);
+      // Validate image/effect support before doing image work. Text support is
+      // checked against the actual retained glyphs in the bounded font session.
+      assertVectorPdfTreeSupported(documentSnapshot, node, booleanGeometryPlan, { skipText: true });
     }
     imagePreviews = await vectorPdfImagePreviews(frames.map(frame => frame.id), {
       controller, assertCurrent, pendingQueueKeys, queueGroup, booleanGeometryPlan,
     });
     assertCurrent();
-    const svgPages = frames.map(({ node }) => {
-      assertCurrent();
-      return exportNodeToSvg(projectBooleanVectorPaintTree(documentSnapshot, node, booleanGeometryPlan), {
-        document: documentSnapshot,
-        assets: state.assets,
-        imagePreviews,
-        measureText,
+    pdfBytes = await withPreparedVectorPdfText(shapeText => {
+      // Cheap revision/epoch fences run for every cold glyph retry. Compare
+      // full immutable source/catalog signatures only once all pages are ready.
+      assertOperationLive();
+      const measureText = createSvgTextMeasurer({ pdfMetrics: true, shapeText });
+      if (!measureText) throw new PdfVectorExportError('text metrics', 'this browser cannot prepare text metrics; use raster PDF');
+      const svgPages = frames.map(({ node }) => {
+        assertOperationLive();
+        assertVectorPdfTreeSupported(documentSnapshot, node, booleanGeometryPlan, { measureText });
+        return exportNodeToSvg(projectBooleanVectorPaintTree(documentSnapshot, node, booleanGeometryPlan), {
+          document: documentSnapshot,
+          assets: state.assets,
+          imagePreviews,
+          measureText,
+        });
       });
+      assertCurrent();
+      return createMultipageVectorPdf(svgPages);
+    }, {
+      fonts: fontRecords, signal: controller.signal, assertCurrent: assertOperationLive,
+      readFont: async fontId => {
+        assertOperationLive();
+        const saved = workspace
+          ? await readWorkspaceFontAssetOrRestore(workspace, documentSnapshot.id, fontId, { loadFallback: loadFontAsset })
+          : await loadFontAsset(fontId);
+        assertOperationLive();
+        return workspace ? validateLocalFontAsset({ ...saved.metadata, bytes: saved.bytes }) : saved;
+      },
     });
-    assertCurrent();
-    pdfBytes = createMultipageVectorPdf(svgPages);
     assertCurrent();
     const filename = `${safeExportName(baseName)}${frames.length > 1 ? '-frames' : ''}.pdf`;
     downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), filename);

@@ -5,6 +5,7 @@ import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
 import { isValidTextPosition } from './text-position-style.js';
 import { isValidLeadingTrim } from './text-leading-trim-style.js';
 import { inheritedTextLetterSpacing, resolvedTextLetterSpacing } from './text-letter-spacing.js';
+import { assertLocalTextGlyphExportReady } from './svg-export.js';
 
 const standardFontFamilies = new Set(['arial', 'helvetica', 'sans-serif']);
 const supportedWeights = new Set([400, 700, '400', '700']);
@@ -41,7 +42,7 @@ function hasActiveTextStroke(node) {
 }
 
 /** Check source settings before export; the PDF writer validates emitted glyphs and layout metrics. */
-export function assertVectorPdfTextSupported(documentSnapshot, node) {
+export function assertVectorPdfTextSupported(documentSnapshot, node, { measureText } = {}) {
   const label = node?.name || 'Text';
   const reject = (feature, detail) => {
     throw new PdfVectorExportError(feature, `layer “${label}”: ${detail} Use raster PDF to preserve this text exactly`);
@@ -49,9 +50,7 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   if (!node || node.type !== 'text') return true;
 
   const text = String(getNodePropertyValue(documentSnapshot, node, 'text') ?? '');
-  if (node.textPath) reject('text on a path', 'the vector writer cannot preserve shaped path placement.');
-
-  const fontSize = Number(getNodePropertyValue(documentSnapshot, node, 'fontSize') || 16);
+  const fontSize = Number(getNodePropertyValue(documentSnapshot, node, 'fontSize') ?? 16);
   const fontFamily = getNodePropertyValue(documentSnapshot, node, 'fontFamily') || 'Arial, sans-serif';
   const fontWeight = getNodePropertyValue(documentSnapshot, node, 'fontWeight') || 400;
   const fontStyle = getNodePropertyValue(documentSnapshot, node, 'fontStyle') || 'normal';
@@ -73,14 +72,23 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
     reject('leading trim', 'trim settings must use NONE or CAP_HEIGHT.');
   }
 
-  if (!fontFamilySupported(fontFamily)) {
+  let nativeGlyphs = false;
+  if (typeof measureText?.shapeText === 'function') {
+    try { nativeGlyphs = assertLocalTextGlyphExportReady(documentSnapshot, node, measureText); }
+    catch (error) {
+      if (String(error?.code || '').endsWith('_PENDING')) throw error;
+      reject('local text glyph coverage', error.message || 'complete retained glyph contours are unavailable.');
+    }
+  }
+  if (!nativeGlyphs && node.textPath) reject('text on a path', 'the vector writer cannot preserve shaped path placement.');
+  if (!nativeGlyphs && !fontFamilySupported(fontFamily)) {
     reject('custom text fonts', 'only Arial, Helvetica, or sans-serif can use the built-in PDF fonts.');
   }
-  if (!supportedWeights.has(fontWeight) || !supportedStyles.has(fontStyle)) {
+  if (!nativeGlyphs && (!supportedWeights.has(fontWeight) || !supportedStyles.has(fontStyle))) {
     reject('text font variants', 'only regular, bold, italic, and bold italic standard fonts are supported.');
   }
-  if (!Number.isFinite(letterSpacing) || letterSpacing !== 0) reject('letter spacing', 'the vector text writer requires zero resolved letter spacing.');
-  if (hasSettings(fontAxes) || hasSettings(fontFeatures)) {
+  if (!Number.isFinite(letterSpacing) || !nativeGlyphs && letterSpacing !== 0) reject('letter spacing', 'the vector text writer requires zero resolved letter spacing.');
+  if (!nativeGlyphs && (hasSettings(fontAxes) || hasSettings(fontFeatures))) {
     reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce these font settings.');
   }
   if (!Number.isFinite(fontSize) || fontSize <= 0) reject('text font metrics', 'the font size must be positive and finite.');
@@ -104,18 +112,18 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
       const runAxes = run.fontAxes ?? fontAxes;
       const runFeatures = run.fontFeatures ?? fontFeatures;
       const baselineShift = Number(run.baselineShift ?? 0);
-      if (!fontFamilySupported(runFamily)) {
+      if (!nativeGlyphs && !fontFamilySupported(runFamily)) {
         reject('custom text fonts', 'each active rich-text run must use Arial, Helvetica, or sans-serif.');
       }
-      if (!supportedWeights.has(runWeight) || !supportedStyles.has(runStyle)) {
+      if (!nativeGlyphs && (!supportedWeights.has(runWeight) || !supportedStyles.has(runStyle))) {
         reject('text font variants', 'each active rich-text run must use a supported standard font variant.');
       }
       if (!Number.isFinite(Number(runSize)) || Number(runSize) <= 0 || Number(runSize) > 100_000) {
         reject('rich text font metrics', 'inline run sizes must be positive, finite, and within the supported font range.');
       }
-      if (runSpacing !== 0) reject('letter spacing', 'every active rich-text run must use zero letter spacing.');
+      if (!Number.isFinite(runSpacing) || !nativeGlyphs && runSpacing !== 0) reject('letter spacing', 'every active rich-text run must use zero letter spacing.');
       if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > 100_000) reject('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics.');
-      if (hasSettings(runAxes) || hasSettings(runFeatures)) {
+      if (!nativeGlyphs && (hasSettings(runAxes) || hasSettings(runFeatures))) {
         reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce rich-text font settings.');
       }
     }
@@ -125,7 +133,7 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
     reject('text case transforms', 'the vector writer supports none, uppercase, lowercase, and capitalize.');
   }
   const alignmentIssue = vectorPdfTextAlignmentIssue(node);
-  if (alignmentIssue) reject('text alignment', alignmentIssue);
+  if (!nativeGlyphs && alignmentIssue) reject('text alignment', alignmentIssue);
 
   for (const paragraph of node.paragraphStyles || []) {
     if (paragraph?.listStyle != null && !supportedListStyles.has(paragraph.listStyle)) {
@@ -136,7 +144,7 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   if (unsupportedTextFillStack(node)) {
     reject('text paint stacks', 'only visible normal solid text fills are supported.');
   }
-  if (hasActiveTextStroke(node)) {
+  if (!nativeGlyphs && hasActiveTextStroke(node)) {
     reject('text outlines', 'text strokes require glyph outlines, which the vector PDF text writer does not create.');
   }
   if (node.blendMode && String(node.blendMode).toLowerCase() !== 'normal') {

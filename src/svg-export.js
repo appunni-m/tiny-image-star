@@ -1685,6 +1685,18 @@ function localTextUsesGlyphGeometry(node, document, measureText) {
   return allLocal;
 }
 
+/**
+ * Validate the same actual local glyph layout used by SVG serialization.
+ * Entirely unretained text returns false; queued or incomplete local coverage
+ * cannot masquerade as a built-in font. Font catalog entries alone are not
+ * evidence that the glyph geometry is ready.
+ */
+export function assertLocalTextGlyphExportReady(document, node, measureText) {
+  if (node?.type !== 'text' || !localTextUsesGlyphGeometry(node, document || emptyDocument, measureText)) return false;
+  positionedGlyphGeometry(node, document || emptyDocument, measureText);
+  return true;
+}
+
 function positionedTextView(node, document, measureText) {
   const resolved = { ...node, text: String(getNodePropertyValue(document, node, 'text') ?? ''),
     ...Object.fromEntries(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
