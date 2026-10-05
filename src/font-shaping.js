@@ -23,6 +23,7 @@ function copyResult(result) {
   return result && {
     upem: result.upem,
     extents: result.extents ? { ...result.extents } : null,
+    ...(result.positionMetrics ? { positionMetrics: structuredClone(result.positionMetrics) } : {}),
     missingGlyph: result.missingGlyph === true,
     glyphs: Array.isArray(result.glyphs) ? result.glyphs.map(glyph => ({ ...glyph })) : []
   };

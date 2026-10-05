@@ -2950,9 +2950,9 @@ test('text fill stacks composite ordered paints through the combined laid-out gl
     renderer.getState = () => state;
     renderer.drawNode(context, text, 0, 0, state.assets);
 
-    assert.equal(canvases.length, 2, 'glyph alpha and one reusable paint surface are bounded to a pair of canvases');
+    assert.equal(canvases.length, 3, 'fractional layer opacity adds one bounded isolation surface to the reusable glyph/paint pair');
     assert.ok(canvases.every(canvas => canvas.width === 120 && canvas.height === 54));
-    const glyphCalls = canvases[0].context.calls;
+    const glyphCalls = canvases[1].context.calls;
     const glyphs = glyphCalls.filter(call => call.kind === 'fillText');
     assert.deepEqual(glyphs.map(call => call.text), ['A', '👩‍💻'],
       'the white alpha pass keeps run segmentation and grapheme-safe tracking');
@@ -2963,14 +2963,17 @@ test('text fill stacks composite ordered paints through the combined laid-out gl
     assert.ok(glyphCalls.some(call => call.kind === 'stroke' && call.strokeStyle === 'rgba(255, 255, 255, 1)'),
       'rich paragraph decoration is included in the same text alpha');
 
-    const composites = context.calls.filter(call => call.kind === 'drawImage' && call.image instanceof RecordingCanvas);
-    assert.deepEqual(composites.map(call => [call.blendMode, call.alpha]), [['multiply', .75], ['screen', .75]],
-      'each paint composites in order against the active destination with node opacity applied once');
+    const layerComposite = context.calls.filter(call => call.kind === 'drawImage' && call.image instanceof RecordingCanvas);
+    assert.deepEqual(layerComposite.map(call => [call.blendMode, call.alpha]), [['source-over', .75]],
+      'completed text paint receives the layer opacity once');
+    const composites = canvases[0].context.calls.filter(call => call.kind === 'drawImage' && call.image instanceof RecordingCanvas);
+    assert.deepEqual(composites.map(call => [call.blendMode, call.alpha]), [['multiply', 1], ['screen', 1]],
+      'paint blend order stays inside the isolated full-opacity layer');
     assert.ok(composites[0].sourceCalls.some(call => call.kind === 'fill'
       && call.fillStyle === 'rgba(255, 0, 255, 1)' && call.alpha === .6),
     'the first solid paint is rendered with its own opacity before glyph clipping');
     assert.ok(composites.every(call => call.sourceCalls.some(sourceCall => sourceCall.kind === 'drawImage'
-      && sourceCall.image === canvases[0] && sourceCall.blendMode === 'destination-in')),
+      && sourceCall.image === canvases[1] && sourceCall.blendMode === 'destination-in')),
     'each paint is clipped by the same combined glyph alpha');
     assert.ok(composites[1].sourceCalls.some(call => call.kind === 'drawImage' && call.image === preview),
       'image fills use the local fill preview cache before glyph clipping');

@@ -25,8 +25,10 @@ import { fontFeatureSettings } from './font-features.js';
 import { ellipseArcSvgPathData, isValidEllipseArcData } from './ellipse-arc.js';
 import { hasVisibleRenderedPaint, renderNodeInkBounds, transformInkBounds } from './render-ink-bounds.js';
 import { decorationStyleForRun } from './text-decoration.js';
-import { collectTextDecorationGeometry } from './text-outline-geometry.js';
+import { collectTextDecorationGeometry, collectTextOutlineGeometry } from './text-outline-geometry.js';
 import { TEXT_DECORATION_PROPERTIES } from './text-decoration-style.js';
+import { resolveTextPositionView } from './text-position.js';
+import { isValidTextPosition } from './text-position-style.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -384,6 +386,14 @@ function multiply(left, right) {
   return [a * g + c * h, b * g + d * h, a * i + c * j, b * i + d * j, a * k + c * l + e, b * k + d * l + f];
 }
 
+function inverse(matrix) {
+  const [a, b, c, d, e, f] = matrix;
+  const determinant = a * d - b * c;
+  if (!matrix.every(Number.isFinite) || Math.abs(determinant) <= 1e-12) throw new TypeError('SVG text stroke transforms must be finite and invertible.');
+  return [d / determinant, -b / determinant, -c / determinant, a / determinant,
+    (c * f - d * e) / determinant, (b * e - a * f) / determinant];
+}
+
 function nodeMatrix(node, { includePosition = true } = {}) {
   const { width, height } = dimensions(node);
   const rotation = Number(node.rotation || 0);
@@ -560,6 +570,7 @@ function alignedStrokeGeometry(node, document, measureText, fill, maskSuffix) {
   // A glyph mask contains glyph contours, rather than text decorations.
   if (node.type === 'text') {
     plain.textDecoration = 'none';
+    if (plain.textRuns) plain.textRuns = plain.textRuns.map(run => ({ ...run, textDecoration: 'none' }));
     plain.id = `${node.id || 'text'}-stroke-mask-${maskSuffix}`;
   }
   return shapeMarkup(plain, document, measureText, null, { fillValue: fill, fillOpacity: 1, includeStroke: false });
@@ -707,6 +718,9 @@ function roundedRectMarkup(node, document, attributes = '') {
 
 function unsupportedFeature(node, assets, imagePreviews = null, document = emptyDocument) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
+  if (node.type === 'text' && [node, ...(node.textRuns || [])].some(style => style.textPosition !== undefined && !isValidTextPosition(style.textPosition))) {
+    throw new TypeError(`SVG export requires a valid text position on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
   const fillValidationNode = node.type === 'text' ? { ...node, type: 'rectangle' } : node;
   if (Array.isArray(node.fills)) {
     for (const fill of node.fills) {
@@ -1292,14 +1306,17 @@ function renderNetworkFillStack(node, document, context, index) {
 function textLines(node, document, measureText) {
   const sourceText = String(getNodePropertyValue(document, node, 'text') ?? '');
   const text = transformTextCase(sourceText, node.textCase || 'none');
-  const resolvedNode = {
+  let resolvedNode = {
     ...node,
+    text: sourceText,
+    fontSize: getNodePropertyValue(document, node, 'fontSize'),
     fontFamily: getNodePropertyValue(document, node, 'fontFamily'),
     fontWeight: getNodePropertyValue(document, node, 'fontWeight'),
     fontStyle: getNodePropertyValue(document, node, 'fontStyle'),
     paragraphSpacing: getNodePropertyValue(document, node, 'paragraphSpacing'),
     firstLineIndent: getNodePropertyValue(document, node, 'firstLineIndent')
   };
+  resolvedNode = resolveTextPositionView(resolvedNode, { shapeText: measureText?.shapeText, strict: true }).node;
   const hasListMarker = Array.isArray(node.paragraphStyles) && node.paragraphStyles.some(paragraph => paragraph?.listStyle === 'bulleted' || paragraph?.listStyle === 'numbered');
   if (!text && !hasListMarker) {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
@@ -1309,7 +1326,7 @@ function textLines(node, document, measureText) {
   if (Number(node.width) <= 0) throw new TypeError(`SVG export cannot faithfully render text in a zero-width box on layer ${node.name || node.id || '(unnamed)'}.`);
   if (typeof measureText !== 'function') throw new TypeError(`SVG export requires canvas text measurement to match editor wrapping on layer ${node.name || node.id || '(unnamed)'}.`);
 
-  const runs = node.textRuns;
+  const runs = resolvedNode.textRuns;
   if (Array.isArray(runs) && runs.every(run => run && typeof run.text === 'string') && runs.map(run => run.text).join('') === sourceText) {
     const baseStyle = {
       fontFamily: resolvedNode.fontFamily || 'Arial, sans-serif',
@@ -1328,11 +1345,13 @@ function textLines(node, document, measureText) {
       color: color(document, node, 'text'),
       textDecoration: node.textDecoration || 'none',
       ...decorationStyleForRun(node),
+      textPosition: node.textPosition,
       textCase: node.textCase || 'none'
     };
     const layout = layoutTextRuns(runs, Math.max(1, Number(node.width)), baseStyle, (value, style) => {
       const measureNode = { ...resolvedNode, ...style, variableBindings: {} };
-      return Number(measureText(value, measureNode));
+      const scaleX = style.textPositionScaleX || 1;
+      return Number(measureText(value, { ...measureNode, letterSpacing: measureNode.letterSpacing / scaleX })) * scaleX;
     }, {
       textTruncation: node.textTruncation,
       maxLines: node.maxLines,
@@ -1473,7 +1492,7 @@ export const SVG_TEXT_DECORATION_SOURCE_FIELDS = Object.freeze([
   'text', 'width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
   'lineHeight', 'lineHeightUnit', 'letterSpacing', 'align', 'verticalAlign', 'textCase', 'textDecoration',
   'color', 'fillOpacity', 'textFit', 'textWrapStyle', 'textTruncation', 'maxLines', 'maxHeight',
-  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textRuns', ...TEXT_DECORATION_PROPERTIES
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textRuns', 'textPosition', ...TEXT_DECORATION_PROPERTIES
 ]);
 export function svgTextMeasurementKey(text, style) {
   return JSON.stringify([String(text), ...['fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
@@ -1485,7 +1504,8 @@ function textDecorationRecoveryMeasurer(node, document, measureText, options) {
     || strokeStackForNode(node).some(stroke => stroke.visible !== false && stroke.width > 0 && stroke.opacity > 0)
     || options.fillValue !== undefined || options.strokeItem || typeof measureText !== 'function'
     || measureText.pdfNaturalWidth || measureText.pdfBaselineOffset
-    || ![node, ...(node.textRuns || [])].some(customTextDecoration)
+    || ![node, ...(node.textRuns || [])].some(style => customTextDecoration(style) || positionedTextStyle(style))
+    || positionedTextUsesLocalFont(node, measureText)
     || [node, ...(node.textRuns || [])].some(style => style.textDecorationSkipInk)) return null;
   const source = Object.fromEntries(SVG_TEXT_DECORATION_SOURCE_FIELDS.filter(key => node[key] !== undefined)
     .map(key => [key, structuredClone(node[key])]));
@@ -1534,6 +1554,105 @@ function customTextDecoration(style) {
     || style?.textDecorationSkipInk === true;
 }
 
+function positionedTextStyle(style) {
+  return style?.textPosition === 'superscript' || style?.textPosition === 'subscript';
+}
+
+function hasPositionedText(node) {
+  return [node, ...(node.textRuns || [])].some(positionedTextStyle);
+}
+
+function positionedTextUsesLocalFont(node, measureText) {
+  if (!hasPositionedText(node) || typeof measureText?.shapeText !== 'function') return false;
+  const runs = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === String(node.text ?? '')
+    ? node.textRuns : [{ text: String(node.text ?? '') }];
+  return runs.some(run => measureText.shapeText.fontStatus?.({ ...node, ...run }, run.text) !== 'none');
+}
+
+function positionedTextView(node, document, measureText) {
+  const resolved = { ...node, text: String(getNodePropertyValue(document, node, 'text') ?? ''),
+    ...Object.fromEntries(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
+      'paragraphSpacing', 'firstLineIndent'].map(key => [key, getNodePropertyValue(document, node, key)])),
+    ...(node.textPath ? { textPath: getNodeTextPath(document, node) } : {}) };
+  return resolveTextPositionView(resolved, { shapeText: measureText?.shapeText, strict: true });
+}
+
+function positionedGlyphGeometry(node, document, measureText, { whitePaint = false } = {}) {
+  const { node: view } = positionedTextView(node, document, measureText);
+  const source = whitePaint ? { ...view, color: '#ffffff', textVariableId: null, textStyleId: null,
+    textRuns: view.textRuns?.map(run => ({ ...run, color: '#ffffff' })) } : view;
+  try { return collectTextOutlineGeometry(document, source, { shapeText: measureText.shapeText }); }
+  catch (error) {
+    if (String(error?.code || '').endsWith('_PENDING')) throw error;
+    throw new SvgExportError(`positioned local glyph geometry (${error.message})`, node);
+  }
+}
+
+// Genuine position glyphs and nonuniform local-font synthesis are actual
+// font contours, not CSS feature hints whose meaning changes on another device.
+function positionedGlyphMarkup(node, document, measureText, options) {
+  const { fillValue, fillOpacity, includeStroke, strokeItem, strokeIndex, strokeGradientId,
+    strokeWidthScale, decorationsMode, clipSuffix } = options;
+  const explicitFillPlane = node.fills?.length && fillValue !== undefined && !['transparent', 'none'].includes(fillValue) && !strokeItem;
+  const result = positionedGlyphGeometry(node, document, measureText, { whitePaint: explicitFillPlane });
+  const isolateAlignedStroke = strokeItem && effectiveStrokeAlignment(node, strokeItem) !== 'center';
+  const glyphStroke = isolateAlignedStroke ? { ...strokeItem, opacity: 1 } : strokeItem;
+  let fills = ''; let strokes = ''; let decorations = ''; let coverage = '';
+  for (const { geometry, paint, glyphId, strokeTransform = identity } of result.glyphs) {
+    const contours = geometry.fillGroups.flatMap(group => group.contours);
+    const data = decorationContoursSvg(contours);
+    if (!data) continue;
+    const rawColor = fillValue === undefined ? paint.color : fillValue;
+    const value = rawColor === 'transparent' ? 'none' : rawColor;
+    const alpha = (fillOpacity ?? node.fillOpacity ?? 1) * (fillValue === undefined ? paint.opacity : 1);
+    if (value && value !== 'none' && alpha > 0 && decorationsMode !== 'custom') {
+      if (!isSvgPaintValue(value)) throw new SvgExportError('invalid positioned glyph paint', node);
+      const markup = `<path data-tiny-image-star-positioned-glyph="${glyphId}" d="${data}" fill="${escapeXml(explicitFillPlane ? '#ffffff' : value)}" fill-opacity="${number(explicitFillPlane ? 1 : alpha)}" fill-rule="nonzero" stroke="none"/>`;
+      if (explicitFillPlane) coverage += markup; else fills += markup;
+    }
+    if (includeStroke && decorationsMode !== 'custom') {
+      const basis = strokeTransform; const inverseBasis = inverse(basis);
+      const mappedPoint = point => transformPoint(inverseBasis, point.x, point.y);
+      const localContours = contours.map(contour => ({ ...contour, start: mappedPoint(contour.start),
+        commands: contour.commands.map(command => ({ ...command, ...Object.fromEntries(['start', 'end', 'control', 'control1', 'control2']
+          .filter(key => command[key]).map(key => [key, mappedPoint(command[key])])) })) }));
+      // Canvas gradients use the current text paint coordinate system when
+      // rendered. Keep the same line/path basis for paint and stroke style;
+      // the font-metric X scale alone remains baked into the glyph contour.
+      const attributes = strokeAttributes(document, node, glyphStroke, strokeIndex, strokeGradientId, strokeWidthScale);
+      if (!attributes.includes(' stroke="none"')) {
+        const markup = `<path d="${decorationContoursSvg(localContours)}" fill="none"${attributes}/>`;
+        strokes += basis.some((value, index) => value !== identity[index]) ? `<g${matrixAttribute(basis)}>${markup}</g>` : markup;
+      }
+    }
+  }
+  if (!strokeItem) for (const { geometry, paint } of result.decorations) {
+    if (paint.visible === false || !(paint.opacity > 0)
+      || decorationsMode === 'auto' && paint.independent || decorationsMode === 'custom' && !paint.independent) continue;
+    const value = paint.independent || fillValue === undefined ? paint.color : fillValue;
+    const alpha = paint.independent ? paint.opacity : (fillOpacity ?? node.fillOpacity ?? 1) * (fillValue === undefined ? paint.opacity : 1);
+    if (!value || ['none', 'transparent'].includes(value) || !(alpha > 0)) continue;
+    if (!isSvgPaintValue(value)) throw new SvgExportError('invalid positioned decoration paint', node);
+    const data = decorationContoursSvg(geometry.fillGroups.flatMap(group => group.contours));
+    const markup = `<path data-tiny-image-star-text-decoration="underline" d="${data}" fill="${escapeXml(explicitFillPlane && !paint.independent ? '#ffffff' : value)}" fill-opacity="${number(explicitFillPlane && !paint.independent ? 1 : alpha)}" stroke="none"/>`;
+    if (explicitFillPlane && !paint.independent) coverage += markup; else decorations += markup;
+  }
+  // Explicit text paints are bounded by their logical paint planes. Strokes
+  // remain full glyph outlines and must not acquire an artificial box edge.
+  if (explicitFillPlane && coverage) {
+    if (!(node.width > 0 && node.height > 0)) throw new SvgExportError('explicit text fill planes with zero width or height', node);
+    const id = `tis-positioned-glyph-fill-plane-${String(node.id || 'text')}-${clipSuffix}`.replace(/[^a-zA-Z0-9_-]/gu, '-');
+    fills = `<defs><mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(node.width)}" height="${number(node.height)}">${coverage}</mask></defs><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="${escapeXml(fillValue)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}" stroke="none" mask="url(#${id})"/>`;
+  }
+  if (isolateAlignedStroke && strokes) strokes = `<g opacity="${number(strokeItem.opacity)}">${strokes}</g>`;
+  return clipTruncatedTextMarkup(node, fills + decorations + strokes, clipSuffix);
+}
+
+function positionedFontFeatures(style, node) {
+  const features = style.fontFeatures || node.fontFeatures;
+  return features && Object.fromEntries(Object.entries(features).filter(([key, value]) => !(['sups', 'subs'].includes(key) && value === 0)));
+}
+
 function decorationContoursSvg(contours) {
   return contours.map(contour => {
     let data = `M ${number(contour.start.x)} ${number(contour.start.y)}`;
@@ -1580,10 +1699,15 @@ function textMarkup(node, document, measureText, {
   strokeItem, strokeIndex = 0, strokeGradientId = null, strokeWidthScale = 1, decorationsMode = 'all', recoveryMetadata = true
 } = {}) {
   if (strokeItem && decorationsMode === 'all') decorationsMode = 'auto';
+  const position = positionedTextView(node, document, measureText);
+  if (position.plan.mode !== 'normal' && positionedTextUsesLocalFont(node, measureText)) {
+    return positionedGlyphMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke,
+      strokeItem, strokeIndex, strokeGradientId, strokeWidthScale, decorationsMode, clipSuffix });
+  }
   const recovery = textDecorationRecoveryMeasurer(node, document, measureText, { fillValue, strokeItem, recoveryMetadata });
   if (recovery) measureText = recovery.measured;
   const finish = markup => recovery ? recovery.wrap(markup) : markup;
-  const customDecorations = [node, ...(node.textRuns || [])].some(customTextDecoration);
+  const customDecorations = position.plan.mode !== 'normal' || [node, ...(node.textRuns || [])].some(customTextDecoration);
   const decorationMarkup = () => customDecorationMarkup(node, document, measureText, fillValue, fillOpacity, decorationsMode);
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -1611,9 +1735,10 @@ function textMarkup(node, document, measureText, {
     const sourceText = String(getNodePropertyValue(document, node, 'text') ?? '');
     const text = transformTextCase(sourceText, node.textCase || 'none');
     const length = flattenTextPath(node.textPath).at(-1)?.distance || 0;
-    const currentRuns = Array.isArray(node.textRuns)
-      && node.textRuns.map(run => run.text).join('') === sourceText;
-    const measuredSpans = textPathSpans(sourceText, { ...resolvedNode, fontSize, fontWeight, letterSpacing });
+    const pathRuns = position.node.textRuns || node.textRuns;
+    const currentRuns = Array.isArray(pathRuns)
+      && pathRuns.map(run => run.text).join('') === sourceText;
+    const measuredSpans = textPathSpans(sourceText, { ...resolvedNode, ...position.node, fontSize, fontWeight, letterSpacing });
     const measured = measuredSpans.reduce((width, span, index) => {
       const naturalWidth = typeof measureText === 'function'
         ? Number(measureText(span.text, {
@@ -1623,11 +1748,11 @@ function textMarkup(node, document, measureText, {
         : span.graphemeCount * span.style.fontSize * .6;
       const tracking = Math.max(0, span.graphemeCount - 1) * span.style.letterSpacing
         + (index < measuredSpans.length - 1 ? span.style.letterSpacing : 0);
-      return width + naturalWidth + tracking;
+      return width + naturalWidth * (span.style.textPositionScaleX || 1) + tracking;
     }, 0);
     const alignmentOffset = node.align === 'center' ? (length - measured) / 2 : node.align === 'right' ? length - measured : 0;
     const startOffset = number((Number(node.textPath.startOffset) || 0) + alignmentOffset);
-    const pathText = currentRuns ? node.textRuns.map(run => {
+    const pathText = currentRuns ? pathRuns.map(run => {
       const runFamily = run.fontFamily || fontFamily;
       const runSize = Number(run.fontSize ?? fontSize);
       const runWeight = run.fontWeight ?? fontWeight;
@@ -1640,12 +1765,13 @@ function textMarkup(node, document, measureText, {
       }
       const runDecoration = ['underline', 'line-through'].includes(run.textDecoration)
         && !(run.textDecoration === 'underline' && customTextDecoration({ ...node, ...run })) ? ` text-decoration="${run.textDecoration}"` : '';
-      const baselineShift = Number(run.baselineShift || 0);
+      const baselineShift = Number(run.baselineShift || 0) - Number(run.textPositionBaselineOffset || 0);
       if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
         throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
       }
       const baseline = baselineShift ? ` baseline-shift="${number(baselineShift)}px"` : '';
-      return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}"${fontVariationAttribute(run.fontAxes || node.fontAxes)}${fontFeatureAttribute(run.fontFeatures || node.fontFeatures)} fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
+      const features = position.plan.mode === 'normal' ? run.fontFeatures || node.fontFeatures : positionedFontFeatures(run, node);
+      return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}"${fontVariationAttribute(run.fontAxes || node.fontAxes)}${fontFeatureAttribute(features)} fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
     }).join('') : escapeXml(text);
     const pathDecorations = customDecorations ? decorationMarkup() : '';
     return clipTruncatedTextMarkup(node, `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${fontStyle}" letter-spacing="${number(letterSpacing)}"${fontVariationAttribute(node.fontAxes)}${fontFeatureAttribute(node.fontFeatures)} fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>${pathDecorations}`, clipSuffix);
@@ -1656,6 +1782,7 @@ function textMarkup(node, document, measureText, {
   const lines = textLines(resolvedNode, document, measureText);
   const verticalOffset = textVerticalOffset(node, lines, lineHeight);
   const richLines = lines.some(line => Array.isArray(line.parts));
+  const positioned = position.plan.mode !== 'normal';
   if (richLines) {
     const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
     const decorations = [];
@@ -1664,7 +1791,7 @@ function textMarkup(node, document, measureText, {
     const pdfAscentAttribute = Number.isFinite(pdfAscent) && pdfAscent > 0
       ? ` data-tiny-image-star-pdf-ascent="${number(pdfAscent)}"` : '';
     const richTspans = lines.map(line => {
-      const textLength = line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
+      const textLength = !positioned && line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
       const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
       const lineAnchorX = textLineAnchorX(node, line);
       const lineTextAnchor = svgTextAnchor(line.align || node.align || 'left');
@@ -1692,12 +1819,20 @@ function textMarkup(node, document, measureText, {
         const pdfNaturalWidth = typeof measureText?.pdfNaturalWidth === 'function'
           ? [...part.text].reduce((total, character) => total + Number(measureText.pdfNaturalWidth(character, pdfMetricStyle)), 0)
           : NaN;
-        const pdfRunAttributes = Number.isFinite(pdfX) && Number.isFinite(pdfY)
+        const positionX = pdfX + (style.textPositionOffsetX || 0) * pdfScaleX;
+        const positionY = pdfY + (style.textPositionTopOffset || 0) - baselineShift;
+        const runAscent = positioned && typeof measureText?.pdfBaselineOffset === 'function'
+          ? Number(measureText.pdfBaselineOffset(pdfMetricStyle)) : NaN;
+        const pdfPositionAttributes = positioned && Number.isFinite(runAscent) && runAscent > 0
+          ? ` data-tiny-image-star-pdf-text-position="${style.textPosition || 'normal'}" data-tiny-image-star-pdf-run-ascent="${number(runAscent)}"` : '';
+        const pdfRunAttributes = Number.isFinite(positionX) && Number.isFinite(positionY)
           && Number.isFinite(pdfWidth) && pdfWidth > 0
           && Number.isFinite(pdfNaturalWidth) && pdfNaturalWidth > 0
-          ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(pdfX)}" data-tiny-image-star-pdf-y="${number(pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"`
+          ? ` data-tiny-image-star-pdf-rich-run="1" data-tiny-image-star-pdf-x="${number(positioned ? positionX : pdfX)}" data-tiny-image-star-pdf-y="${number(positioned ? positionY : pdfY)}" data-tiny-image-star-pdf-width="${number(pdfWidth)}" data-tiny-image-star-pdf-natural-width="${number(pdfNaturalWidth)}"${pdfPositionAttributes}`
           : '';
-        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(style.fontFeatures || node.fontFeatures)}${baselineShiftAttribute} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
+        const positionAttributes = positioned ? ` x="${number(positionX)}" y="${number(positionY)}" text-anchor="start"${!line.justify && pdfWidth > 0 ? ` textLength="${number(pdfWidth)}" lengthAdjust="spacingAndGlyphs"` : ''}` : baselineShiftAttribute;
+        const features = positioned ? positionedFontFeatures(style, node) : style.fontFeatures || node.fontFeatures;
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${fontVariationAttribute(style.fontAxes || node.fontAxes)}${fontFeatureAttribute(features)}${positionAttributes} fill="${escapeXml(partColor)}"${pdfRunAttributes}>${escapeXml(part.text)}</tspan>`;
         if (customDecorations || !['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);
@@ -1876,7 +2011,7 @@ function maskSourceMarkup(source, document, measureText, context, maskMode = 'al
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
   if (maskMode === 'alpha' && (node.booleanGeometry === 'vector'
-    || node.type === 'text' && [node, ...(node.textRuns || [])].some(customTextDecoration))) {
+    || node.type === 'text' && (hasPositionedText(node) || [node, ...(node.textRuns || [])].some(customTextDecoration)))) {
     return renderTree([node], document, context, true, measureText);
   }
   if (maskMode === 'luminance') {
@@ -2577,7 +2712,18 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
         const lines = textLines(node, document, measureText);
-        if ([node, ...(node.textRuns || [])].some(customTextDecoration)) {
+        if (positionedTextUsesLocalFont(node, measureText)) {
+          const geometry = positionedGlyphGeometry(node, document, measureText);
+          const padding = layerEffectPadding(node.effects);
+          const stroke = strokePaintPadding(node, strokeStackForNode(node));
+          for (const record of [...geometry.glyphs, ...geometry.decorations]) for (const group of record.geometry.fillGroups) for (const contour of group.contours) {
+            const points = [contour.start, ...contour.commands.flatMap(command => [command.end, command.control, command.control1, command.control2].filter(Boolean))];
+            for (const point of points) for (const [dx, dy] of [[-padding.x - stroke, -padding.y - stroke], [padding.x + stroke, -padding.y - stroke], [-padding.x - stroke, padding.y + stroke], [padding.x + stroke, padding.y + stroke]]) {
+              include(transformPoint(matrix, point.x + dx, point.y + dy), bounds);
+            }
+          }
+        }
+        if (hasPositionedText(node) || [node, ...(node.textRuns || [])].some(customTextDecoration)) {
           for (const { geometry, paint } of customDecorationRecords(node, document, measureText)) {
             if (paint.visible === false || !(paint.opacity > 0)) continue;
             for (const group of geometry.fillGroups) for (const contour of group.contours) {
@@ -2617,7 +2763,7 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
               const x1 = startX + part.offsetX * scaleX;
               const x2 = x1 + part.width * scaleX;
               const lineTop = line.y + verticalOffset;
-              const shiftedLineTop = lineTop - baselineShift;
+              const shiftedLineTop = lineTop + (part.style.textPositionTopOffset || 0) - baselineShift;
               const top = shiftedLineTop - size * .15;
               const decorationBottom = shiftedLineTop + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
               const bottom = Math.max(shiftedLineTop + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);

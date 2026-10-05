@@ -60,7 +60,7 @@ export function parseLocalGlyphContours(data) {
 }
 
 /** Placed glyph contours in the same top/baseline coordinates used by Canvas. */
-export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize = 24, letterSpacing = 0 } = {}) {
+export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize = 24, letterSpacing = 0, scaleX = 1 } = {}) {
   if (!shaped || shaped.missingGlyph || !Array.isArray(shaped.glyphs) || !(shaped.upem > 0)
     || !Number.isFinite(shaped.extents?.ascender)) return null;
   if (shaped.glyphs.length > TEXT_DECORATION_LIMITS.maxGlyphs) fail('The underline exceeds the bounded glyph limit.');
@@ -70,7 +70,7 @@ export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize 
     if (previous !== null && previous !== glyph.cluster) tracking += letterSpacing;
     if (glyph.path) {
       let raw = paths.get(glyph.path); if (!raw) { raw = parseLocalGlyphContours(glyph.path); paths.set(glyph.path, raw); }
-      const project = value => point(x + (pen + Number(glyph.xOffset || 0)) * scale + tracking + value.x * scale,
+      const project = value => point(x + (pen + Number(glyph.xOffset || 0)) * scale * scaleX + tracking + value.x * scale * scaleX,
         y + (shaped.extents.ascender - Number(glyph.yOffset || 0) - value.y) * scale);
       for (const item of raw) {
         commands += item.commands.length;
@@ -88,7 +88,7 @@ export function nativeInkContoursForShapedText(shaped, { x = 0, y = 0, fontSize 
 
 /** Actual per-grapheme Canvas bounds, with measured prefix kerning/tracking. */
 export function canvasTextInkBounds(ctx, text, styleOrOptions = {}, options) {
-  const { x = 0, y = 0, letterSpacing = 0 } = options ?? styleOrOptions;
+  const { x = 0, y = 0, letterSpacing = 0, scaleX = 1 } = options ?? styleOrOptions;
   if (typeof ctx.measureText !== 'function') return [];
   const graphemes = globalThis.Intl?.Segmenter ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(String(text))].map(item => item.segment) : [...String(text)];
   if (graphemes.length > TEXT_DECORATION_LIMITS.maxGlyphs) fail('The underline exceeds the bounded fallback glyph limit.');
@@ -101,8 +101,8 @@ export function canvasTextInkBounds(ctx, text, styleOrOptions = {}, options) {
       const values = ['actualBoundingBoxLeft', 'actualBoundingBoxRight', 'actualBoundingBoxAscent', 'actualBoundingBoxDescent'].map(key => metrics[key]);
       if (!values.every(Number.isFinite)) fail('Skip ink requires finite actual Canvas glyph bounds or ready local font contours.');
       if (values.every(Number.isFinite)) {
-        const start = x + ctx.measureText(prefix + value).width - metrics.width + index * letterSpacing;
-        result.push({ left: start - values[0], right: start + values[1], top: y - values[2], bottom: y + values[3] });
+        const start = x + (ctx.measureText(prefix + value).width - metrics.width) * scaleX + index * letterSpacing;
+        result.push({ left: start - values[0] * scaleX, right: start + values[1] * scaleX, top: y - values[2], bottom: y + values[3] });
       }
       prefix += value;
     }

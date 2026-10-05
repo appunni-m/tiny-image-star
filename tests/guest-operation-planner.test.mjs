@@ -28,6 +28,7 @@ test('every literal inspector property root can be planned for a shared design',
   const roots = new Set([...source.matchAll(/data-prop="([a-z][A-Za-z0-9]*)"/g)].map(match => match[1]));
   assert.deepEqual([...roots].filter(property => !isCollaborationSetPropertyRoot(property)), []);
   assert.equal(isCollaborationSetPropertyRoot('arcData'), true, 'ellipse geometry remains editable in host-authoritative sessions');
+  assert.equal(isCollaborationSetPropertyRoot('textPosition'), true, 'semantic text position is an editable property root');
 });
 
 async function assertPlanMatchesHost(before, after, expectedTypes) {

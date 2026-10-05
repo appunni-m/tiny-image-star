@@ -2,6 +2,7 @@ import { getNodePropertyValue } from './model.js';
 import { PdfVectorExportError } from './pdf-vector-export.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
 import { vectorPdfTextAlignmentIssue } from './pdf-text-alignment.js';
+import { isValidTextPosition } from './text-position-style.js';
 
 const standardFontFamilies = new Set(['arial', 'helvetica', 'sans-serif']);
 const supportedWeights = new Set([400, 700, '400', '700']);
@@ -59,6 +60,10 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
   const activeRuns = Array.isArray(node.textRuns)
     && node.textRuns.map(run => run?.text ?? '').join('') === text
     ? node.textRuns : [];
+  const positioned = [node, ...activeRuns].some(style => ['superscript', 'subscript'].includes(style.textPosition));
+  if ([node, ...activeRuns].some(style => style.textPosition !== undefined && !isValidTextPosition(style.textPosition))) {
+    reject('text position', 'superscript/subscript settings must use the supported semantic enum.');
+  }
 
   if (!fontFamilySupported(fontFamily)) {
     reject('custom text fonts', 'only Arial, Helvetica, or sans-serif can use the built-in PDF fonts.');
@@ -97,11 +102,11 @@ export function assertVectorPdfTextSupported(documentSnapshot, node) {
       if (!supportedWeights.has(runWeight) || !supportedStyles.has(runStyle)) {
         reject('text font variants', 'each active rich-text run must use a supported standard font variant.');
       }
-      if (Number(runSize) !== fontSize) {
+      if ((!Number.isFinite(Number(runSize)) || Number(runSize) <= 0) || !positioned && Number(runSize) !== fontSize) {
         reject('rich text font metrics', 'inline runs must use the text layer font size.');
       }
       if (runSpacing !== 0) reject('letter spacing', 'every active rich-text run must use zero letter spacing.');
-      if (baselineShift !== 0) reject('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics.');
+      if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > 100_000 || baselineShift !== 0 && !positioned) reject('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics.');
       if (hasSettings(runAxes) || hasSettings(runFeatures)) {
         reject('variable-font axes or OpenType features', 'the built-in PDF fonts cannot reproduce rich-text font settings.');
       }

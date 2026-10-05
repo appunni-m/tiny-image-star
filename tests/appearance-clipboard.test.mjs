@@ -238,14 +238,14 @@ test('text appearance copies typography but preserves target rich text, paragrap
     text: 'Source heading', fontFamily: 'Inter', fontSize: 32, fontWeight: 700,
     fontStyle: 'italic', lineHeight: 1.4, letterSpacing: 1.2,
     paragraphSpacing: 12, firstLineIndent: 4, listSpacing: 6,
-    color: '#224466', align: 'center', verticalAlign: 'bottom', textCase: 'uppercase', textDecoration: 'underline', textWrapStyle: 'pretty',
+    color: '#224466', align: 'center', verticalAlign: 'bottom', textCase: 'uppercase', textDecoration: 'underline', textWrapStyle: 'pretty', textPosition: 'superscript',
     textRuns: [{ text: 'Source ', fontWeight: 700 }, { text: 'heading', fontStyle: 'italic' }],
     paragraphStyles: [{ listStyle: 'numbered', listLevel: 0, listStart: 3 }]
   };
   const target = {
     type: 'text', id: 'target-text', name: 'Target text', opacity: 1, blendMode: 'normal',
     text: 'Keep this rich text\nexactly', fontFamily: 'Arial', fontSize: 14, fontWeight: 400,
-    color: '#000000', textRuns: [{ text: 'Keep this ', color: '#b02030' }, { text: 'rich text\nexactly', fontWeight: 500 }],
+    color: '#000000', textPosition: 'subscript', textRuns: [{ text: 'Keep this ', color: '#b02030' }, { text: 'rich text\nexactly', fontWeight: 500 }],
     paragraphStyles: [{ listStyle: 'bulleted', listLevel: 1 }, { align: 'right' }],
     width: 180, height: 50, visible: false, children: []
   };
@@ -269,11 +269,19 @@ test('text appearance copies typography but preserves target rich text, paragrap
   assert.equal(pasted.lineHeight, 1.4);
   assert.equal(pasted.letterSpacing, 1.2);
   assert.equal(pasted.textWrapStyle, 'pretty');
+  assert.equal(pasted.textPosition, 'superscript');
   assert.equal(pasted.color, '#224466');
   assert.equal(pasted.align, 'center');
   assert.equal(pasted.name, 'Target text');
   assert.equal(pasted.width, 180);
   assert.equal(pasted.visible, false);
+});
+
+test('copying legacy text appearance without a position resets target semantic position to normal', () => {
+  const snapshot = snapshotAppearance({ type:'text', opacity:1, blendMode:'normal', text:'Old text' });
+  assert.equal(snapshot.textStyle.textPosition, 'normal');
+  const target = { type:'text', opacity:1, blendMode:'normal', text:'Target', textPosition:'subscript' };
+  assert.equal(applyAppearance(target, snapshot, { idFactory: ids() }).node.textPosition, 'normal');
 });
 
 test('text targets accept complete fill stacks while still skipping incompatible radius and text groups', () => {

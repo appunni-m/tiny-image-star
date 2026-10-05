@@ -1306,11 +1306,11 @@ dialog[data-dialog-modeless-fallback][open] { position: fixed; z-index: 20000; i
 .text-format-button[data-paragraph-align="right"]::before { background-size: 16px 1.5px, 11px 1.5px, 14px 1.5px; background-position: right top, right center, right bottom; }
 .text-format-button[data-paragraph-align="justify"]::before { background-size: 16px 1.5px, 16px 1.5px, 16px 1.5px; background-position: left top, left center, left bottom; }
 .text-format-button[aria-pressed="true"] { border-color: #9bcfff; background: #eaf5ff; color: #087dcc; }
-.text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
+.text-format-position-label, .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
 .text-format-size-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-line-height-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-color-label input { width: 25px; height: 25px; padding: 1px; border: 0; background: transparent; }
-.text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { min-width: 0; width: 100%; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
+.text-format-position-label select, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { min-width: 0; width: 100%; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-done { min-width: 44px; padding: 0 7px; background: #1e1e1e; color: #fff; font-size: 10px; }
 .presentation-dialog { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; overflow: hidden; border: 0; background: #333; color: #f1f3f7; }
 .presentation-dialog::backdrop { background: #222; }
@@ -1470,10 +1470,12 @@ dialog[data-dialog-modeless-fallback][open] { position: fixed; z-index: 20000; i
   .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
   .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; width: min(360px, calc(100% - 16px)); padding: 5px; overflow-y: auto; max-height: min(360px, 50dvh); overscroll-behavior: contain; }
   .text-format-button, .text-format-done { min-width: 40px; height: 44px; font-size: 14px; }
-  .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
+  .text-format-position-label, .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
   .text-format-family-label { grid-column: span 4; }
-  .text-format-size-label input, .text-format-line-height-label input, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { box-sizing: border-box; width: min(100%, 58px); min-width: 40px; height: 40px; font-size: 13px; }
+  .text-format-position-label { grid-column: span 2; }
+  .text-format-position-label select, .text-format-size-label input, .text-format-line-height-label input, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { box-sizing: border-box; width: min(100%, 58px); min-width: 40px; height: 40px; font-size: 13px; }
   .text-format-family-label input { width: 100%; }
+  .text-format-position-label select { width: 100%; min-width: 0; font-size: 16px; }
   .text-format-color-label input { width: 40px; min-width: 40px; height: 40px; flex: 0 0 40px; }
   .text-format-done { min-width: 52px; padding: 0 5px; font-size: 11px; }
   .export-setting-row .select-field, .export-suffix input { height: 38px; font-size: 12px; }
@@ -2016,6 +2018,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .text-format-weight-label,
   :root[data-theme="dark"] .text-format-spacing-label,
   :root[data-theme="dark"] .text-format-baseline-shift-label,
+  :root[data-theme="dark"] .text-format-position-label,
   :root[data-theme="dark"] .text-format-decoration-label {
     color: #e0e4eb;
     border-color: #454953;
@@ -2078,6 +2081,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .text-format-weight-label select,
   :root[data-theme="dark"] .text-format-spacing-label input,
   :root[data-theme="dark"] .text-format-baseline-shift-label input,
+  :root[data-theme="dark"] .text-format-position-label select,
   :root[data-theme="dark"] .text-format-decoration-label select { color: #edf0f5; }
   :root[data-theme="dark"] .layer-search-wrap input:focus,
   :root[data-theme="dark"] .select-field:focus,
@@ -2745,6 +2749,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .text-format-weight-label,
   :root[data-theme="dark"] .text-format-spacing-label,
   :root[data-theme="dark"] .text-format-baseline-shift-label,
+  :root[data-theme="dark"] .text-format-position-label,
   :root[data-theme="dark"] .text-format-decoration-label {
     color: #a6acb6;
   }

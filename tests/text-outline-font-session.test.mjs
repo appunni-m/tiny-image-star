@@ -40,6 +40,14 @@ test('preview and outlining share family order, closest faces and variable-axis 
   assert.deepEqual(localFontAxisValues(variable, { fontWeight: 760, fontSize: 110, fontAxes: { wght: 950 } }), { wght: 900, opsz: 80 });
 });
 
+test('explicit wght selects the same retained face before and after layout normalizes fontWeight', () => {
+  const regular = font('regular', 'Local', { weight: 400 });
+  const bold = font('bold', 'Local', { weight: 700 });
+  const authored = { fontFamily: 'Local', fontWeight: 400, fontAxes: { wght: 700 } };
+  assert.deepEqual(localFontsForStyle(authored, [regular, bold]), [bold]);
+  assert.deepEqual(localFontsForStyle({ ...authored, fontWeight: 700 }, [regular, bold]), [bold]);
+});
+
 test('conversion shapes real font requests after loading coverage and preserves axes, features and script', async t => {
   const record = font('variable', 'Local', { axes: [{ tag: 'wght', min: 100, max: 900, defaultValue: 400 }] });
   const h = harness([record]); t.after(() => h.session.close());

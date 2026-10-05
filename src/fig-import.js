@@ -1,5 +1,6 @@
 import { getBlobBytes, parseFigBinary, parseVectorNetworkBlob, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
+import { isValidTextPosition } from './text-position-style.js';
 import {
   canSwapComponentTo, createComponentSet, createDocument, createId, createNode, isMaskSource,
   MAX_DOCUMENT_TREE_DEPTH, parseDocument, setComponentPropertyValue, switchComponentInstanceVariant
@@ -1307,6 +1308,10 @@ function figTextDecorationOverrides(style, base, context, name) {
   return result;
 }
 
+function figTextPosition(value) {
+  return ({ NORMAL: 'normal', SUB: 'subscript', SUPER: 'superscript' })[value] || null;
+}
+
 function textRunStyleOverrides(style, base, context, name) {
   const result = {};
   const family = style.fontFamily || style.fontName?.family;
@@ -1343,6 +1348,11 @@ function textRunStyleOverrides(style, base, context, name) {
   const decoration = String(style.textDecoration || '').toUpperCase();
   const textDecoration = ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[decoration];
   if (textDecoration && textDecoration !== base.textDecoration) result.textDecoration = textDecoration;
+  if (Object.hasOwn(style, 'fontVariantPosition')) {
+    const position = figTextPosition(style.fontVariantPosition);
+    if (position == null) warn(context.report, 'unsupported', 'TEXT_POSITION', name, 'The Figma font-variant position value was unknown and was omitted.');
+    else if (position !== base.textPosition) result.textPosition = position;
+  }
   Object.assign(result, figTextDecorationOverrides(style, base, context, name));
 
   if (typeof style.color === 'string' && /^#[0-9a-f]{6}$/iu.test(style.color) && style.color.toLowerCase() !== base.color.toLowerCase()) {
@@ -1368,7 +1378,7 @@ function textRunStyleOverrides(style, base, context, name) {
 
   const supported = new Set([
     'fontFamily', 'fontName', 'fontSize', 'fontWeight', 'fontStyle', 'fontStyleName', 'italic',
-    'lineHeight', 'letterSpacing', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'color', 'fills', 'fillPaints',
+    'lineHeight', 'letterSpacing', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'fontVariantPosition', 'color', 'fills', 'fillPaints',
     'textListData', 'listOptions', 'textListOptions', 'indentation', 'indentationLevel',
     'paragraphIndent', 'paragraphSpacing', 'listSpacing', 'textWrapStyle', 'textAlignHorizontal',
     'hangingList', 'hangingPunctuation'
@@ -1487,6 +1497,14 @@ function textProperties(source, context) {
     if (value == null) warn(context.report, 'unsupported', 'TEXT_DECORATION', source.name, `The ${property} value could not be represented and was left at its default.`);
     else decorationSettings[property] = value;
   }
+  let textPosition;
+  if (Object.hasOwn(source, 'fontVariantPosition')) {
+    textPosition = figTextPosition(source.fontVariantPosition);
+    if (!isValidTextPosition(textPosition)) {
+      warn(context.report, 'unsupported', 'TEXT_POSITION', source.name, 'The Figma font-variant position value was unknown and was omitted.');
+      textPosition = undefined;
+    }
+  }
   const properties = {
     // Layer paint opacity stays attached to each imported fill. The legacy
     // `color` field remains as a fallback for older local documents and runs.
@@ -1509,6 +1527,7 @@ function textProperties(source, context) {
     ...(maxLines !== undefined ? { maxLines } : {}),
     textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
     ...decorationSettings,
+    ...(textPosition ? { textPosition } : {}),
     ...paragraphMetrics
   };
   const textRuns = textRunsFromFigOverrides(source, characters, properties, context);

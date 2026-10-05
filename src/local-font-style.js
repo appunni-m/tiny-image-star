@@ -1,9 +1,10 @@
 import { fontFamilyStack } from './font-fallback.js';
+import { canvasFontWeight } from './font-variation.js';
 
 /** Use the same family, face and variable-axis choices for preview and conversion. */
 export function localFontsForStyle(style, availableFonts) {
   const available = Array.from(availableFonts || []);
-  const requestedWeight = Number(style?.fontWeight) || 400;
+  const requestedWeight = canvasFontWeight(style?.fontWeight, style?.fontAxes);
   const score = font => {
     const weightAxis = font.axes?.find(axis => axis.tag === 'wght');
     const weightDistance = weightAxis && requestedWeight >= weightAxis.min && requestedWeight <= weightAxis.max

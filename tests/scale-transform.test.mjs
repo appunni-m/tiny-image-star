@@ -4,10 +4,29 @@ import { readFile } from 'node:fs/promises';
 import { ANCHOR_COORDINATES, planScaleTransform } from '../src/scale-transform.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 import { selectionBounds } from '../src/group-transform.js';
+import { resolveTextPositionView } from '../src/text-position.js';
 
 function close(actual, expected, epsilon = 1e-7) {
   assert.ok(Math.abs(actual - expected) <= epsilon, `expected ${actual} to be within ${epsilon} of ${expected}`);
 }
+
+test('scaling positioned text preserves semantic ranges and scales authored metrics exactly once', () => {
+  const node = { id: 'footnote', type: 'text', x: 0, y: 0, width: 100, height: 40, fontSize: 20,
+    text: 'A12', textPosition: 'subscript', textRuns: [{ text: 'A', textPosition: 'normal' },
+      { text: '1', fontSize: 16, baselineShift: 2, textPosition: 'superscript' }, { text: '2' }], children: [] };
+  const before = resolveTextPositionView(node).node;
+  const patch = planScaleTransform([{ node, ancestors: [] }], 2, 'top-left').patches[0];
+  const scaled = { ...node, ...patch };
+  const after = resolveTextPositionView(scaled).node;
+  assert.equal(scaled.fontSize, 40); assert.equal(scaled.textRuns[1].fontSize, 32);
+  assert.equal(scaled.textRuns[1].baselineShift, 4); assert.equal(scaled.textPosition, 'subscript');
+  assert.deepEqual(scaled.textRuns.map(run => run.textPosition), ['normal', 'superscript', undefined]);
+  before.textRuns.forEach((run, index) => {
+    close(after.textRuns[index].fontSize, run.fontSize * 2);
+    close(after.textRuns[index].textPositionBaselineOffset || 0, (run.textPositionBaselineOffset || 0) * 2);
+  });
+  assert.equal(node.fontSize, 20); assert.equal(node.textRuns[1].baselineShift, 2);
+});
 
 test('all nine scale anchors preserve their page-space point through rotation and nesting', () => {
   const parent = { id: 'parent', x: 80, y: 35, width: 200, height: 120, rotation: 27 };

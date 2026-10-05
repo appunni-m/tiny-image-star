@@ -1,5 +1,6 @@
 import { drawTextLayerContent } from './renderer.js';
 import { findNode, getNodeGeometry, getNodeTextPath } from './model.js';
+import { resolveTextPositionView, TextPositionPendingError } from './text-position.js';
 
 export const TEXT_OUTLINE_LIMITS = Object.freeze({
   maxTextCodeUnits: 32_768, maxGlyphs: 1_024, maxContours: 4_096, maxCommands: 20_000,
@@ -15,6 +16,13 @@ export class TextOutlineGeometryError extends Error {
 }
 const fail = message => { throw new TextOutlineGeometryError(message); };
 const abort = signal => { if (signal?.aborted) throw new DOMException('Text outlining cancelled.', 'AbortError'); };
+function positionShapeValue(node, shapeText, text, style) {
+  const value = shapeText?.(text, style);
+  if (value == null && node.__textPositionResolved && typeof shapeText === 'function' && shapeText.fontStatus?.(style, text) !== 'none') {
+    throw new TextPositionPendingError();
+  }
+  return value;
+}
 const coordinate = value => {
   if (!Number.isFinite(value) || Math.abs(value) > TEXT_OUTLINE_LIMITS.maxCoordinate) fail('A local font outline exceeds the supported coordinate range.');
   return Object.is(value, -0) ? 0 : value;
@@ -141,6 +149,7 @@ class TextGeometryContext {
   restore() { const previous = this.stack.pop(); if (!previous) fail('The text layout restored an absent geometry state.'); Object.assign(this, previous); }
   translate(x, y) { this.matrix = multiply(this.matrix, [1, 0, 0, 1, coordinate(x), coordinate(y)]); }
   scale(x, y) { this.matrix = multiply(this.matrix, [coordinate(x), 0, 0, coordinate(y), 0, 0]); }
+  captureTextStrokeTransform() { return [...this.matrix]; }
   rotate(value) { if (!Number.isFinite(value)) fail('The text path has an invalid angle.'); this.matrix = multiply(this.matrix, [Math.cos(value), Math.sin(value), -Math.sin(value), Math.cos(value), 0, 0]); }
   beginPath() { this.path = { points: [], matrix: [...this.matrix], rectangle: null }; }
   moveTo(x, y) { if (!this.path) this.beginPath(); this.path.points = [point(x, y)]; this.path.matrix = [...this.matrix]; }
@@ -163,7 +172,8 @@ class TextGeometryContext {
     if (this.glyphs.length >= TEXT_OUTLINE_LIMITS.maxGlyphs) fail('This text exceeds the 1,024-glyph editable outline limit. Outline fewer characters at a time.');
     const geometry = shapeFor(transformedContours(contours, this.matrix)); this.addContours(geometry.strokeContours);
     this.glyphs.push({ geometry, paint: colorPaint(this.fillStyle, this.globalAlpha), glyphId: metadata.glyphId,
-      cluster: metadata.cluster, text: metadata.text, font: this.font });
+      cluster: metadata.cluster, text: metadata.text, font: this.font,
+      ...(metadata.strokeTransform ? { strokeTransform: [...metadata.strokeTransform] } : {}) });
   }
   drawLocalDecorationGeometry(contours, metadata) {
     const transformed = transformedContours(contours, this.matrix); this.addContours(transformed);
@@ -193,7 +203,8 @@ export function collectTextDecorationGeometry(document, source, {
 } = {}) {
   abort(signal);
   if (source?.type !== 'text' || typeof measureText !== 'function') fail('A text layer and an actual text measurement resolver are required for decorations.');
-  const node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
+  let node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
+  if (!node.__textPositionResolved) node = resolveTextPositionView(node, { shapeText, strict: true }).node;
   const context = new TextGeometryContext(signal); context.skipInvisibleDecorations = true; let measurements = 0;
   context.measureText = text => {
     abort(signal); if (++measurements > 16_384) fail('Text decorations exceed the bounded measurement limit.');
@@ -209,7 +220,8 @@ export function collectTextDecorationGeometry(document, source, {
       actualBoundingBoxAscent: -Math.min(...bounds.map(item => item.top)), actualBoundingBoxDescent: Math.max(...bounds.map(item => item.bottom)) };
   };
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
-    shapeText, colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true
+    shapeText: typeof shapeText === 'function' ? (text, style) => positionShapeValue(node, shapeText, text, style) : null,
+    colorOverride, fillOpacity, decorationMode, forceDecorationGeometry, decorationsOnly: true
   });
   abort(signal); return { decorations: context.decorations, ...(context.clipGeometry ? { clipGeometry: context.clipGeometry } : {}), layout };
 }
@@ -227,12 +239,13 @@ export function collectTextOutlineGeometry(document, source, {
 } = {}) {
   abort(signal);
   if (source?.type !== 'text' || typeof shapeText !== 'function') fail('A text layer and a local font shaping resolver are required.');
-  const node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
+  let node = { ...source, ...getNodeGeometry(document, source), ...(source.textPath ? { textPath: getNodeTextPath(document, source) } : {}) };
+  if (!node.__textPositionResolved) node = resolveTextPositionView(node, { shapeText, strict: true }).node;
   if (![node.width, node.height].every(value => Number.isFinite(value) && value >= 0 && value <= TEXT_OUTLINE_LIMITS.maxCoordinate)) fail('The text box dimensions exceed the supported outline range.');
   const context = new TextGeometryContext(signal);
   const checkedShape = (text, style) => {
     abort(signal); if (typeof text !== 'string' || text.length > TEXT_OUTLINE_LIMITS.maxTextCodeUnits) fail('This text exceeds the local font shaping limit.');
-    return checkShaped(shapeText(text, style), text);
+    return checkShaped(positionShapeValue(node, shapeText, text, style), text);
   };
   const layout = drawTextLayerContent(context, node, document, 0, 0, node.width, node.height, {
     shapeText: checkedShape, fillOpacity: 1, includeDecorations

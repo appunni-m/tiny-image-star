@@ -319,6 +319,7 @@ function cssForEntry(document, entry) {
       ] : []),
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
       `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`,
+      ...(['superscript', 'subscript'].includes(node.textPosition) ? [`font-variant-position: ${node.textPosition === 'superscript' ? 'super' : 'sub'};`] : []),
       ...Object.entries(textDecorationCss(node)).map(([property, value]) => `${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}: ${value};`),
       ...(['balance', 'pretty'].includes(node.textWrapStyle) ? [`text-wrap: ${node.textWrapStyle};`] : [])
     );
@@ -654,6 +655,7 @@ function summaryForEntry(document, entry) {
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
       textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none',
+      ...(node.textPosition != null ? { textPosition: node.textPosition } : {}),
       ...Object.fromEntries(TEXT_DECORATION_PROPERTIES.filter(property => node[property] != null).map(property => [property, structuredClone(node[property])])),
       textWrapStyle: ['auto', 'balance', 'pretty'].includes(node.textWrapStyle) ? node.textWrapStyle : 'auto',
       ...(node.textTruncation === 'ending' ? { textTruncation: node.textTruncation } : {}),

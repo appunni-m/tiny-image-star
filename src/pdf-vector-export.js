@@ -726,7 +726,7 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     const attrs = run.attributes;
     assertAttributes(run, new Set([
       'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing',
-      'fill', 'baseline-shift',
+      'fill', 'baseline-shift', 'x', 'y', 'text-anchor', 'textLength', 'lengthAdjust',
     ]));
     if (attrs['data-tiny-image-star-pdf-rich-run'] !== '1'
       || ['x', 'y', 'width', 'natural-width'].some(name => attrs[`data-tiny-image-star-pdf-${name}`] == null)) {
@@ -737,21 +737,45 @@ function paintPositionedRichTextRuns(line, parentAttributes, parentSize, ascent,
     }
     const letterSpacing = finite(attrs['letter-spacing'] ?? 0, 'rich text letter spacing');
     if (letterSpacing !== 0) fail('letter spacing', 'the vector PDF text subset requires zero letter spacing on every run');
-    const baselineShift = finite(attrs['baseline-shift'] ?? 0, 'rich text baseline shift');
-    if (baselineShift !== 0) fail('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics; use raster PDF');
+    const positioned = attrs['data-tiny-image-star-pdf-text-position'] != null;
+    if (positioned && !['normal', 'superscript', 'subscript'].includes(attrs['data-tiny-image-star-pdf-text-position'])) {
+      fail('text position', 'the generated run uses an unknown superscript/subscript mode');
+    }
+    const shiftText = String(attrs['baseline-shift'] ?? 0);
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px)?$/iu.test(shiftText)) {
+      fail('rich text baseline shifts', 'only bounded generated pixel offsets have a PDF mapping');
+    }
+    const baselineShift = finite(shiftText.replace(/px$/iu, ''), 'rich text baseline shift');
+    if (baselineShift !== 0 && !positioned) fail('rich text baseline shifts', 'per-run baseline shifts need font-specific metrics; use raster PDF');
     const size = finite(attrs['font-size'] ?? parentSize, 'rich text font size');
     if (size <= 0) throw new TypeError('SVG rich text font sizes must be positive.');
-    if (size !== parentSize) {
+    if (size !== parentSize && !positioned) {
       fail('rich text font metrics', 'inline runs must use the text layer font size so the measured baseline remains exact');
+    }
+    let runAscent = ascent;
+    if (positioned) {
+      if (attrs['data-tiny-image-star-pdf-run-ascent'] == null) fail('text position metrics', 'a positioned run needs measured standard-font ascent');
+      runAscent = finite(attrs['data-tiny-image-star-pdf-run-ascent'], 'positioned text run ascent');
+      if (!(runAscent > 0) || runAscent > size * 4 || Math.abs(baselineShift) > 100_000) {
+        fail('text position metrics', 'the generated run size/ascent/offset exceeds the supported metric range');
+      }
     }
 
     const value = run.children.map(child => child.text).join('');
     if (!value) continue;
     const literal = pdfTextLiteral(value);
     const x = finite(attrs['data-tiny-image-star-pdf-x'], 'rich text run x');
-    const y = finite(attrs['data-tiny-image-star-pdf-y'], 'rich text run y') + ascent;
+    const y = finite(attrs['data-tiny-image-star-pdf-y'], 'rich text run y') + runAscent - baselineShift;
     const desiredWidth = finite(attrs['data-tiny-image-star-pdf-width'], 'rich text run width');
     const naturalWidth = finite(attrs['data-tiny-image-star-pdf-natural-width'], 'standard-font rich text run width');
+    if (['x', 'y', 'text-anchor', 'textLength', 'lengthAdjust'].some(name => attrs[name] != null)) {
+      if (!positioned || attrs['text-anchor'] !== 'start' || attrs.lengthAdjust !== 'spacingAndGlyphs'
+        || Math.abs(finite(attrs.x, 'positioned SVG run x') - x) > 1e-8
+        || Math.abs(finite(attrs.y, 'positioned SVG run y') - (y - runAscent + baselineShift)) > 1e-8
+        || Math.abs(finite(attrs.textLength, 'positioned SVG run width') - desiredWidth) > 1e-8) {
+        fail('text position metrics', 'the generated PDF position must match the visible SVG run position and width');
+      }
+    }
     if (desiredWidth <= 0 || naturalWidth <= 0) {
       fail('rich text font metrics', 'the editor did not provide positive measured run widths; use raster PDF');
     }

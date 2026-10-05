@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from '../src/text-decoration-style.js';
+import { isValidTextPosition } from '../src/text-position-style.js';
 import { textStyleValuesEqual } from '../src/text-decoration-controls.js';
 import { isValidFontVariationValues } from '../src/font-variation.js';
 import { isValidFontFeatureValues, parseFontFeatureSettings } from '../src/font-features.js';
@@ -14,10 +15,10 @@ const start = main.indexOf('const textRunStyleKeys =');
 const end = main.indexOf('function readTextEditorContent(', start);
 assert.ok(start >= 0 && end > start);
 const { textRunStyleForElement, textRunDataAttribute, appendTextRun } = new Function(
-  'TEXT_DECORATION_PROPERTIES', 'isValidTextDecorationProperty', 'textStyleValuesEqual',
+  'TEXT_DECORATION_PROPERTIES', 'isValidTextDecorationProperty', 'textStyleValuesEqual', 'isValidTextPosition',
   'isValidFontVariationValues', 'isValidFontFeatureValues', 'parseFontFeatureSettings', 'normalizeTextRunBaselineShift',
   `${main.slice(start, end)}\nreturn { textRunStyleForElement, textRunDataAttribute, appendTextRun };`
-)(TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textStyleValuesEqual,
+)(TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textStyleValuesEqual, isValidTextPosition,
   isValidFontVariationValues, isValidFontFeatureValues, parseFontFeatureSettings, normalizeTextRunBaselineShift);
 
 function element({ encoded = {}, style = {}, preview = false, tag = 'SPAN' } = {}) {
@@ -65,4 +66,28 @@ test('editor normalization merges equivalent encoded objects without changing se
   assert.equal(runs.length, 1); assert.equal(runs[0].text, 'AB');
   assert.equal(textRunStyleForElement(element({ tag: 'U' }), {}).textDecoration, 'underline');
   assert.equal(textRunStyleForElement(element({ tag: 'DEL' }), {}).textDecoration, 'line-through');
+});
+
+test('positioned preview CSS cannot compound authored font size, baseline shift or OpenType settings on reopen', () => {
+  const inherited = { fontSize: 24, baselineShift: 2, textPosition: 'superscript', fontFeatures: { kern: 0 } };
+  const preview = { preview: true, style: { fontSize: '14.4px', top: '-10px', baselineShift: '-10',
+    fontFeatureSettings: '"sups" 1', fontVariantPosition: 'super' } };
+  let decoded = inherited;
+  for (let reopen = 0; reopen < 5; reopen++) decoded = textRunStyleForElement(element(preview), decoded);
+  assert.deepEqual(decoded, inherited);
+  const explicit = textRunStyleForElement(element({ ...preview, encoded: {
+    fontSize: '24', baselineShift: '2', textPosition: 'superscript', fontFeatures: '{"kern":0}'
+  } }), {});
+  assert.deepEqual(explicit, inherited);
+});
+
+test('superscript and subscript markup retain source characters and explicit Normal clears semantic inheritance', () => {
+  assert.equal(textRunStyleForElement(element({ tag: 'SUP' }), {}).textPosition, 'superscript');
+  assert.equal(textRunStyleForElement(element({ tag: 'SUB' }), {}).textPosition, 'subscript');
+  assert.equal(textRunStyleForElement(element({ style: { fontVariantPosition: 'sub' } }), {}).textPosition, 'subscript');
+  assert.equal(textRunStyleForElement(element({ preview: true, encoded: { textPosition: 'normal' } }), { textPosition: 'superscript' }).textPosition, 'normal');
+  assert.equal(textRunStyleForElement(element({ encoded: { textPosition: 'super' } }), { textPosition: 'subscript' }).textPosition, 'subscript');
+  const runs = [];
+  appendTextRun(runs, '1', { textPosition: 'superscript' }); appendTextRun(runs, '2', { textPosition: 'subscript' });
+  assert.equal(runs.map(run => run.text).join(''), '12'); assert.equal(runs.length, 2);
 });

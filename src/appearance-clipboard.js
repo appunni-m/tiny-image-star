@@ -8,6 +8,7 @@ import { isValidStrokeStack, strokeStackForNode, syncLegacyStrokeFields } from '
 import { isValidFontVariationValues } from './font-variation.js';
 import { isValidFontFeatureValues } from './font-features.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty, textDecorationDefaults } from './text-decoration-style.js';
+import { isValidTextPosition } from './text-position-style.js';
 
 const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
@@ -17,7 +18,7 @@ const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textStyleProperties = Object.freeze([
   'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
-  'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES
+  'verticalAlign', 'textCase', 'textDecoration', 'textWrapStyle', ...TEXT_DECORATION_PROPERTIES, 'textPosition'
 ]);
 
 /**
@@ -67,9 +68,11 @@ export function snapshotAppearance(sourceNode) {
         && (property !== 'fontAxes' || isValidFontVariationValues(sourceNode[property]))
         && (property !== 'fontFeatures' || isValidFontFeatureValues(sourceNode[property]))
         && (property !== 'textWrapStyle' || textWrapStyles.has(sourceNode[property]))
-        && (!TEXT_DECORATION_PROPERTIES.includes(property) || isValidTextDecorationProperty(property, sourceNode[property])))
+        && (!TEXT_DECORATION_PROPERTIES.includes(property) || isValidTextDecorationProperty(property, sourceNode[property]))
+        && (property !== 'textPosition' || isValidTextPosition(sourceNode[property])))
       .map(property => [property, clone(sourceNode[property])]));
     Object.assign(textStyle, textDecorationDefaults(sourceNode));
+    textStyle.textPosition = isValidTextPosition(sourceNode.textPosition) ? sourceNode.textPosition : 'normal';
     if (Object.keys(textStyle).length) snapshot.textStyle = textStyle;
   }
 
@@ -257,6 +260,9 @@ export function applyAppearance(targetNode, appearance, { idFactory = defaultIdF
       }
       if (appearance.textStyle.textWrapStyle != null && !textWrapStyles.has(appearance.textStyle.textWrapStyle)) {
         throw new TypeError('The copied text wrap style is invalid.');
+      }
+      if (appearance.textStyle.textPosition != null && !isValidTextPosition(appearance.textStyle.textPosition)) {
+        throw new TypeError('The copied text position is invalid.');
       }
       if (TEXT_DECORATION_PROPERTIES.some(property => Object.hasOwn(appearance.textStyle, property)
         && !isValidTextDecorationProperty(property, appearance.textStyle[property]))) {

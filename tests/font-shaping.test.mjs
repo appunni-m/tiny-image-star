@@ -113,6 +113,12 @@ test('the pinned local HarfBuzz worker shapes variable axes and OpenType feature
     assert.ok(base.glyphs.every(glyph => typeof glyph.path === 'string' && Number.isFinite(glyph.xAdvance)));
     assert.equal(missingGlyph.missingGlyph, true, 'unsupported text must request the browser fallback instead of drawing .notdef glyphs');
     assert.equal(missingGlyph.glyphs.length, 0);
+    assert.deepEqual(base.positionMetrics.superscript, { xSize: 1331, ySize: 1229, xOffset: 0, yOffset: 717 });
+    assert.deepEqual(base.positionMetrics.subscript, { xSize: 1331, ySize: 1229, xOffset: 0, yOffset: 154 });
+    base.positionMetrics.superscript.ySize = -1;
+    assert.equal(harness.client.get('inter-variable', { text: 'ToWa', variations: { wght: 400, opsz: 14 } }).positionMetrics.superscript.ySize, 1229,
+      'worker metrics are cloned at the public cache boundary');
+    base.positionMetrics.superscript.ySize = 1229;
 
     const woff = createWoff1(new Uint8Array(sfnt));
     const woffFont = await harness.client.loadFont('inter-variable-woff', woff);

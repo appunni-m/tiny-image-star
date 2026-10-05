@@ -14,7 +14,7 @@ export const MAX_OUTLINE_STROKE_SELECTION_NODES = 20_000;
 const MAX_OUTLINE_SNAPSHOT_CHARACTERS = 4_000_000;
 const supportedTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'line', 'path', 'network']);
 const geometryBindings = ['x', 'y', 'width', 'height', 'rotation', 'radius'];
-const textStyleProperties = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'textWrapStyle', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'paragraphStyles', 'textRuns', 'color', 'fillOpacity', 'textPath'];
+const textStyleProperties = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration', 'textDecorationStyle', 'textDecorationThickness', 'textDecorationOffset', 'textDecorationColor', 'textDecorationSkipInk', 'textPosition', 'textWrapStyle', 'align', 'verticalAlign', 'textFit', 'textTruncation', 'maxLines', 'paragraphStyles', 'textRuns', 'color', 'fillOpacity', 'textPath'];
 const plans = new WeakMap();
 const clone = value => structuredClone(value);
 const abort = signal => { if (signal?.aborted) throw new DOMException('Outline Stroke cancelled.', 'AbortError'); };
@@ -231,6 +231,73 @@ function identityShapeNode(width, height, pathGeometry) {
   return nativePathGeometryForNode({ type: 'path', width, height, ...pathGeometry });
 }
 
+const identityTextStrokeTransform = Object.freeze([1, 0, 0, 1, 0, 0]);
+
+function textStrokeTransform(value) {
+  const matrix = value ?? identityTextStrokeTransform;
+  if (!Array.isArray(matrix) || matrix.length !== 6 || matrix.some(part => !Number.isFinite(part))) {
+    throw new Error('The local text outline has an invalid stroke transform.');
+  }
+  const [a, b, c, d, e, f] = matrix;
+  const determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) {
+    throw new Error('The local text outline has a singular stroke transform.');
+  }
+  return { matrix, inverse: [d / determinant, -b / determinant, -c / determinant, a / determinant,
+    (c * f - d * e) / determinant, (b * e - a * f) / determinant] };
+}
+
+function mapTextOutlineShape(shape, matrix) {
+  const [a, b, c, d, e, f] = matrix;
+  const mapPoint = point => ({ ...point, x: a * point.x + c * point.y + e, y: b * point.x + d * point.y + f });
+  const contours = list => list.map(contour => ({ ...contour, start: mapPoint(contour.start), commands: contour.commands.map(command => {
+    const mapped = { ...command, start: mapPoint(command.start), end: mapPoint(command.end) };
+    if (command.control) mapped.control = mapPoint(command.control);
+    if (command.control1) mapped.control1 = mapPoint(command.control1);
+    if (command.control2) mapped.control2 = mapPoint(command.control2);
+    return mapped;
+  }) }));
+  return { ...shape,
+    fillGroups: (shape.fillGroups || []).map(group => ({ ...group, contours: contours(group.contours || []) })),
+    strokeContours: contours(shape.strokeContours || []),
+    alignedStrokeContours: contours(shape.alignedStrokeContours || []) };
+}
+
+function mapTextOutlinePath(path, width, height, matrix) {
+  const [a, b, c, d, e, f] = matrix;
+  const safeWidth = width > 0 ? width : 1; const safeHeight = height > 0 ? height : 1;
+  const mapPoint = point => ({ ...point,
+    x: (a * point.x * safeWidth + c * point.y * safeHeight + e) / safeWidth,
+    y: (b * point.x * safeWidth + d * point.y * safeHeight + f) / safeHeight,
+    in: { x: (a * point.in.x * safeWidth + c * point.in.y * safeHeight) / safeWidth,
+      y: (b * point.in.x * safeWidth + d * point.in.y * safeHeight) / safeHeight },
+    out: { x: (a * point.out.x * safeWidth + c * point.out.y * safeHeight) / safeWidth,
+      y: (b * point.out.x * safeWidth + d * point.out.y * safeHeight) / safeHeight } });
+  return { ...path, points: (path.points || []).map(mapPoint),
+    ...(path.subpaths ? { subpaths: path.subpaths.map(contour => ({ ...contour, points: contour.points.map(mapPoint) })) } : {}) };
+}
+
+function commonTextStrokeTransform(glyphs) {
+  const metricFor = glyph => {
+    const [a, b, c, d] = textStrokeTransform(glyph?.strokeTransform).matrix;
+    return [a * a + c * c, a * b + c * d, b * b + d * d];
+  };
+  const first = metricFor(glyphs[0]);
+  for (const glyph of glyphs.slice(1)) {
+    const metric = metricFor(glyph); const tolerance = 1e-9 * Math.max(1, ...first.map(Math.abs), ...metric.map(Math.abs));
+    if (metric.some((value, index) => Math.abs(value - first[index]) > tolerance)) {
+      throw new Error('Aligned strokes on text with incompatible glyph scale transforms are not supported yet.');
+    }
+  }
+  const [xx, xy, yy] = first; const determinantRoot = Math.sqrt(xx * yy - xy * xy);
+  const denominator = Math.sqrt(xx + yy + 2 * determinantRoot);
+  if (!(denominator > 0) || !Number.isFinite(denominator)) throw new Error('The local text outline has an invalid aligned-stroke scale transform.');
+  // A symmetric square root of A·Aᵀ removes the captured stroke metric while
+  // remaining independent of translation and each glyph's rigid orientation.
+  const a = (xx + determinantRoot) / denominator; const b = xy / denominator; const d = (yy + determinantRoot) / denominator;
+  return textStrokeTransform([a, b, b, d, 0, 0]);
+}
+
 async function clippedPathGeometry(width, height, geometry, clipGeometry, booleanGeometry, signal) {
   if (!clipGeometry) return geometry;
   const pathShape = identityShapeNode(width, height, geometry);
@@ -319,14 +386,20 @@ async function outlinedTextReplacement(document, node, textOutline, outline, boo
     const outlined = [];
     const centered = effectiveStrokeAlignment(node, stroke) === 'center';
     if (!centered && !textOutline.glyphGeometry) throw new Error(`The local font outlines for “${node.name || 'text'}” do not include aggregate glyph-only geometry needed for aligned strokes.`);
+    const alignedTransform = centered ? null : commonTextStrokeTransform(textOutline.glyphs);
     const strokeSources = centered
-      ? textOutline.glyphs.map((glyph, glyphIndex) => ({ geometry:glyph.geometry, glyphIndex }))
-      : [{ geometry:textOutline.glyphGeometry, glyphIndex:null }];
-    for (const { geometry:sourceGeometry, glyphIndex } of strokeSources) {
+      ? textOutline.glyphs.map((glyph, glyphIndex) => ({ geometry:glyph.geometry, glyphIndex, transform:textStrokeTransform(glyph.strokeTransform) }))
+      : [{ geometry:textOutline.glyphGeometry, glyphIndex:null, transform:alignedTransform }];
+    for (const { geometry:sourceGeometry, glyphIndex, transform } of strokeSources) {
       abort(signal);
-      const result = await outline(sourceGeometry, { ...clone(stroke), alignment: effectiveStrokeAlignment(node, stroke) }, { signal });
+      const outlineSource = transform.matrix.every((value, index) => value === identityTextStrokeTransform[index])
+        ? sourceGeometry : mapTextOutlineShape(sourceGeometry, transform.inverse);
+      const result = await outline(outlineSource, { ...clone(stroke), alignment: effectiveStrokeAlignment(node, stroke) }, { signal });
       abort(signal);
       let geometry = outlinedGeometryToPathGeometry(result, width, height);
+      if (!transform.matrix.every((value, index) => value === identityTextStrokeTransform[index])) {
+        geometry = mapTextOutlinePath(geometry, width, height, transform.matrix);
+      }
       if (!geometry.points.length) continue;
       if (textOutline.clipGeometry) geometry = await clippedPathGeometry(width, height, geometry, textOutline.clipGeometry, booleanGeometry, signal);
       budget.points += geometry.points.length + (geometry.subpaths || []).reduce((sum, contour) => sum + contour.points.length, 0);

@@ -6,6 +6,20 @@ import { createImageFill } from '../src/image-fills.js';
 import { buildInspectOutput } from '../src/inspect.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
+test('Inspect exports semantic superscript/subscript CSS while retaining authored sizes and source runs', () => {
+  for (const [textPosition, css] of [['superscript', 'super'], ['subscript', 'sub']]) {
+    const document = createDocument();
+    const label = createNode('text', { text: 'A1', textPosition, fontSize: 24,
+      textRuns: [{ text: 'A', textPosition: 'normal' }, { text: '1', baselineShift: 2 }] });
+    addNode(document, label);
+    const output = buildInspectOutput(document, [findNode(document, label.id)]);
+    assert.match(output.css, new RegExp(`font-variant-position: ${css};`, 'u'));
+    assert.equal(output.layers[0].typography.fontSize, 24);
+    assert.equal(output.layers[0].typography.textPosition, textPosition);
+    assert.deepEqual(JSON.parse(output.json).textRuns, label.textRuns);
+  }
+});
+
 test('Inspect reports independent vector-network vertex corner radii', () => {
   const document = createDocument();
   const network = createNode('network', {

@@ -2662,6 +2662,37 @@ test('unsupported underline enum data stays at default and is called out for imp
   assert.match(imported.report.warnings.find(warning => warning.type === 'TEXT_DECORATION').detail, /textDecorationStyle/u);
 });
 
+test('imports parser fontVariantPosition enums as layer and ranged semantic text positions', async () => {
+  const pageGuid = { sessionID: 207, localID: 1 };
+  const parser = parseFig(new Uint8Array(await readFile(fixture('circle-v101.fig'))));
+  const parserPosition = value => parser.compiledSchema.decodeNodeChange(
+    parser.compiledSchema.encodeNodeChange({ fontVariantPosition:value })
+  ).fontVariantPosition;
+  assert.deepEqual(['NORMAL','SUB','SUPER'].map(parserPosition), ['NORMAL','SUB','SUPER'],
+    'the installed FIG protobuf schema decodes actual fontVariantPosition enum values');
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name:'Page' }),
+      node('TEXT', 2, pageGuid, '!', {
+        name:'Chemical formula', fontVariantPosition:parserPosition('SUPER'),
+        textData:{ characters:'H₂O', characterStyleOverrides:[0, 1, 0], styleOverrideTable:[{}, { fontVariantPosition:parserPosition('SUB') }] }
+      })
+    ], images:new Map(), message:{blobs:[]}
+  });
+  const text=imported.document.pages[0].children[0];
+  assert.equal(text.textPosition,'superscript');
+  assert.deepEqual(text.textRuns,[{text:'H'},{text:'₂',textPosition:'subscript'},{text:'O'}]);
+  assert.equal(imported.report.unsupportedTypes.TEXT_POSITION,undefined);
+
+  const unknown=convertFigDocument({
+    nodes:[node('CANVAS',11,null,'',{guid:{sessionID:207,localID:11},name:'Page'}),
+      node('TEXT',12,{sessionID:207,localID:11},'!',{textData:{characters:'x'},fontVariantPosition:'EXTRA'})],
+    images:new Map(),message:{blobs:[]}
+  });
+  assert.equal(unknown.document.pages[0].children[0].textPosition,undefined);
+  assert.equal(unknown.report.unsupportedTypes.TEXT_POSITION,1);
+});
+
 test('preserves imported Auto and Percent line-height units while legacy numbers remain ratios', () => {
   const pageGuid = { sessionID: 121, localID: 1 };
   const nodes = [

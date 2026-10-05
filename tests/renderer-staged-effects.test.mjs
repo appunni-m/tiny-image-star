@@ -179,11 +179,14 @@ test('legacy root fill opacity applies to each direct fill child and leaves stro
   const fill = path('#ff0000'); fill.fills[0].opacity = .4;
   const stroke = path('#0000ff', { effectPaintPhase: 'stroke' }); stroke.fills[0].opacity = .5;
   const root = staged(document, [fill, stroke], { effectFillMode: 'legacy', fillOpacity: .3, fill: '#ff00ff', fills: undefined, opacity: .6 });
-  const canvas = new Surface(100, 100); renderer(document).drawNode(canvas.context, root, 0, 0, new Map());
-  const paints = canvas.calls.filter(call => call[0] === 'fill');
+  const canvas = new Surface(100, 100);
+  canvas.context.drawImage = (...args) => canvas.calls.push(['image', canvas.context.globalAlpha, ...args]);
+  renderer(document).drawNode(canvas.context, root, 0, 0, new Map());
+  const paints = Surface.surfaces[1].calls.filter(call => call[0] === 'fill');
   assert.equal(paints.length, 2, 'semantic scalar root fill never paints a rectangle');
-  assert.ok(Math.abs(paints[0][2] - .072) < 1e-12);
-  assert.ok(Math.abs(paints[1][2] - .3) < 1e-12);
+  assert.ok(Math.abs(paints[0][2] - .12) < 1e-12);
+  assert.ok(Math.abs(paints[1][2] - .5) < 1e-12);
+  assert.equal(canvas.calls.filter(call => call[0] === 'image')[0][1], .6, 'root opacity is applied once after independent fill/stroke paint');
   delete root.effectPaintMode; delete root.effectFillMode; root.fills = [];
   canvas.calls.length = 0; renderer(document).drawNode(canvas.context, root, 0, 0, new Map());
   assert.deepEqual(canvas.calls.filter(call => call[0] === 'fill').map(call => call[2]), [.24, .3]);

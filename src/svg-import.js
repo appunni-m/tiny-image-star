@@ -1,6 +1,7 @@
 import { createDocument, createNode, validateDocument } from './model.js';
 import { exportAlignedStrokeValidationSvg, exportTextDecorationValidationSvg, SVG_TEXT_DECORATION_METADATA_ATTRIBUTE, SVG_TEXT_DECORATION_SOURCE_FIELDS, svgDropShadowClipIsRedundant } from './svg-export.js';
 import { TEXT_DECORATION_PROPERTIES, isValidTextDecorationProperty } from './text-decoration-style.js';
+import { isValidTextPosition } from './text-position-style.js';
 import { effectiveStrokeAlignment } from './stroke-alignment.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidGradientBasis } from './fills.js';
@@ -3187,9 +3188,10 @@ function importEditorTextDecorationLayer(node, style, matrix, prefix, counter) {
   const record = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => keys.includes(key));
   const runFields = ['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures',
-    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift',
+    'lineHeight', 'lineHeightUnit', 'letterSpacing', 'textDecoration', 'textCase', 'color', 'baselineShift', 'textPosition',
     ...TEXT_DECORATION_PROPERTIES];
   const safeStyle = value => TEXT_DECORATION_PROPERTIES.every(key => value[key] === undefined || isValidTextDecorationProperty(key, value[key]))
+    && (value.textPosition === undefined || isValidTextPosition(value.textPosition))
     && (value.fontAxes == null || isValidFontVariationValues(value.fontAxes))
     && (value.fontFeatures == null || isValidFontFeatureValues(value.fontFeatures));
   if (!record(payload, ['version', 'source', 'measurements']) || payload.version !== 1

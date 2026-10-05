@@ -1,5 +1,6 @@
 import { canvasFontWeight } from './font-variation.js';
 import { TEXT_DECORATION_PROPERTIES, textDecorationDefaults } from './text-decoration-style.js';
+import { resolveTextPositionView } from './text-position.js';
 
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
@@ -764,13 +765,13 @@ export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
   return size * amount;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', ...TEXT_DECORATION_PROPERTIES, 'baselineShift', 'textPosition', 'authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset'];
 
 function richTextStyle(base, run) {
   const style = {};
   for (const key of richTextStyleKeys) style[key] = run[key] ?? base[key];
   style.fontFamily ||= 'Arial, sans-serif';
-  style.fontSize = Math.max(1, Number(style.fontSize) || 24);
+  style.fontSize = Math.max(style.authoredFontSize ? .001 : 1, Number(style.fontSize) || 24);
   style.fontWeight = Number(style.fontWeight) || 400;
   style.fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal';
   style.lineHeight = Math.max(.1, Number(style.lineHeight) || 1.25);
@@ -822,6 +823,13 @@ function appendRichPart(parts, text, style) {
   const previous = parts.at(-1);
   if (previous && richTextStyleKeys.every(key => previous.style[key] === style[key])) previous.text += text;
   else parts.push({ text, style });
+}
+
+/** Displayed case spans shared by layout and glyph-feature preflight. */
+export function textCaseStyleRuns(runs, textCase, baseStyle) {
+  const parts = [];
+  for (const character of transformRichCharacters(runs, textCase, baseStyle)) appendRichPart(parts, character.text, character.style);
+  return parts;
 }
 
 function richUnitsRawParts(units) {
@@ -1193,7 +1201,7 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     const justify = paragraphAlign === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
     const lineWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
     const lineHeight = visibleParts.length
-      ? Math.max(...visibleParts.map(part => resolvedLineHeight(part.style.lineHeight, part.style.fontSize, part.style.lineHeightUnit)))
+      ? Math.max(...visibleParts.map(part => resolvedLineHeight(part.style.lineHeight, part.style.authoredFontSize || part.style.fontSize, part.style.lineHeightUnit)))
       : resolvedLineHeight(fallback.lineHeight, fallback.fontSize, fallback.lineHeightUnit);
     let offsetX = 0;
     const resolvedHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : fallback.fontSize * fallback.lineHeight;
@@ -1254,7 +1262,8 @@ export function calculateTextBox(ctx, node, {
   const family = fontFamily || 'Arial, sans-serif';
   const weight = Number(fontWeight) || 400;
   const style = fontStyle || 'normal';
-  const resolvedNode = { ...node, fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: size, letterSpacing: spacing };
+  let resolvedNode = { ...node, fontFamily: family, fontWeight: weight, fontStyle: style, fontSize: size, letterSpacing: spacing };
+  if (!node.__textPositionResolved) resolvedNode = resolveTextPositionView(resolvedNode, { shapeText }).node;
   ctx.font = `${style === 'italic' ? 'italic ' : ''}${canvasFontWeight(weight, node.fontAxes)} ${size}px ${family}`;
   const measure = (value, textStyle = resolvedNode) => {
     const shaped = shapeText?.(value, textStyle);
@@ -1265,12 +1274,13 @@ export function calculateTextBox(ctx, node, {
         advance += Number(shaped.glyphs[index].xAdvance) || 0;
         if (index > 0 && shaped.glyphs[index].cluster !== shaped.glyphs[index - 1].cluster) boundaries += 1;
       }
-        return Math.max(0, advance * (Number(textStyle.fontSize) || size) / shaped.upem + boundaries * (Number(textStyle.letterSpacing) || 0));
+        return Math.max(0, advance * (Number(textStyle.fontSize) || size) / shaped.upem * (textStyle.textPositionScaleX || 1) + boundaries * (Number(textStyle.letterSpacing) || 0));
     }
-    return measureTrackedText(ctx, value, textStyle.letterSpacing ?? spacing);
+    const scaleX = textStyle.textPositionScaleX || 1;
+    return measureTrackedText(ctx, value, (textStyle.letterSpacing ?? spacing) / scaleX) * scaleX;
   };
 
-  const richRuns = node.textRuns;
+  const richRuns = resolvedNode.textRuns;
   if (Array.isArray(richRuns) && richRuns.every(run => run && typeof run.text === 'string') && richRuns.map(run => run.text).join('') === String(text ?? '')) {
     const baseStyle = {
       fontFamily: family, fontSize: size,

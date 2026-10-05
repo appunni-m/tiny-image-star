@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import { addNode, bindColorVariable, cloneDocument, createColorStyle, createColorVariable, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode, createVariableCollection, findNode, getNodeColor, updateColorStyle, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createStroke } from '../src/strokes.js';
@@ -8,6 +10,11 @@ import { nodeToParentTransform } from '../src/transform-geometry.js';
 import { applyOutlineStroke, outlineStrokeUnavailableReason, prepareOutlineStroke } from '../src/outline-stroke.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
+import { outlineStrokeGeometryWithKit } from '../src/vector-geometry-kernel.js';
+
+const kit = await createRequire(import.meta.url)('canvaskit-wasm')({
+  wasmBinary: await readFile(new URL('../node_modules/canvaskit-wasm/bin/canvaskit.wasm', import.meta.url))
+});
 
 function design(...nodes) {
   const document = createDocument(); document.pages[0].children = [];
@@ -209,13 +216,16 @@ function textOutlineFixture(node, glyphs, extra = {}) {
 }
 
 test('text outlines retain separate editable glyph masks while each translucent fill plane is applied once', async () => {
-  const node = createNode('text', { name:'Overlap', text:'HH', width:20, height:20, fillOpacity:.7,
+  const node = createNode('text', { name:'Overlap', text:'HH', width:20, height:20, textPosition:'superscript',
+    textRuns:[{text:'H',textPosition:'normal'},{text:'H',textPosition:'subscript'}], fillOpacity:.7,
     opacity:.6, fills:[createFillLayer('solid',{color:'#ff0000',opacity:.3}),createFillLayer('solid',{color:'#0000ff',opacity:.5})] });
   const document = design(node); const overlapping = nativeRect(2,2,14,18);
   const outline = textOutlineFixture(node,[overlapping,overlapping]);
   const plan = await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>outline});
   applyOutlineStroke(document,plan);
   assert.equal(node.type,'group'); assert.equal(node.opacity,.6); assert.deepEqual(node.fills,[]);
+  assert.equal(node.textPosition,undefined);
+  assert.ok(node.children.every(child => child.textPosition === undefined));
   assert.equal(node.children.length,2);
   for (const plane of node.children) {
     assert.equal(plane.mask,true); assert.equal(plane.maskMode,'alpha');
@@ -264,6 +274,71 @@ test('aligned text strokes outline the aggregate glyph silhouette once; centered
   assert.equal(centeredCalls.length,2); assert.deepEqual(centeredCalls.map(call=>call.shape),[glyphA,glyphB]);
   assert.deepEqual(centered.children.slice(-2).map(path=>path.fills[0].opacity),[.35,.35]);
   validateDocument(document); validateDocument(centeredDesign);
+});
+
+test('text strokes are outlined in authored pixel basis before captured line transforms are restored', async () => {
+  const node=createNode('text',{text:'H',width:20,height:20,strokes:[createStroke({width:2,color:'#0088cc'})]});
+  const document=design(node); const glyph=nativeRect(1,2,4,8); const seen=[];
+  const plan=await prepareOutlineStroke(document,[node.id],{
+    getTextOutline:async()=>textOutlineFixture(node,[glyph],{glyphs:[{
+      geometry:glyph,paint:{color:'#112233',opacity:1},glyphId:72,cluster:0,text:'H',strokeTransform:[.5,0,0,1,0,0]
+    }]}),
+    outline:async(shape,stroke)=>{
+      const contour=shape.fillGroups[0].contours[0];
+      const xs=[contour.start.x,...contour.commands.map(command=>command.end.x)];
+      const ys=[contour.start.y,...contour.commands.map(command=>command.end.y)];
+      seen.push({left:Math.min(...xs),right:Math.max(...xs),top:Math.min(...ys),bottom:Math.max(...ys)});
+      const nativeShape={...shape,fillRule:'nonzero',strokeContours:shape.fillGroups.flatMap(group=>group.contours),
+        alignedStrokeContours:shape.fillGroups.flatMap(group=>group.contours)};
+      return outlineStrokeGeometryWithKit(kit,nativeShape,stroke);
+    }
+  });
+  applyOutlineStroke(document,plan);
+  assert.deepEqual(seen,[{left:2,right:8,top:2,bottom:8}], 'compressed contours are inverse-mapped while the native outline uses authored stroke pixels');
+  const strokePath=node.children.at(-1);
+  assert.equal(Math.min(...strokePath.points.map(point=>point.x)),.5/node.width);
+  assert.equal(Math.max(...strokePath.points.map(point=>point.x)),4.5/node.width,
+    'the generated stroke region is mapped back through line compression exactly once');
+  validateDocument(document);
+});
+
+test('aligned curved text strokes accept matching glyph stroke metrics and reject incompatible metrics', async () => {
+  const curve={fillRule:'nonzero',fillGroups:[{fillRule:'nonzero',contours:[{closed:true,start:{x:10,y:2},commands:[
+    {type:'cubic',start:{x:10,y:2},control1:{x:14,y:2},control2:{x:18,y:6},end:{x:18,y:10}},
+    {type:'cubic',start:{x:18,y:10},control1:{x:18,y:14},control2:{x:14,y:18},end:{x:10,y:18}},
+    {type:'cubic',start:{x:10,y:18},control1:{x:6,y:18},control2:{x:2,y:14},end:{x:2,y:10}},
+    {type:'cubic',start:{x:2,y:10},control1:{x:2,y:6},control2:{x:6,y:2},end:{x:10,y:2}}
+  ]}]}]};
+  curve.strokeContours=curve.fillGroups.flatMap(group=>group.contours); curve.alignedStrokeContours=curve.strokeContours;
+  const cosine=Math.cos(Math.PI/3),sine=Math.sin(Math.PI/3);
+  for (const alignment of ['center','inside','outside']) {
+    const node=createNode('text',{text:'HH',width:24,height:24,strokes:[createStroke({width:2,alignment})]});
+    const document=design(node);
+    const secondTransform=alignment==='center'
+      ? [cosine,sine,-sine,cosine,17,9]
+      : [.5*cosine,sine,-.5*sine,cosine,17,9];
+    const outline=textOutlineFixture(node,[curve,curve],{glyphGeometry:curve,glyphs:[
+      {geometry:curve,paint:{color:'#112233',opacity:1},glyphId:1,cluster:0,text:'H',strokeTransform:alignment==='center'?[1,0,0,1,3,5]:[.5,0,0,1,3,5]},
+      {geometry:curve,paint:{color:'#112233',opacity:1},glyphId:2,cluster:1,text:'H',strokeTransform:secondTransform}
+    ]});
+    const plan=await prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>outline,
+      outline:async(shape,stroke)=>outlineStrokeGeometryWithKit(kit,{
+        ...shape,fillRule:'nonzero',strokeContours:shape.fillGroups.flatMap(group=>group.contours),
+        alignedStrokeContours:shape.fillGroups.flatMap(group=>group.contours)
+      },stroke)});
+    applyOutlineStroke(document,plan);
+    assert.ok(node.children.at(-1).points.length>0,`${alignment} curved outline remains editable`);
+    validateDocument(document);
+  }
+
+  const node=createNode('text',{text:'HH',width:24,height:24,strokes:[createStroke({width:2,alignment:'inside'})]});
+  const document=design(node); const before=cloneDocument(document);
+  const incompatible=textOutlineFixture(node,[curve,curve],{glyphGeometry:curve,glyphs:[
+    {geometry:curve,paint:{color:'#112233',opacity:1},glyphId:1,cluster:0,text:'H',strokeTransform:[2,0,0,1,0,0]},
+    {geometry:curve,paint:{color:'#112233',opacity:1},glyphId:2,cluster:1,text:'H',strokeTransform:[1,0,0,2,0,0]}
+  ]});
+  await assert.rejects(prepareOutlineStroke(document,[node.id],{getTextOutline:async()=>incompatible}),/incompatible glyph scale transforms/u);
+  assert.deepEqual(document,before,'unsupported mixed nonuniform stroke bases leave the source text unchanged');
 });
 
 test('staged text outlines preserve effects and layer blend on the root and mark authored strokes', async () => {

@@ -228,7 +228,7 @@ function pathRunStyle(node, run, baseColor) {
   const fontAxes = run?.fontAxes || node.fontAxes;
   return {
     fontFamily: run?.fontFamily || node.fontFamily || 'Arial, sans-serif',
-    fontSize: Math.max(1, Number(run?.fontSize ?? node.fontSize) || 24),
+    fontSize: Math.max(run?.authoredFontSize ? .001 : 1, Number(run?.fontSize ?? node.fontSize) || 24),
     fontWeight: canvasFontWeight(run?.fontWeight ?? node.fontWeight, fontAxes),
     fontStyle: (run?.fontStyle ?? node.fontStyle) === 'italic' ? 'italic' : 'normal',
     fontAxes,
@@ -237,7 +237,9 @@ function pathRunStyle(node, run, baseColor) {
     color: run?.color || baseColor || node.color || '#1e1e1e',
     textDecoration: run?.textDecoration || node.textDecoration || 'none',
     ...decorationStyleForRun(node, run),
-    baselineShift: Number(run?.baselineShift) || 0
+    baselineShift: Number(run?.baselineShift ?? node.baselineShift) || 0,
+    ...Object.fromEntries(['authoredFontSize', 'textPositionScaleX', 'textPositionOffsetX', 'textPositionTopOffset', 'textPositionBaselineOffset']
+      .filter(key => run?.[key] !== undefined || node[key] !== undefined).map(key => [key, run?.[key] ?? node[key]]))
   };
 }
 
@@ -378,7 +380,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
       appendCanvasFallback({ text: textValue, style });
       return;
     }
-    const scale = Math.max(1, Number(style.fontSize) || 24) / shaped.upem;
+    const scale = Math.max(.001, Number(style.fontSize) || 24) / shaped.upem * (style.textPositionScaleX || 1);
     for (const group of groups) {
       const advanceUnits = group.glyphs.reduce((sum, glyph) => sum + (Number(glyph.xAdvance) || 0), 0);
       const advance = Math.abs(advanceUnits * scale);
@@ -423,7 +425,7 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
     ctx.rotate(angle);
     if (path.flipped) ctx.scale(1, -1);
     ctx.textAlign = 'center';
-    const baseline = -style.baselineShift;
+    const baseline = (style.textPositionBaselineOffset || 0) - style.baselineShift;
     ctx.fillStyle = style.color;
     if (paintMode !== 'stroke') ctx.strokeStyle = style.color;
     const parentAlpha = ctx.globalAlpha;
@@ -433,11 +435,14 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
       : baseline;
     const paintedByShaper = !decorationsOnly && segment.shaped && typeof drawShaped === 'function'
       ? drawShaped(ctx, segment.shaped, segment.text, segment.shapedStartX ?? -segment.advance / 2,
-        shapedTop, style.fontSize, 0, paintMode, segment.text)
+        shapedTop, style.fontSize, 0, paintMode, segment.text, style)
       : false;
     if (!decorationsOnly && !paintedByShaper) {
+      const transformed = style.textPositionOffsetX || style.textPositionScaleX && style.textPositionScaleX !== 1;
+      if (transformed) { ctx.save(); ctx.translate(style.textPositionOffsetX || 0, 0); ctx.scale(style.textPositionScaleX || 1, 1); }
       if (paintMode === 'stroke') ctx.strokeText(segment.text, 0, baseline);
       else ctx.fillText(segment.text, 0, baseline);
+      if (transformed) ctx.restore();
     }
     if (includeDecorations && paintMode !== 'stroke') {
       ctx.fillStyle = style.color;
@@ -449,10 +454,12 @@ export function drawTextAlongPath(ctx, text, node, x, y, measure, {
           || style.textDecorationColor && style.textDecorationColor !== 'auto' || style.textDecorationSkipInk);
         if (custom) {
           const inkContours = style.textDecorationSkipInk ? nativeInkContoursForShapedText(segment.shaped,
-            { x: segment.shapedStartX ?? -segment.advance / 2, y: shapedTop, fontSize: style.fontSize }) : null;
+            { x: (segment.shapedStartX ?? -segment.advance / 2) + (style.textPositionOffsetX || 0), y: shapedTop, fontSize: style.fontSize,
+              scaleX: style.textPositionScaleX || 1 }) : null;
           const geometry = textDecorationGeometry({ x: -segment.advance / 2, y: baseline, width: segment.advance, fontSize: style.fontSize,
             decoration: style.textDecoration, style, baseline: true, inkContours,
-            fallbackInkBounds: style.textDecorationSkipInk && !inkContours ? canvasTextInkBounds(ctx, segment.text, { x: -segment.advance / 2, y: baseline }) : [] });
+            fallbackInkBounds: style.textDecorationSkipInk && !inkContours ? canvasTextInkBounds(ctx, segment.text, {
+              x: -segment.advance / 2 + (style.textPositionOffsetX || 0), y: baseline, scaleX: style.textPositionScaleX || 1 }) : [] });
           if (geometry.paint === 'auto' || geometry.paint.visible !== false) {
             if (geometry.paint !== 'auto') { ctx.fillStyle = geometry.paint.color; ctx.globalAlpha = parentAlpha * geometry.paint.opacity; }
             ctx.beginPath(); traceTextDecorationContours(ctx, geometry.contours); ctx.fill('nonzero');
