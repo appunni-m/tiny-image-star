@@ -1,5 +1,5 @@
 import {
-  addNode, addVariableMode, addCommentReply, alignLayers, applyTidyUpPlan, planTidyUpLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canTidyUpLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canFrameSelection, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
+  addNode, addVariableMode, addCommentReply, alignLayers, applyTidyUpPlan, planTidyUpLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canTidyUpLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canFrameSelection, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   addComponentVariantFromMaster, applyLayoutGuideStyle, copyLayoutGuide, pasteLayoutGuide, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayoutGuideStyle, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteLayoutGuideStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, detachLayoutGuideStyle, detachNodeTextPath, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, recordComponentChildOrder, renameColorStyle, renameImageRecipe, renameLayoutGuideStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableScopes, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, updateLayoutGuideStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, frameSelection, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
@@ -25,6 +25,8 @@ import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack,
 import { effectiveStrokeAlignment, supportsStrokeAlignment } from './stroke-alignment.js';
 import { rasterExportBounds } from './raster-export-bounds.js';
 import { prepareRasterExportMasks } from './raster-export-preflight.js';
+import { prepareBooleanVectorExport, projectBooleanVectorPaintTree, walkBooleanPaintInputs } from './boolean-vector-export-preflight.js';
+import { prepareBooleanCombine, validateBooleanCombinePlan, applyBooleanCombine } from './model.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { createCanvasContextPressController, shouldArmCanvasContextPress } from './canvas-context-press.js';
@@ -95,7 +97,7 @@ import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
 import { shouldCancelShapeBuilderOnPinch, shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from './canvas-pointer-lifecycle.js';
-import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
+import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError, walkVectorPdfPaintNodes } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
 import { parseLocalFigFile } from './fig-import-worker-client.js';
@@ -201,6 +203,7 @@ const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
 ]);
 const state = {
   shapeBuilder: null,
+  booleanController: null,
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', scaleAnchor: 'center', scaleMultiplier: 1, zoom: 1, panX: 0, panY: 0,
   fontShaper: new LocalFontShapingClient({ onReady: () => renderer?.invalidate() }), shapeLocalTextRun,
   fontShapeLoadPromises: new Map(), fontShapeFailures: new Set(), fontAssetEpoch: 0,
@@ -2716,6 +2719,7 @@ function sliceExportGeometry(node) {
   return { ...node, ...resolvedGeometry(node), rotation: 0 };
 }
 function blendingSection(node) {
+  if (booleanSourceAncestor(node)) return '';
   const selected = node.blendMode || 'normal';
   const options = layerBlendModes.map(mode => `<option value="${mode}"${selected === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('');
   return section('Blending', `<select class="prop-input select-field blend-mode-select" data-prop="blendMode" aria-label="Layer blend mode"${node.locked ? ' disabled' : ''}>${options}</select>`);
@@ -2872,6 +2876,8 @@ function paintBlendCompositionWarning(node) {
   return `<div class="image-properties-note paint-blend-warning" role="status">Paint blending may differ inside ${escapeHtml([...reasons].join(', '))}.</div>`;
 }
 function appearanceSection(node) {
+  const booleanParent = booleanSourceAncestor(node);
+  if (booleanParent) return section('Shared appearance', `<div class="image-properties-note">Edit this source layer's position, size, and vector points here. Fill, stroke, effects, and opacity belong to the Boolean group.</div><button class="add-fill" type="button" data-action="select-boolean-parent" data-layer-id="${escapeHtml(booleanParent.id)}">Edit group appearance</button>${cornerRadiusControls(node)}`);
   const hasFill = isFillStackSupported(node);
   const fills = hasFill ? fillStackControls(node) : '';
   const canBindPrimaryFill = node.type !== 'text' && hasFill && fillStackForNode(node)[0]?.type === 'solid';
@@ -2889,22 +2895,25 @@ function appearanceSection(node) {
     ? `<div class="image-properties-note" role="status">${booleanStroke.available
       ? 'Strokes follow the combined outline. Source layers stay editable inside this Boolean group.'
       : `${strokeCount ? 'The saved outline is unavailable for these sources. ' : ''}${escapeHtml(booleanStroke.reason)}`}</div>` : '';
+  const retryGeometry = node.type === 'boolean' && node.booleanGeometry === 'vector' && !booleanStroke.available
+    ? '<button class="add-fill" type="button" data-action="retry-boolean-geometry">Retry vector preview</button>' : '';
   const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill)
     ? `<div class="style-actions">${addStrokeAction}</div>`
     : node.type === 'text'
         ? `<div class="style-actions">${addStrokeAction}</div>`
         : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
-  const body = `${fills}${fillBinding}${stroke}${outlineNote}${paintBlendWarning}${styleActions}${strokeCount ? outlineStrokeControls() : ''}${radius}`;
+  const body = `${fills}${fillBinding}${stroke}${outlineNote}${retryGeometry}${paintBlendWarning}${styleActions}${strokeCount ? outlineStrokeControls() : ''}${radius}`;
   return section('Appearance', body);
 }
 function strokeSection(node) {
+  if (booleanSourceAncestor(node)) return appearanceSection(node);
   const strokeCount = strokeStackForNode(node).length;
   const addStroke = `<button class="add-fill" type="button" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>`;
   return section('Stroke', `${strokeStackControls(node)}<div class="style-actions">${addStroke}</div>${strokeCount ? outlineStrokeControls() : ''}`);
 }
 
 function outlineStrokeReason(ids = rootSelectedIds()) {
-  return state.outlineStrokeController ? 'Strokes are being converted. Cancel or wait for this operation to finish.'
+  return state.outlineStrokeController || state.booleanController ? 'Vector geometry is being prepared. Cancel or wait for this operation to finish.'
     : isImageRecipeBatchActive(state.bulk) ? 'Finish or cancel the current image batch first.'
       : outlineStrokeUnavailableReason(state.document, ids);
 }
@@ -4712,6 +4721,7 @@ function renderInspector() {
   syncQuickExportControl();
   const outlining = Boolean(state.outlineStrokeController);
   $('#outline-stroke-progress').hidden = !outlining;
+  $('#boolean-operation-progress').hidden = !state.booleanController;
   const outlineStatus = outlining ? 'Converting strokes… Original layers stay intact until the conversion finishes.' : '';
   if ($('#outline-stroke-status').textContent !== outlineStatus) $('#outline-stroke-status').textContent = outlineStatus;
   const content = $('#inspector-content');
@@ -4740,6 +4750,7 @@ function renderInspector() {
   }
   if (entries.length > 1) {
     const containsSlice = entries.some(entry => entry.node.type === 'slice');
+    const containsBooleanSource = entries.some(entry => booleanSourceAncestor(entry.node));
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
     const guideFrameNodes = entries.map(entry => entry.node).filter(node => node.type === 'frame');
     const activeImageBatchSelected = entries.some(entry => entry.node.type === 'image' && isActiveImageRecipeTarget(entry.node.id));
@@ -4768,13 +4779,13 @@ function renderInspector() {
             : hugWidth || hugHeight
               ? `Position and size use page-space visual bounds. Auto layout Hug controls ${[hugWidth && 'width', hugHeight && 'height'].filter(Boolean).join(' and ')}; edit its sizing mode first.`
               : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
-    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 0.01, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 0.01, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
+    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 0.01, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 0.01, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice || containsBooleanSource, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
     const deleteSelection = `<button class="delete-layer-button" type="button" data-action="delete-selected-layers" data-layer-ids="${escapeHtml(JSON.stringify(state.selectedIds))}" aria-label="Delete ${entries.length} selected layers">Delete ${entries.length} layers</button>`;
     const shapeBuilderControl = canStartShapeBuilder(shapeBuilderEntries(state.selectedIds))
       ? section('Vector tools', `<button class="add-fill" type="button" data-action="shape-builder-start">Shape Builder</button><div class="image-properties-note">Tap a filled region to extract it, drag across regions to merge, or choose Subtract in the canvas bar. Source layers stay editable.</div>`)
       : '';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${guideFrameNodes.length ? layoutGuideStylesSection(guideFrameNodes) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${shapeBuilderControl}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${guideFrameNodes.length ? layoutGuideStylesSection(guideFrameNodes) : ''}${containsSlice || containsBooleanSource ? '' : effectStylesSection({ canSave: false })}${shapeBuilderControl}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
     const tidyControls = content.querySelector('.multi-align-controls');
     if (tidyControls) {
       const tidyButton = document.createElement('button');
@@ -4896,11 +4907,11 @@ function renderInspector() {
     body += section('Vector network', `${anchorMode}${networkCornerRadius}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; hold Shift while dragging a handle at a two-edge junction to move both controls together. Branch handles remain independent.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
     const primaryFill = fillStackForNode(node)[0];
     const faceColorsEditable = Array.isArray(node.fills) ? primaryFill?.type === 'solid' : !node.imageFill;
-    if (node.faces.length && faceColorsEditable) body += section('Region fills', networkFaceControls(node));
+    if (node.faces.length && faceColorsEditable && !booleanSourceAncestor(node)) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += strokeSection(node);
-  body += effectStylesSection({ canSave: true }) + layerEffectsSection(node);
+  if (!booleanSourceAncestor(node)) body += effectStylesSection({ canSave: true }) + layerEffectsSection(node);
   if (node.type === 'frame') body += frameVariableModesSection(node) + frameOverflowSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
@@ -4923,6 +4934,7 @@ function renderInspector() {
   }
   body += exportSettingsSection(node);
   content.innerHTML = body;
+  if (booleanSourceAncestor(node)) for (const input of content.querySelectorAll('[data-prop="opacity"], [data-prop="fill"], [data-prop="fillOpacity"], [data-prop="color"], [data-variable-property-binding="opacity"]')) input.disabled = true;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
 }
 
@@ -5924,6 +5936,7 @@ function updateSelectionInspectorInput(input) {
   let properties;
   let frameStates = new Map();
   if (property === 'opacity') {
+    if (entries.some(({ node }) => booleanSourceAncestor(node))) { showToast('Change opacity on the Boolean group.'); return; }
     if (entries.some(({ node, ancestors }) => node.locked || ancestors.some(parent => parent.locked))) return;
     const opacity = Math.max(0, Math.min(100, value)) / 100;
     patches = entries.map(({ node }) => ({ id: node.id, opacity }));
@@ -14258,7 +14271,7 @@ function saveTypographyStyleFor(nodeId) {
 function applyStyleToSelection(styleId) {
   const style = state.document.colorStyles?.find(item => item.id === styleId);
   if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
-  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text' : isFillStackSupported(node));
+  const compatible = selectedNodes().filter(node => !booleanSourceAncestor(node) && (style.kind === 'text' ? node.type === 'text' : isFillStackSupported(node)));
   if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
   for (const node of compatible) {
@@ -14414,6 +14427,7 @@ function removeEffectStyleFromAssets() {
 }
 
 function handleEffectStyleAction(action) {
+  if (action !== 'delete' && selectedNodes().some(booleanSourceAncestor)) { showToast('Change effects on the Boolean group.'); return; }
   if (action === 'save') saveEffectStyleFor(selectedNodes()[0]?.id);
   else if (action === 'apply') applyEffectStyleToSelection();
   else if (action === 'update') updateEffectStyleFromSelection();
@@ -14518,7 +14532,7 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
   if (variableId && !state.document.variables?.some(variable => variable.id === variableId && variable.type === 'color')) { showToast('This color variable no longer exists.'); return; }
   const nodes = selectedNodes();
   const changes = nodes.map(node => {
-    if (node.type === 'slice') return null;
+    if (node.type === 'slice' || booleanSourceAncestor(node)) return null;
     const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
     const compatible = kind === 'text' ? node.type === 'text'
       : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
@@ -14538,6 +14552,7 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
 function applyVariablePropertyToSelection(property, variableId) {
   if (!state.selectedIds.length) { showToast('Select a layer before binding a variable.'); return; }
   const nodes = selectedNodes();
+  if (property === 'opacity' && nodes.some(booleanSourceAncestor)) { renderUI(); showToast('Bind opacity on the Boolean group.'); return; }
   const compatible = nodes.filter(node => node.type !== 'slice' && canBindVariable(state.document, node.id, variableId || null, property));
   if (!compatible.length) { renderUI(); showToast('That variable type is not compatible with the selected layer property.'); return; }
   checkpoint(variableId ? `Bind ${property} variable` : `Unbind ${property} variable`);
@@ -14902,14 +14917,35 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   showMenu(items, x, y, returnFocusElement, 'Layer actions');
 }
 
-function combineSelectedBoolean(operation) {
+async function combineSelectedBoolean(operation) {
+  if (state.documentTransitioning || isLiveHostViewOnly()) return;
+  if (state.booleanController || state.outlineStrokeController) { showToast('Finish or cancel the current vector operation first.'); return; }
+  if (isImageRecipeBatchActive(state.bulk)) { showToast('Finish or pause the image batch before combining vector geometry.'); return; }
   const ids = rootSelectedIds();
+  const sourceDocument = state.document;
+  const pageId = sourceDocument.activePageId;
+  const generation = state.documentGeneration;
+  const controller = new AbortController();
+  state.booleanController = controller;
+  renderInspector();
   try {
+    const plan = await prepareBooleanCombine(sourceDocument, ids, operation, pageId, { signal: controller.signal });
+    if (controller.signal.aborted || state.document !== sourceDocument || state.documentGeneration !== generation
+      || state.document.activePageId !== pageId || state.documentTransitioning || isLiveHostViewOnly()) {
+      throw new DOMException('Boolean operation cancelled.', 'AbortError');
+    }
+    validateBooleanCombinePlan(sourceDocument, plan);
+    if (isImageRecipeBatchActive(state.bulk)) throw new Error('The image batch started while geometry was preparing. Finish it and try again.');
     checkpoint(`Combine as ${operation}`);
-    const group = combineBoolean(state.document, ids, operation);
+    const group = applyBooleanCombine(sourceDocument, plan);
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
     showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source layers remain editable.`);
-  } catch (error) { showToast(error.message || 'These layers cannot be combined.'); }
+  } catch (error) {
+    showToast(error.name === 'AbortError' ? 'Boolean operation cancelled. Original layers kept.' : error.message || 'These layers cannot be combined.');
+  } finally {
+    if (state.booleanController === controller) state.booleanController = null;
+    renderInspector();
+  }
 }
 
 function groupSelectedLayers() {
@@ -15122,6 +15158,12 @@ function quickActionCatalog() {
     deselectAll: () => setSelection([])
   });
   return [
+    ...(state.booleanController ? [{
+      id: 'cancel-boolean-operation', label: 'Cancel Boolean operation',
+      description: 'Stop combining vector regions and keep the original layers.',
+      keywords: ['stop combining', 'cancel union', 'cancel subtract'],
+      run: () => state.booleanController?.abort(),
+    }] : []),
     ...(state.outlineStrokeController ? [{
       id: 'cancel-outline-stroke', label: 'Cancel stroke conversion',
       description: 'Stop the conversion and keep the original layers.',
@@ -16845,9 +16887,12 @@ function copyAppearanceFrom(nodeId = null) {
     showToast(error.message || 'Could not copy these properties.');
   }
 }
+function booleanSourceAncestor(node) {
+  return findNode(state.document, node.id)?.parents.findLast(parent => parent.type === 'boolean') || null;
+}
 function appearanceTargetEntries() {
   return selectedEntries().filter(entry => entry.node.type !== 'slice'
-    && !entry.node.locked && !entry.parents.some(parent => parent.locked));
+    && !entry.node.locked && !entry.parents.some(parent => parent.locked || parent.type === 'boolean'));
 }
 function pasteAppearanceToSelection() {
   if (!state.appearanceClipboard) { showToast('Copy properties from a layer first.'); return; }
@@ -19520,14 +19565,16 @@ async function ensureImageLibraryCompatibility(documentData) {
   return true;
 }
 
-function exportBoundsForNode(nodeId) {
+function exportBoundsForNode(nodeId, booleanGeometryPlan = null) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
-  return rasterExportBounds(state.document, entry.node, entry.parents);
+  return rasterExportBounds(state.document, entry.node, entry.parents, { booleanGeometryPlan });
 }
 
 function exportDimensions(nodeId, scale = 1) {
-  const bounds = exportBoundsForNode(nodeId);
+  let bounds;
+  try { bounds = exportBoundsForNode(nodeId); }
+  catch { return { width: 0, height: 0 }; }
   return bounds ? { width: Math.ceil(bounds.width * scale), height: Math.ceil(bounds.height * scale) } : { width: 0, height: 0 };
 }
 
@@ -19543,7 +19590,10 @@ function exportRenderTree(nodeId) {
     else wrapper.children = [branch];
     wrapper.type = 'group'; wrapper.fill = 'transparent'; wrapper.stroke = null; wrapper.strokeWidth = 0;
     wrapper.fillOpacity = 0;
+    delete wrapper.fills; delete wrapper.strokes; delete wrapper.fillGradient; delete wrapper.imageFill;
+    delete wrapper.booleanGeometry; delete wrapper.booleanSourceFrame; delete wrapper.operation;
     delete wrapper.fillStyleId; delete wrapper.fillVariableId;
+    delete wrapper.strokeVariableId;
     if (wrapper.variableBindings) delete wrapper.variableBindings.fill;
     if (!maskSource || maskSource.id === branch.id) { wrapper.mask = false; delete wrapper.maskSourceId; }
     branch = wrapper;
@@ -19565,7 +19615,17 @@ function hasDynamicFrameConstraints(node) {
   return horizontal !== 'left' || vertical !== 'top';
 }
 
-function sliceExportImageDependencyNeeded(node, crop) {
+function sliceExportBoundsForNode(nodeId, booleanGeometryPlan) {
+  try { return exportBoundsForNode(nodeId, booleanGeometryPlan); }
+  catch (error) {
+    // Inspector estimates must not require a warmed native preview. Export
+    // callers supply pinned geometry and retain fail-closed bounds checks.
+    if (!booleanGeometryPlan) return null;
+    throw error;
+  }
+}
+
+function sliceExportImageDependencyNeeded(node, crop, booleanGeometryPlan = null) {
   if (!crop) return true;
   const entry = findNode(state.document, node.id);
   if (!entry) return false;
@@ -19586,11 +19646,11 @@ function sliceExportImageDependencyNeeded(node, crop) {
     || (candidate.effects || []).some(effect => effect.visible !== false
       && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
   if (unresolvedGeometry || effectsCanBleed) return true;
-  const bounds = exportBoundsForNode(node.id);
+  const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan);
   return !bounds || sliceRasterBoundsIntersect(crop, bounds);
 }
 
-function sliceExportNodeMayAffectCrop(nodeId, crop) {
+function sliceExportNodeMayAffectCrop(nodeId, crop, booleanGeometryPlan = null) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return false;
   const chain = [...entry.parents, entry.node];
@@ -19603,25 +19663,25 @@ function sliceExportNodeMayAffectCrop(nodeId, crop) {
       && ['drop-shadow', 'layer-blur'].includes(effect.type)
       && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
   if (unresolvedGeometry || effectsCanExtendBounds) return true;
-  const bounds = exportBoundsForNode(nodeId);
+  const bounds = sliceExportBoundsForNode(nodeId, booleanGeometryPlan);
   return !bounds || sliceRasterBoundsIntersect(crop, bounds);
 }
 
-function sliceExportRootMayAffectCrop(rootId, crop) {
+function sliceExportRootMayAffectCrop(rootId, crop, booleanGeometryPlan = null) {
   const root = findNode(state.document, rootId)?.node;
   if (!root) return false;
   let mayAffect = false;
-  walkNodes([root], ({ node }) => {
-    if (!mayAffect && sliceExportNodeMayAffectCrop(node.id, crop)) mayAffect = true;
+  walkBooleanPaintInputs([root], ({ node }) => {
+    if (!mayAffect && sliceExportNodeMayAffectCrop(node.id, crop, booleanGeometryPlan)) mayAffect = true;
   });
   return mayAffect;
 }
 
-function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null } = {}) {
+function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null, booleanGeometryPlan = null } = {}) {
   let maximumWorldBleed = 0;
   for (const root of page.children || []) {
     if (root.type === 'slice') continue;
-    walkNodes([root], ({ node }) => {
+    walkBooleanPaintInputs([root], ({ node }) => {
       const effect = firstBackdropEffect(node.effects);
       const backdropBlurRadius = effect?.type === 'background-blur' && effect.blurType === 'PROGRESSIVE'
         ? Math.max(effect.radius || 0, effect.startRadius || 0) : effect?.radius;
@@ -19637,7 +19697,7 @@ function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null } = {
         ['x', 'y', 'width', 'height', 'rotation'].some(property => candidate.variableBindings?.[property])
           || Boolean(candidate.autoLayout)
           || hasDynamicFrameConstraints(candidate));
-      const bounds = exportBoundsForNode(node.id);
+      const bounds = sliceExportBoundsForNode(node.id, booleanGeometryPlan);
       if (!uncertainBounds && bounds && !sliceRasterBoundsIntersect(crop, bounds)) return;
       onBackdropNode?.(node);
       const worldBleed = effect.type === 'background-blur'
@@ -19649,23 +19709,23 @@ function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null } = {
   return maximumWorldBleed;
 }
 
-async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
+async function refreshImagesForExport(nodeIds, { crop = null, booleanGeometryPlan = null } = {}) {
   const images = new Map();
   for (const id of nodeIds) {
     const node = findNode(state.document, id)?.node;
-    if (node) walkNodes([node], ({ node: child }) => {
-      if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop)) {
+    if (node) walkBooleanPaintInputs([node], ({ node: child }) => {
+      if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, inpaintStrokes: child.inpaintStrokes, previewKey });
       }
       if (Array.isArray(child.fills)) {
         for (const fill of child.fills) {
           if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId
-            || !sliceExportImageDependencyNeeded(child, crop)) continue;
+            || !sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) continue;
           const previewKey = imagePreviewKey(child.id, fill.id);
           images.set(previewKey, { node: child, fillId: fill.id, previewKey, assetId: fill.imageFill.assetId, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
         }
-      } else if (child.imageFill?.assetId && sliceExportImageDependencyNeeded(child, crop)) {
+      } else if (child.imageFill?.assetId && sliceExportImageDependencyNeeded(child, crop, booleanGeometryPlan)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, previewKey, assetId: child.imageFill.assetId, adjustments: child.imageFill.adjustments, transforms: child.imageFill.transforms });
       }
@@ -19700,7 +19760,15 @@ async function renderExportBlob(ids, setting, baseName, {
   signal, assertCurrent = () => {}, refreshImages = true, replaceKey = null, queueGroup = null,
   renderBounds = null, rawPng = false
 } = {}) {
-  const checkCurrent = () => { abortIfExportCanceled(signal); assertCurrent(); };
+  const sourceDocument = state.document; const sourceGeneration = state.documentGeneration;
+  const sourceRevision = state.saveRevision;
+  const checkCurrent = () => {
+    abortIfExportCanceled(signal); assertCurrent();
+    if (state.document !== sourceDocument || state.documentGeneration !== sourceGeneration
+      || state.saveRevision !== sourceRevision || state.documentTransitioning) {
+      throw new Error('The design changed while export was being prepared. Retry the export.');
+    }
+  };
   checkCurrent();
   if (!ids.length) throw new Error('Select a layer to export.');
   const selected = ids.map(id => findNode(state.document, id)?.node).filter(Boolean);
@@ -19708,6 +19776,10 @@ async function renderExportBlob(ids, setting, baseName, {
   const slice = ids.length === 1 && selected[0]?.type === 'slice' ? selected[0] : null;
   if (!slice && selected.some(node => node.type === 'slice')) throw new Error('Export a slice by itself so its crop and export settings stay unambiguous.');
   const scale = Number(setting.scale) || 1;
+  const exportDocument = state.document; const exportGeneration = state.documentGeneration;
+  const booleanGeometryPlan = await prepareBooleanVectorExport(exportDocument, slice ? activePage().children.map(node => node.id) : ids, { signal });
+  if (state.document !== exportDocument || state.documentGeneration !== exportGeneration) throw new Error('The active design changed before export finished.');
+  checkCurrent();
   let left; let top; let width; let height; let renderIds = ids; let slicePlan = null; let sliceSurfacePlan = null;
   let sliceBackdropNodeIds = new Set();
   if (slice) {
@@ -19736,13 +19808,13 @@ async function renderExportBlob(ids, setting, baseName, {
     ({ width, height } = slicePlan.outputSize);
     ({ x: left, y: top } = slicePlan.sourceCrop);
     const backdropWorldBleed = sliceExportBackdropWorldBleed(page, slicePlan.sourceCrop, {
-      onBackdropNode: node => sliceBackdropNodeIds.add(node.id)
+      onBackdropNode: node => sliceBackdropNodeIds.add(node.id), booleanGeometryPlan
     });
     const bleed = sliceRenderBleedPixels(backdropWorldBleed, scale);
     sliceSurfacePlan = planSliceRenderSurface(slicePlan, bleed);
     renderIds = page.children.map(root => root.id);
   } else {
-    const boundsList = renderBounds ? [renderBounds] : ids.map(exportBoundsForNode).filter(Boolean);
+    const boundsList = renderBounds ? [renderBounds] : ids.map(id => exportBoundsForNode(id, booleanGeometryPlan)).filter(Boolean);
     if (!boundsList.length) throw new Error('The selected layer is no longer available.');
     left = Math.min(...boundsList.map(item => item.x)); top = Math.min(...boundsList.map(item => item.y));
     const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
@@ -19750,7 +19822,7 @@ async function renderExportBlob(ids, setting, baseName, {
     if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
   }
   checkCurrent();
-  if (refreshImages) await refreshImagesForExport(renderIds, slicePlan ? { crop: slicePlan.sourceCrop } : {});
+  if (refreshImages) await refreshImagesForExport(renderIds, { crop: slicePlan?.sourceCrop || null, booleanGeometryPlan });
   checkCurrent();
   await document.fonts?.ready;
   checkCurrent();
@@ -19772,6 +19844,7 @@ async function renderExportBlob(ids, setting, baseName, {
   const captureExportRenderError = (_node, error) => exportRenderErrors.push(error);
   const baseRenderOptions = {
     showLayoutGuides: false, outlineMode: false, includeSlices: false, ignoreMotionPreview: true,
+    booleanGeometryPlan,
     onRenderError: captureExportRenderError
   };
   const drawExportScene = (context, renderOptions = baseRenderOptions, sceneIds = renderIds) => {
@@ -19784,7 +19857,7 @@ async function renderExportBlob(ids, setting, baseName, {
   };
   if (slicePlan) {
     const { padding, sourceCrop } = slicePlan;
-    const croppedRenderIds = renderIds.filter(id => sliceExportRootMayAffectCrop(id, sourceCrop));
+    const croppedRenderIds = renderIds.filter(id => sliceExportRootMayAffectCrop(id, sourceCrop, booleanGeometryPlan));
     if (backdropSampler) {
       samplerContext.imageSmoothingEnabled = true; samplerContext.imageSmoothingQuality = 'high';
       samplerContext.setTransform(scale, 0, 0, scale,
@@ -20037,7 +20110,7 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
   for (const id of rootNodeIds) {
     const root = findNode(state.document, id)?.node;
     if (!root) continue;
-    walkNodes([root], ({ node, parents }) => {
+    walkBooleanPaintInputs([root], ({ node, parents }) => {
       if (parents.some(parent => getNodePropertyValue(state.document, parent, 'visible') === false)
         || getNodePropertyValue(state.document, node, 'visible') === false) return;
       if (node.type === 'image' && node.assetId) {
@@ -20105,11 +20178,21 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
 
 async function exportSelectedNodeSvg(nodeId) {
   const generation = state.documentGeneration;
+  const sourceDocument = state.document; const sourceRevision = state.saveRevision;
+  const assertCurrent = () => {
+    if (state.document !== sourceDocument || state.documentGeneration !== generation
+      || state.saveRevision !== sourceRevision || state.documentTransitioning) {
+      throw new Error('The design changed while SVG export was being prepared. Retry the export.');
+    }
+  };
   const node = findNode(state.document, nodeId)?.node;
   if (!node) throw new Error('The selected layer is no longer available.');
   const imagePreviews = await imagePreviewsForSvgExport([nodeId]);
+  assertCurrent();
+  const booleanGeometryPlan = await prepareBooleanVectorExport(state.document, [nodeId]);
+  assertCurrent();
   if (generation !== state.documentGeneration || findNode(state.document, nodeId)?.node !== node) throw new Error('The active design changed before SVG export finished.');
-  const markup = exportNodeToSvg(node, { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
+  const markup = exportNodeToSvg(projectBooleanVectorPaintTree(state.document, node, booleanGeometryPlan), { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(node.name)}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable SVG · ${filename}.`);
@@ -20117,11 +20200,22 @@ async function exportSelectedNodeSvg(nodeId) {
 
 async function exportActivePageSvg() {
   const generation = state.documentGeneration;
+  const sourceDocument = state.document; const sourceRevision = state.saveRevision;
+  const assertCurrent = () => {
+    if (state.document !== sourceDocument || state.documentGeneration !== generation
+      || state.saveRevision !== sourceRevision || state.documentTransitioning) {
+      throw new Error('The design changed while SVG export was being prepared. Retry the export.');
+    }
+  };
   const page = activePage();
   if (!page) throw new Error('There is no active page to export.');
   const imagePreviews = await imagePreviewsForSvgExport(page.children.map(node => node.id));
+  assertCurrent();
+  const booleanGeometryPlan = await prepareBooleanVectorExport(state.document, page.children.map(node => node.id));
+  assertCurrent();
   if (generation !== state.documentGeneration || activePage() !== page) throw new Error('The active design changed before SVG export finished.');
-  const markup = exportPageToSvg(page, { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
+  const projectedPage = { ...page, children: page.children.map(node => projectBooleanVectorPaintTree(state.document, node, booleanGeometryPlan)) };
+  const markup = exportPageToSvg(projectedPage, { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(page.name || 'Page')}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable page SVG · ${filename}.`);
@@ -20287,8 +20381,7 @@ async function exportActivePagePdf(pagePlan) {
   const generation = state.documentGeneration;
   const pageId = page.id;
   const pageSignature = JSON.stringify(page);
-  const bounds = getPageContentBounds(page, { document: documentSnapshot, measureText: createSvgTextMeasurer() });
-  const renderScale = pdfContentRenderScale(bounds);
+  let bounds; let renderScale;
   const controller = new AbortController();
   const queueKey = `page-pdf:${generation}:${Date.now()}`;
   const queueGroup = `page-pdf:${generation}`;
@@ -20315,6 +20408,11 @@ async function exportActivePagePdf(pagePlan) {
     status.textContent = 'Rendering the current page locally… Large designs may take a moment.';
     status.classList.remove('is-error');
     showToast(`Preparing ${page.name || 'page'} for ${pagePlan.label} PDF at ${pagePlan.dpi} DPI… Press Escape to cancel.`, 5000);
+    const booleanGeometryPlan = await prepareBooleanVectorExport(documentSnapshot, rootIds, { signal: controller.signal });
+    assertCurrent();
+    const projectedPage = { ...page, children: page.children.map(node => projectBooleanVectorPaintTree(documentSnapshot, node, booleanGeometryPlan)) };
+    bounds = getPageContentBounds(projectedPage, { document: documentSnapshot, measureText: createSvgTextMeasurer() });
+    renderScale = pdfContentRenderScale(bounds);
     const artwork = await renderExportBlob(rootIds, {
       format: 'png', quality: 100, scale: renderScale, suffix: ''
     }, page.name || 'Page', {
@@ -20389,7 +20487,7 @@ async function exportActivePagePdf(pagePlan) {
   }
 }
 
-function assertVectorPdfTreeSupported(documentSnapshot, frame) {
+function assertVectorPdfTreeSupported(documentSnapshot, frame, booleanGeometryPlan) {
   const assertRasterSource = (node, { assetId, adjustments, transforms, inpaintStrokes = [] }) => {
     const label = node.name || (node.type === 'image' ? 'Image' : 'Layer');
     const asset = state.assets.get(assetId);
@@ -20408,7 +20506,7 @@ function assertVectorPdfTreeSupported(documentSnapshot, frame) {
       throw new PdfVectorExportError('embedded raster image', `layer “${label}” uses ${source}; untouched vector-PDF images must be PNG or JPEG. Convert the source to PNG/JPEG or use raster PDF`);
     }
   };
-  walkNodes([frame], ({ node, parents }) => {
+  walkVectorPdfPaintNodes(documentSnapshot, [projectBooleanVectorPaintTree(documentSnapshot, frame, booleanGeometryPlan)], ({ node, parents }) => {
     if (parents.some(parent => getNodePropertyValue(documentSnapshot, parent, 'visible') === false)
       || getNodePropertyValue(documentSnapshot, node, 'visible') === false) return;
     if (parents.some(parent => Number(getNodePropertyValue(documentSnapshot, parent, 'opacity') ?? 1) === 0)
@@ -20429,12 +20527,12 @@ function assertVectorPdfTreeSupported(documentSnapshot, frame) {
   });
 }
 
-function vectorPdfRasterReferences(rootNodeIds) {
+function vectorPdfRasterReferences(rootNodeIds, booleanGeometryPlan) {
   const references = new Map();
   for (const id of rootNodeIds) {
     const root = findNode(state.document, id)?.node;
     if (!root) continue;
-    walkNodes([root], ({ node, parents }) => {
+    walkVectorPdfPaintNodes(state.document, [projectBooleanVectorPaintTree(state.document, root, booleanGeometryPlan)], ({ node, parents }) => {
       if (parents.some(parent => getNodePropertyValue(state.document, parent, 'visible') === false
         || Number(getNodePropertyValue(state.document, parent, 'opacity') ?? 1) === 0)
         || getNodePropertyValue(state.document, node, 'visible') === false
@@ -20471,17 +20569,17 @@ function vectorPdfRasterReferences(rootNodeIds) {
   });
 }
 
-async function vectorPdfImagePreviews(rootNodeIds, { controller, assertCurrent, pendingQueueKeys, queueGroup }) {
+async function vectorPdfImagePreviews(rootNodeIds, { controller, assertCurrent, pendingQueueKeys, queueGroup, booleanGeometryPlan }) {
   const previews = new Map();
   let firstFailure = null;
-  const requestedReferences = vectorPdfRasterReferences(rootNodeIds);
+  const requestedReferences = vectorPdfRasterReferences(rootNodeIds, booleanGeometryPlan);
   await restoreImageAssets(state.documentGeneration, {
     assetIds: [...new Set(requestedReferences.map(reference => reference.assetId))],
     previewKeys: requestedReferences.map(reference => reference.previewKey),
     skipPreview: true
   });
   assertCurrent();
-  const references = vectorPdfRasterReferences(rootNodeIds);
+  const references = vectorPdfRasterReferences(rootNodeIds, booleanGeometryPlan);
   let aggregateImageBytes = 0;
   for (const { assetId, plan } of references) {
     if (plan.kind === 'source') {
@@ -20594,18 +20692,20 @@ async function exportVectorPdf(frameIds, { page = activePage(), baseName = page?
   try {
     assertCurrent();
     showToast(`Preparing ${frames.length} frame${frames.length === 1 ? '' : 's'} for vector PDF… Press Escape to cancel.`, 5000);
+    const booleanGeometryPlan = await prepareBooleanVectorExport(documentSnapshot, frames.map(frame => frame.id), { signal: controller.signal });
+    assertCurrent();
     const measureText = createSvgTextMeasurer({ pdfMetrics: true });
     for (const { node } of frames) {
       assertCurrent();
-      assertVectorPdfTreeSupported(documentSnapshot, node);
+      assertVectorPdfTreeSupported(documentSnapshot, node, booleanGeometryPlan);
     }
     imagePreviews = await vectorPdfImagePreviews(frames.map(frame => frame.id), {
-      controller, assertCurrent, pendingQueueKeys, queueGroup,
+      controller, assertCurrent, pendingQueueKeys, queueGroup, booleanGeometryPlan,
     });
     assertCurrent();
     const svgPages = frames.map(({ node }) => {
       assertCurrent();
-      return exportNodeToSvg(node, {
+      return exportNodeToSvg(projectBooleanVectorPaintTree(documentSnapshot, node, booleanGeometryPlan), {
         document: documentSnapshot,
         assets: state.assets,
         imagePreviews,
@@ -21371,6 +21471,16 @@ function applyInspectorAction(action, details = {}) {
   }
   if (action === 'shape-builder-start') { enterShapeBuilder(rootSelectedIds()); return; }
   if (action === 'offset-vector') { applyVectorOffset(); return; }
+  if (action === 'select-boolean-parent') {
+    const node = findNode(state.document, details.layerId)?.node;
+    if (node?.type === 'boolean') { setSelection([node.id]); renderUI(); renderer.invalidate(); }
+    return;
+  }
+  if (action === 'retry-boolean-geometry') {
+    const node = selectedNodes()[0];
+    if (node?.type === 'boolean' && node.booleanGeometry === 'vector') renderer.loadBooleanVectorPath(node, { retry: true });
+    return;
+  }
   if (action === 'outline-stroke') { void outlineSelectedStrokes(); return; }
   if (action === 'cancel-outline-stroke') { state.outlineStrokeController?.abort(); return; }
   if (action === 'delete-layer') {
@@ -23706,6 +23816,7 @@ function initEvents() {
   $('#text-replace-all').addEventListener('click', replaceAllTextMatches);
   $('#quick-actions-close').addEventListener('click', () => $('#quick-actions-dialog').close('close'));
   $('#outline-stroke-cancel').addEventListener('click', () => state.outlineStrokeController?.abort());
+  $('#boolean-operation-cancel').addEventListener('click', () => state.booleanController?.abort());
   $('#quick-actions-search').addEventListener('input', event => renderQuickActionResults(event.currentTarget.value));
   $('#quick-actions-suggestions').addEventListener('click', event => {
     const suggestion = event.target.closest('[data-quick-action-query]');
@@ -24083,8 +24194,9 @@ function onKeyDown(event) {
     return;
   }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
-  if (event.key === 'Escape' && state.outlineStrokeController && !editing && !document.querySelector('dialog[open]')) {
-    state.outlineStrokeController.abort();
+  if (event.key === 'Escape' && (state.outlineStrokeController || state.booleanController) && !editing && !document.querySelector('dialog[open]')) {
+    state.outlineStrokeController?.abort();
+    state.booleanController?.abort();
     event.preventDefault();
     return;
   }
@@ -24341,7 +24453,8 @@ async function boot() {
   catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state, drawRulerScales, {
     onMaskError: node => showToast(`“${node.name || 'Luminance mask'}” could not be rendered. Its masked content is hidden.`),
-    onStrokeError: (node, error) => showToast(error.message)
+    onStrokeError: (node, error) => showToast(error.message),
+    onVectorGeometryReady: node => { if (state.selectedIds.includes(node.id)) renderInspector(); }
   });
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   previousCanvasViewportSize = { width: canvas.clientWidth, height: canvas.clientHeight };

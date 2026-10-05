@@ -34,7 +34,7 @@ test('recipe management actions operate on the picker choice and remain within l
 
 test('an image context menu opens one recipe chooser to refresh the chosen recipe from that image', () => {
   const menuStart = source.indexOf('function openNodeMenu(');
-  const menuEnd = source.indexOf('\nfunction combineSelectedBoolean', menuStart);
+  const menuEnd = source.indexOf('\nasync function combineSelectedBoolean', menuStart);
   assert.ok(menuStart >= 0 && menuEnd > menuStart, 'image context menu should have a bounded builder');
   const menu = source.slice(menuStart, menuEnd);
   assert.match(menu, /if \(node\?\.type === 'image'\)[\s\S]*?Refresh saved recipe from this image…/,

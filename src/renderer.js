@@ -1,4 +1,6 @@
-import { findNode, getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
+import { findNode, getBooleanStrokePath, getBooleanVectorPath, prepareBooleanVectorPath, resolveBooleanSourceNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
+import { booleanVectorGeometryKey, registerBooleanVectorGeometryProvider } from './boolean-vector-geometry.js';
+import { projectBooleanVectorPaintTree } from './boolean-vector-export-preflight.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { vectorNetworkFacePathCommands } from './vector-network-corners.js';
@@ -1583,7 +1585,7 @@ function richTextStyleForMarker(baseStyle) {
 }
 
 export class SceneRenderer {
-  constructor(canvas, getState, onDraw = null, { transparent = false, onMaskError = null, onStrokeError = null } = {}) {
+  constructor(canvas, getState, onDraw = null, { transparent = false, onMaskError = null, onStrokeError = null, onVectorGeometryReady = null } = {}) {
     this.canvas = canvas;
     this.transparent = Boolean(transparent);
     this.context = canvas.getContext('2d', { alpha: this.transparent, desynchronized: true });
@@ -1591,6 +1593,7 @@ export class SceneRenderer {
     this.onDraw = typeof onDraw === 'function' ? onDraw : null;
     this.onMaskError = typeof onMaskError === 'function' ? onMaskError : null;
     this.onStrokeError = typeof onStrokeError === 'function' ? onStrokeError : null;
+    this.onVectorGeometryReady = typeof onVectorGeometryReady === 'function' ? onVectorGeometryReady : null;
     this.visiblePreviewKeys = new Set();
     this.frame = 0;
     this.workspacePattern = null;
@@ -1598,6 +1601,11 @@ export class SceneRenderer {
     this.booleanCachePixels = 0;
     this.luminanceMaskErrors = new Set();
     this.booleanStrokeErrors = new Map();
+    this.booleanVectorPending = new Map();
+    this.booleanVectorFailures = new Map();
+    this.booleanVectorRetryTimer = null;
+    this.booleanVectorPaths = new Map();
+    this.booleanVectorPathBytes = 0;
     this.textPaintSurfaces = { glyph: null, paint: null };
     this.noiseCache = new Map();
     this.noiseCachePixels = 0;
@@ -1747,6 +1755,7 @@ export class SceneRenderer {
 
   draw() {
     const state = this.getState();
+    this.pruneBooleanVectorRenderScope(state.document);
     const { width, height, dpr, cssWidth, cssHeight } = this.resize();
     const ctx = this.context;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1873,13 +1882,27 @@ export class SceneRenderer {
     if (!getNodePropertyValue(document, node, 'visible')) return;
     if (node.type === 'slice' && (state.presenting || renderOptions.includeSlices === false)) return;
     const motionValues = renderOptions.ignoreMotionPreview ? null : state.motionPreview?.get(node.id);
+    const resolvedMotion = renderOptions.motionResolvedNodeId === node.id;
     node = {
       ...node,
-      ...getNodeGeometry(document, node),
-      ...(node.textPath ? { textPath: getNodeTextPath(document, node) } : {}),
-      ...(motionValues || {}),
+      ...(!resolvedMotion ? getNodeGeometry(document, node) : {}),
+      ...(!resolvedMotion && node.textPath ? { textPath: getNodeTextPath(document, node) } : {}),
+      ...(!resolvedMotion ? motionValues || {} : {}),
       ...(node.type === 'slice' ? { rotation: 0 } : {})
     };
+    if (node.type === 'boolean' && node.booleanGeometry === 'vector') {
+      const resolveNode = resolved => renderOptions.ignoreMotionPreview ? resolved
+        : { ...resolved, ...(state.motionPreview?.get(resolved.id) || {}) };
+      try { node = renderOptions.booleanGeometryPlan
+        ? projectBooleanVectorPaintTree(document, node, renderOptions.booleanGeometryPlan)
+        : this.getRenderedBooleanVectorPath(node, { resolveNode }); }
+      catch (error) {
+        if (error.code === 'BOOLEAN_VECTOR_PENDING' && !renderOptions.onRenderError) {
+          this.loadBooleanVectorPath(node, { resolveNode });
+        } else this.reportBooleanStrokeError(node, error, renderOptions);
+        return;
+      }
+    }
     if (node.type === 'slice') {
       const x = parentX + node.x; const y = parentY + node.y;
       const width = node.width; const height = node.height;
@@ -1922,12 +1945,14 @@ export class SceneRenderer {
       }
     }
     const hasForegroundEffects = effects.some(effect => !['glass', 'background-blur'].includes(effect.type));
-    if ((hasForegroundEffects && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed)
-      && !draft && !maskMode && !outline && !cropEditing && typeof ctx.filter === 'string') {
+    const opacity = (!resolvedMotion ? motionValues?.opacity : undefined) ?? getNodePropertyValue(document, node, 'opacity');
+    const isolateBooleanOpacity = node.booleanGeometry === 'vector' && Number(opacity ?? 1) < 1
+      && renderOptions.effectBypassNodeId !== node.id;
+    if ((hasForegroundEffects && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed || isolateBooleanOpacity)
+      && !draft && !maskMode && !outline && !cropEditing && (typeof ctx.filter === 'string' || isolateBooleanOpacity)) {
       this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
       return;
     }
-    const opacity = motionValues?.opacity ?? getNodePropertyValue(document, node, 'opacity');
     const vectorMask = maskMode === 'vector';
     const radius = node.cornerRadii || getNodePropertyValue(document, node, 'radius');
     const cornerSmoothing = node.cornerSmoothing || 0;
@@ -3076,6 +3101,11 @@ export class SceneRenderer {
     delete copy.variableBindings.opacity;
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
+    // The caller has resolved this layer's motion already. Re-entering by the
+    // same ID must keep the local origin and full surface opacity, while fill
+    // animation and descendant motion remain live in their normal paint paths.
+    const localRenderOptions = { ...renderOptions, motionResolvedNodeId: node.id,
+      effectBypassNodeId: node.id, compositeBypassNodeId: node.id };
     // Plain paint layers use explicit fill, inner-shadow, and stroke phases.
     // Containers stay flattened, but their inner shadows sit below the top
     // effect stack (blur/noise/texture), matching the group effect order.
@@ -3090,7 +3120,7 @@ export class SceneRenderer {
       return Math.max(Number(stroke.width) || 0, ...strokeSideNames.map(side => Number(sideWidths?.[side]) || 0)) > 0;
     });
     const drawPaintStage = (context, stage) => this.drawNode(context, copy, 0, 0, assets, false, false, {
-      ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id, effectPaintStage: stage
+      ...localRenderOptions, effectPaintStage: stage
     });
     let stagedPaints = false;
     if (stagePaints) {
@@ -3126,12 +3156,10 @@ export class SceneRenderer {
         effectContext.clearRect(0, 0, pixelWidth, pixelHeight);
         effectContext.restore();
         effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
-        this.drawNode(effectContext, copy, 0, 0, assets, false, false, {
-          ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
-        });
+        this.drawNode(effectContext, copy, 0, 0, assets, false, false, localRenderOptions);
       }
     } else {
-      this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+      this.drawNode(effectContext, copy, 0, 0, assets, false, false, localRenderOptions);
     }
     const topEffects = effects.filter(effect => ['layer-blur', 'noise', 'texture'].includes(effect.type));
     const deferredLayerBlurIds = new Set();
@@ -3147,7 +3175,10 @@ export class SceneRenderer {
     }
     if (!stagedPaints && !containerEffectOrder) this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight, surface, node);
     const x = parentX + node.x; const y = parentY + node.y;
-    const nodeOpacity = getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+    const currentState = this.getState();
+    const nodeOpacity = (!renderOptions.ignoreMotionPreview && renderOptions.motionResolvedNodeId !== node.id
+      ? currentState.motionPreview?.get(node.id)?.opacity : undefined)
+      ?? getNodePropertyValue(currentState.document, node, 'opacity') ?? 1;
     const needsShadowGeometryMask = effects.some(effect => effect.type === 'drop-shadow' && effect.visible !== false
       && effect.opacity > 0 && effect.showShadowBehindNode !== true);
     const shadowGeometryMask = needsShadowGeometryMask
@@ -3310,10 +3341,17 @@ export class SceneRenderer {
     const transform = ctx.getTransform?.();
     const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
     const { width: pixelWidth, height: pixelHeight } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
-    const surface = typeof OffscreenCanvas === 'function'
-      ? new OffscreenCanvas(pixelWidth, pixelHeight)
-      : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
-    const maskContext = surface.getContext('2d');
+    let surface; let maskContext;
+    try {
+      surface = typeof OffscreenCanvas === 'function'
+        ? new OffscreenCanvas(pixelWidth, pixelHeight)
+        : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+      maskContext = surface.getContext('2d');
+      if (!maskContext && (!node.maskMode || node.maskMode === 'alpha')) throw new Error('The alpha-mask content canvas is unavailable.');
+    } catch (error) {
+      if (!node.maskMode || node.maskMode === 'alpha') { this.reportAlphaMaskError(node, error, renderOptions); return; }
+      throw error;
+    }
     if (!maskContext) return;
     maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
     for (const child of contentNodes) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
@@ -3354,11 +3392,43 @@ export class SceneRenderer {
       maskContext.globalCompositeOperation = 'destination-in';
       maskContext.drawImage(luminanceSurface, 0, 0);
     } else {
+      // Alpha is the completed source layer's alpha, including its ordered
+      // paints, effects and layer opacity. Applying destination-in separately
+      // for every paint multiplies coverage and can erase filled interiors.
+      let alphaSurface; let alphaContext;
+      try {
+        alphaSurface = typeof OffscreenCanvas === 'function'
+          ? new OffscreenCanvas(pixelWidth, pixelHeight)
+          : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+        alphaContext = alphaSurface.getContext('2d');
+        if (!alphaContext) throw new Error('The alpha-mask canvas is unavailable.');
+        alphaContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
+        this.drawNode(alphaContext, maskNode, 0, 0, assets, false, false, renderOptions);
+      } catch (error) {
+        this.reportAlphaMaskError(node, error, renderOptions);
+        return;
+      }
+      maskContext.setTransform(1, 0, 0, 1, 0, 0);
       maskContext.globalCompositeOperation = 'destination-in';
-      this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
+      maskContext.drawImage(alphaSurface, 0, 0);
     }
     maskContext.globalCompositeOperation = 'source-over';
     ctx.drawImage(surface, x, y, node.width, node.height);
+  }
+
+  reportAlphaMaskError(node, error, renderOptions = {}) {
+    if (typeof renderOptions.onRenderError === 'function') renderOptions.onRenderError(node, error);
+    const errors = this.alphaMaskErrors ||= new Set();
+    if (errors.has(node.id)) return;
+    if (errors.size >= 256) errors.delete(errors.values().next().value);
+    errors.add(node.id);
+    console.warn(`Alpha mask “${node.name || node.id}” could not be rendered safely; its masked content was omitted.`, error);
+    const callbacks = new Set([renderOptions.onMaskError, this.onMaskError]);
+    for (const callback of callbacks) {
+      if (typeof callback !== 'function') continue;
+      try { callback(node, error); }
+      catch (callbackError) { console.warn('The alpha-mask warning handler failed.', callbackError); }
+    }
   }
 
   reportLuminanceMaskError(node, error, renderOptions = {}) {
@@ -3426,6 +3496,132 @@ export class SceneRenderer {
         pathContext => traceVectorPath(pathContext, path, x, y), maskMode);
       this.booleanStrokeErrors?.delete(node.id);
     } catch (error) { this.reportBooleanStrokeError(node, error, renderOptions); }
+  }
+
+  resetBooleanVectorRenderScope(document) {
+    this.booleanVectorPaths ||= new Map();
+    this.booleanVectorPending ||= new Map();
+    this.booleanVectorFailures ||= new Map();
+    if (this.booleanVectorScopeDocument === document && this.booleanVectorScopePage === document.activePageId
+      && this.booleanVectorUnregister?.isRegistered()) return;
+    this.booleanVectorUnregister?.();
+    for (const ticket of this.booleanVectorPending.values()) ticket.controller.abort();
+    this.booleanVectorPending.clear(); this.booleanVectorFailures.clear();
+    this.booleanVectorPaths.clear(); this.booleanVectorPathBytes = 0; this.booleanVectorBudgetError = null;
+    this.booleanVectorScopeDocument = document; this.booleanVectorScopePage = document.activePageId;
+    this.booleanVectorUnregister = registerBooleanVectorGeometryProvider(key => {
+      if (this.destroyed || this.getState().document !== document || document.activePageId !== this.booleanVectorScopePage) return null;
+      for (const entry of this.booleanVectorPaths.values()) if (entry.key === key) return entry;
+      return null;
+    });
+  }
+
+  pruneBooleanVectorRenderScope(document) {
+    this.resetBooleanVectorRenderScope(document);
+    const page = document.pages.find(value => value.id === document.activePageId);
+    const live = new Set(); const stack = [...(page?.children || [])];
+    while (stack.length) {
+      const node = stack.pop();
+      if (getNodePropertyValue(document, node, 'visible') === false) continue;
+      if (node.type === 'boolean' && node.booleanGeometry === 'vector') live.add(node.id);
+      else for (const child of node.children || []) stack.push(child);
+    }
+    for (const [id, entry] of this.booleanVectorPaths) if (!live.has(id)) {
+      this.booleanVectorPaths.delete(id); this.booleanVectorPathBytes -= entry.bytes; this.booleanVectorBudgetError = null;
+    }
+    for (const [id, ticket] of this.booleanVectorPending) if (!live.has(id)) {
+      ticket.controller.abort(); this.booleanVectorPending.delete(id);
+    }
+    for (const id of this.booleanVectorFailures.keys()) if (!live.has(id)) this.booleanVectorFailures.delete(id);
+  }
+
+  booleanVectorRenderKey(node, document, options = {}) {
+    return booleanVectorGeometryKey(node, { resolveNode: source => {
+      const resolved = resolveBooleanSourceNode(document, source);
+      return options.resolveNode?.(resolved) ?? resolved;
+    } });
+  }
+
+  retainBooleanVectorRenderPath(node, key, document, path) {
+    const previous = this.booleanVectorPaths.get(node.id);
+    const geometry = structuredClone({ points: path.points, closed: path.closed, fillRule: path.fillRule,
+      ...(path.subpaths ? { subpaths: path.subpaths } : {}) });
+    const bounds = structuredClone(path.__booleanGeometryBounds);
+    const bytes = (key.length + JSON.stringify(geometry).length + JSON.stringify(bounds).length) * 2;
+    const nextBytes = this.booleanVectorPathBytes - (previous?.bytes || 0) + bytes;
+    // Visible regions must stay retained together. LRU eviction here causes a
+    // redraw to continuously recompute a page larger than the shared cache.
+    if (nextBytes > 32 * 1024 * 1024 || !previous && this.booleanVectorPaths.size >= 4096) {
+      const error = new Error('This page exceeds the local Boolean preview geometry budget. Hide or remove some Boolean layers, or simplify their sources.');
+      error.code = 'BOOLEAN_VECTOR_RENDER_LIMIT'; this.booleanVectorBudgetError = error; throw error;
+    }
+    this.booleanVectorPaths.set(node.id, { document, key, geometry, bounds, bytes });
+    this.booleanVectorPathBytes = nextBytes;
+  }
+
+  getRenderedBooleanVectorPath(node, options = {}) {
+    const document = this.getState().document;
+    this.resetBooleanVectorRenderScope(document);
+    const key = this.booleanVectorRenderKey(node, document, options);
+    const entry = this.booleanVectorPaths.get(node.id);
+    if (entry?.document === document && entry.key === key) {
+      const resolved = resolveBooleanSourceNode(document, node);
+      const { children, ...own } = options.resolveNode?.(resolved) ?? resolved;
+      return { ...own, ...structuredClone(entry.geometry), type: 'path', children: [], __booleanGeometryBounds: { ...entry.bounds } };
+    }
+    if (entry) {
+      this.booleanVectorPaths.delete(node.id); this.booleanVectorPathBytes -= entry.bytes; this.booleanVectorBudgetError = null;
+    }
+    if (this.booleanVectorBudgetError) throw this.booleanVectorBudgetError;
+    const path = getBooleanVectorPath(document, node, options);
+    this.retainBooleanVectorRenderPath(node, key, document, path);
+    return path;
+  }
+
+  loadBooleanVectorPath(node, options = {}) {
+    if (this.destroyed) return;
+    const document = this.getState().document;
+    this.resetBooleanVectorRenderScope(document);
+    if (this.booleanVectorBudgetError) { this.reportBooleanStrokeError(node, this.booleanVectorBudgetError); return; }
+    let key;
+    try { key = this.booleanVectorRenderKey(node, document, options); }
+    catch (error) { this.reportBooleanStrokeError(node, error); return; }
+    const previous = this.booleanVectorPending.get(node.id);
+    if (previous?.document === document && previous.key === key) return;
+    if (!previous && this.booleanVectorPending.size >= 4) return;
+    if (!options.retry && this.booleanVectorFailures.get(node.id)?.key === key
+      && this.booleanVectorFailures.get(node.id)?.document === document) return;
+    this.booleanVectorFailures.delete(node.id);
+    previous?.controller.abort();
+    const controller = new AbortController();
+    const ticket = { key, document, pageId: document.activePageId, controller };
+    this.booleanVectorPending.set(node.id, ticket);
+    prepareBooleanVectorPath(document, node, { ...options, signal: controller.signal }).then(path => {
+      if (controller.signal.aborted || this.destroyed || this.getState().document !== document
+        || document.activePageId !== ticket.pageId || this.booleanVectorPending.get(node.id) !== ticket) return;
+      this.retainBooleanVectorRenderPath(node, key, document, path);
+    }).catch(error => {
+      if (['BOOLEAN_VECTOR_QUEUE_FULL', 'VECTOR_GEOMETRY_QUEUE_FULL'].includes(error.code)) {
+        ticket.deferred = true;
+        if (!this.destroyed && !this.booleanVectorRetryTimer) this.booleanVectorRetryTimer = setTimeout(() => {
+          this.booleanVectorRetryTimer = null; this.invalidate();
+        }, 400);
+        return;
+      }
+      if (!controller.signal.aborted && !this.destroyed && this.getState().document === document
+        && !['AbortError'].includes(error.name) && error.code !== 'BOOLEAN_VECTOR_STALE') {
+        if (this.booleanVectorFailures.size >= 256) this.booleanVectorFailures.delete(this.booleanVectorFailures.keys().next().value);
+        this.booleanVectorFailures.set(node.id, { key, document });
+        this.reportBooleanStrokeError(node, error);
+      }
+    }).finally(() => {
+      if (this.booleanVectorPending.get(node.id) === ticket) {
+        this.booleanVectorPending.delete(node.id);
+        if (!ticket.deferred && !this.destroyed && this.getState().document === document) {
+          this.invalidate(); this.onVectorGeometryReady?.(node);
+        }
+      }
+    });
   }
 
   reportBooleanStrokeError(node, error, renderOptions = {}) {
@@ -3600,6 +3796,12 @@ export class SceneRenderer {
   }
 
   hitTestBoolean(node, point, originX, originY) {
+    if (node.booleanGeometry === 'vector') {
+      try {
+        const local = pageToNodeLocal({ ...node, x: originX, y: originY }, point);
+        return hitTestVisibleGeometry(getBooleanVectorPath(this.getState().document, node), local, { document: this.getState().document });
+      } catch { return false; }
+    }
     if (node.width <= 0 || node.height <= 0) return false;
     const center = { x: originX + node.width / 2, y: originY + node.height / 2 };
     const angle = -(node.rotation || 0) * Math.PI / 180;
@@ -4321,7 +4523,15 @@ export class SceneRenderer {
     }
   }
 
-  destroy() { this.destroyed = true; cancelAnimationFrame(this.frame); this.resizeObserver.disconnect(); }
+  destroy() {
+    this.destroyed = true;
+    for (const ticket of this.booleanVectorPending.values()) ticket.controller.abort();
+    this.booleanVectorPending.clear();
+    this.booleanVectorPaths?.clear(); this.booleanVectorPathBytes = 0; this.booleanVectorBudgetError = null;
+    this.booleanVectorUnregister?.(); this.booleanVectorUnregister = null;
+    clearTimeout(this.booleanVectorRetryTimer);
+    cancelAnimationFrame(this.frame); this.resizeObserver.disconnect();
+  }
 }
 
 export function screenToWorld(event, canvas, state) {
@@ -4418,7 +4628,7 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
       const inBounds = localPoint.x >= 0 && localPoint.y >= 0
         && localPoint.x <= geometry.width && localPoint.y <= geometry.height;
       let contained = false;
-      if (node.type === 'boolean' && containsBoolean) {
+      if (node.type === 'boolean' && containsBoolean && node.booleanGeometry !== 'vector') {
         if (inBounds) {
           // The boolean raster is queried in page coordinates by existing callers.
           // Fold ancestor rotations into the node rotation and use its true page

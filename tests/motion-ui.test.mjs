@@ -24,8 +24,8 @@ test('Motion is a keyboard-accessible inspector tab with a duration, playhead, a
 test('motion playback samples transient renderer overrides without mutating authored layer geometry', () => {
   assert.match(main, /motionSampler\(state\.motionPlayheadMs\)/);
   assert.match(main, /state\.motionPreview = preview\.size \? preview : null/);
-  assert.match(renderer, /\.\.\.getNodeGeometry\(document, node\),\s*\.\.\.\(node\.textPath \? \{ textPath: getNodeTextPath\(document, node\) \} : \{\}\),\s*\.\.\.\(motionValues \|\| \{\}\)/,
-    'linked text geometry must refresh before transient motion values are applied');
+  assert.match(renderer, /\.\.\.\(!resolvedMotion \? getNodeGeometry\(document, node\) : \{\}\),\s*\.\.\.\(!resolvedMotion && node\.textPath \? \{ textPath: getNodeTextPath\(document, node\) \} : \{\}\),\s*\.\.\.\(!resolvedMotion \? motionValues \|\| \{\} : \{\}\)/,
+    'linked text geometry refreshes before motion values, while isolated paint re-entry retains its resolved root');
   assert.match(renderer, /state\.motionPreview\?\.get\(node\.id\)/);
   assert.match(main, /includeSlices: false, ignoreMotionPreview: true/);
   assert.match(main, /Motion preview is read-only\. Select a layer from the Layers panel/);

@@ -614,6 +614,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .property-section { min-width: 0; border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
 #outline-stroke-progress { flex-shrink: 0; }
 #outline-stroke-progress .add-fill { min-height: 44px; }
+#boolean-operation-progress { flex-shrink: 0; }
+#boolean-operation-progress .add-fill { min-height: 44px; }
 .frame-preset-picker { display: grid; gap: 6px; }
 .frame-preset-group { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
 .frame-preset-group > summary { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: var(--surface-subtle); color: var(--ink); cursor: pointer; list-style-position: inside; font-size: 10px; font-weight: 550; }

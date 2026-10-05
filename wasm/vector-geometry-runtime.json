@@ -17,8 +17,8 @@
     },
     "worker": {
       "bundle": "../src/workers/vector-geometry-worker.bundle.js",
-      "sizeBytes": 142471,
-      "sha256": "e83528c9928c391c8171796adb88661f8527a5e66b377410b1b9c8d714dc4ab9"
+      "sizeBytes": 146429,
+      "sha256": "5201c9cbe7e27e9af2bd0b408f652776d8a16ac30bcdfb06a623e24ac081dccc"
     },
     "licenseArtifact": {
       "sizeBytes": 1635,
@@ -30,6 +30,10 @@
       "maxInputCommands": 20000,
       "maxContours": 4096,
       "maxFillGroups": 1024,
+      "maxInputNodes": 256,
+      "maxInputDepth": 32,
+      "maxInputStrokes": 1024,
+      "maxStrokeWorkPoints": 400000,
       "maxOutputValues": 400000,
       "maxOutputPoints": 20000,
       "maxCoordinate": 10000000,

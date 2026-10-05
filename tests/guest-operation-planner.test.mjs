@@ -71,6 +71,15 @@ async function assertPlanMatchesHost(before, after, expectedTypes) {
   return plan;
 }
 
+test('plans a text color edit through the same validated host property surface as Inspector controls', async () => {
+  const { document, pageId } = fixture();
+  const after = structuredClone(document);
+  updateNode(after, 'text-a', { color: '#336699' }, pageId);
+  const plan = await assertPlanMatchesHost(document, after, ['SetProperty']);
+  assert.equal(plan[0].operation.property, 'color');
+  assert.equal(plan[0].operation.value, '#336699');
+});
+
 test('plans a subtree deletion as one host DeleteNode with an exact ACK snapshot', async () => {
   const { document, pageId } = fixture();
   const after = structuredClone(document);

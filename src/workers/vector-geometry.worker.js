@@ -1,5 +1,5 @@
 import CanvasKitInit from 'canvaskit-wasm';
-import { outlineStrokeGeometryWithKit } from '../vector-geometry-kernel.js';
+import { booleanGeometryWithKit, outlineStrokeGeometryWithKit } from '../vector-geometry-kernel.js';
 import { VectorGeometryError, VECTOR_GEOMETRY_LIMITS } from '../vector-geometry-contract.js';
 import { VECTOR_GEOMETRY_RUNTIME_ARTIFACTS as artifacts } from '../vector-geometry-artifacts.js';
 
@@ -47,11 +47,14 @@ self.addEventListener('message',async event=>{
   if(busy){self.postMessage({id:message.id,ok:false,error:{message:'The local vector worker is already processing a job.',code:'VECTOR_GEOMETRY_BUSY'}});return;}
   busy=true;
   try{
-    if(!['initialize','outline-stroke'].includes(message.type))throw new VectorGeometryError('The local vector worker received an unsupported operation.');
+    if(!['initialize','outline-stroke','boolean-geometry'].includes(message.type))throw new VectorGeometryError('The local vector worker received an unsupported operation.');
     const kit=await initialize();
     if(message.type==='initialize')self.postMessage({id:message.id,ok:true,value:{package:artifacts.package,version:artifacts.version,heapBytes:kit.HEAPU8.byteLength}});
     else if(message.type==='outline-stroke'){
       const value=outlineStrokeGeometryWithKit(kit,message.geometry,message.stroke);
+      self.postMessage({id:message.id,ok:true,value},[value.commands.buffer]);
+    }else if(message.type==='boolean-geometry'){
+      const value=booleanGeometryWithKit(kit,{root:message.root});
       self.postMessage({id:message.id,ok:true,value},[value.commands.buffer]);
     }else throw new VectorGeometryError('The local vector worker received an unsupported operation.');
   }catch(error){

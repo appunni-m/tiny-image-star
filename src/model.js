@@ -9,7 +9,7 @@ import { defaultImageRecipeName } from './image-recipe-name.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
-import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
+import { isValidStrokeStack, strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
 import { isValidStrokeDashArray } from './stroke-style.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
 import { booleanStrokePath } from './boolean-stroke-geometry.js';
@@ -28,6 +28,8 @@ import { componentExposedNestedInstanceSourceIds, componentPropertyDefinitionCou
 import { isValidVertexRadii, MAX_POLYGON_POINTS, MAX_STAR_POINTS, MIN_STAR_POINTS } from './polygon-corners.js';
 import { isValidEllipseArcData } from './ellipse-arc.js';
 import { planTidyUp } from './tidy-up.js';
+import { getBooleanVectorPath as cachedBooleanVectorPath, prepareBooleanVectorPath as prepareCachedBooleanVectorPath,
+  booleanVectorGeometryKey as cachedBooleanVectorGeometryKey } from './boolean-vector-geometry.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -129,6 +131,13 @@ function writeNodePropertyPath(node, property, value) {
     target = target[segment];
   }
   target[key] = value;
+}
+
+function materializedPropertyInParentFrame(node, parent, property, value) {
+  const frame = parent?.type === 'boolean' ? parent.booleanSourceFrame : null;
+  if (frame && property === 'x') return value - frame.x;
+  if (frame && property === 'y') return value - frame.y;
+  return value;
 }
 
 function isValidFontWeight(value) {
@@ -518,6 +527,7 @@ const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
 const MAX_LAYOUT_GUIDES_PER_FRAME = 32;
 const MAX_LAYOUT_GUIDE_STYLES = 1000;
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
+const booleanGeometryModes = new Set(['vector']);
 const textCases = new Set(['none', 'uppercase', 'lowercase', 'capitalize']);
 const textWrapStyles = new Set(['auto', 'balance', 'pretty']);
 const textDecorations = new Set(['none', 'underline', 'line-through']);
@@ -532,7 +542,7 @@ const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 const frameScrollPositions = new Set(['scroll', 'fixed', 'sticky']);
-const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
+const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'line', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment', 'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'overflowBehavior', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'fontAxes', 'fontFeatures', 'lineHeight', 'lineHeightUnit',
@@ -543,10 +553,10 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'assetId', 'sourceWidth', 'sourceHeight', 'scalingFactor', 'inpaintStrokes', 'imageExpansion',
-  'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId',
+  'backgroundRemoved', 'backgroundRemovalSourceAssetId', 'backgroundRemovalAssetId', 'booleanGeometry', 'booleanSourceFrame',
   'resolutionBoosted', 'resolutionBoostSourceAssetId', 'resolutionBoostAssetId',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'fixedPositionWhenScrolling', 'scrollPosition', 'points', 'vertexRadii', 'subpaths', 'fillRule', 'innerRadius', 'arcData', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'booleanGeometry', 'booleanSourceFrame', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'layoutGuideStyleId', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -1077,6 +1087,7 @@ export function addNode(document, node, { parentId = null, pageId = document.act
   const list = parent ? parent.children : page.children;
   const insertAt = index == null ? list.length : Math.max(0, Math.min(index, list.length));
   list.splice(insertAt, 0, node);
+  invalidateBooleanSourceRestore(parent);
   if (parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return node;
 }
@@ -1117,6 +1128,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   }
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);
+  invalidateBooleanSourceRestore(entry.parent);
   if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   const removedComponents = [];
   const removedNodeIds = new Set();
@@ -1230,6 +1242,7 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
   duplicate.y += 16;
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
   list.splice(entry.index + 1, 0, duplicate);
+  invalidateBooleanSourceRestore(entry.parent);
   if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return duplicate;
 }
@@ -1265,6 +1278,8 @@ export function moveNode(document, nodeId, { parentId = null, index, pageId = do
   detachTextPathLinksCrossingNodes(document, [nodeId]);
   const [moving] = sourceList.splice(entry.index, 1);
   targetList.splice(insertAt, 0, moving);
+  invalidateBooleanSourceRestore(entry.parent);
+  invalidateBooleanSourceRestore(parent);
   if (entry.parent === sourceContext?.target) syncSlotChildOrder(sourceContext, sourceList);
   if (parent === destinationContext?.target) syncSlotChildOrder(destinationContext, targetList);
   reconcilePrototypeScrollInteractions(document);
@@ -1283,6 +1298,7 @@ export function reorderNode(document, nodeId, index, pageId = document.activePag
   if (nextIndex === entry.index) return false;
   const [moving] = list.splice(entry.index, 1);
   list.splice(nextIndex, 0, moving);
+  invalidateBooleanSourceRestore(entry.parent);
   if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return true;
 }
@@ -1318,6 +1334,24 @@ function visualBounds(node) {
   const extentX = Math.abs(node.width * Math.cos(angle)) / 2 + Math.abs(node.height * Math.sin(angle)) / 2;
   const extentY = Math.abs(node.width * Math.sin(angle)) / 2 + Math.abs(node.height * Math.cos(angle)) / 2;
   return { left: centerX - extentX, top: centerY - extentY, right: centerX + extentX, bottom: centerY + extentY };
+}
+
+function booleanSourceBounds(node) {
+  // Boolean operands use their currently resolved geometry, rather than the
+  // stored fallback frame, so mode-bound x/y/size values are baked in the
+  // same coordinate frame the worker will receive.
+  const affine = node.affineTransform || { a: 1, b: 0, c: 0, d: 1 };
+  const angle = (node.rotation || 0) * Math.PI / 180;
+  const cx = node.width / 2; const cy = node.height / 2;
+  const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([x, y]) => {
+    const tx = affine.a * x + affine.c * y;
+    const ty = affine.b * x + affine.d * y;
+    const dx = tx - cx; const dy = ty - cy;
+    return { x: node.x + cx + dx * Math.cos(angle) - dy * Math.sin(angle),
+      y: node.y + cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
+  });
+  return { left: Math.min(...corners.map(point => point.x)), top: Math.min(...corners.map(point => point.y)),
+    right: Math.max(...corners.map(point => point.x)), bottom: Math.max(...corners.map(point => point.y)) };
 }
 
 /** Return whether sibling layers can be wrapped without crossing containers. */
@@ -1566,53 +1600,175 @@ export function tidyUpLayers(document, nodeIds, pageId = document.activePageId) 
   return applyTidyUpPlan(document, plan);
 }
 
+function isLegacyBooleanOperand(node) {
+  return booleanOperandTypes.has(node.type) && node.type !== 'line'
+    && (node.type !== 'path' || hasOnlyClosedPathContours(node))
+    && (node.type !== 'network' || (node.faces || []).length > 0);
+}
+
+function isBooleanVectorOperand(node) {
+  if (!node || !booleanOperandTypes.has(node.type) || node.type === 'text') return false;
+  if (node.type === 'path') return vectorPathContours(node).some(contour => Array.isArray(contour.points) && contour.points.length >= 2)
+    && vectorPathContours(node).every(contour => Array.isArray(contour.points) && contour.points.length >= 2);
+  if (node.type === 'network') return (node.edges || []).length > 0 || (node.faces || []).length > 0;
+  if (node.type === 'boolean') return booleanOperations.has(node.operation) && Array.isArray(node.children) && node.children.length >= 2
+    && node.children.every(isBooleanVectorOperand);
+  return true;
+}
+
 function isBooleanOperand(node) {
-  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || hasOnlyClosedPathContours(node)) && (node.type !== 'network' || (node.faces || []).length > 0);
+  if (!node || !booleanOperandTypes.has(node.type)) return false;
+  if (node.type === 'boolean' && node.booleanGeometry === 'vector') return isBooleanVectorOperand(node);
+  return isLegacyBooleanOperand(node);
+}
+
+function isBooleanSelectionOperand(node) {
+  return isLegacyBooleanOperand(node) || isBooleanVectorOperand(node);
+}
+
+function validBooleanSourceFrame(frame, node) {
+  if (!frame || typeof frame !== 'object' || Array.isArray(frame) || frame.version !== 1
+    || !['x', 'y', 'width', 'height', 'rotation'].every(key => Number.isFinite(frame[key]))
+    || frame.width < 0 || frame.height < 0 || frame.rotation !== 0
+    || !Array.isArray(frame.children)) return false;
+  return frame.children.every((source, index) => {
+    const child = node.children[index];
+    return source && child
+      && ['x', 'y', 'width', 'height', 'rotation'].every(key => Number.isFinite(source[key]))
+      && source.width >= 0 && source.height >= 0
+      && (source.affineTransform == null || source.affineTransform && typeof source.affineTransform === 'object'
+        && ['a', 'b', 'c', 'd'].every(key => Number.isFinite(source.affineTransform[key])));
+  });
+}
+
+// Keep the original group origin for variable-bound child positions, but
+// discard per-child restore snapshots after any membership/order edit.
+function invalidateBooleanSourceRestore(parent) {
+  if (parent?.type === 'boolean' && parent.booleanSourceFrame) parent.booleanSourceFrame.children = [];
 }
 
 /** Return whether these layers can become one live, editable Boolean group. */
 export function canCombineBoolean(document, nodeIds, pageId = document.activePageId) {
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
-  if (entries.some(entry => !entry || !isBooleanOperand(entry.node) || entry.node.locked)) return false;
+  if (entries.some(entry => !entry || !isBooleanSelectionOperand(entry.node) || entry.node.locked)) return false;
   if (!slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   return entries.every(entry => entry.parent === parent);
 }
 
-/** Derive a live Boolean outline using the same inherited modes as its paints. */
+function booleanSourceFrame(entries, left, top, width, height) {
+  return {
+    version: 1, x: left, y: top, width, height, rotation: 0,
+    children: entries.map(({ node }) => ({
+      x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation || 0,
+      ...(node.affineTransform ? { affineTransform: clone(node.affineTransform) } : {})
+    }))
+  };
+}
+
+function inheritedBooleanAppearance(source) {
+  const result = {};
+  const keys = [
+    'fill', 'fillOpacity', 'fillGradient', 'fills', 'imageFill', 'fillStyleId', 'fillVariableId',
+    'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray',
+    'strokeMiterLimit', 'strokeAlignment', 'strokes', 'strokeVariableId', 'opacity', 'visible', 'blendMode',
+    'effects', 'effectStyleId'
+  ];
+  for (const key of keys) if (Object.hasOwn(source, key)) result[key] = clone(source[key]);
+  if (source.variableBindings?.opacity) result.variableBindings = { opacity: source.variableBindings.opacity };
+  return result;
+}
+
+function vectorBooleanSources(entries) {
+  const containsText = node => node.type === 'text' || (node.children || []).some(containsText);
+  return entries.every(entry => !containsText(entry.node));
+}
+
+function requiresVectorBoolean(node) {
+  if (node.type === 'line') return true;
+  if (node.type === 'path' && !hasOnlyClosedPathContours(node)) return true;
+  if (node.type === 'network') {
+    const used = new Set();
+    for (const face of node.faces || []) for (let index = 0; index < (face.vertexIds || []).length; index += 1) {
+      const pair = [face.vertexIds[index], face.vertexIds[(index + 1) % face.vertexIds.length]].sort().join('\0');
+      used.add(pair);
+    }
+    if ((node.edges || []).some(edge => !used.has([edge.from, edge.to].sort().join('\0')))) return true;
+  }
+  if (node.type === 'boolean' && node.booleanGeometry === 'vector') return true;
+  return (node.children || []).some(requiresVectorBoolean);
+}
+
+/** Resolve a Boolean source with its current frame modes and paint bindings. */
+export function resolveBooleanSourceNode(document, source) {
+  const geometry = getNodeGeometry(document, source);
+  const parentEntry = source?.id ? findNode(document, source.id) : null;
+  const booleanFrame = parentEntry?.parent?.type === 'boolean' ? parentEntry.parent.booleanSourceFrame : null;
+  // Child x/y variables store their original parent-space coordinates. Once
+  // wrapped, convert those resolved values to the Boolean group's local frame.
+  if (booleanFrame && source.variableBindings?.x) geometry.x -= booleanFrame.x;
+  if (booleanFrame && source.variableBindings?.y) geometry.y -= booleanFrame.y;
+  const resolvedFill = getNodeColor(document, source, 'fill');
+  const boundFill = source.fillVariableId || source.fillStyleId;
+  const fills = source.fills?.map((fill, index) => index === 0 && boundFill && fill.type === 'solid'
+    ? { ...fill, color: resolvedFill } : fill);
+  const strokes = source.strokes?.map((stroke, index) => index === 0 && source.strokeVariableId
+    ? { ...stroke, color: getNodeColor(document, source, 'stroke') } : stroke);
+  return {
+    ...source, ...geometry,
+    opacity: getNodePropertyValue(document, source, 'opacity'),
+    visible: getNodePropertyValue(document, source, 'visible'),
+    radius: getNodePropertyValue(document, source, 'radius'),
+    fill: resolvedFill, fillOpacity: getNodePropertyValue(document, source, 'fillOpacity'),
+    ...(fills ? { fills } : {}), ...(strokes ? { strokes } : {}),
+    ...(source.strokeVariableId ? { stroke: getNodeColor(document, source, 'stroke') } : {})
+  };
+}
+
+function booleanSourceResolver(document, resolveNode) {
+  return source => {
+    const resolved = resolveBooleanSourceNode(document, source);
+    return resolveNode?.(resolved) ?? resolved;
+  };
+}
+
+/** Read a prepared exact vector result for a new full-geometry Boolean. */
+export function getBooleanVectorPath(document, node, options = {}) {
+  return cachedBooleanVectorPath(node, { ...options, resolveNode: booleanSourceResolver(document, options.resolveNode) });
+}
+
+/** Prepare the current exact Boolean path before render, export, or combine. */
+export function prepareBooleanVectorPath(document, node, options = {}) {
+  return prepareCachedBooleanVectorPath(node, { ...options, resolveNode: booleanSourceResolver(document, options.resolveNode) });
+}
+
+/** Derive a legacy Boolean outline using the same inherited modes as its paints. */
 export function getBooleanStrokePath(document, node) {
+  if (node?.booleanGeometry === 'vector') return getBooleanVectorPath(document, node);
   return booleanStrokePath(node, { resolveNode: source => {
-    const resolvedFill = getNodeColor(document, source, 'fill');
-    const boundFill = source.fillVariableId || source.fillStyleId;
-    const fills = source.fills?.map((fill, index) => index === 0 && boundFill && fill.type === 'solid'
-      ? { ...fill, color: resolvedFill } : fill);
-    const strokes = source.strokes?.map((stroke, index) => index === 0 && source.strokeVariableId
-      ? { ...stroke, color: getNodeColor(document, source, 'stroke') } : stroke);
-    return {
-      ...source, ...getNodeGeometry(document, source),
-      opacity: getNodePropertyValue(document, source, 'opacity'),
-      visible: getNodePropertyValue(document, source, 'visible'),
-      radius: getNodePropertyValue(document, source, 'radius'),
-      fill: resolvedFill, fillOpacity: getNodePropertyValue(document, source, 'fillOpacity'),
-      ...(fills ? { fills } : {}), ...(strokes ? { strokes } : {}),
-      ...(source.strokeVariableId ? { stroke: getNodeColor(document, source, 'stroke') } : {})
-    };
+    return resolveBooleanSourceNode(document, source);
   } });
 }
 
 /** Combine supported sibling shapes and text without flattening their editable source layers. */
-export function combineBoolean(document, nodeIds, operation = 'union', pageId = document.activePageId) {
+export function combineBoolean(document, nodeIds, operation = 'union', pageId = document.activePageId, options = {}) {
   if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
   if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, supported shape or text layers in the same container.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => requiresVectorBoolean(entry.node)) && options.booleanGeometry !== 'vector') {
+    throw new Error('Open paths, lines, network edges, and nested vector Booleans require asynchronous vector preparation. Use prepareBooleanCombine before applying this operation.');
+  }
+  if (options.booleanGeometry === 'vector' && !vectorBooleanSources(entries)) {
+    throw new Error('Text sources need resolved glyph outlines before they can join a vector Boolean. Use the existing text Boolean workflow or outline the text first.');
+  }
   detachTextPathLinksCrossingNodes(document, nodeIds);
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
   const list = parent ? parent.children : page.children;
   const selectedIds = new Set(nodeIds);
   const selectedEntries = entries.map(entry => ({ ...entry, index: list.indexOf(entry.node) })).sort((a, b) => a.index - b.index);
-  const bounds = selectedEntries.map(entry => visualBounds(entry.node));
+  const bounds = selectedEntries.map(entry => booleanSourceBounds(resolveBooleanSourceNode(document, entry.node)));
   const left = Math.min(...bounds.map(item => item.left));
   const top = Math.min(...bounds.map(item => item.top));
   const right = Math.max(...bounds.map(item => item.right));
@@ -1620,23 +1776,90 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   const frontmost = selectedEntries.at(-1).node;
   const styleSource = operation === 'subtract' ? selectedEntries[0].node : frontmost;
   const operationNames = { union: 'Union', subtract: 'Subtract', intersect: 'Intersect', exclude: 'Exclude' };
+  const groupWidth = Math.max(1, right - left); const groupHeight = Math.max(1, bottom - top);
+  const isVector = options.booleanGeometry === 'vector';
   const group = createNode('boolean', {
     name: `${operationNames[operation]} group`, operation,
-    x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top),
-    fill: styleSource.fill || DEFAULT_SHAPE_FILL, fillOpacity: styleSource.fillOpacity ?? 1,
-    ...(styleSource.fillStyleId ? { fillStyleId: styleSource.fillStyleId } : {}),
-    ...(styleSource.fillVariableId ? { fillVariableId: styleSource.fillVariableId } : {}),
+    x: left, y: top, width: groupWidth, height: groupHeight,
+    ...inheritedBooleanAppearance(styleSource),
+    ...(isVector ? { booleanGeometry: 'vector' } : {}),
+    booleanSourceFrame: booleanSourceFrame(selectedEntries, left, top, groupWidth, groupHeight),
     children: selectedEntries.map(entry => {
       entry.node.x -= left;
       entry.node.y -= top;
       return entry.node;
     })
   });
+  // createNode clones override data for general callers. Boolean combine is a
+  // tree operation and must move the exact selected objects into the wrapper.
+  group.children = selectedEntries.map(entry => entry.node);
   const frontmostIndex = selectedEntries.at(-1).index;
   const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
   list.splice(insertionIndex, 0, group);
   syncSlotChildOrder(slotAwareSiblingMutation(document, entries).context, list);
+  return group;
+}
+
+const booleanCombinePlans = new WeakMap();
+const MAX_BOOLEAN_COMBINE_SNAPSHOT_CHARACTERS = 4_000_000;
+
+function booleanCombineContextSnapshot(document, nodeIds, pageId) {
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => !entry)) throw new Error('A selected Boolean source no longer exists.');
+  const parent = entries[0].parent;
+  const list = parent ? parent.children : document.pages.find(page => page.id === pageId)?.children;
+  const ancestors = entries[0].parents.map(item => ({ id: item.id, type: item.type, locked: item.locked, variableModes: item.variableModes }));
+  const snapshot = JSON.stringify({
+    pageId, parentId: parent?.id || null, order: list?.map(node => node.id), ancestors,
+    sources: entries.map(entry => entry.node), variables: document.variables, variableCollections: document.variableCollections,
+    colorStyles: document.colorStyles, effectStyles: document.effectStyles
+  });
+  if (snapshot.length > MAX_BOOLEAN_COMBINE_SNAPSHOT_CHARACTERS) throw new Error('The selected Boolean sources exceed the safe preparation size. Select fewer or simpler layers.');
+  return snapshot;
+}
+
+/** Prepare exact fill-plus-stroke Boolean geometry without changing source layers. */
+export async function prepareBooleanCombine(document, nodeIds, operation = 'union', pageId = document.activePageId, options = {}) {
+  if (options.signal?.aborted) throw new DOMException('Boolean operation cancelled.', 'AbortError');
+  if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
+  if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, supported sibling vector layers in the same container.');
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const vector = vectorBooleanSources(entries);
+  if (!vector && entries.some(entry => requiresVectorBoolean(entry.node))) {
+    throw new Error('Text sources cannot yet join open vector geometry. Outline the text first, or combine closed text and shapes with the existing workflow.');
+  }
+  const expected = booleanCombineContextSnapshot(document, nodeIds, pageId);
+  const candidate = cloneDocument(document);
+  const group = combineBoolean(candidate, nodeIds, operation, pageId, { booleanGeometry: vector ? 'vector' : undefined });
+  if (vector) await prepareBooleanVectorPath(candidate, group, options);
+  if (options.signal?.aborted) throw new DOMException('Boolean operation cancelled.', 'AbortError');
+  validateDocument(candidate);
+  // A worker may have been awaiting while another actor changed this design.
+  if (booleanCombineContextSnapshot(document, nodeIds, pageId) !== expected) throw new Error('The selected layers or their variable context changed while the Boolean geometry was preparing. Try again.');
+  const plan = Object.freeze({ pageId, nodeIds: Object.freeze([...nodeIds]), operation });
+  booleanCombinePlans.set(plan, { document, expected, vector });
+  return plan;
+}
+
+/** Revalidate a prepared Boolean plan immediately before history checkpoint. */
+export function validateBooleanCombinePlan(document, plan) {
+  const prepared = booleanCombinePlans.get(plan);
+  if (!prepared || prepared.document !== document) throw new TypeError('Prepare this Boolean operation before applying it.');
+  if (booleanCombineContextSnapshot(document, plan.nodeIds, plan.pageId) !== prepared.expected) throw new Error('The selected layers or their variable context changed while the Boolean geometry was preparing. Try again.');
+  const candidate = cloneDocument(document);
+  const group = combineBoolean(candidate, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: prepared.vector ? 'vector' : undefined });
+  if (Boolean(group.booleanGeometry === 'vector') !== prepared.vector) throw new Error('The selected Boolean geometry mode changed. Prepare it again.');
+  if (prepared.vector) getBooleanVectorPath(candidate, group);
+  validateDocument(candidate);
+  return true;
+}
+
+/** Commit one prepared Boolean group atomically while preserving source objects and IDs. */
+export function applyBooleanCombine(document, plan) {
+  validateBooleanCombinePlan(document, plan);
+  const group = combineBoolean(document, plan.nodeIds, plan.operation, plan.pageId, { booleanGeometry: booleanCombinePlans.get(plan)?.vector ? 'vector' : undefined });
+  booleanCombinePlans.delete(plan);
   return group;
 }
 
@@ -1745,6 +1968,38 @@ export function separateBoolean(document, nodeId, pageId = document.activePageId
   const group = entry.node;
   const children = group.children || [];
   if (children.length < 2) throw new Error('This Boolean group has no source shapes to separate.');
+  const sourceFrame = group.booleanSourceFrame;
+  const same = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  const untransformed = sourceFrame && group.x === sourceFrame.x && group.y === sourceFrame.y
+    && group.width === sourceFrame.width && group.height === sourceFrame.height && group.rotation === sourceFrame.rotation
+    && group.affineTransform == null
+    && children.length === sourceFrame.children.length && children.every((child, index) => {
+      const source = sourceFrame.children[index];
+      return child.x === source.x - sourceFrame.x && child.y === source.y - sourceFrame.y
+        && child.width === source.width && child.height === source.height && (child.rotation || 0) === source.rotation
+        && same(child.affineTransform, source.affineTransform);
+    });
+  if (untransformed) {
+    for (const child of children) {
+      const source = sourceFrame.children[children.indexOf(child)];
+      child.x = source.x; child.y = source.y;
+    }
+    const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
+    list.splice(entry.index, 1, ...children);
+    group.children = [];
+    if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
+    return children;
+  }
+  // The group affine is applied around its frame origin before rotation.
+  // This routine currently distributes scale/rotation only; refusing here is
+  // safer than silently dropping an affine transform during Separate.
+  if (group.affineTransform != null) {
+    throw new Error('Separate cannot preserve this Boolean group affine transform yet. Clear the group transform or bake the Boolean first.');
+  }
+  const geometryBindings = ['x', 'y', 'width', 'height', 'rotation', 'radius'];
+  if (children.some(child => geometryBindings.some(property => child.variableBindings?.[property]))) {
+    throw new Error('Separate cannot transform mode-bound Boolean source geometry without changing its resolved appearance. Remove the geometry bindings or restore the original group frame first.');
+  }
   const bounds = children.map(visualBounds);
   const sourceLeft = Math.min(...bounds.map(item => item.left));
   const sourceTop = Math.min(...bounds.map(item => item.top));
@@ -1802,24 +2057,39 @@ export function prepareBooleanBake(document, nodeId, pageId = document.activePag
     for (const child of node.children || []) verifyChildren(child);
   };
   for (const child of group.children || []) verifyChildren(child);
-  const contours = flattenBooleanPathContours(group);
-  const geometry = normalizedPathGeometryFromCurveContours(contours, group.width, group.height);
+  let geometry;
+  if (group.booleanGeometry === 'vector') {
+    const vectorPath = getBooleanVectorPath(document, group);
+    geometry = { points: clone(vectorPath.points || []), closed: true, fillRule: vectorPath.fillRule || 'nonzero',
+      ...(vectorPath.subpaths?.length ? { subpaths: clone(vectorPath.subpaths) } : {}) };
+  } else {
+    const contours = flattenBooleanPathContours(group);
+    geometry = normalizedPathGeometryFromCurveContours(contours, group.width, group.height);
+  }
   const plan = Object.freeze({ nodeId: group.id, pageId });
-  booleanBakePlans.set(plan, { expected: JSON.stringify(group), geometry });
+  booleanBakePlans.set(plan, {
+    document, expected: JSON.stringify(group), geometry,
+    vectorKey: group.booleanGeometry === 'vector'
+      ? cachedBooleanVectorGeometryKey(group, { resolveNode: booleanSourceResolver(document) }) : null
+  });
   return plan;
 }
 
 /** Commit one prepared Boolean result as native, editable path geometry in place. */
 export function applyBooleanBake(document, plan) {
   const prepared = booleanBakePlans.get(plan);
-  if (!prepared) throw new TypeError('Prepare a Boolean bake before committing it.');
+  if (!prepared || prepared.document !== document) throw new TypeError('Prepare a Boolean bake for this document before committing it.');
   const entry = findNode(document, plan.nodeId, plan.pageId);
   if (!entry || entry.node.type !== 'boolean' || JSON.stringify(entry.node) !== prepared.expected) {
     throw new Error('The Boolean group changed after the bake was prepared. Prepare it again before committing.');
   }
+  if (prepared.vectorKey != null
+    && cachedBooleanVectorGeometryKey(entry.node, { resolveNode: booleanSourceResolver(document) }) !== prepared.vectorKey) {
+    throw new Error('The resolved Boolean source geometry changed after the bake was prepared. Prepare it again before committing it.');
+  }
   const node = entry.node;
   Object.assign(node, { type: 'path', ...prepared.geometry, children: [] });
-  delete node.operation;
+  delete node.operation; delete node.booleanGeometry; delete node.booleanSourceFrame;
   booleanBakePlans.delete(plan);
   return node;
 }
@@ -2200,11 +2470,13 @@ export function canBindVariable(document, nodeId, variableId, property, pageId =
 }
 
 export function bindVariable(document, nodeId, variableId, property, pageId = document.activePageId) {
-  const node = findNode(document, nodeId, pageId)?.node;
+  const entry = findNode(document, nodeId, pageId);
+  const node = entry?.node;
   if (!canBindVariable(document, nodeId, variableId, property, pageId)) return false;
   if (!variableId) {
     const value = getNodePropertyValue(document, node, property);
-    if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property, value);
+    if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property,
+      materializedPropertyInParentFrame(node, entry.parent, property, value));
     if (node.variableBindings) {
       delete node.variableBindings[property];
       if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
@@ -2217,11 +2489,12 @@ export function bindVariable(document, nodeId, variableId, property, pageId = do
 }
 
 function materializeVariableBindingsToRemovedVariables(document, removedIds) {
-  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+  for (const page of document.pages) walkNodes(page.children, ({ node, parent }) => {
     for (const [property, variableId] of Object.entries(node.variableBindings || {})) {
       if (!removedIds.has(variableId)) continue;
       const value = getNodePropertyValue(document, node, property);
-      if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property, value);
+      if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property,
+        materializedPropertyInParentFrame(node, parent, property, value));
       delete node.variableBindings[property];
     }
     if (!Object.keys(node.variableBindings || {}).length) delete node.variableBindings;
@@ -4232,7 +4505,13 @@ export function validateDocument(document) {
       if (sizeLimits.some(property => node[property] != null && (typeof node[property] !== 'number' || !Number.isFinite(node[property]) || node[property] < 0))
         || (node.minWidth != null && node.maxWidth != null && node.minWidth > node.maxWidth)
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
-      if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
+      if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2
+        || node.children.some(child => !(node.booleanGeometry === 'vector' ? isBooleanVectorOperand(child) : isBooleanOperand(child)))
+        || (node.booleanGeometry != null && !booleanGeometryModes.has(node.booleanGeometry))
+        || (node.booleanGeometry === 'vector' && node.children.some(child => !isBooleanVectorOperand(child)))
+        || (Object.hasOwn(node, 'booleanSourceFrame') && !validBooleanSourceFrame(node.booleanSourceFrame, node)))) {
+        throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
+      }
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
       if (Object.hasOwn(node, 'textTruncation') && (node.type !== 'text' || !textTruncations.has(node.textTruncation))) throw new TypeError(`Invalid text truncation mode on layer ${node.name || node.id}.`);
       if (Object.hasOwn(node, 'maxLines') && (node.type !== 'text' || (node.maxLines !== null && (!Number.isSafeInteger(node.maxLines) || node.maxLines < 1)))) throw new TypeError(`Invalid text maximum line count on layer ${node.name || node.id}.`);

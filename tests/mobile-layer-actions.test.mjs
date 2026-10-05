@@ -93,7 +93,7 @@ test('placing imported images resets selection through the shared invariant path
 
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
   const start = source.indexOf('function openNodeMenu(');
-  const end = source.indexOf('\nfunction combineSelectedBoolean(', start);
+  const end = source.indexOf('\nasync function combineSelectedBoolean(', start);
   assert.ok(start >= 0 && end > start, 'the node action menu should have a bounded action builder');
   const builder = source.slice(start, end);
   for (const action of ["label: 'Duplicate'", "label: 'Rename'", "label: 'Delete'", "label: 'Create component'"]) {

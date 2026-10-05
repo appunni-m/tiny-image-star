@@ -2176,7 +2176,7 @@ test('viewBox includes stroke bleed, Bézier controls and text overflow but excl
     { x: 0, y: 0, out: { x: 3, y: 0 } }, { x: 1, y: 1, in: { x: -3, y: 0 } }
   ] });
   const curveSvg = exportNodeToSvg(curve);
-  assert.match(curveSvg, /viewBox="-201 -1 502 82"/);
+  assert.match(curveSvg, /viewBox="-210 -10 520 100"/, 'the control hull receives the conservative miter apron used for every ordered path stroke');
 
   const overflowingText = createNode('text', { width: 20, height: 10, fontSize: 10, text: 'WIDE', textDecoration: 'underline', textFit: 'fixed' });
   const textSvg = exportNodeToSvg(overflowingText, { measureText: text => text.length * 10 });

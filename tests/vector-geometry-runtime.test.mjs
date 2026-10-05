@@ -34,6 +34,20 @@ test('the vector client is lazy, serializes queued jobs, copies geometry, and re
   workers[1].complete({version:'0.42.0',heapBytes:128*1024*1024});await restarted;client.close();
 });
 
+test('Boolean and outline jobs share serialization while Boolean tree snapshots stay independent',async()=>{
+  const worker=new FakeWorker();const client=new LocalVectorGeometryClient({workerFactory:()=>worker});
+  const first=client.outlineStroke(geometry,stroke);
+  const root={kind:'boolean',operation:'union',includeFill:true,strokes:[],transform:[1,0,0,1,0,0],children:[{kind:'shape',geometry:structuredClone(geometry),includeFill:false,strokes:[stroke],transform:[1,0,0,1,10,20]}]};
+  const second=client.booleanGeometry({root});
+  root.children[0].transform[4]=999;root.children[0].geometry.strokeContours[0].start.x=999;
+  assert.equal(worker.messages.length,1);worker.complete();await first;await turn();
+  assert.equal(worker.messages[1].type,'boolean-geometry');assert.equal(worker.messages[1].root.children[0].transform[4],10);
+  assert.equal(worker.messages[1].root.children[0].geometry.strokeContours[0].start.x,0);
+  worker.complete();await second;client.close();
+  const unsupported=new LocalVectorGeometryClient({workerFactory:()=>{throw new Error('An invalid request must not allocate a worker.');}});
+  root.children.push(root);await assert.rejects(unsupported.booleanGeometry({root}),/cyclic/);unsupported.close();
+});
+
 test('queued cancellation preserves the active job and active cancellation terminates before restarting queued work',async()=>{
   const workers=[];const client=new LocalVectorGeometryClient({workerFactory:()=>{const worker=new FakeWorker();workers.push(worker);return worker;}});
   const runningAbort=new AbortController();const queuedAbort=new AbortController();
@@ -99,4 +113,24 @@ test('the actual bundled worker rejects corrupt local WASM before running geomet
   const client=new LocalVectorGeometryClient({workerFactory:()=>nativeWorkerFactory({tamper:true}),timeoutMs:10_000});
   try{await assert.rejects(client.initialize(),{code:'VECTOR_GEOMETRY_INTEGRITY'});}
   finally{client.close();}
+});
+
+test('the actual bundled worker composes all Boolean operations and nested stroked affine operands',async()=>{
+  const client=new LocalVectorGeometryClient({workerFactory:nativeWorkerFactory,timeoutMs:10_000});
+  const region=(x,y)=>({kind:'shape',geometry,transform:[1,0,0,1,x,y],includeFill:true,strokes:[]});
+  const group=(operation,children,options={})=>({kind:'boolean',transform:[1,0,0,1,0,0],includeFill:true,strokes:[],operation,children,...options});
+  try{
+    for(const operation of ['union','subtract','intersect','exclude']){
+      const result=await client.booleanGeometry({root:group(operation,[region(0,0),region(20,10)])});
+      assert.deepEqual(result.bounds,operation==='union'||operation==='exclude'?{left:0,top:0,right:80,bottom:50}
+        :operation==='subtract'?{left:0,top:0,right:60,bottom:40}:{left:20,top:10,right:60,bottom:40});
+      assert.ok(outlinedGeometryToPathGeometry(result,80,50).points.length>=4);
+    }
+    const nested=group('union',[region(0,0)],{includeFill:false,transform:[2,0,0,1,10,20],strokes:[stroke]});
+    const result=await client.booleanGeometry({root:group('union',[nested])});
+    assert.deepEqual(result.bounds,{left:-6,top:12,right:146,bottom:68});
+    assert.equal(outlinedGeometryToPathGeometry(result,60,40).subpaths.length,1);
+    const selected=region(0,0);selected.geometry={...geometry,fillGroups:[...geometry.fillGroups,...nativePathGeometryForNode(createNode('rectangle',{width:20,height:10})).fillGroups]};selected.fillGroupIndices=[1];
+    assert.deepEqual((await client.booleanGeometry({root:selected})).bounds,{left:0,top:0,right:20,bottom:10},'face selection survives the typed request and built worker');
+  }finally{client.close();}
 });

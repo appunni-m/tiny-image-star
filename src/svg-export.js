@@ -1,4 +1,4 @@
-import { getBooleanStrokePath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource } from './model.js';
+import { getBooleanStrokePath, getBooleanVectorPath, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, isMaskSource } from './model.js';
 import { layoutPlainText, layoutTextRuns, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { fillStackForNode, gradientTypes, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
@@ -8,7 +8,7 @@ import { DEFAULT_IMAGE_TILE_SCALE, imageTilePatternTransform, imageTileSourceDim
 import { isValidLayerEffects, layerEffectPadding, supportsShadowSpread } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
-import { effectiveStrokeAlignment, strokeOuterExtent, strokePaintPadding } from './stroke-alignment.js';
+import { effectiveStrokeAlignment, strokeOuterExtent, strokePaintPadding, strokeGeometryBounds } from './stroke-alignment.js';
 import { isUniformStrokeSideWidths, isValidStrokeStack, strokeSideNames, strokeSideWidths, strokeStackForNode, syncLegacyStrokeFields } from './strokes.js';
 import { rectangleStrokeSideJoins, rectangleStrokeSidePaths } from './stroke-side-geometry.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
@@ -53,6 +53,10 @@ const alignmentMetadataFields = [
 
 function visibleBooleanStrokePath(node, document) {
   if (node.type !== 'boolean') return null;
+  if (node.booleanGeometry === 'vector') {
+    try { return getBooleanVectorPath(document, node); }
+    catch (error) { throw new SvgExportError(`Boolean vector geometry (${error.message})`, node); }
+  }
   const hasVisibleStroke = strokeStackForNode(node).some((stroke, index) => {
     const strokeColor = index === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
     return stroke.visible !== false && Number(stroke.opacity ?? 1) > 0 && Number(stroke.width) > 0
@@ -871,6 +875,11 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
     return source;
   }
   if (!svgMaskSourceTypes.has(source.type)) throw new SvgExportError(`${source.type || 'unknown'} alpha mask contents`, source);
+  if (source.booleanGeometry === 'vector') {
+    // Prepared Boolean masks use the completed result paint, including its
+    // ordered fills, strokes and once-only layer opacity.
+    validateTree([source], document, assets, imagePreviews, new Set(), true);
+  }
   if (['image', 'group', 'frame', 'section'].includes(source.type)) {
     const unsupported = unsupportedFeature(source, assets, imagePreviews, document);
     if (unsupported) throw new SvgExportError(unsupported, source);
@@ -893,11 +902,12 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
 }
 
 function validateTree(nodes, document, assets, imagePreviews = null, ignoredNodeIds = new Set(), hasIsolatedPaintAncestor = false) {
-  for (const node of nodes || []) {
+  for (let node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
     if (node.type === 'slice') continue;
     if (ignoredNodeIds.has(node.id)) continue;
     if (!isNodeVisible(document, node)) continue;
+    if (node.type === 'boolean' && node.booleanGeometry === 'vector') node = visibleBooleanStrokePath(node, document);
     const maskSource = node.mask ? validateMaskGroup(node, document, assets, imagePreviews) : null;
     const unsupported = unsupportedFeature(node, assets, imagePreviews, document);
     if (unsupported) throw new SvgExportError(unsupported, node);
@@ -1729,6 +1739,7 @@ function vectorMaskSourceMarkup(node, document, measureText, context, layerIndex
 function maskSourceMarkup(source, document, measureText, context, maskMode = 'alpha', layerIndex = 0) {
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (maskMode === 'vector') return vectorMaskSourceMarkup(node, document, measureText, context, layerIndex);
+  if (maskMode === 'alpha' && node.booleanGeometry === 'vector') return renderTree([node], document, context, true, measureText);
   if (maskMode === 'luminance') {
     if (['group', 'frame', 'section'].includes(node.type)) return renderTree([node], document, context, true, measureText);
     const gradient = gradientDefinition(node, layerIndex);
@@ -2380,11 +2391,12 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       if (!['rectangle', 'frame'].includes(node.type)) {
         const strokes = strokeStackForNode(node);
         const hasAlignment = strokes.some(stroke => effectiveStrokeAlignment(node, stroke) !== 'center');
-        const strokeWidth = hasAlignment || sourceNode.type === 'boolean' ? strokePaintPadding(node, strokes)
+        const vectorBoolean = sourceNode.type === 'boolean' || node.booleanGeometry === 'vector';
+        const strokeWidth = hasAlignment || vectorBoolean || node.type === 'path' ? strokePaintPadding(node, strokes)
           : node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
         if (strokeWidth) {
-          const paddingX = sourceNode.type === 'boolean' ? strokeWidth * (Math.abs(matrix[0]) + Math.abs(matrix[2])) : strokeWidth;
-          const paddingY = sourceNode.type === 'boolean' ? strokeWidth * (Math.abs(matrix[1]) + Math.abs(matrix[3])) : strokeWidth;
+          const paddingX = vectorBoolean || node.type === 'path' ? strokeWidth * (Math.abs(matrix[0]) + Math.abs(matrix[2])) : strokeWidth;
+          const paddingY = vectorBoolean || node.type === 'path' ? strokeWidth * (Math.abs(matrix[1]) + Math.abs(matrix[3])) : strokeWidth;
           bounds.minX -= paddingX; bounds.minY -= paddingY; bounds.maxX += paddingX; bounds.maxY += paddingY;
         }
       }
@@ -2397,11 +2409,13 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       }
       const effectPadding = layerEffectPadding(node.effects);
       if (effectPadding.x || effectPadding.y) {
+        const geometry = node.type === 'path' ? strokeGeometryBounds(node) : { left: 0, top: 0, right: width, bottom: height };
+        const paintPadding = node.type === 'path' ? strokePaintPadding(node, strokeStackForNode(node)) : regularStrokePadding;
         for (const [x, y] of [
-          [-effectPadding.x - regularStrokePadding, -effectPadding.y - regularStrokePadding],
-          [width + effectPadding.x + regularStrokePadding, -effectPadding.y - regularStrokePadding],
-          [width + effectPadding.x + regularStrokePadding, height + effectPadding.y + regularStrokePadding],
-          [-effectPadding.x - regularStrokePadding, height + effectPadding.y + regularStrokePadding]
+          [geometry.left - effectPadding.x - paintPadding, geometry.top - effectPadding.y - paintPadding],
+          [geometry.right + effectPadding.x + paintPadding, geometry.top - effectPadding.y - paintPadding],
+          [geometry.right + effectPadding.x + paintPadding, geometry.bottom + effectPadding.y + paintPadding],
+          [geometry.left - effectPadding.x - paintPadding, geometry.bottom + effectPadding.y + paintPadding]
         ]) include(transformPoint(matrix, x, y), bounds);
       }
       const visibleBounds = intersectBounds(bounds, clipBounds);

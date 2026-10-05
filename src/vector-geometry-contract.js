@@ -1,5 +1,6 @@
 export const VECTOR_GEOMETRY_LIMITS = Object.freeze({
   maxInputCommands: 20_000, maxContours: 4_096, maxFillGroups: 1_024,
+  maxInputNodes: 256, maxInputDepth: 32, maxInputStrokes: 1_024, maxStrokeWorkPoints: 400_000,
   maxOutputValues: 400_000, maxOutputPoints: 20_000,
   maxCoordinate: 10_000_000, maxQueue: 8,
   requestTimeoutMs: 15_000, idleTimeoutMs: 15_000,
@@ -31,16 +32,14 @@ const angle = value => {
   return value;
 };
 
-/** Validate and copy only geometry fields before a request enters the worker queue. */
-export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
-  if (!geometry || typeof geometry !== 'object' || !sourceStroke || typeof sourceStroke !== 'object') fail('A vector shape and stroke are required.');
-  let commandCount = 0; let contourCount = 0;
+function normalizeGeometry(geometry, state) {
+  if (!geometry || typeof geometry !== 'object') fail('Readable native vector geometry is required.');
   const contours = value => {
     if (!Array.isArray(value)) fail('Vector contour arrays are required.');
-    if ((contourCount += value.length) > VECTOR_GEOMETRY_LIMITS.maxContours) fail('The vector operation exceeds its bounded contour limit.');
+    if ((state.contours += value.length) > VECTOR_GEOMETRY_LIMITS.maxContours) fail('The vector operation exceeds its bounded contour limit.');
     return value.map(contour => {
       if (!contour || !Array.isArray(contour.commands) || typeof contour.closed !== 'boolean') fail('Each vector contour needs commands and a closed setting.');
-      if ((commandCount += contour.commands.length) > VECTOR_GEOMETRY_LIMITS.maxInputCommands) fail('The vector operation exceeds its bounded input command limit.');
+      if ((state.commands += contour.commands.length) > VECTOR_GEOMETRY_LIMITS.maxInputCommands) fail('The vector operation exceeds its bounded input command limit.');
       return { start: point(contour.start), closed: contour.closed, commands: contour.commands.map(command => {
         const result = { type: command?.type, start: point(command?.start), end: point(command?.end) };
         if (result.type === 'quadratic') result.control = point(command.control);
@@ -61,7 +60,7 @@ export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
     if (!['nonzero', 'evenodd'].includes(rule)) fail('A supported vector fill rule is required.');
     return rule;
   };
-  if (!Array.isArray(geometry.fillGroups) || geometry.fillGroups.length > VECTOR_GEOMETRY_LIMITS.maxFillGroups) fail('The vector operation exceeds its fill-group limit.');
+  if (!Array.isArray(geometry.fillGroups) || (state.fillGroups += geometry.fillGroups.length) > VECTOR_GEOMETRY_LIMITS.maxFillGroups) fail('The vector operation exceeds its fill-group limit.');
   const shape = {
     fillRule: fillRule(geometry.fillRule),
     fillGroups: geometry.fillGroups.map(group => ({ fillRule: fillRule(group?.fillRule), contours: contours(group?.contours) })),
@@ -76,6 +75,11 @@ export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
       || Object.values(shape.rectangleSideGeometry.radii).some(value => value < 0)
       || !Number.isFinite(rectangle.smoothing) || rectangle.smoothing < 0 || rectangle.smoothing > 1) fail('Rectangle side geometry is invalid.');
   }
+  return shape;
+}
+
+function normalizeStroke(sourceStroke, shape, closedRegion = false) {
+  if (!sourceStroke || typeof sourceStroke !== 'object') fail('Readable vector stroke settings are required.');
   const stroke = {};
   for (const key of ['width','cap','join','pattern','miterLimit','alignment','sideMode','startDecoration','endDecoration']) {
     if (Object.hasOwn(sourceStroke,key)) stroke[key] = sourceStroke[key];
@@ -89,7 +93,7 @@ export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
     || !Number.isFinite(stroke.miterLimit) || stroke.miterLimit < 1 || stroke.miterLimit > 1000) fail('The stroke geometry settings are invalid.');
   if (![undefined,'none'].includes(stroke.startDecoration) || ![undefined,'none'].includes(stroke.endDecoration)) fail('Outline stroke does not yet support endpoint decorations. Remove them before outlining.');
   if (!['all','top','right','bottom','left','custom'].includes(stroke.sideMode)) fail('The stroke side mode is invalid.');
-  if (stroke.sideMode !== 'all' && !shape.rectangleSideGeometry) fail('Individual side weights require rectangle or frame geometry.');
+  if (stroke.sideMode !== 'all' && !shape?.rectangleSideGeometry) fail('Individual side weights require rectangle or frame geometry.');
   if (stroke.sideMode === 'custom') {
     if (!sourceStroke.sideWidths || typeof sourceStroke.sideWidths !== 'object') fail('Custom side weights are missing.');
     stroke.sideWidths = Object.fromEntries(['top','right','bottom','left'].map(key => [key, sourceStroke.sideWidths[key]]));
@@ -101,8 +105,51 @@ export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
     if (stroke.dashArray.some(value => !Number.isFinite(value) || value < 0 || value > 100_000) || stroke.dashArray.every(value => value === 0)) fail('Custom dash lengths are invalid.');
     if (stroke.dashArray[1] === 0) fail('Outline stroke cannot yet preserve a zero-length dash gap. Use a positive gap or a solid stroke.');
   }
-  if (stroke.alignment !== 'center' && !shape.fillGroups.length) fail('Inside and outside outlines need closed geometric fill coverage.');
+  if (stroke.alignment !== 'center' && !closedRegion && !shape?.fillGroups.length) fail('Inside and outside outlines need closed geometric fill coverage.');
+  return stroke;
+}
+
+/** Validate and copy only geometry fields before a request enters the worker queue. */
+export function normalizeVectorOutlineRequest(geometry, sourceStroke) {
+  const shape = normalizeGeometry(geometry, { commands: 0, contours: 0, fillGroups: 0 });
+  const stroke = normalizeStroke(sourceStroke, shape);
   return { geometry: shape, stroke };
+}
+
+/** A bounded binary region tree. Paint eligibility is supplied by the caller. */
+export function normalizeVectorBooleanRequest(request) {
+  if (!request || typeof request !== 'object') fail('A Boolean region tree is required.');
+  const state = { commands: 0, contours: 0, fillGroups: 0, nodes: 0, strokes: 0, ancestors: new Set() };
+  const visit = (source, depth) => {
+    if (!source || typeof source !== 'object' || !['shape', 'boolean'].includes(source.kind)) fail('Each Boolean operand needs a supported region kind.');
+    if (depth > VECTOR_GEOMETRY_LIMITS.maxInputDepth || ++state.nodes > VECTOR_GEOMETRY_LIMITS.maxInputNodes) fail('The Boolean operation exceeds its bounded source-tree limit.');
+    if (state.ancestors.has(source)) fail('A cyclic Boolean region tree cannot be processed.');
+    if (!Array.isArray(source.transform) || source.transform.length !== 6) fail('Every Boolean operand needs an affine transform with six values.');
+    const transform = source.transform.map(coordinate);
+    if (typeof source.includeFill !== 'boolean' || !Array.isArray(source.strokes)) fail('Every Boolean operand needs explicit fill coverage and enabled stroke settings.');
+    if ((state.strokes += source.strokes.length) > VECTOR_GEOMETRY_LIMITS.maxInputStrokes || source.strokes.length > 32) fail('The Boolean operation exceeds its bounded source-stroke limit.');
+    state.ancestors.add(source);
+    let result;
+    if (source.kind === 'shape') {
+      const geometry = normalizeGeometry(source.geometry, state);
+      result = { kind: 'shape', transform, geometry, includeFill: source.includeFill,
+        strokes: source.strokes.map(stroke => normalizeStroke(stroke, geometry)) };
+      if(Object.hasOwn(source,'fillGroupIndices')){
+        if(!Array.isArray(source.fillGroupIndices)||source.fillGroupIndices.length>geometry.fillGroups.length
+          ||source.fillGroupIndices.some(index=>!Number.isSafeInteger(index)||index<0||index>=geometry.fillGroups.length)
+          ||new Set(source.fillGroupIndices).size!==source.fillGroupIndices.length)fail('Boolean fill-group selection must contain unique valid native face indices.');
+        result.fillGroupIndices=[...source.fillGroupIndices];
+      }
+    } else {
+      if (!['union', 'subtract', 'intersect', 'exclude'].includes(source.operation) || !Array.isArray(source.children)) fail('Every Boolean group needs an ordered supported operation and source array.');
+      if (source.children.length > VECTOR_GEOMETRY_LIMITS.maxInputNodes - state.nodes) fail('The Boolean operation exceeds its bounded source-tree limit.');
+      result = { kind: 'boolean', transform, includeFill: source.includeFill, operation: source.operation,
+        strokes: source.strokes.map(stroke => normalizeStroke(stroke, null, true)), children: source.children.map(child => visit(child, depth + 1)) };
+    }
+    state.ancestors.delete(source);
+    return result;
+  };
+  return { root: visit(request.root, 0) };
 }
 
 const verbArguments = Object.freeze({ 0: 2, 1: 2, 2: 4, 3: 5, 4: 6, 5: 0 });

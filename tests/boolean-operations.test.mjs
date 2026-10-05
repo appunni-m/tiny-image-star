@@ -52,7 +52,7 @@ test('Boolean combine accepts text layers and preserves editable text as a live 
     'text remains editable and valid inside the non-destructive Boolean group');
 });
 
-test('Boolean combine requires unlocked closed vector siblings in one container', () => {
+test('Boolean combine requires unlocked supported vector siblings in one container', () => {
   const document = createDocument();
   const frame = createNode('frame');
   const first = createNode('rectangle');
@@ -64,7 +64,7 @@ test('Boolean combine requires unlocked closed vector siblings in one container'
 
   assert.equal(canCombineBoolean(document, [first.id]), false);
   assert.equal(canCombineBoolean(document, [first.id, locked.id]), false);
-  assert.equal(canCombineBoolean(document, [first.id, openPath.id]), false);
+  assert.equal(canCombineBoolean(document, [first.id, openPath.id]), true, 'open vector paths can contribute their stroke geometry');
   assert.equal(canCombineBoolean(document, [first.id, frame.children[0].id]), false);
   assert.throws(() => combineBoolean(document, [first.id, second.id], 'merge'), /supported Boolean/);
   assert.throws(() => combineBoolean(document, [first.id, frame.children[0].id]), /same container/);
@@ -806,7 +806,7 @@ test('rotated network face controls follow resized Boolean source geometry', () 
   }
 });
 
-test('disconnected and edge-adjacent closed network faces bake into compound paths; malformed topology is refused', () => {
+test('disconnected and edge-adjacent closed network faces bake into compound paths; open topology requires vector preparation', () => {
   const document = createDocument();
   const networkGeometry = vectorNetworkGeometryFromAnchors([
     { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 25, y: 35 }
@@ -870,10 +870,9 @@ test('disconnected and edge-adjacent closed network faces bake into compound pat
   const openNetwork = createNode('network', openGeometry);
   const openOther = createNode('rectangle', { x: 100, y: 10, width: 20, height: 20 });
   addNode(openDocument, openNetwork); addNode(openDocument, openOther);
-  const openGroup = combineBoolean(openDocument, [openNetwork.id, openOther.id], 'union');
   const before = serializeDocument(openDocument);
-  assert.throws(() => prepareBooleanBake(openDocument, openGroup.id), /open or unfilled network (vertices|edges)/);
-  assert.equal(serializeDocument(openDocument), before, 'refusing an open network must retain its live graph and Boolean group');
+  assert.throws(() => combineBoolean(openDocument, [openNetwork.id, openOther.id], 'union'), /asynchronous vector preparation/);
+  assert.equal(serializeDocument(openDocument), before, 'the synchronous legacy operation must not install a Boolean with incorrect open-network geometry');
 
   const sharedDocument = createDocument();
   const sharedGeometry = vectorNetworkGeometryFromAnchors([

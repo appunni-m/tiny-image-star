@@ -1,4 +1,4 @@
-import { normalizeVectorOutlineRequest, validateVectorOutlineResult, vectorGeometryAbortError, VectorGeometryError, VECTOR_GEOMETRY_LIMITS } from './vector-geometry-contract.js';
+import { normalizeVectorBooleanRequest, normalizeVectorOutlineRequest, validateVectorOutlineResult, vectorGeometryAbortError, VectorGeometryError, VECTOR_GEOMETRY_LIMITS } from './vector-geometry-contract.js';
 
 /** One lazy geometry worker with a bounded queue; idle termination releases its128MiB heap. */
 export class LocalVectorGeometryClient {
@@ -12,6 +12,10 @@ export class LocalVectorGeometryClient {
   initialize({signal}={}){return this.#request('initialize',{},signal);}
   outlineStroke(geometry,stroke,{signal}={}){
     try{return this.#request('outline-stroke',normalizeVectorOutlineRequest(geometry,stroke),signal).then(validateVectorOutlineResult);}
+    catch(error){return Promise.reject(error);}
+  }
+  booleanGeometry(request,{signal}={}){
+    try{return this.#request('boolean-geometry',normalizeVectorBooleanRequest(request),signal).then(validateVectorOutlineResult);}
     catch(error){return Promise.reject(error);}
   }
   close(){
@@ -75,4 +79,5 @@ let sharedClient=null;
 const client=()=>sharedClient||=(new LocalVectorGeometryClient());
 export const initializeVectorGeometry=options=>client().initialize(options);
 export const outlineStrokeGeometry=(geometry,stroke,options)=>client().outlineStroke(geometry,stroke,options);
+export const booleanGeometry=(request,options)=>client().booleanGeometry(request,options);
 export function closeVectorGeometryRuntime(){sharedClient?.close();sharedClient=null;}

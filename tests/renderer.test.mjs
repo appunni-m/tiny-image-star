@@ -1905,7 +1905,7 @@ test('Boolean paint and mask surfaces cap extreme axes and total pixels without 
       assert.ok(maskSurface.width * maskSurface.height <= 4_000_000,
         `${item.name} alpha mask exceeded the total pixel budget`);
     }
-    assert.equal(created.length, cases.length * 3, 'paint, Boolean mask, and alpha-mask requests should each allocate one bounded surface');
+    assert.equal(created.length, cases.length * 4, 'paint and Boolean mask allocate one surface; alpha masks isolate content and source in two bounded surfaces');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -2124,6 +2124,101 @@ test('motion fill keyframe base color resolution matches the renderer for linked
     fills: [{ id: 'ordinary-fill', type: 'solid', color: '#fedcba', visible: true, opacity: 1 }] });
   assert.equal(fillLayerColor(document, linked, linked.fills[0], 0), '#123456');
   assert.equal(fillLayerColor(document, ordinary, ordinary.fills[0], 0), '#fedcba');
+});
+
+function motionPixelCanvasClass() {
+  return class extends ShadowPixelCanvas {
+    constructor(width, height) {
+      super(width, height);
+      const ctx = this.context;
+      ctx.getTransform = () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+      ctx.rect = (x, y, w, h) => ctx.path.push({ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h });
+      for (const method of ['translate', 'rotate', 'transform', 'clip', 'setLineDash', 'stroke']) ctx[method] = () => {};
+    }
+  };
+}
+
+test('resolved Boolean effect reentry freezes motion geometry and opacity while retaining animated fills', () => {
+  const PixelCanvas = motionPixelCanvasClass(); const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PixelCanvas;
+  try {
+    const document = createDocument();
+    const node = createNode('path', { id: 'animated-vector-result', x: 2, y: 3, width: 20, height: 16, closed: true, strokes: [],
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+      fills: [{ id: 'first', type: 'solid', color: '#123456', visible: true, opacity: .4 },
+        { id: 'second', type: 'solid', color: '#abcdef', visible: true, opacity: .6 }] });
+    node.booleanGeometry = 'vector'; addNode(document, node);
+    const collection = createVariableCollection(document, 'Animated geometry');
+    const width = createVariable(document, collection.id, 'Width', 'number', 16);
+    const opacity = createVariable(document, collection.id, 'Opacity', 'number', .3);
+    assert.equal(bindVariable(document, node.id, width.id, 'width'), true);
+    assert.equal(bindVariable(document, node.id, opacity.id, 'opacity'), true);
+    const motionPreview = new Map([[node.id, { x: 40, y: 30, width: 32, height: 20, opacity: .65, fillColor: '#ffffff', fillOpacity: .25 }]]);
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1, assets: new Map(), presenting: true, motionPreview });
+    const actual = new PixelCanvas(100, 80);
+    renderer.drawNode(actual.context, node, 0, 0, new Map());
+    const reference = { ...node, x: 40, y: 30, width: 32, height: 20, opacity: 1, booleanGeometry: undefined, variableBindings: {},
+      fills: [{ ...node.fills[0], color: '#ffffff', opacity: .25 }, node.fills[1]] };
+    const opaque = new PixelCanvas(100, 80);
+    renderer.drawNode(opaque.context, reference, 0, 0, new Map(), false, false, { ignoreMotionPreview: true });
+    const expected = new PixelCanvas(100, 80); expected.context.globalAlpha = .65; expected.context.drawImage(opaque, 0, 0);
+    assert.deepEqual(actual.pixels, expected.pixels, 'resolved motion and variable bindings cannot overwrite the local effect surface origin or opacity');
+    assert.ok(actual.pixels[(35 * 100 + 45) * 4 + 3] > 0);
+    assert.equal(actual.pixels[(60 * 100 + 80) * 4 + 3], 0, 'the animated translation is not applied twice');
+    assert.equal(node.x, 2); assert.equal(node.width, 20); assert.equal(node.fills[0].opacity, .4);
+  } finally { if (previousCanvas === undefined) delete globalThis.OffscreenCanvas; else globalThis.OffscreenCanvas = previousCanvas; }
+});
+
+test('freezing an effect root leaves descendant motion and animated paint live', () => {
+  const PixelCanvas = motionPixelCanvasClass(); const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PixelCanvas;
+  try {
+    const child = createNode('rectangle', { x: 1, y: 2, width: 5, height: 5 });
+    const node = createNode('group', { x: 3, y: 4, width: 40, height: 40, fill: 'transparent', children: [child],
+      effects: [{ id: 'zero-blur', type: 'layer-blur', visible: true, radius: 0 }] });
+    const document = createDocument(); addNode(document, node);
+    const motionPreview = new Map([[node.id, { x: 30, y: 20, opacity: .5 }], [child.id, { x: 9, y: 7, fillOpacity: .25 }]]);
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1, assets: new Map(), presenting: true, motionPreview });
+    const output = new PixelCanvas(100, 80); renderer.drawNode(output.context, node, 0, 0, new Map());
+    assert.equal(output.pixels[(28 * 100 + 40) * 4 + 3], 32, 'descendant fill opacity and position remain animated under the isolated root');
+    assert.equal(output.pixels[(23 * 100 + 32) * 4 + 3], 0, 'the saved child position is not substituted for its current motion');
+  } finally { if (previousCanvas === undefined) delete globalThis.OffscreenCanvas; else globalThis.OffscreenCanvas = previousCanvas; }
+});
+
+test('alpha masks apply the completed Boolean paint alpha once and fail closed on unavailable source surfaces', () => {
+  const PixelCanvas = motionPixelCanvasClass(); const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PixelCanvas;
+  try {
+    const source = createNode('path', { x: 5, y: 4, width: 10, height: 8, opacity: .65, closed: true, strokes: [],
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+      fills: [{ id: 'first', type: 'solid', color: '#123456', visible: true, opacity: .4 },
+        { id: 'second', type: 'solid', color: '#abcdef', visible: true, opacity: .6 }],
+      effects: [{ id: 'zero-blur', type: 'layer-blur', visible: true, radius: 0 }] });
+    source.booleanGeometry = 'vector';
+    const group = createNode('group', { width: 30, height: 20, fill: 'transparent', mask: true, maskMode: 'alpha',
+      maskSourceId: source.id, children: [source, createNode('rectangle', { width: 30, height: 20, fill: '#ff0000' })] });
+    const document = createDocument(); addNode(document, group);
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, zoom: 1, assets: new Map(), presenting: true });
+    const output = new PixelCanvas(30, 20); renderer.drawMaskGroup(output.context, group, 0, 0, new Map());
+    assert.equal(output.pixels[(6 * 30 + 7) * 4 + 3], 126, 'source-over .4 and .6 paints then layer opacity .65 give alpha .494');
+    assert.equal(output.pixels[3], 0, 'pixels outside the source region are removed');
+    let allocated = 0;
+    globalThis.OffscreenCanvas = class extends PixelCanvas {
+      constructor(w, h) { super(w, h); this.failed = ++allocated === 2; }
+      getContext() { return this.failed ? null : super.getContext(); }
+    };
+    const failures = []; const renderFailures = []; const destination = new PixelCanvas(30, 20);
+    const previousWarn = console.warn; console.warn = () => {};
+    try {
+      renderer.drawMaskGroup(destination.context, group, 0, 0, new Map(), {
+        onMaskError: (_node, error) => failures.push(error.message), onRenderError: (_node, error) => renderFailures.push(error.message) });
+    } finally { console.warn = previousWarn; }
+    assert.equal(destination.pixels.some(value => value !== 0), false, 'allocation failure never exposes unmasked content');
+    assert.equal(failures.length, 1); assert.equal(renderFailures.length, 1);
+  } finally { if (previousCanvas === undefined) delete globalThis.OffscreenCanvas; else globalThis.OffscreenCanvas = previousCanvas; }
 });
 
 test('Boolean text operands render white glyph masks and resolve text metrics by frame mode', () => {

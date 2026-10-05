@@ -40,7 +40,8 @@ test('pen geometry stores open and closed strokes as a connected network with sh
   addNode(document, rectangle);
   addNode(document, image);
   assert.equal(canCombineBoolean(document, [node.id, rectangle.id]), true);
-  assert.equal(canCombineBoolean(document, [open.id, rectangle.id]), false);
+  assert.equal(canCombineBoolean(document, [open.id, rectangle.id]), true, 'open network edges can enter the asynchronously prepared vector workflow');
+  assert.throws(() => combineBoolean(document, [open.id, rectangle.id]), /asynchronous vector preparation/, 'the legacy synchronous operation cannot silently omit open edges');
   const maskDocument = createDocument();
   const maskImage = createNode('image');
   const maskNetwork = createNode('network', network);

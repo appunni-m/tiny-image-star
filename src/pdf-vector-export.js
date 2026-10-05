@@ -1,5 +1,6 @@
 import { decodePdfImageDataUri, PdfImageFormatError } from './pdf-image.js';
 import { transformTextCase } from './text-layout.js';
+import * as model from './model.js';
 
 const encoder = new TextEncoder();
 
@@ -44,6 +45,44 @@ export function assertVectorPdfEffectsSupported(node) {
     throw new PdfVectorExportError('texture effects', `layer “${node.name || 'Layer'}” cannot be represented; use raster PDF or hide/remove the texture effect`);
   }
   return true;
+}
+
+/**
+ * Visit the layers that the SVG/PDF paint stream actually draws. A prepared
+ * vector Boolean is one path with its original identity and result paints;
+ * its editable operands are geometry inputs, not additional painted layers.
+ * Preparation remains asynchronous and must finish before this synchronous
+ * traversal starts. Legacy Boolean traversal retains its existing behavior.
+ */
+export function walkVectorPdfPaintNodes(document, roots, visit, {
+  resolveBoolean = (snapshot, node) => model.getBooleanVectorPath(snapshot, node)
+} = {}) {
+  if (!Array.isArray(roots) || typeof visit !== 'function' || typeof resolveBoolean !== 'function') throw new TypeError('Vector PDF paint traversal requires roots, a visitor, and a Boolean resolver.');
+  if(roots.length>model.MAX_DOCUMENT_NODE_COUNT)throw new RangeError('Vector PDF paint traversal exceeds the bounded design tree.');
+  const stack=roots.map(node=>({node,parents:[]})).reverse();
+  const seen=new Set();
+  while(stack.length){
+    const entry=stack.pop();const sourceNode=entry.node;
+    if(!sourceNode||typeof sourceNode!=='object')throw new TypeError('Vector PDF requires readable layer geometry.');
+    if(model.getNodePropertyValue(document,sourceNode,'visible')===false
+      ||Number(model.getNodePropertyValue(document,sourceNode,'opacity')??1)===0)continue;
+    if(seen.has(sourceNode)||seen.size>=model.MAX_DOCUMENT_NODE_COUNT||entry.parents.length>=model.MAX_DOCUMENT_TREE_DEPTH)throw new RangeError('Vector PDF paint traversal exceeds the bounded design tree.');
+    seen.add(sourceNode);
+    let node=sourceNode;
+    if(sourceNode.type==='boolean'&&sourceNode.booleanGeometry==='vector'){
+      try{node=resolveBoolean(document,sourceNode);}
+      catch(error){throw new PdfVectorExportError('Boolean geometry',`layer “${sourceNode.name||'Boolean'}”: ${error.message||'prepare the result before exporting'}`);}
+      if(!node||node.type!=='path'||node.id!==sourceNode.id||!Array.isArray(node.children)||node.children.length
+        ||node.closed!==true||!Array.isArray(node.points)||node.subpaths!=null&&!Array.isArray(node.subpaths))throw new PdfVectorExportError('Boolean geometry',`layer “${sourceNode.name||'Boolean'}” has no complete prepared result path`);
+    }
+    visit({node,sourceNode,parents:entry.parents});
+    if(node!==sourceNode)continue;
+    const children=node.children||[];
+    if(!Array.isArray(children))throw new TypeError('Vector PDF requires readable child layers.');
+    if(children.length>model.MAX_DOCUMENT_NODE_COUNT-seen.size-stack.length)throw new RangeError('Vector PDF paint traversal exceeds the bounded design tree.');
+    const parents=[...entry.parents,sourceNode];
+    for(let index=children.length-1;index>=0;index--)stack.push({node:children[index],parents});
+  }
 }
 
 function fail(feature, detail) {

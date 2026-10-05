@@ -6,7 +6,7 @@ const roots = new Set([
   'blendMode', 'fill', 'fills', 'fillOpacity', 'fillStyleId', 'stroke', 'strokeWidth',
   'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeDashArray', 'strokeMiterLimit', 'strokeAlignment',
   'strokes', 'radius', 'cornerRadii', 'cornerSmoothing', 'clip', 'mask', 'maskMode', 'maskSourceId', 'effects',
-  'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
+  'effectStyleId', 'color', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
   'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
   'minHeight', 'maxHeight', 'gridCell', 'fillGradient', 'imageFill', 'fillVariableId',
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
